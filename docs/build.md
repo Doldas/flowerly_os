@@ -136,13 +136,17 @@ The official base image is cached under the runner user's
 evidence contains the tested git commit, image checksum, running kernel/package
 information, QEMU accelerator, guest report and serial log.
 
-The workflow also supports `workflow_dispatch` with `force=true`. That is
-the current manual **final validation** path before a release when we want a
-fresh run even if the same fingerprint already passed overnight.
+The workflow also supports `workflow_dispatch` with `force=true`, giving a
+manual final-validation path before tagging even if the same fingerprint passed
+overnight.
 
-This test is deliberately not a per-PR gate: it performs a full rolling Arch
-upgrade, reboot and build inside a VM. Normal CI remains the fast pull-request
-gate.
+Tagged releases go one step further: `.github/workflows/release.yml` performs a
+fresh Arch-kernel VM run for the exact tag and will not publish the GitHub
+Release unless that guest validation passes.
+
+The heavyweight VM test is deliberately not a per-PR gate: it performs a full
+rolling Arch upgrade, reboot and build inside a VM. Normal CI remains the fast
+pull-request gate.
 
 ### Runner caching and stale-run cancellation
 
