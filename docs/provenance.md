@@ -21,8 +21,10 @@ ProvenanceEdge {
 }
 ```
 
-Endpoints are serialized as strings for inspectability, but `ObjectRef` validates
-them at the type boundary. Accepted forms are:
+`ObjectRef` is a strongly typed Rust enum whose variants carry the corresponding
+typed ID (`FlowId`, `GoalId`, `SessionId`, and so on) or an explicit Actor
+value. It serializes to a compact string for SQLite/wire inspectability and
+backwards compatibility. Accepted serialized forms are:
 
 ```text
 flow-...
@@ -41,9 +43,11 @@ project-...
 actor:<name>
 ```
 
-Arbitrary untyped strings are rejected. Domain code constructs references from
-typed IDs (`ObjectRef::from(&goal_id)`) and uses the explicit `actor:`
-namespace for human/system/agent actor labels. Migration 0002 normalizes legacy
+Arbitrary untyped strings are rejected. Parsing reconstructs the enum variant,
+so a valid `goal-...` reference is represented as `ObjectRef::Goal(GoalId)`
+rather than losing its domain type. Domain code constructs references from typed
+IDs (`ObjectRef::from(&goal_id)`) and uses the explicit `actor:` namespace for
+human/system/agent actor labels. Migration 0002 normalizes legacy
 `created_by` targets into that actor namespace.
 
 ## Relation vocabulary
