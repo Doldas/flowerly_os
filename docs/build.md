@@ -148,6 +148,20 @@ The heavyweight VM test is deliberately not a per-PR gate: it performs a full
 rolling Arch upgrade, reboot and build inside a VM. Normal CI remains the fast
 pull-request gate.
 
+### Documentation Pages publication
+
+Documentation builds run on both `master` and `release/**` when docs inputs
+change. Release branches therefore validate the MkDocs site before promotion,
+but they do **not** publish the production GitHub Pages site.
+
+Only `master` may execute the `github-pages` deployment job. Manual
+`workflow_dispatch` runs follow the same rule: a non-master ref can build and
+validate documentation, while production publication is skipped.
+
+This matches the release model and GitHub environment protection: unreleased
+documentation is tested on the active release branch and becomes public only
+after that release line is promoted to `master`.
+
 ### Runner caching and stale-run cancellation
 
 CI is optimized for both GitHub-hosted and self-hosted runners:
