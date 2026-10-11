@@ -105,7 +105,6 @@ fn flowd_starts_and_answers_status() {
     }
 }
 
-
 #[test]
 fn durable_flow_state_survives_runtime_restart() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -136,7 +135,10 @@ fn durable_flow_state_survives_runtime_restart() {
     loop {
         match first.try_wait().expect("try_wait first daemon") {
             Some(status) => {
-                assert!(status.success(), "first flowd exited unsuccessfully: {status}");
+                assert!(
+                    status.success(),
+                    "first flowd exited unsuccessfully: {status}"
+                );
                 break;
             }
             None if Instant::now() > deadline => {
@@ -177,7 +179,10 @@ fn durable_flow_state_survives_runtime_restart() {
     loop {
         match second.try_wait().expect("try_wait second daemon") {
             Some(status) => {
-                assert!(status.success(), "second flowd exited unsuccessfully: {status}");
+                assert!(
+                    status.success(),
+                    "second flowd exited unsuccessfully: {status}"
+                );
                 break;
             }
             None if Instant::now() > deadline => {
