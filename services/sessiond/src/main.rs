@@ -152,10 +152,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .update_session_state(&session_id, SessionState::Exited)
                 .map_err(err_str)?;
             store
-                .update_session_presentation_state(
-                    &session_id,
-                    SessionPresentationState::Detached,
-                )
+                .update_session_presentation_state(&session_id, SessionPresentationState::Detached)
                 .map_err(err_str)?;
             Ok(serde_json::json!({
                 "id": session_id,
