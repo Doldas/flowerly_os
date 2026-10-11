@@ -15,8 +15,10 @@ most of the long-term direction is planned, not yet implemented.
 A Linux distribution whose defining property is that the operating environment
 itself can evolve. Agents observe the system, pursue persistent goals, operate
 Linux directly, develop software, build and test candidate generations, and
-evolve the userspace around the actual needs of its owner. Linux remains the
-stable substrate; the innovation happens above the kernel.
+evolve the userspace around the actual needs of its owner. Flowerly uses Arch
+Linux as its initial userspace/package substrate while retaining an upstream
+Linux kernel policy. Arch supplies moving upstream inputs; Flowerly generations
+decide what reaches Stable World.
 
 ## Design principles
 
@@ -46,8 +48,10 @@ today:
 - Unix-domain-socket, length-prefixed JSON IPC (protocol v1).
 
 Planned, not yet implemented: PTY-backed persistent sessions, the agent
-runtime, the KVM Evolution World, generation building, and self-modification.
-See [docs/roadmap.md](docs/roadmap.md).
+runtime, the KVM Evolution World, generation building, bootable Arch-based
+Flowerly images, and self-modification. The initial Arch image-input scaffold
+already lives under `image/arch/`; it is not yet a bootable release image. See
+[docs/roadmap.md](docs/roadmap.md).
 
 ## Getting started
 
@@ -80,6 +84,7 @@ just stop     # shuts the dev runtime down cleanly
 | `tools/` | `agenticctl` control-plane CLI |
 | `docs/` | Architecture specifications, design updates, ADRs, RFCs, specs |
 | `scripts/` | Development tooling |
+| `image/` | Arch Linux rootfs/image inputs and future generation-image builder |
 
 ## Language policy
 
