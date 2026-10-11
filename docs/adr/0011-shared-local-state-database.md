@@ -57,13 +57,18 @@ SQLite remains configured with foreign keys, WAL and a busy timeout. Migrations
 use an IMMEDIATE transaction and re-check the migration version inside that
 transaction so concurrently starting daemons converge safely on one schema.
 
+Causal object creation that must carry provenance (currently Flow, Goal and
+Session creation) is committed through one SQLite transaction. A durable object
+must not become visible merely because the provenance write that explains its
+creation failed a moment later.
+
 ## Consequences
 
 - Cross-domain relationships live in one ACID database.
 - Foreign keys can represent real local relationships.
 - Startup no longer creates one copy of the complete schema per daemon.
-- Cross-domain transactions are possible when a future invariant genuinely
-  requires them.
+- Cross-domain transactions are available for real local invariants; object
+  creation plus mandatory provenance already uses them.
 - Service boundaries remain logical/API boundaries, not database-file
   boundaries.
 - If scaling or fault-isolation evidence later justifies splitting stores, that
