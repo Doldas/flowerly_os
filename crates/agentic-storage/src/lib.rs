@@ -338,20 +338,22 @@ impl Store {
     }
 
     pub fn insert_execution(&self, exec: &Execution) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                exec.id.as_str(),
-                exec.agent_id.as_ref().map(AgentId::as_str),
-                exec.goal_id.as_ref().map(GoalId::as_str),
-                exec.reason,
-                exec.command,
-                exec.exit_code,
-                exec.duration_ms,
-                exec.started_at.as_millis(),
-            ],
-        )?;
+        insert_execution_row(&self.conn, exec)
+    }
+
+    pub fn insert_execution_with_provenance(
+        &mut self,
+        exec: &Execution,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_execution_row(&tx, exec)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -377,20 +379,22 @@ impl Store {
     }
 
     pub fn insert_generation(&self, generation: &Generation) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                generation.id.as_str(),
-                generation.parent.as_ref().map(GenerationId::as_str),
-                generation.source_commit,
-                generation.system_manifest,
-                generation.reason_goal.as_ref().map(GoalId::as_str),
-                generation.experiment.as_ref().map(|e| e.to_string()),
-                generation.status.to_string(),
-                generation.created_at.as_millis(),
-            ],
-        )?;
+        insert_generation_row(&self.conn, generation)
+    }
+
+    pub fn insert_generation_with_provenance(
+        &mut self,
+        generation: &Generation,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_generation_row(&tx, generation)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -426,6 +430,43 @@ impl Store {
         Ok(())
     }
 
+    /// Promote one generation to STABLE and supersede any previous STABLE
+    /// generation in the same SQLite transaction.
+    pub fn activate_generation(&mut self, id: &GenerationId) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let exists = tx
+            .query_row(
+                "SELECT id FROM generations WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+
+        tx.execute(
+            "UPDATE generations
+             SET status = ?1
+             WHERE status = ?2 AND id <> ?3",
+            params![
+                GenerationStatus::Superseded.to_string(),
+                GenerationStatus::Stable.to_string(),
+                id.as_str(),
+            ],
+        )?;
+        tx.execute(
+            "UPDATE generations SET status = ?2 WHERE id = ?1",
+            params![id.as_str(), GenerationStatus::Stable.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
         insert_provenance_row(&self.conn, edge)
     }
@@ -436,6 +477,15 @@ impl Store {
              FROM provenance_edges WHERE from_ref = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![from.as_str()], map_provenance)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn provenance_to(&self, to: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT from_ref, relation, to_ref, created_at, note
+             FROM provenance_edges WHERE to_ref = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![to.as_str()], map_provenance)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
@@ -493,6 +543,42 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
             session.presentation_state.to_string(),
             session.created_by,
             session.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
+    conn.execute(
+        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            exec.id.as_str(),
+            exec.agent_id.as_ref().map(AgentId::as_str),
+            exec.goal_id.as_ref().map(GoalId::as_str),
+            exec.reason,
+            exec.command,
+            exec.exit_code,
+            exec.duration_ms,
+            exec.started_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<()> {
+    conn.execute(
+        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            generation.id.as_str(),
+            generation.parent.as_ref().map(GenerationId::as_str),
+            generation.source_commit,
+            generation.system_manifest,
+            generation.reason_goal.as_ref().map(GoalId::as_str),
+            generation.experiment.as_ref().map(|e| e.to_string()),
+            generation.status.to_string(),
+            generation.created_at.as_millis(),
         ],
     )?;
     Ok(())
