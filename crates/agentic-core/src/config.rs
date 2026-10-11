@@ -151,7 +151,10 @@ pub fn default_state_dir() -> PathBuf {
 
     if let Ok(home) = env::var("HOME") {
         if !home.is_empty() {
-            return PathBuf::from(home).join(".local").join("state").join("flowerly");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("flowerly");
         }
     }
 
