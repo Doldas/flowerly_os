@@ -1,0 +1,9 @@
+agenticctl
+agenticd
+capabilityd
+evolutiond
+flowd
+generationd
+goald
+provenanced
+sessiond

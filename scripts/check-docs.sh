@@ -17,6 +17,7 @@ required_docs=(
     docs/evolution.md docs/provenance.md docs/capabilities.md
     docs/user-model.md docs/threat-model.md docs/build.md docs/releases.md
     docs/vision.md docs/roadmap.md docs/decisions.md docs/journal.md
+    docs/image-model.md
 )
 
 required_adrs=(
@@ -33,6 +34,8 @@ required_adrs=(
     docs/adr/0011-shared-local-state-database.md
     docs/adr/0012-agenticctl-control-plane.md
     docs/adr/0013-process-boundaries-require-justification.md
+    docs/adr/0014-linux-authority-is-the-enforcement-substrate.md
+    docs/adr/0015-arch-linux-userspace-substrate.md
 )
 
 required_rfcs=(

@@ -6,7 +6,7 @@
 CARGO ?= cargo
 TARGET ?= target
 
-.PHONY: fmt fmt-check lint check build test verify run serve stop status release image vm vm-test
+.PHONY: fmt fmt-check lint check build test verify run serve stop status release image-inputs image vm vm-test
 
 fmt:
 	$(CARGO) fmt --all
@@ -44,8 +44,12 @@ status:
 release: build
 	@echo "release build complete; see docs/RELEASES.md for tagging"
 
-image:
-	@echo "image target is a placeholder — not implemented yet"
+image-inputs:
+	bash ./scripts/check-image-inputs.sh
+
+image: image-inputs
+	@echo "Arch image inputs are ready, but bootable image production is not implemented yet."
+	@echo "See image/arch/README.md and docs/image-model.md."
 	@exit 1
 
 vm:

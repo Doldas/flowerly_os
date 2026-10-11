@@ -81,6 +81,9 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Check Arch image inputs
+        run: bash ./scripts/check-image-inputs.sh
+
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v19
         with:
@@ -89,6 +92,7 @@ jobs:
             "docs/**/*.md"
             "docs/adr/**/*.md"
             "docs/rfcs/**/*.md"
+            "image/**/*.md"
 
       - name: Check documentation build references
         run: |

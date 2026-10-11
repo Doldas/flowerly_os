@@ -39,6 +39,35 @@ The intended lifecycle is `CANDIDATE`, `STABLE`, `SUPERSEDED` and `REVOKED`:
 > above is the intended model; reconciling `TESTED`/`REJECTED`/`REVOKED` is
 > planned.
 
+## Arch package generations
+
+Arch Linux is the initial userspace/package substrate. Its rolling release model
+does not mean Stable World rolls continuously.
+
+An Arch repository update is an input to generation construction:
+
+```text
+upstream package delta
+        ↓
+resolve a full candidate package set
+        ↓
+record exact package/kernel/build identities
+        ↓
+build and test candidate
+        ↓
+promote or reject
+```
+
+The package-name selection under `image/arch/` is not itself a generation
+manifest. A promoted generation must eventually record exact versions,
+architecture, package hashes/repository acquisition context, kernel identity,
+Flowerly source/output hashes, and its parent/provenance. Flowerly may retain
+the exact package artifacts or a repository snapshot needed to reproduce
+promoted generations.
+
+This also means rollback is not implemented by attempting to reverse a sequence
+of pacman transactions. Rollback selects a known previous Flowerly generation.
+
 ## Activation and rollback
 
 Activating a generation supersedes the previously active stable generation. On

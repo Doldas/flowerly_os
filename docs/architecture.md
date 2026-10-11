@@ -42,6 +42,27 @@ validation. Durable models (`Flow`, `Goal`, `Session`, `Execution`,
 live here and are shared by services and storage. The workspace forbids unsafe
 code in the shared crates.
 
+## Linux distribution substrate
+
+Flowerly OS uses Arch Linux as its initial userspace/package substrate while
+retaining the upstream Linux kernel policy from ADR-0004. Arch packages are
+ordinary build inputs; Flowerly owns generation construction, testing,
+promotion and rollback.
+
+```text
+Arch repositories ──→ candidate generation ──→ Evolution World
+                                              │
+                                  promote ─────┘
+                                      ↓
+                                 Stable World
+```
+
+Stable World is therefore not intended to track Arch repositories by unmanaged
+system-wide upgrades. The first declarative image inputs live under
+`image/arch/`; bootable image output is still planned. See
+[image-model.md](image-model.md) and
+[ADR-0015](adr/0015-arch-linux-userspace-substrate.md).
+
 ## Persistent state
 
 Local services share one physical SQLite database, `state.db`, by default.

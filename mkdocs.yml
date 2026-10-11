@@ -34,6 +34,7 @@ nav:
       - Vision: vision.md
       - Architecture: architecture.md
       - System Design: system-design.md
+      - Image & Userspace Model: image-model.md
       - Flow Model: flow-model.md
       - Session Model: session-model.md
       - Goal Model: goal-model.md
