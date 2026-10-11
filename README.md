@@ -89,6 +89,14 @@ just stop     # shuts the dev runtime down cleanly
 - **C** is used only where direct low-level Linux integration justifies it.
 - **Java** is allowed only where a JVM ecosystem provides a concrete advantage.
 
+## Documentation website
+
+The public wiki, online help, architecture reference, roadmap, and release documentation are published through GitHub Pages:
+
+**https://doldas.github.io/flowerly_os/**
+
+The website is built from the Markdown under `docs/`, so repository documentation and online help stay in the same version-controlled source of truth.
+
 ## Project documents
 
 - [docs/vision.md](docs/vision.md) — long-term direction.
