@@ -167,21 +167,22 @@ impl Store {
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                flow.id.as_str(),
-                flow.name,
-                flow.purpose,
-                flow.parent_flow.as_ref().map(FlowId::as_str),
-                flow.state.to_string(),
-                flow.created_by,
-                flow.created_at.as_millis(),
-                flow.last_active.map(|t| t.as_millis()),
-                flow.revision,
-            ],
-        )?;
+        insert_flow_row(&self.conn, flow)
+    }
+
+    pub fn insert_flow_with_provenance(
+        &mut self,
+        flow: &Flow,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_flow_row(&tx, flow)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -218,22 +219,22 @@ impl Store {
     }
 
     pub fn insert_goal(&self, goal: &Goal) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                goal.id.as_str(),
-                goal.parent_goal.as_ref().map(GoalId::as_str),
-                goal.objective,
-                goal.rationale,
-                serde_json::to_string(&goal.constraints)?,
-                serde_json::to_string(&goal.success_metrics)?,
-                goal.priority,
-                goal.status.to_string(),
-                goal.created_by,
-                goal.created_at.as_millis(),
-            ],
-        )?;
+        insert_goal_row(&self.conn, goal)
+    }
+
+    pub fn insert_goal_with_provenance(
+        &mut self,
+        goal: &Goal,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_goal_row(&tx, goal)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -270,21 +271,22 @@ impl Store {
     }
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                session.id.as_str(),
-                session.flow_id.as_ref().map(FlowId::as_str),
-                session.kind,
-                session.pid,
-                session.cwd,
-                session.state.to_string(),
-                session.presentation_state.to_string(),
-                session.created_by,
-                session.created_at.as_millis(),
-            ],
-        )?;
+        insert_session_row(&self.conn, session)
+    }
+
+    pub fn insert_session_with_provenance(
+        &mut self,
+        session: &Session,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_session_row(&tx, session)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -425,18 +427,7 @@ impl Store {
     }
 
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO provenance_edges (from_ref, relation, to_ref, created_at, note)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                edge.from.as_str(),
-                edge.relation.as_str(),
-                edge.to.as_str(),
-                edge.created_at.as_millis(),
-                edge.note,
-            ],
-        )?;
-        Ok(())
+        insert_provenance_row(&self.conn, edge)
     }
 
     pub fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
@@ -447,6 +438,79 @@ impl Store {
         let rows = stmt.query_map(params![from.as_str()], map_provenance)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            flow.id.as_str(),
+            flow.name,
+            flow.purpose,
+            flow.parent_flow.as_ref().map(FlowId::as_str),
+            flow.state.to_string(),
+            flow.created_by,
+            flow.created_at.as_millis(),
+            flow.last_active.map(|t| t.as_millis()),
+            flow.revision,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
+    conn.execute(
+        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            goal.id.as_str(),
+            goal.parent_goal.as_ref().map(GoalId::as_str),
+            goal.objective,
+            goal.rationale,
+            serde_json::to_string(&goal.constraints)?,
+            serde_json::to_string(&goal.success_metrics)?,
+            goal.priority,
+            goal.status.to_string(),
+            goal.created_by,
+            goal.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            session.id.as_str(),
+            session.flow_id.as_ref().map(FlowId::as_str),
+            session.kind,
+            session.pid,
+            session.cwd,
+            session.state.to_string(),
+            session.presentation_state.to_string(),
+            session.created_by,
+            session.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO provenance_edges (from_ref, relation, to_ref, created_at, note)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            edge.from.as_str(),
+            edge.relation.as_str(),
+            edge.to.as_str(),
+            edge.created_at.as_millis(),
+            edge.note,
+        ],
+    )?;
+    Ok(())
 }
 
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
@@ -668,6 +732,32 @@ mod tests {
             .expect("query edges");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].relation, ProvenanceRelation::BelongsTo);
+    }
+
+    #[test]
+    fn object_and_provenance_can_commit_atomically() {
+        let mut store = migrated_store();
+        let flow = Flow::new("Atomic", "user");
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&flow.id),
+            relation: ProvenanceRelation::CreatedBy,
+            to: ObjectRef::actor("user").expect("actor ref"),
+            created_at: Timestamp::now(),
+            note: None,
+        };
+
+        store
+            .insert_flow_with_provenance(&flow, &[edge])
+            .expect("atomic insert");
+
+        assert!(store.get_flow(&flow.id).expect("flow query").is_some());
+        assert_eq!(
+            store
+                .provenance_from(&ObjectRef::from(&flow.id))
+                .expect("provenance query")
+                .len(),
+            1
+        );
     }
 
     #[test]
