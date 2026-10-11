@@ -38,11 +38,9 @@ api() {
 
 label() {
     local name="$1" color="$2" desc="$3"
-    if gh label view "$name" --repo "$REPO" >/dev/null 2>&1; then
-        echo "label exists: $name"
-        return
-    fi
-    run gh label create "$name" --repo "$REPO" --color "$color" --description "$desc"
+    # --force updates an existing label instead of failing, making this
+    # idempotent across runs.
+    run gh label create "$name" --repo "$REPO" --color "$color" --description "$desc" --force
 }
 
 milestone() {
@@ -62,9 +60,10 @@ milestone() {
 
 issue() {
     local title="$1" labels="$2" milestone="$3" body="$4"
-    if gh issue list --repo "$REPO" --label "type:feature" --search "title:$title in:title" \
-        -q ".[] | select(.title == \"$title\")" 2>/dev/null | grep -q "$title"; then
-        echo "issue exists: $title"
+    local existing
+    existing="$(gh issue list --repo "$REPO" --state all --search "in:title \"$title\"" --json number -q '.[0].number' 2>/dev/null || true)"
+    if [[ -n "$existing" ]]; then
+        echo "issue exists: $title (#$existing)"
         return
     fi
     local args=(-R "$REPO" --title "$title" --label "$labels" --body "$body")
@@ -84,27 +83,22 @@ project_v2() {
         echo "[dry-run] project_v2"
         return
     fi
-    local owner_id
-    owner_id="$(gh api graphql -f query='
-        query { user(login: "Doldas") { id } }' -q .data.user.id)"
-    local existing
-    existing="$(gh api graphql -f query='
-        query($e: ID!) {
-          user(login: "Doldas") {
-            projectsV2(first: 50) { nodes { id title } }
-          }
-        }' 2>/dev/null | sed -n 's/.*"title": "Flowerly OS.*//p')"
-    if [[ -z "$existing" ]]; then
-        gh api graphql -f query='
-            mutation($o: ID!, $t: String!) {
-              createProjectV2(input: { ownerId: $o, title: $t }) {
-                projectV2 { id title }
-              }
-            }' -f o="$owner_id" -f t="Flowerly OS" >/dev/null
-        echo "created project board: Flowerly OS"
-    else
+    local login="Doldas"
+    local project_id
+    project_id="$(gh api graphql \
+        -f query='query($l: String!){ user(login: $l){ projectsV2(first: 50){ nodes{ id title } } } }' \
+        -f l="$login" \
+        -q '.data.user.projectsV2.nodes[] | select(.title == "Flowerly OS") | .id')"
+    if [[ -n "$project_id" ]]; then
         echo "project board exists"
+        return
     fi
+    local owner_id
+    owner_id="$(gh api graphql -f query='query($l: String!){ user(login: $l){ id } }' -f l="$login" -q .data.user.id)"
+    gh api graphql \
+        -f query='mutation($o: ID!, $t: String!){ createProjectV2(input: { ownerId: $o, title: $t }){ projectV2 { id } } }' \
+        -f o="$owner_id" -f t="Flowerly OS" >/dev/null
+    echo "created project board: Flowerly OS"
 }
 
 echo "Configuring $REPO"
