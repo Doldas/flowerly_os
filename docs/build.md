@@ -38,8 +38,22 @@ without extra tooling.
 
 Services are foreground processes, so `cargo run -p flowd` or
 `cargo run -p agenticctl -- status` works directly. They create Unix sockets
-under `$XDG_RUNTIME_DIR/flowerly` and persist state in SQLite, all without a
-network or an AI provider.
+under `$XDG_RUNTIME_DIR/flowerly` and persist structured state in one local
+SQLite `state.db` under the XDG state directory (normally
+`$XDG_STATE_HOME/flowerly` or `$HOME/.local/state/flowerly`). All of this works
+without a network or an AI provider.
+
+Useful overrides:
+
+```text
+AGENTIC_RUNTIME_DIR   ephemeral sockets/runtime files
+AGENTIC_STATE_DIR     durable Flowerly state directory
+AGENTIC_DATABASE_PATH explicit database path for tests/recovery
+```
+
+`scripts/dev-runtime.sh` deliberately keeps its durable development state under
+`target/flowerly-state` while its sockets/logs live in a separate runtime
+directory.
 
 ## CI
 
