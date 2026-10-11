@@ -78,9 +78,11 @@ CI is optimized for both GitHub-hosted and self-hosted runners:
 
 - Rust CI caches Cargo registry/git data plus `target/`, keyed by the runner
   platform, toolchain file and `Cargo.lock`.
-- CodeQL caches Cargo registry/git downloads but deliberately **does not cache
-  `target/`**. CodeQL must observe the instrumented build; reusing compiled
-  target artifacts can make analysis incomplete.
+- CodeQL uses `github/codeql-action@v4` with Rust `build-mode: none`, so PR
+  analysis does not perform a second full Cargo build. It still caches Cargo
+  registry/git downloads for dependency metadata. `target/` is deliberately
+  not part of the CodeQL cache because no compiled build output is required by
+  this analysis mode.
 - Security jobs reuse Cargo registry/git metadata.
 - GitHub Pages uses the built-in pip cache keyed by
   `requirements-docs.txt`.
@@ -90,6 +92,9 @@ CI is optimized for both GitHub-hosted and self-hosted runners:
   queue.
 - CodeQL and dependency security workflows skip documentation-only changes.
   Scheduled security analysis still runs independently.
+- CodeQL disables database artifact upload (`upload-database: false`) while
+  still publishing code-scanning results, avoiding an unnecessary large
+  database upload on every PR run.
 
 `FLOWERLY_CACHE_VERSION` in the workflows is the manual cache-busting knob.
 Increment it when cache layout or semantics change.
