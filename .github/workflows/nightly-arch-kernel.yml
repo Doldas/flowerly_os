@@ -111,6 +111,7 @@ jobs:
             git ls-files -s -- \
               Cargo.toml Cargo.lock rust-toolchain.toml justfile Makefile \
               crates services tools scripts image tests \
+              kernel packaging evolution shell go python c schemas \
               .github/workflows/nightly-arch-kernel.yml |
               sha256sum |
               awk '{print $1}'
