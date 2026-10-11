@@ -17,9 +17,11 @@ initial goals.
 Use upstream Linux as the kernel substrate. Do not fork or patch the kernel for
 the initial architecture. Concrete kernel configurations live in `kernel/config`
 and are consumed by the image build; kernel packaging lives in
-`kernel/packaging`. Kernel changes are adopted through the normal distribution
-packaging and update policy, and the project cooperates with upstream and honors
-GPL obligations (Flowerly OS is licensed GPL-3.0-or-later).
+`kernel/packaging`. Kernel changes are adopted through reproducible packaging and Flowerly's
+generation/update policy, and the project cooperates with upstream and honors
+GPL obligations (Flowerly OS is licensed GPL-3.0-or-later). ADR-0015 selects
+Arch Linux as the initial userspace/package substrate; Arch's `linux` package
+may bootstrap early images, but it does not replace this upstream-kernel policy.
 
 ## Consequences
 
