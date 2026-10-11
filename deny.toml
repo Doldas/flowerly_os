@@ -28,7 +28,3 @@ allow = [
     "GPL-3.0-or-later",
 ]
 deny = []
-
-[sources]
-unknown-registry = "deny"
-unknown-git = "deny"
