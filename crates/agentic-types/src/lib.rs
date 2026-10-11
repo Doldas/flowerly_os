@@ -146,9 +146,27 @@ pub enum ObjectRefParseError {
     Invalid(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct ObjectRef(String);
+/// A provenance endpoint with a real domain type.
+///
+/// The enum is serialized as the same compact string used by typed IDs so the
+/// SQLite schema and wire format remain inspectable and backwards-compatible.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ObjectRef {
+    Flow(FlowId),
+    Intent(IntentId),
+    Goal(GoalId),
+    Agent(AgentId),
+    Session(SessionId),
+    Generation(GenerationId),
+    Experiment(ExperimentId),
+    Execution(ExecutionId),
+    Observation(ObservationId),
+    Finding(FindingId),
+    Decision(DecisionId),
+    Artifact(ArtifactId),
+    Project(ProjectId),
+    Actor(String),
+}
 
 impl ObjectRef {
     pub fn try_new(value: impl Into<String>) -> Result<Self, ObjectRefParseError> {
@@ -160,12 +178,27 @@ impl ObjectRef {
         if value.is_empty() || value.chars().any(char::is_control) {
             return Err(ObjectRefParseError::Invalid(value.to_owned()));
         }
-        format!("actor:{value}").parse()
+        Ok(Self::Actor(format!("actor:{value}")))
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            Self::Flow(id) => id.as_str(),
+            Self::Intent(id) => id.as_str(),
+            Self::Goal(id) => id.as_str(),
+            Self::Agent(id) => id.as_str(),
+            Self::Session(id) => id.as_str(),
+            Self::Generation(id) => id.as_str(),
+            Self::Experiment(id) => id.as_str(),
+            Self::Execution(id) => id.as_str(),
+            Self::Observation(id) => id.as_str(),
+            Self::Finding(id) => id.as_str(),
+            Self::Decision(id) => id.as_str(),
+            Self::Artifact(id) => id.as_str(),
+            Self::Project(id) => id.as_str(),
+            Self::Actor(actor) => actor.as_str(),
+        }
     }
 }
 
@@ -179,35 +212,46 @@ impl FromStr for ObjectRef {
 
         if let Some(actor) = s.strip_prefix("actor:") {
             if !actor.is_empty() && !actor.chars().any(char::is_control) {
-                return Ok(Self(s.to_owned()));
+                return Ok(Self::Actor(s.to_owned()));
             }
             return Err(ObjectRefParseError::Invalid(s.to_owned()));
         }
 
-        let Some((prefix, body)) = s.split_once('-') else {
-            return Err(ObjectRefParseError::Invalid(s.to_owned()));
-        };
-        let known_prefix = matches!(
-            prefix,
-            "flow"
-                | "intent"
-                | "goal"
-                | "agent"
-                | "session"
-                | "gen"
-                | "exp"
-                | "exec"
-                | "obs"
-                | "finding"
-                | "decision"
-                | "artifact"
-                | "project"
-        );
-        if known_prefix && !body.is_empty() {
-            Ok(Self(s.to_owned()))
-        } else {
-            Err(ObjectRefParseError::Invalid(s.to_owned()))
+        macro_rules! parse_variant {
+            ($prefix:literal, $id:ty, $variant:ident) => {
+                if s.starts_with(concat!($prefix, "-")) {
+                    return s
+                        .parse::<$id>()
+                        .map(Self::$variant)
+                        .map_err(|_| ObjectRefParseError::Invalid(s.to_owned()));
+                }
+            };
         }
+
+        parse_variant!("flow", FlowId, Flow);
+        parse_variant!("intent", IntentId, Intent);
+        parse_variant!("goal", GoalId, Goal);
+        parse_variant!("agent", AgentId, Agent);
+        parse_variant!("session", SessionId, Session);
+        parse_variant!("gen", GenerationId, Generation);
+        parse_variant!("exp", ExperimentId, Experiment);
+        parse_variant!("exec", ExecutionId, Execution);
+        parse_variant!("obs", ObservationId, Observation);
+        parse_variant!("finding", FindingId, Finding);
+        parse_variant!("decision", DecisionId, Decision);
+        parse_variant!("artifact", ArtifactId, Artifact);
+        parse_variant!("project", ProjectId, Project);
+
+        Err(ObjectRefParseError::Invalid(s.to_owned()))
+    }
+}
+
+impl Serialize for ObjectRef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -223,37 +267,33 @@ impl<'de> Deserialize<'de> for ObjectRef {
 
 impl fmt::Display for ObjectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
 macro_rules! object_ref_from_id {
-    ($($id:ty),+ $(,)?) => {
-        $(
-            impl From<&$id> for ObjectRef {
-                fn from(value: &$id) -> Self {
-                    Self(value.to_string())
-                }
+    ($id:ty, $variant:ident) => {
+        impl From<&$id> for ObjectRef {
+            fn from(value: &$id) -> Self {
+                Self::$variant(value.clone())
             }
-        )+
+        }
     };
 }
 
-object_ref_from_id!(
-    FlowId,
-    IntentId,
-    GoalId,
-    AgentId,
-    SessionId,
-    GenerationId,
-    ExperimentId,
-    ExecutionId,
-    ObservationId,
-    FindingId,
-    DecisionId,
-    ArtifactId,
-    ProjectId,
-);
+object_ref_from_id!(FlowId, Flow);
+object_ref_from_id!(IntentId, Intent);
+object_ref_from_id!(GoalId, Goal);
+object_ref_from_id!(AgentId, Agent);
+object_ref_from_id!(SessionId, Session);
+object_ref_from_id!(GenerationId, Generation);
+object_ref_from_id!(ExperimentId, Experiment);
+object_ref_from_id!(ExecutionId, Execution);
+object_ref_from_id!(ObservationId, Observation);
+object_ref_from_id!(FindingId, Finding);
+object_ref_from_id!(DecisionId, Decision);
+object_ref_from_id!(ArtifactId, Artifact);
+object_ref_from_id!(ProjectId, Project);
 
 #[cfg(test)]
 mod tests {
