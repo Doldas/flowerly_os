@@ -55,6 +55,30 @@ AGENTIC_DATABASE_PATH explicit database path for tests/recovery
 `target/flowerly-state` while its sockets/logs live in a separate runtime
 directory.
 
+## Arch image inputs
+
+The initial distribution substrate is Arch Linux. The current repository does
+not yet produce the 0.0.9 bootable image, but the image inputs are concrete
+under `image/arch/`.
+
+Validate them with:
+
+```text
+just image-inputs
+```
+
+This checks that the selected Arch packages and expected Flowerly binaries are
+sorted, unique and consistent with the initial mkosi rootfs configuration.
+
+`just image` deliberately still fails after validation because a successful
+command named `image` must eventually produce a real image artifact. The
+project will not report the scaffold as a completed bootable image.
+
+The current mkosi prototype uses Arch Linux and a directory/rootfs output. A
+later milestone adds Flowerly package installation, bootable disk output,
+initramfs/UKI handling, exact resolved package manifests and KVM boot tests. See
+[image-model.md](image-model.md).
+
 ## CI
 
 GitHub Actions runs the same targets from a clean checkout, keeping local and CI
