@@ -57,6 +57,19 @@ Eventually releases will also provide bootable images, packages, an SBOM,
 signatures and provenance metadata. Until then, releases ship source and
 artifacts with checksums.
 
+## Final Arch-kernel validation
+
+The nightly Arch-kernel workflow can also be dispatched manually with
+`force=true` for `master`, the latest release branch, or both. It boots the
+official Arch cloud image, upgrades it fully, reboots into the installed Arch
+kernel, and runs the complete Flowerly verification inside the guest.
+
+For the current pre-image releases this is additional final evidence rather
+than an automated tag blocker. Once Flowerly has a real generation image and
+boot/rollback release gate, this VM validation should become part of the
+enforced release pipeline rather than remaining a manually requested final
+check.
+
 ## Release gates
 
 A release cannot be tagged if:
