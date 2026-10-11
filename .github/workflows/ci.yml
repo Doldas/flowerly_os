@@ -92,6 +92,7 @@ jobs:
             "docs/**/*.md"
             "docs/adr/**/*.md"
             "docs/rfcs/**/*.md"
+            "image/**/*.md"
 
       - name: Check documentation build references
         run: |
