@@ -32,6 +32,11 @@ its Architecture Decision Record in [adr/](adr/).
 - **Conceptual domains do not automatically become daemons** —
   [ADR-0013](adr/0013-process-boundaries-require-justification.md). New process
   boundaries require a concrete lifecycle, isolation, security or runtime reason.
+- **Linux authority remains the enforcement substrate beneath Flowerly policy** —
+  [ADR-0014](adr/0014-linux-authority-is-the-enforcement-substrate.md).
+- **Arch Linux is the initial userspace/package substrate** —
+  [ADR-0015](adr/0015-arch-linux-userspace-substrate.md). Rolling upstream
+  changes feed candidate generations; Stable World does not roll directly.
 
 Proposed architecture that is not yet a committed decision lives under
 [RFCs](rfcs/), including the Intent domain and future Flow state decomposition.
