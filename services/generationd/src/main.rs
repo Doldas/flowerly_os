@@ -182,9 +182,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let generation_id = GenerationId::from_str(id).map_err(err_str)?;
-            store
-                .activate_generation(&generation_id)
-                .map_err(err_str)?;
+            store.activate_generation(&generation_id).map_err(err_str)?;
             Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
         }
         other => Err(format!("generationd: unknown command `{other}`")),
@@ -261,7 +259,6 @@ async fn self_test() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,7 +303,10 @@ mod tests {
         .expect_err("invalid experiment must fail");
         assert!(error.contains("experiment"), "unexpected error: {error}");
 
-        assert!(store.list_generations().expect("list generations").is_empty());
+        assert!(store
+            .list_generations()
+            .expect("list generations")
+            .is_empty());
     }
 
     #[test]
@@ -331,7 +331,10 @@ mod tests {
         .expect_err("missing reason goal must fail");
         assert_eq!(error, format!("goal not found: {missing_goal}"));
 
-        assert!(store.list_generations().expect("list generations").is_empty());
+        assert!(store
+            .list_generations()
+            .expect("list generations")
+            .is_empty());
     }
 
     #[test]
@@ -374,16 +377,13 @@ mod tests {
             .expect("generation provenance");
         assert_eq!(edges.len(), 3);
         assert!(edges.iter().any(|edge| {
-            edge.relation == ProvenanceRelation::CausedBy
-                && edge.to == ObjectRef::from(&parent.id)
+            edge.relation == ProvenanceRelation::CausedBy && edge.to == ObjectRef::from(&parent.id)
         }));
         assert!(edges.iter().any(|edge| {
-            edge.relation == ProvenanceRelation::CausedBy
-                && edge.to == ObjectRef::from(&goal.id)
+            edge.relation == ProvenanceRelation::CausedBy && edge.to == ObjectRef::from(&goal.id)
         }));
         assert!(edges.iter().any(|edge| {
-            edge.relation == ProvenanceRelation::TestedBy
-                && edge.to == ObjectRef::from(&experiment)
+            edge.relation == ProvenanceRelation::TestedBy && edge.to == ObjectRef::from(&experiment)
         }));
     }
 
