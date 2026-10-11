@@ -1083,7 +1083,7 @@ mod tests {
             writer.insert_goal(&goal).expect("insert goal");
             writer.insert_session(&session).expect("insert session");
             writer
-                .insert_execution_with_provenance(&execution, &[edge.clone()])
+                .insert_execution_with_provenance(&execution, std::slice::from_ref(&edge))
                 .expect("insert execution");
             writer
                 .insert_generation(&generation)
