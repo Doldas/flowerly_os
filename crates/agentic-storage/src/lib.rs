@@ -542,8 +542,12 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
         parent_goal: parent.map(GoalId::from_raw),
         objective: row.get(2)?,
         rationale: row.get(3)?,
-        constraints: serde_json::from_str(&constraints).unwrap_or_default(),
-        success_metrics: serde_json::from_str(&metrics).unwrap_or_default(),
+        constraints: serde_json::from_str(&constraints).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+        })?,
+        success_metrics: serde_json::from_str(&metrics).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+        })?,
         priority: row.get(6)?,
         status: status.parse().map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
@@ -869,6 +873,22 @@ mod tests {
             loaded.presentation_state,
             SessionPresentationState::Attached
         );
+    }
+
+    #[test]
+    fn invalid_persisted_goal_json_is_not_silently_accepted() {
+        let store = migrated_store();
+        let goal = Goal::new("Corruption test", "test");
+        store.insert_goal(&goal).expect("insert goal");
+        store
+            .conn
+            .execute(
+                "UPDATE goals SET constraints = 'not-json' WHERE id = ?1",
+                params![goal.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.get_goal(&goal.id).is_err());
     }
 
     #[test]
