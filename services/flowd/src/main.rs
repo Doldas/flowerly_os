@@ -35,8 +35,8 @@ async fn main() -> anyhow::Result<()> {
         return self_test().await;
     }
 
-    let store = open_store(&config)?;
-    ensure_general_flow(&store)?;
+    let mut store = open_store(&config)?;
+    ensure_general_flow(&mut store)?;
 
     let extra = serde_json::json!({
         "flow_count": count_flows(&store)?,
@@ -60,20 +60,20 @@ fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
     Ok(store)
 }
 
-fn ensure_general_flow(store: &Store) -> anyhow::Result<()> {
+fn ensure_general_flow(store: &mut Store) -> anyhow::Result<()> {
     if store.list_flows()?.iter().any(|f| f.name == "General") {
         return Ok(());
     }
     let mut general = Flow::new("General", "system");
     general.purpose = Some("The universal default context".to_owned());
-    store.insert_flow(&general)?;
-    store.insert_provenance(&ProvenanceEdge {
+    let provenance = ProvenanceEdge {
         from: ObjectRef::from(&general.id),
         relation: ProvenanceRelation::CreatedBy,
         to: ObjectRef::actor("system")?,
         created_at: Timestamp::now(),
         note: Some("bootstrap default General flow".to_owned()),
-    })?;
+    };
+    store.insert_flow_with_provenance(&general, &[provenance])?;
     tracing::info!(flow_id = %general.id, "created General flow");
     Ok(())
 }
@@ -86,13 +86,13 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
-    let store = match store.lock() {
+    let mut store = match store.lock() {
         Ok(store) => store,
         Err(_) => {
             return error_envelope(request.id.clone(), "storage lock poisoned");
         }
     };
-    let data = match run_command(&store, name, args) {
+    let data = match run_command(&mut store, name, args) {
         Ok(data) => data,
         Err(message) => {
             return error_envelope(request.id.clone(), message);
@@ -101,7 +101,11 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     ok_envelope(request.id.clone(), data)
 }
 
-fn run_command(store: &Store, name: &str, args: &Value) -> std::result::Result<Value, String> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+) -> std::result::Result<Value, String> {
     match name {
         "flow.create" => {
             let name = args
@@ -113,15 +117,15 @@ fn run_command(store: &Store, name: &str, args: &Value) -> std::result::Result<V
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             let flow = Flow::new(name, created_by);
-            store.insert_flow(&flow).map_err(err_str)?;
+            let provenance = ProvenanceEdge {
+                from: ObjectRef::from(&flow.id),
+                relation: ProvenanceRelation::CreatedBy,
+                to: ObjectRef::actor(created_by).map_err(err_str)?,
+                created_at: Timestamp::now(),
+                note: None,
+            };
             store
-                .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::from(&flow.id),
-                    relation: ProvenanceRelation::CreatedBy,
-                    to: ObjectRef::actor(created_by).map_err(err_str)?,
-                    created_at: Timestamp::now(),
-                    note: None,
-                })
+                .insert_flow_with_provenance(&flow, &[provenance])
                 .map_err(err_str)?;
             tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
@@ -178,7 +182,7 @@ async fn self_test() -> anyhow::Result<()> {
     let db = dir.path().join("flowd-self-test.db");
     let mut store = Store::open(&db).context("opening self-test db")?;
     let applied = store.migrate()?;
-    ensure_general_flow(&store)?;
+    ensure_general_flow(&mut store)?;
     let flows = store.list_flows()?;
     let flow = Flow::new("Development", "self-test");
     store.insert_flow(&flow)?;
