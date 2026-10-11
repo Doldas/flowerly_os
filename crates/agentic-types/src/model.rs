@@ -194,19 +194,62 @@ impl Goal {
 pub enum SessionState {
     Running,
 
-    Exited,
+    Suspended,
 
-    Detached,
+    Exited,
 }
 
 impl fmt::Display for SessionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             SessionState::Running => "RUNNING",
+            SessionState::Suspended => "SUSPENDED",
             SessionState::Exited => "EXITED",
-            SessionState::Detached => "DETACHED",
         };
         f.write_str(value)
+    }
+}
+
+impl FromStr for SessionState {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "RUNNING" => Ok(SessionState::Running),
+            "SUSPENDED" => Ok(SessionState::Suspended),
+            "EXITED" => Ok(SessionState::Exited),
+            other => Err(StateParseError::Session(other.to_owned())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionPresentationState {
+    Attached,
+
+    Detached,
+}
+
+impl fmt::Display for SessionPresentationState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            SessionPresentationState::Attached => "ATTACHED",
+            SessionPresentationState::Detached => "DETACHED",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for SessionPresentationState {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "ATTACHED" => Ok(SessionPresentationState::Attached),
+            "DETACHED" => Ok(SessionPresentationState::Detached),
+            other => Err(StateParseError::SessionPresentation(other.to_owned())),
+        }
     }
 }
 
@@ -222,7 +265,11 @@ pub struct Session {
 
     pub cwd: Option<String>,
 
+    /// Runtime lifecycle of the underlying process/session.
     pub state: SessionState,
+
+    /// Whether a user-facing presentation is currently attached.
+    pub presentation_state: SessionPresentationState,
 
     pub created_by: String,
 
@@ -370,6 +417,12 @@ pub enum StateParseError {
 
     #[error("invalid goal status: `{0}`")]
     Goal(String),
+
+    #[error("invalid session state: `{0}`")]
+    Session(String),
+
+    #[error("invalid session presentation state: `{0}`")]
+    SessionPresentation(String),
 }
 
 #[cfg(test)]
@@ -400,6 +453,20 @@ mod tests {
         let json = serde_json::to_string(&goal).expect("serialize goal");
         let restored: Goal = serde_json::from_str(&json).expect("deserialize goal");
         assert_eq!(goal, restored);
+    }
+
+    #[test]
+    fn session_runtime_and_presentation_states_are_independent() {
+        assert_eq!(
+            "RUNNING".parse::<SessionState>().expect("runtime state"),
+            SessionState::Running
+        );
+        assert_eq!(
+            "DETACHED"
+                .parse::<SessionPresentationState>()
+                .expect("presentation state"),
+            SessionPresentationState::Detached
+        );
     }
 
     #[test]
