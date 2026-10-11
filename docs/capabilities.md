@@ -10,7 +10,9 @@ authority: agents start with nothing and are explicitly bound to what they need.
 
 Linux remains the execution substrate and final enforcement layer for many real
 operations through process identity, file permissions, namespaces, cgroups,
-seccomp, sockets and other kernel/userspace mechanisms.
+seccomp, sockets and other kernel/userspace mechanisms. This layering is an
+accepted architectural decision; see
+[ADR-0014](adr/0014-linux-authority-is-the-enforcement-substrate.md).
 
 ## Capability model
 
