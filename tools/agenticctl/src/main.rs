@@ -133,6 +133,10 @@ enum SessionAction {
             help = "Session kind (local-pty, ssh, container, vm-console)."
         )]
         kind: String,
+        #[arg(long, help = "Associate the session with a Flow id.")]
+        flow_id: Option<String>,
+        #[arg(long, help = "Known process id for a registered runtime.")]
+        pid: Option<i32>,
         #[arg(long, help = "Working directory.")]
         cwd: Option<String>,
     },
@@ -155,8 +159,16 @@ struct GenerationArgs {
 enum GenerationAction {
     #[command(about = "Create a candidate generation.")]
     Create {
+        #[arg(long, help = "Parent generation id.")]
+        parent: Option<String>,
         #[arg(long, help = "Source commit.")]
         source_commit: Option<String>,
+        #[arg(long, help = "Resolved system manifest identity.")]
+        system_manifest: Option<String>,
+        #[arg(long, help = "Goal that motivated this generation.")]
+        reason_goal: Option<String>,
+        #[arg(long, help = "Experiment associated with this generation.")]
+        experiment: Option<String>,
     },
     #[command(about = "List generations.")]
     List,
@@ -196,6 +208,11 @@ enum ProvenanceAction {
         #[arg(help = "Object reference.")]
         reference: String,
     },
+    #[command(about = "Query edges pointing to an object.")]
+    To {
+        #[arg(help = "Object reference.")]
+        reference: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -210,12 +227,16 @@ enum ExecutionAction {
     Create {
         #[arg(long, help = "Command or operation executed.")]
         command: String,
+        #[arg(long, help = "Reason for the execution.")]
+        reason: Option<String>,
         #[arg(long, help = "Agent id.")]
         agent_id: Option<String>,
         #[arg(long, help = "Goal id.")]
         goal_id: Option<String>,
         #[arg(long, help = "Exit code.")]
         exit_code: Option<i32>,
+        #[arg(long, help = "Execution duration in milliseconds.")]
+        duration_ms: Option<i64>,
     },
     #[command(about = "Show an execution.")]
     Show {
@@ -332,9 +353,19 @@ async fn dispatch_goal(runtime_dir: &std::path::Path, action: GoalAction) -> Res
 async fn dispatch_session(runtime_dir: &std::path::Path, action: SessionAction) -> Result<Value> {
     let socket = socket(runtime_dir, "sessiond");
     let payload = match action {
-        SessionAction::Create { kind, cwd } => Payload::Command {
+        SessionAction::Create {
+            kind,
+            flow_id,
+            pid,
+            cwd,
+        } => Payload::Command {
             name: "session.create".into(),
-            args: serde_json::json!({ "kind": kind, "cwd": cwd }),
+            args: serde_json::json!({
+                "kind": kind,
+                "flow_id": flow_id,
+                "pid": pid,
+                "cwd": cwd
+            }),
         },
         SessionAction::List => Payload::Command {
             name: "session.list".into(),
@@ -354,9 +385,21 @@ async fn dispatch_generation(
 ) -> Result<Value> {
     let socket = socket(runtime_dir, "generationd");
     let payload = match action {
-        GenerationAction::Create { source_commit } => Payload::Command {
+        GenerationAction::Create {
+            parent,
+            source_commit,
+            system_manifest,
+            reason_goal,
+            experiment,
+        } => Payload::Command {
             name: "generation.create".into(),
-            args: serde_json::json!({ "source_commit": source_commit }),
+            args: serde_json::json!({
+                "parent": parent,
+                "source_commit": source_commit,
+                "system_manifest": system_manifest,
+                "reason_goal": reason_goal,
+                "experiment": experiment,
+            }),
         },
         GenerationAction::List => Payload::Command {
             name: "generation.list".into(),
@@ -393,6 +436,10 @@ async fn dispatch_provenance(
             name: "provenance.from".into(),
             args: serde_json::json!({ "ref": reference }),
         },
+        ProvenanceAction::To { reference } => Payload::Command {
+            name: "provenance.to".into(),
+            args: serde_json::json!({ "ref": reference }),
+        },
     };
     reply_value(call(&socket, payload).await?)
 }
@@ -405,16 +452,20 @@ async fn dispatch_execution(
     let payload = match action {
         ExecutionAction::Create {
             command,
+            reason,
             agent_id,
             goal_id,
             exit_code,
+            duration_ms,
         } => Payload::Command {
             name: "execution.create".into(),
             args: serde_json::json!({
                 "command": command,
+                "reason": reason,
                 "agent_id": agent_id,
                 "goal_id": goal_id,
                 "exit_code": exit_code,
+                "duration_ms": duration_ms,
             }),
         },
         ExecutionAction::Show { id } => Payload::Command {
