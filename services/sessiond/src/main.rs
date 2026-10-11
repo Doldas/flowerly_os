@@ -60,17 +60,17 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
-    let store = match store.lock() {
+    let mut store = match store.lock() {
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    match run_command(&store, name, args) {
+    match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(message) => error_envelope(request.id.clone(), message),
     }
 }
 
-fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "session.create" => {
             let kind = args
@@ -100,15 +100,15 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 created_by: created_by.to_owned(),
                 created_at: Timestamp::now(),
             };
-            store.insert_session(&session).map_err(err_str)?;
+            let provenance = ProvenanceEdge {
+                from: ObjectRef::from(&session.id),
+                relation: ProvenanceRelation::CreatedBy,
+                to: ObjectRef::actor(created_by).map_err(err_str)?,
+                created_at: Timestamp::now(),
+                note: None,
+            };
             store
-                .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::from(&session.id),
-                    relation: ProvenanceRelation::CreatedBy,
-                    to: ObjectRef::actor(created_by).map_err(err_str)?,
-                    created_at: Timestamp::now(),
-                    note: None,
-                })
+                .insert_session_with_provenance(&session, &[provenance])
                 .map_err(err_str)?;
             tracing::info!(session_id = %session.id, kind, "session created");
             Ok(serde_json::json!({
