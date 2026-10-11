@@ -9,6 +9,27 @@ the implementation strategy is deliberately conservative.
 
 Status legend: done, in progress, planned.
 
+## Distribution substrate direction
+
+Arch Linux is the selected initial userspace/package substrate (ADR-0015). Its
+rolling repositories are treated as candidate-generation inputs, not as a
+command to mutate Stable World directly. The first concrete scaffold lives in
+`image/arch/`.
+
+The roadmap therefore separates two concerns:
+
+```text
+Arch rolls continuously
+        ↓
+candidate generation construction/testing
+        ↓
+Flowerly Stable World changes deliberately
+```
+
+Bootable-image work still belongs to 0.0.9; choosing the substrate now lets the
+Generation and Evolution milestones design against the real package model
+instead of an abstract future distribution.
+
 ## 0.0.1 — Repository Foundation (done)
 
 - **Goal:** a professional repository that supports long-term human and agent
@@ -63,7 +84,9 @@ Status legend: done, in progress, planned.
 - **Goal:** a reproducible model for system state and rollback.
 - **Key deliverables:** Generation manifest; create/list/inspect/activate/
   rollback; integration with source commit, build manifest, parent generation,
-  reason, and provenance; initially over a constrained test root filesystem.
+  reason, and provenance; initially over a constrained Arch Linux test root
+  filesystem. The manifest must be able to carry the exact resolved package
+  set and kernel/build identities needed to explain a candidate.
 - **Entry criteria:** Flows and sessions plus provenance (0.0.3–0.0.4).
 - **Exit criteria:** manifests are reproducible; a candidate can be created;
   activation is recorded; rollback returns a known previous state; history
@@ -105,12 +128,15 @@ Status legend: done, in progress, planned.
 
 - **Goal:** a bootable Flowerly OS image, still without autonomous
   self-modification.
-- **Key deliverables:** reproducible root filesystem; initramfs; systemd;
-  networking; users; a VM-first installable image carrying the services and
-  `agenticctl`; General Flow present; journald logs; a documented recovery path.
+- **Key deliverables:** reproducible Arch Linux root filesystem; initramfs;
+  systemd; networking; users; a VM-first installable image carrying the
+  Flowerly services and `agenticctl`; exact resolved Arch package manifest;
+  General Flow present; journald logs; a documented recovery path.
 - **Entry criteria:** the Evolution Lab can boot candidates (0.0.6).
 - **Exit criteria:** a clean build from source produces a bootable KVM image
-  with the services running.
+  with the services running; its resolved Arch package/kernel inputs are
+  recorded; rebuilding from the recorded generation inputs is demonstrably
+  possible or any remaining reproducibility limitation is explicit.
 
 ## 0.1.0 — First Real Agentic OS
 
