@@ -35,7 +35,7 @@ fi
 echo "os_pretty_name=${PRETTY_NAME}"
 echo "kernel=$kernel"
 echo "kernel_package=$(pacman -Q linux)"
-echo "systemd=$(systemd --version | head -n1)"
+echo "systemd=$(systemctl --version | head -n1)"
 echo "rustc=$(rustc --version)"
 echo "cargo=$(cargo --version)"
 echo "just=$(just --version)"
