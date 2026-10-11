@@ -101,11 +101,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     ok_envelope(request.id.clone(), data)
 }
 
-fn run_command(
-    store: &mut Store,
-    name: &str,
-    args: &Value,
-) -> std::result::Result<Value, String> {
+fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Result<Value, String> {
     match name {
         "flow.create" => {
             let name = args
