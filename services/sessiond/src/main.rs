@@ -190,7 +190,9 @@ fn parse_optional_pid(args: &Value) -> Result<Option<i32>, String> {
         return Ok(None);
     }
 
-    let raw = value.as_i64().ok_or("arg `pid` must be an integer or null")?;
+    let raw = value
+        .as_i64()
+        .ok_or("arg `pid` must be an integer or null")?;
     let pid = i32::try_from(raw).map_err(|_| format!("pid out of range for i32: {raw}"))?;
     Ok(Some(pid))
 }
@@ -221,7 +223,6 @@ async fn self_test() -> anyhow::Result<()> {
     println!("sessiond self-test ok: migrations={}", applied.len());
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
