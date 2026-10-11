@@ -1,9 +1,14 @@
 # Flowerly OS — Goal Model
 
 Goals are first-class operating-system objects owned by `goald`. A Goal is a
-persistent statement of intent with a rationale, constraints, success criteria
-and a priority. Goals are what agents and the evolution loop act on, and they
-are the anchor that provenance edges point back to.
+persistent statement of work with a rationale, constraints, success criteria and
+a priority. Goals are what agents and the evolution loop act on, and they are
+the anchor that provenance edges point back to.
+
+A Goal is deliberately distinct from an **Intent**. An Intent can resolve to an
+immediate contextual action ("show the servers") without creating durable work,
+while an Intent such as "reduce boot time by 20%" may produce a persistent Goal.
+See [RFC 0001](rfcs/0001-intent-as-first-class-domain.md).
 
 ## Data model
 
