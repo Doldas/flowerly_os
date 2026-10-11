@@ -458,7 +458,9 @@ fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
         name: row.get(1)?,
         purpose: row.get(2)?,
         parent_flow: parent.map(FlowId::from_raw),
-        state: state.parse().unwrap_or(FlowState::Active),
+        state: state.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+        })?,
         created_by: row.get(5)?,
         created_at: Timestamp::from_millis(row.get(6)?),
         last_active: last_active.map(Timestamp::from_millis),
@@ -479,7 +481,9 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
         constraints: serde_json::from_str(&constraints).unwrap_or_default(),
         success_metrics: serde_json::from_str(&metrics).unwrap_or_default(),
         priority: row.get(6)?,
-        status: status.parse().unwrap_or(GoalStatus::Proposed),
+        status: status.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+        })?,
         created_by: row.get(8)?,
         created_at: Timestamp::from_millis(row.get(9)?),
     })
@@ -495,10 +499,12 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
         kind: row.get(2)?,
         pid: row.get(3)?,
         cwd: row.get(4)?,
-        state: state.parse().unwrap_or(SessionState::Running),
-        presentation_state: presentation_state
-            .parse()
-            .unwrap_or(SessionPresentationState::Detached),
+        state: state.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+        })?,
+        presentation_state: presentation_state.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?,
         created_by: row.get(7)?,
         created_at: Timestamp::from_millis(row.get(8)?),
     })
@@ -531,27 +537,18 @@ fn map_generation(row: &Row<'_>) -> rusqlite::Result<Generation> {
         system_manifest: row.get(3)?,
         reason_goal: goal.map(GoalId::from_raw),
         experiment: experiment.map(agentic_types::ExperimentId::from_raw),
-        status: match status.as_str() {
-            "CANDIDATE" => GenerationStatus::Candidate,
-            "TESTED" => GenerationStatus::Tested,
-            "STABLE" => GenerationStatus::Stable,
-            "REJECTED" => GenerationStatus::Rejected,
-            _ => GenerationStatus::Superseded,
-        },
+        status: status.parse().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?,
         created_at: Timestamp::from_millis(row.get(7)?),
     })
 }
 
 fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
-    let relation: String = row.get(1)?;
-    let relation = match relation.as_str() {
-        "created_by" => ProvenanceRelation::CreatedBy,
-        "caused_by" => ProvenanceRelation::CausedBy,
-        "belongs_to" => ProvenanceRelation::BelongsTo,
-        "produced" => ProvenanceRelation::Produced,
-        "tested_by" => ProvenanceRelation::TestedBy,
-        _ => ProvenanceRelation::PromotedTo,
-    };
+    let relation_raw: String = row.get(1)?;
+    let relation = relation_raw.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
+    })?;
     let from_raw: String = row.get(0)?;
     let to_raw: String = row.get(2)?;
     let from = ObjectRef::from_str(&from_raw).map_err(|error| {
@@ -707,6 +704,32 @@ mod tests {
             loaded.presentation_state,
             SessionPresentationState::Attached
         );
+    }
+
+    #[test]
+    fn invalid_persisted_session_state_is_not_silently_accepted() {
+        let store = migrated_store();
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "local-pty".to_owned(),
+            pid: None,
+            cwd: None,
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        store.insert_session(&session).expect("insert session");
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET state = 'CORRUPT' WHERE id = ?1",
+                params![session.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.get_session(&session.id).is_err());
     }
 
     #[test]
