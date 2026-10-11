@@ -69,8 +69,30 @@ cargo build --workspace --release
 
 Go and Python checks (`go test`/`go vet`, `ruff`/`pytest`) run only when such code
 is present. Documentation checks validate required docs and relative links;
-security checks (`cargo audit`, `cargo deny`) are added once dependencies
-stabilize. A red CI cannot be released; see [releases.md](releases.md).
+security checks run `cargo audit` and `cargo deny`. A red CI cannot be
+released; see [releases.md](releases.md).
+
+### Runner caching and stale-run cancellation
+
+CI is optimized for both GitHub-hosted and self-hosted runners:
+
+- Rust CI caches Cargo registry/git data plus `target/`, keyed by the runner
+  platform, toolchain file and `Cargo.lock`.
+- CodeQL caches Cargo registry/git downloads but deliberately **does not cache
+  `target/`**. CodeQL must observe the instrumented build; reusing compiled
+  target artifacts can make analysis incomplete.
+- Security jobs reuse Cargo registry/git metadata.
+- GitHub Pages uses the built-in pip cache keyed by
+  `requirements-docs.txt`.
+- PR CI, CodeQL, security and PR-validation use concurrency groups with
+  `cancel-in-progress: true`. A new commit therefore cancels stale work for
+  the same PR instead of allowing obsolete jobs to accumulate in the runner
+  queue.
+- CodeQL and dependency security workflows skip documentation-only changes.
+  Scheduled security analysis still runs independently.
+
+`FLOWERLY_CACHE_VERSION` in the workflows is the manual cache-busting knob.
+Increment it when cache layout or semantics change.
 
 ## Current status
 
