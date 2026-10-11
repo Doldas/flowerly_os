@@ -144,3 +144,27 @@ Implemented on issue #17 / PR #18:
 The older journal entry referring to `main` reflects an earlier bootstrap
 state. The repository's current release policy uses `master` as the protected
 promotion branch and `release/N` as active integration branches.
+
+
+## 2026-10-11 — Recovered abandoned core-model alignment branch
+
+Reviewed the stale `arch/align-core-models` branch after PR #18 landed. The
+branch was an interrupted precursor to the architecture-alignment work rather
+than an independent feature line. Its main goals — shared durable state,
+Session runtime/presentation separation, and typed provenance references — had
+already been implemented more completely by issue #17 / PR #18.
+
+The stale branch was deliberately **not** merged because it was far behind the
+active `release/2` line and would have reintroduced older partial
+implementations. Issue #20 instead finishes the remaining intent on a clean
+branch from current `release/2`:
+
+- malformed Flow IDs now fail at service boundaries instead of disappearing
+  into optional values;
+- Session creation validates that referenced Flows exist and range-checks PIDs;
+- Goal creation range-checks priorities rather than silently defaulting;
+- child Goal creation validates the parent before writing state;
+- tests lock in these failure semantics.
+
+This establishes a core invariant for future agent-facing APIs: typed domain
+data must remain typed and validated when it crosses JSON/IPC boundaries.
