@@ -1,13 +1,15 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+use std::str::FromStr;
 
 use agentic_types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
     GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation,
-    Session, SessionId, SessionState, Timestamp,
+    Session, SessionId, SessionPresentationState, SessionState, Timestamp,
 };
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::types::Type;
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,6 +19,9 @@ pub enum StorageError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 
     #[error("record not found: {0}")]
     NotFound(String),
@@ -33,11 +38,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "session_presentation_and_actor_refs",
+        sql: include_str!("../migrations/0002_session_presentation_and_actor_refs.sql"),
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -54,6 +66,12 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let conn = Connection::open(path)?;
         Self::configure(&conn)?;
         Ok(Self { conn })
@@ -82,19 +100,30 @@ impl Store {
              );",
         )?;
 
-        let already: Vec<i64> = {
-            let mut stmt = self.conn.prepare("SELECT version FROM schema_migrations")?;
-            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-
         let mut applied = Vec::new();
         for migration in MIGRATIONS {
-            if already.contains(&migration.version) {
+            // A shared state.db means several daemons may start at the same time.
+            // IMMEDIATE serializes migration writers; the applied-version check
+            // happens inside the transaction so a daemon that waited for another
+            // migrator observes the committed version before doing any work.
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let exists = tx
+                .query_row(
+                    "SELECT version FROM schema_migrations WHERE version = ?1",
+                    params![migration.version],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+
+            if exists {
+                tx.commit()?;
                 continue;
             }
+
             let tx_record = Timestamp::now();
-            let tx = self.conn.transaction()?;
             tx.execute_batch(migration.sql)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -242,8 +271,8 @@ impl Store {
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session.id.as_str(),
                 session.flow_id.as_ref().map(FlowId::as_str),
@@ -251,6 +280,7 @@ impl Store {
                 session.pid,
                 session.cwd,
                 session.state.to_string(),
+                session.presentation_state.to_string(),
                 session.created_by,
                 session.created_at.as_millis(),
             ],
@@ -261,7 +291,7 @@ impl Store {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, flow_id, kind, pid, cwd, state, created_by, created_at
+                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
                  FROM sessions WHERE id = ?1",
                 params![id.as_str()],
                 map_session,
@@ -272,7 +302,7 @@ impl Store {
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, flow_id, kind, pid, cwd, state, created_by, created_at
+            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
              FROM sessions ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_session)?;
@@ -282,6 +312,21 @@ impl Store {
     pub fn update_session_state(&self, id: &SessionId, state: SessionState) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE sessions SET state = ?2 WHERE id = ?1",
+            params![id.as_str(), state.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn update_session_presentation_state(
+        &self,
+        id: &SessionId,
+        state: SessionPresentationState,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET presentation_state = ?2 WHERE id = ?1",
             params![id.as_str(), state.to_string()],
         )?;
         if changed == 0 {
@@ -443,19 +488,19 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
 fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
     let flow: Option<String> = row.get(1)?;
     let state: String = row.get(5)?;
+    let presentation_state: String = row.get(6)?;
     Ok(Session {
         id: SessionId::from_raw(row.get::<_, String>(0)?),
         flow_id: flow.map(FlowId::from_raw),
         kind: row.get(2)?,
         pid: row.get(3)?,
         cwd: row.get(4)?,
-        state: match state.as_str() {
-            "RUNNING" => SessionState::Running,
-            "EXITED" => SessionState::Exited,
-            _ => SessionState::Detached,
-        },
-        created_by: row.get(6)?,
-        created_at: Timestamp::from_millis(row.get(7)?),
+        state: state.parse().unwrap_or(SessionState::Running),
+        presentation_state: presentation_state
+            .parse()
+            .unwrap_or(SessionPresentationState::Detached),
+        created_by: row.get(7)?,
+        created_at: Timestamp::from_millis(row.get(8)?),
     })
 }
 
@@ -507,10 +552,18 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
         "tested_by" => ProvenanceRelation::TestedBy,
         _ => ProvenanceRelation::PromotedTo,
     };
+    let from_raw: String = row.get(0)?;
+    let to_raw: String = row.get(2)?;
+    let from = ObjectRef::from_str(&from_raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(error))
+    })?;
+    let to = ObjectRef::from_str(&to_raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+    })?;
     Ok(ProvenanceEdge {
-        from: ObjectRef::new(row.get::<_, String>(0)?),
+        from,
         relation,
-        to: ObjectRef::new(row.get::<_, String>(2)?),
+        to,
         created_at: Timestamp::from_millis(row.get(3)?),
         note: row.get(4)?,
     })
@@ -556,9 +609,9 @@ mod tests {
         store.insert_flow(&flow).expect("insert flow");
 
         let edge = ProvenanceEdge {
-            from: ObjectRef::new(goal.id.to_string()),
+            from: ObjectRef::from(&goal.id),
             relation: ProvenanceRelation::BelongsTo,
-            to: ObjectRef::new(flow.id.to_string()),
+            to: ObjectRef::from(&flow.id),
             created_at: Timestamp::now(),
             note: None,
         };
@@ -567,10 +620,46 @@ mod tests {
         store.insert_provenance(&edge).expect("insert edge again");
 
         let edges = store
-            .provenance_from(&ObjectRef::new(goal.id.to_string()))
+            .provenance_from(&ObjectRef::from(&goal.id))
             .expect("query edges");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].relation, ProvenanceRelation::BelongsTo);
+    }
+
+    #[test]
+    fn session_runtime_and_presentation_round_trip_independently() {
+        let store = migrated_store();
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "local-pty".to_owned(),
+            pid: Some(42),
+            cwd: Some("/tmp".to_owned()),
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        store.insert_session(&session).expect("insert session");
+        store
+            .update_session_state(&session.id, SessionState::Suspended)
+            .expect("suspend session");
+        store
+            .update_session_presentation_state(
+                &session.id,
+                SessionPresentationState::Attached,
+            )
+            .expect("attach presentation");
+
+        let loaded = store
+            .get_session(&session.id)
+            .expect("get session")
+            .expect("session exists");
+        assert_eq!(loaded.state, SessionState::Suspended);
+        assert_eq!(
+            loaded.presentation_state,
+            SessionPresentationState::Attached
+        );
     }
 
     #[test]
