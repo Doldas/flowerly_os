@@ -82,9 +82,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .unwrap_or("user");
             let mut goal = Goal::new(objective, created_by);
             if let Some(value) = args.get("priority") {
-                let priority = value
-                    .as_i64()
-                    .ok_or("arg `priority` must be an integer")?;
+                let priority = value.as_i64().ok_or("arg `priority` must be an integer")?;
                 goal.priority = i32::try_from(priority)
                     .map_err(|_| format!("priority out of range for i32: {priority}"))?;
             }
@@ -221,7 +219,6 @@ async fn self_test() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +288,8 @@ mod tests {
         assert_eq!(response["parent"], serde_json::json!(parent.id));
         let goals = store.list_goals().expect("list goals");
         assert_eq!(goals.len(), 2);
-        assert!(goals.iter().any(|goal| goal.parent_goal.as_ref() == Some(&parent.id)));
+        assert!(goals
+            .iter()
+            .any(|goal| goal.parent_goal.as_ref() == Some(&parent.id)));
     }
 }
