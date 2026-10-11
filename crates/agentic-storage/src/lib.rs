@@ -689,10 +689,7 @@ mod tests {
             .update_session_state(&session.id, SessionState::Suspended)
             .expect("suspend session");
         store
-            .update_session_presentation_state(
-                &session.id,
-                SessionPresentationState::Attached,
-            )
+            .update_session_presentation_state(&session.id, SessionPresentationState::Attached)
             .expect("attach presentation");
 
         let loaded = store
