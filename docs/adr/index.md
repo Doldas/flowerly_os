@@ -18,6 +18,7 @@ and the reasoning behind them.
 11. [One shared local SQLite state database](0011-shared-local-state-database.md)
 12. [agenticctl control plane](0012-agenticctl-control-plane.md)
 13. [Process boundaries require justification](0013-process-boundaries-require-justification.md)
+14. [Linux authority is the enforcement substrate](0014-linux-authority-is-the-enforcement-substrate.md)
 
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
