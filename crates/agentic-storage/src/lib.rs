@@ -1085,7 +1085,9 @@ mod tests {
             writer
                 .insert_execution_with_provenance(&execution, &[edge.clone()])
                 .expect("insert execution");
-            writer.insert_generation(&generation).expect("insert generation");
+            writer
+                .insert_generation(&generation)
+                .expect("insert generation");
         }
 
         let mut reader = Store::open(&path).expect("reopen state");
@@ -1262,7 +1264,9 @@ mod tests {
             duration_ms: None,
             started_at: Timestamp::now(),
         };
-        store.insert_execution(&execution).expect("insert execution");
+        store
+            .insert_execution(&execution)
+            .expect("insert execution");
         store
             .conn
             .execute(
