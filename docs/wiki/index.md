@@ -28,6 +28,7 @@ This wiki is the architectural knowledge base for Flowerly OS.
 
 - [Decisions](../decisions.md)
 - [Architecture Decision Records](../adr/index.md)
+- [Requests for Comment](../rfcs/index.md)
 - [Engineering Journal](../journal.md)
 - [Roadmap](../roadmap.md)
 - [Releases](../releases.md)
