@@ -651,6 +651,84 @@ mod tests {
     }
 
     #[test]
+    fn migration_two_normalizes_legacy_session_and_actor_state() {
+        let mut store = Store::open_in_memory().expect("open store");
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     applied_at INTEGER NOT NULL
+                 );",
+            )
+            .expect("create migration table");
+        store
+            .conn
+            .execute_batch(MIGRATIONS[0].sql)
+            .expect("apply legacy schema");
+        store
+            .conn
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (1, 'init', 1)",
+                [],
+            )
+            .expect("record legacy migration");
+
+        let session_id = SessionId::new();
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions
+                 (id, kind, state, created_by, created_at)
+                 VALUES (?1, 'local-pty', 'DETACHED', 'user', 1)",
+                params![session_id.as_str()],
+            )
+            .expect("insert legacy session");
+
+        let from_ref = session_id.to_string();
+        store
+            .conn
+            .execute(
+                "INSERT INTO provenance_edges
+                 (from_ref, relation, to_ref, created_at)
+                 VALUES (?1, 'created_by', 'user', 1)",
+                params![from_ref],
+            )
+            .expect("insert legacy actor edge");
+        store
+            .conn
+            .execute(
+                "INSERT INTO provenance_edges
+                 (from_ref, relation, to_ref, created_at)
+                 VALUES (?1, 'created_by', 'actor:user', 1)",
+                params![session_id.as_str()],
+            )
+            .expect("insert already-normalized duplicate");
+
+        let applied = store.migrate().expect("apply migration two");
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].version, 2);
+
+        let session = store
+            .get_session(&session_id)
+            .expect("read migrated session")
+            .expect("session exists");
+        assert_eq!(session.state, SessionState::Running);
+        assert_eq!(
+            session.presentation_state,
+            SessionPresentationState::Detached
+        );
+
+        let edges = store
+            .provenance_from(&ObjectRef::from(&session_id))
+            .expect("read migrated provenance");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].to.as_str(), "actor:user");
+    }
+
+    #[test]
     fn file_backed_stores_share_the_same_state() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("state.db");
