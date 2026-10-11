@@ -204,3 +204,30 @@ The same workflow is manually dispatchable with a force option so it can serve
 as final pre-release evidence. It is an Evolution World precursor rather than
 the final generation-image test: the guest is still an upstream Arch image, not
 yet a Flowerly generation image.
+
+
+## 2026-10-12 — Persistent State milestone completed
+
+Closed the 0.0.2 Core Runtime Skeleton tracking issue after the merged daemon,
+migration, IPC and whole-runtime smoke coverage satisfied its exit criteria.
+
+Completed the remaining 0.0.3 Persistent State work on issue #7:
+
+- Execution and Generation IPC inputs now preserve typed-ID semantics instead
+  of silently dropping malformed references;
+- integer Execution fields reject invalid or overflowing input instead of
+  coercing values;
+- Execution writes can commit their causal provenance in the same SQLite
+  transaction;
+- Generation creation validates parent/Goal references, records causal
+  provenance, and preserves typed Experiment references;
+- generation activation supersedes the previous Stable generation and promotes
+  the requested generation atomically;
+- provenance is queryable in both directions;
+- `agenticctl` exposes the corresponding durable-state administration inputs;
+- a file-backed storage test reopens `state.db` and proves Flow, Goal, Session,
+  Execution, Generation and provenance identities survive together;
+- corruption tests now cover persisted Execution and Generation references.
+
+With durable state complete, the next implementation milestone is 0.0.4:
+PTY-backed persistent Sessions with detach/reattach semantics.
