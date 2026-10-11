@@ -11,7 +11,9 @@ targets = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# Workspace-internal crates are intentionally versionless path dependencies,
+# which cargo-deny classes as wildcards; warn instead of fail.
+wildcards = "warn"
 
 [licenses]
 allow = [
@@ -27,4 +29,3 @@ allow = [
     "GPL-3.0-only",
     "GPL-3.0-or-later",
 ]
-deny = []
