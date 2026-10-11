@@ -1269,11 +1269,19 @@ mod tests {
             .expect("insert execution");
         store
             .conn
+            .pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable foreign keys for corruption simulation");
+        store
+            .conn
             .execute(
                 "UPDATE executions SET goal_id = 'not-a-goal-id' WHERE id = ?1",
                 params![execution.id.as_str()],
             )
             .expect("corrupt execution");
+        store
+            .conn
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("restore foreign keys");
 
         assert!(store.get_execution(&execution.id).is_err());
     }
