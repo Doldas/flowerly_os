@@ -322,6 +322,21 @@ impl fmt::Display for GenerationStatus {
     }
 }
 
+impl FromStr for GenerationStatus {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "CANDIDATE" => Ok(GenerationStatus::Candidate),
+            "TESTED" => Ok(GenerationStatus::Tested),
+            "STABLE" => Ok(GenerationStatus::Stable),
+            "REJECTED" => Ok(GenerationStatus::Rejected),
+            "SUPERSEDED" => Ok(GenerationStatus::Superseded),
+            other => Err(StateParseError::Generation(other.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Generation {
     pub id: GenerationId,
@@ -390,6 +405,22 @@ impl fmt::Display for ProvenanceRelation {
     }
 }
 
+impl FromStr for ProvenanceRelation {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "created_by" => Ok(ProvenanceRelation::CreatedBy),
+            "caused_by" => Ok(ProvenanceRelation::CausedBy),
+            "belongs_to" => Ok(ProvenanceRelation::BelongsTo),
+            "produced" => Ok(ProvenanceRelation::Produced),
+            "tested_by" => Ok(ProvenanceRelation::TestedBy),
+            "promoted_to" => Ok(ProvenanceRelation::PromotedTo),
+            other => Err(StateParseError::ProvenanceRelation(other.to_owned())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
     pub name: String,
@@ -423,6 +454,12 @@ pub enum StateParseError {
 
     #[error("invalid session presentation state: `{0}`")]
     SessionPresentation(String),
+
+    #[error("invalid generation status: `{0}`")]
+    Generation(String),
+
+    #[error("invalid provenance relation: `{0}`")]
+    ProvenanceRelation(String),
 }
 
 #[cfg(test)]
@@ -467,6 +504,12 @@ mod tests {
                 .expect("presentation state"),
             SessionPresentationState::Detached
         );
+    }
+
+    #[test]
+    fn generation_and_provenance_parsers_reject_unknown_values() {
+        assert!("BROKEN".parse::<GenerationStatus>().is_err());
+        assert!("made_up".parse::<ProvenanceRelation>().is_err());
     }
 
     #[test]
