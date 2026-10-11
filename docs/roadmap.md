@@ -25,9 +25,9 @@ Status legend: done, in progress, planned.
 
 - **Goal:** shared Rust foundations used by every service.
 - **Key deliverables:** `agentic-types`, `agentic-storage`, `agentic-ipc`,
-  `agentic-core`; typed IDs; structured config; tracing; a SQLite connection and
-  migration framework; Unix-socket IPC; a daemon lifecycle helper; minimal
-  `agenticd`, `flowd`, `sessiond`, `goald`.
+  `agentic-core`; typed IDs; structured config; tracing; one shared local
+  SQLite state database with concurrent-safe migrations; Unix-socket IPC; a
+  daemon lifecycle helper; minimal `agenticd`, `flowd`, `sessiond`, `goald`.
 - **Entry criteria:** 0.0.1 merged.
 - **Exit criteria:** all daemons start and stop cleanly; migrations run; IPC
   request/response works; no daemon needs AI or network; an integration test
@@ -38,8 +38,9 @@ Status legend: done, in progress, planned.
 - **Goal:** make the system remember durable objects.
 - **Key deliverables:** migration-backed CRUD for Flow, Goal, Session,
   Execution, Generation, and ProvenanceEdge; the `agenticctl` admin CLI;
-  provenance relationships (`created_by`, `caused_by`, `belongs_to`,
-  `produced`, `tested_by`, `promoted_to`).
+  validated typed provenance endpoints; provenance relationships
+  (`created_by`, `caused_by`, `belongs_to`, `produced`, `tested_by`,
+  `promoted_to`).
 - **Entry criteria:** 0.0.2 runtime and migrations in place.
 - **Exit criteria:** state survives restart; migrations are tested; object IDs
   are stable; provenance edges are queryable; corruption is not silently
@@ -49,7 +50,8 @@ Status legend: done, in progress, planned.
 
 - **Goal:** the first distinctive Flowerly OS primitive.
 - **Key deliverables:** General Flow plus create/rename/list/activate/archive;
-  states FOREGROUND/ACTIVE/ARCHIVED; persistent PTY sessions with attach,
+  states FOREGROUND/ACTIVE/ARCHIVED; persistent PTY sessions whose runtime
+  lifecycle is independent from ATTACHED/DETACHED presentation state; attach,
   detach, reattach, terminate, and Flow association; CLI operations.
 - **Entry criteria:** persistent state (0.0.3).
 - **Exit criteria:** an integration test proves create Flow, start a persistent
