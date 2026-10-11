@@ -25,6 +25,27 @@ Flow {
 }
 ```
 
+## Separation of concerns
+
+The bootstrap `Flow` struct is intentionally the stable identity/root aggregate,
+not the final home for every future Flow concern.
+
+The planned decomposition is:
+
+```text
+Flow
+├── identity / purpose / hierarchy
+├── FlowConfig revision
+├── FlowRuntime state
+├── FlowPresentation state
+└── FlowPolicy references
+```
+
+This prevents resource state, adaptive UI layout, credentials and durable Flow
+identity from collapsing into one giant record. Exact structs/tables are not
+created until implementation evidence requires them. See
+[RFC 0002](rfcs/0002-flow-state-decomposition.md).
+
 ## States
 
 The implemented `FlowState` enum has five values: `FOREGROUND`, `ACTIVE`,
@@ -65,5 +86,6 @@ Creating or promoting a Flow records a provenance edge whose relation is
 - **Implemented:** the `Flow`/`FlowState` model, the General Flow, persistence
   across restarts, create/list/activate/archive, and `created_by` provenance.
 - **Planned:** `QUIESCENT`/`HIBERNATED` transitions, nested Flow ergonomics,
-  Flow revisions, per-Flow resource policy, cgroup/namespace isolation,
-  Flow-aware credentials, notifications and templates.
+  Flow revisions, the Flow config/runtime/presentation/policy decomposition,
+  per-Flow resource policy, cgroup/namespace isolation, Flow-aware credentials,
+  notifications and templates.

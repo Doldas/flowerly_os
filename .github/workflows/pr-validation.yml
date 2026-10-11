@@ -1,0 +1,55 @@
+name: pr-validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [master, 'release/**']
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-branch-name:
+    name: Validate branch name and issue link
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check head branch follows convention
+        if: "!startsWith(github.head_ref, 'feature/') && !startsWith(github.head_ref, 'bugfix/') && !startsWith(github.head_ref, 'docs/')"
+        run: |
+          echo "::error::Branch name must follow convention: feature/*, bugfix/*, or docs/* (e.g., feature/flow-model, bugfix/generation-rollback)"
+          echo "Current branch: ${{ github.head_ref }}"
+          exit 1
+
+      - name: Check PR description references an issue
+        if: "!contains(github.event.pull_request.body, '#')"
+        run: |
+          echo "::error::PR description must reference an issue (e.g., 'Fixes #123', 'Relates to #456')"
+          echo "No issue reference found in PR body"
+          exit 1
+
+      - name: Verify issue exists
+        if: contains(github.event.pull_request.body, '#')
+        run: |
+          ISSUE_REFS=$(echo "${{ github.event.pull_request.body }}" | grep -oE '#[0-9]+' | sed 's/#//')
+          for issue in $ISSUE_REFS; do
+            RESPONSE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$issue")
+            if echo "$RESPONSE" | grep -q '"state":'; then
+              echo "Issue #$issue exists"
+            else
+              echo "::error::Referenced issue #$issue does not exist"
+              exit 1
+            fi
+          done
+
+      - name: Check base branch is release/*
+        if: "!startsWith(github.base_ref, 'release/')"
+        run: |
+          echo "::error::PRs must target a release/* branch (e.g., release/1, release/2)"
+          echo "Base branch: ${{ github.base_ref }}"
+          exit 1

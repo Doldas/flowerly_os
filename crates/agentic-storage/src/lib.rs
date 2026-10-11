@@ -1,13 +1,15 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+use std::str::FromStr;
 
 use agentic_types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation,
-    Session, SessionId, SessionState, Timestamp,
+    GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, Session, SessionId,
+    SessionPresentationState, SessionState, Timestamp,
 };
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::types::Type;
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,6 +19,9 @@ pub enum StorageError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 
     #[error("record not found: {0}")]
     NotFound(String),
@@ -33,11 +38,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "session_presentation_and_actor_refs",
+        sql: include_str!("../migrations/0002_session_presentation_and_actor_refs.sql"),
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -54,6 +66,12 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let conn = Connection::open(path)?;
         Self::configure(&conn)?;
         Ok(Self { conn })
@@ -82,19 +100,30 @@ impl Store {
              );",
         )?;
 
-        let already: Vec<i64> = {
-            let mut stmt = self.conn.prepare("SELECT version FROM schema_migrations")?;
-            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-
         let mut applied = Vec::new();
         for migration in MIGRATIONS {
-            if already.contains(&migration.version) {
+            // A shared state.db means several daemons may start at the same time.
+            // IMMEDIATE serializes migration writers; the applied-version check
+            // happens inside the transaction so a daemon that waited for another
+            // migrator observes the committed version before doing any work.
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let exists = tx
+                .query_row(
+                    "SELECT version FROM schema_migrations WHERE version = ?1",
+                    params![migration.version],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+
+            if exists {
+                tx.commit()?;
                 continue;
             }
+
             let tx_record = Timestamp::now();
-            let tx = self.conn.transaction()?;
             tx.execute_batch(migration.sql)?;
             tx.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -138,21 +167,22 @@ impl Store {
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                flow.id.as_str(),
-                flow.name,
-                flow.purpose,
-                flow.parent_flow.as_ref().map(FlowId::as_str),
-                flow.state.to_string(),
-                flow.created_by,
-                flow.created_at.as_millis(),
-                flow.last_active.map(|t| t.as_millis()),
-                flow.revision,
-            ],
-        )?;
+        insert_flow_row(&self.conn, flow)
+    }
+
+    pub fn insert_flow_with_provenance(
+        &mut self,
+        flow: &Flow,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_flow_row(&tx, flow)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -189,22 +219,22 @@ impl Store {
     }
 
     pub fn insert_goal(&self, goal: &Goal) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                goal.id.as_str(),
-                goal.parent_goal.as_ref().map(GoalId::as_str),
-                goal.objective,
-                goal.rationale,
-                serde_json::to_string(&goal.constraints)?,
-                serde_json::to_string(&goal.success_metrics)?,
-                goal.priority,
-                goal.status.to_string(),
-                goal.created_by,
-                goal.created_at.as_millis(),
-            ],
-        )?;
+        insert_goal_row(&self.conn, goal)
+    }
+
+    pub fn insert_goal_with_provenance(
+        &mut self,
+        goal: &Goal,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_goal_row(&tx, goal)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -241,27 +271,29 @@ impl Store {
     }
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                session.id.as_str(),
-                session.flow_id.as_ref().map(FlowId::as_str),
-                session.kind,
-                session.pid,
-                session.cwd,
-                session.state.to_string(),
-                session.created_by,
-                session.created_at.as_millis(),
-            ],
-        )?;
+        insert_session_row(&self.conn, session)
+    }
+
+    pub fn insert_session_with_provenance(
+        &mut self,
+        session: &Session,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_session_row(&tx, session)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, flow_id, kind, pid, cwd, state, created_by, created_at
+                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
                  FROM sessions WHERE id = ?1",
                 params![id.as_str()],
                 map_session,
@@ -272,7 +304,7 @@ impl Store {
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, flow_id, kind, pid, cwd, state, created_by, created_at
+            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
              FROM sessions ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_session)?;
@@ -282,6 +314,21 @@ impl Store {
     pub fn update_session_state(&self, id: &SessionId, state: SessionState) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE sessions SET state = ?2 WHERE id = ?1",
+            params![id.as_str(), state.to_string()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn update_session_presentation_state(
+        &self,
+        id: &SessionId,
+        state: SessionPresentationState,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET presentation_state = ?2 WHERE id = ?1",
             params![id.as_str(), state.to_string()],
         )?;
         if changed == 0 {
@@ -380,18 +427,7 @@ impl Store {
     }
 
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO provenance_edges (from_ref, relation, to_ref, created_at, note)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                edge.from.as_str(),
-                edge.relation.as_str(),
-                edge.to.as_str(),
-                edge.created_at.as_millis(),
-                edge.note,
-            ],
-        )?;
-        Ok(())
+        insert_provenance_row(&self.conn, edge)
     }
 
     pub fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
@@ -404,16 +440,99 @@ impl Store {
     }
 }
 
+fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
+    conn.execute(
+        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            flow.id.as_str(),
+            flow.name,
+            flow.purpose,
+            flow.parent_flow.as_ref().map(FlowId::as_str),
+            flow.state.to_string(),
+            flow.created_by,
+            flow.created_at.as_millis(),
+            flow.last_active.map(|t| t.as_millis()),
+            flow.revision,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
+    conn.execute(
+        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            goal.id.as_str(),
+            goal.parent_goal.as_ref().map(GoalId::as_str),
+            goal.objective,
+            goal.rationale,
+            serde_json::to_string(&goal.constraints)?,
+            serde_json::to_string(&goal.success_metrics)?,
+            goal.priority,
+            goal.status.to_string(),
+            goal.created_by,
+            goal.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            session.id.as_str(),
+            session.flow_id.as_ref().map(FlowId::as_str),
+            session.kind,
+            session.pid,
+            session.cwd,
+            session.state.to_string(),
+            session.presentation_state.to_string(),
+            session.created_by,
+            session.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO provenance_edges (from_ref, relation, to_ref, created_at, note)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            edge.from.as_str(),
+            edge.relation.as_str(),
+            edge.to.as_str(),
+            edge.created_at.as_millis(),
+            edge.note,
+        ],
+    )?;
+    Ok(())
+}
+
+fn parse_text<T>(raw: String, column: usize) -> rusqlite::Result<T>
+where
+    T: FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    raw.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
+}
+
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
     let parent: Option<String> = row.get(3)?;
     let last_active: Option<i64> = row.get(7)?;
     let state: String = row.get(4)?;
     Ok(Flow {
-        id: FlowId::from_raw(row.get::<_, String>(0)?),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
         name: row.get(1)?,
         purpose: row.get(2)?,
-        parent_flow: parent.map(FlowId::from_raw),
-        state: state.parse().unwrap_or(FlowState::Active),
+        parent_flow: parent.map(|raw| parse_text(raw, 3)).transpose()?,
+        state: parse_text(state, 4)?,
         created_by: row.get(5)?,
         created_at: Timestamp::from_millis(row.get(6)?),
         last_active: last_active.map(Timestamp::from_millis),
@@ -427,14 +546,18 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
     let metrics: String = row.get(5)?;
     let status: String = row.get(7)?;
     Ok(Goal {
-        id: GoalId::from_raw(row.get::<_, String>(0)?),
-        parent_goal: parent.map(GoalId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        parent_goal: parent.map(|raw| parse_text(raw, 1)).transpose()?,
         objective: row.get(2)?,
         rationale: row.get(3)?,
-        constraints: serde_json::from_str(&constraints).unwrap_or_default(),
-        success_metrics: serde_json::from_str(&metrics).unwrap_or_default(),
+        constraints: serde_json::from_str(&constraints).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+        })?,
+        success_metrics: serde_json::from_str(&metrics).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+        })?,
         priority: row.get(6)?,
-        status: status.parse().unwrap_or(GoalStatus::Proposed),
+        status: parse_text(status, 7)?,
         created_by: row.get(8)?,
         created_at: Timestamp::from_millis(row.get(9)?),
     })
@@ -443,19 +566,17 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
 fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
     let flow: Option<String> = row.get(1)?;
     let state: String = row.get(5)?;
+    let presentation_state: String = row.get(6)?;
     Ok(Session {
-        id: SessionId::from_raw(row.get::<_, String>(0)?),
-        flow_id: flow.map(FlowId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        flow_id: flow.map(|raw| parse_text(raw, 1)).transpose()?,
         kind: row.get(2)?,
         pid: row.get(3)?,
         cwd: row.get(4)?,
-        state: match state.as_str() {
-            "RUNNING" => SessionState::Running,
-            "EXITED" => SessionState::Exited,
-            _ => SessionState::Detached,
-        },
-        created_by: row.get(6)?,
-        created_at: Timestamp::from_millis(row.get(7)?),
+        state: parse_text(state, 5)?,
+        presentation_state: parse_text(presentation_state, 6)?,
+        created_by: row.get(7)?,
+        created_at: Timestamp::from_millis(row.get(8)?),
     })
 }
 
@@ -463,9 +584,9 @@ fn map_execution(row: &Row<'_>) -> rusqlite::Result<Execution> {
     let agent: Option<String> = row.get(1)?;
     let goal: Option<String> = row.get(2)?;
     Ok(Execution {
-        id: ExecutionId::from_raw(row.get::<_, String>(0)?),
-        agent_id: agent.map(AgentId::from_raw),
-        goal_id: goal.map(GoalId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        agent_id: agent.map(|raw| parse_text(raw, 1)).transpose()?,
+        goal_id: goal.map(|raw| parse_text(raw, 2)).transpose()?,
         reason: row.get(3)?,
         command: row.get(4)?,
         exit_code: row.get(5)?,
@@ -480,37 +601,25 @@ fn map_generation(row: &Row<'_>) -> rusqlite::Result<Generation> {
     let experiment: Option<String> = row.get(5)?;
     let status: String = row.get(6)?;
     Ok(Generation {
-        id: GenerationId::from_raw(row.get::<_, String>(0)?),
-        parent: parent.map(GenerationId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        parent: parent.map(|raw| parse_text(raw, 1)).transpose()?,
         source_commit: row.get(2)?,
         system_manifest: row.get(3)?,
-        reason_goal: goal.map(GoalId::from_raw),
-        experiment: experiment.map(agentic_types::ExperimentId::from_raw),
-        status: match status.as_str() {
-            "CANDIDATE" => GenerationStatus::Candidate,
-            "TESTED" => GenerationStatus::Tested,
-            "STABLE" => GenerationStatus::Stable,
-            "REJECTED" => GenerationStatus::Rejected,
-            _ => GenerationStatus::Superseded,
-        },
+        reason_goal: goal.map(|raw| parse_text(raw, 4)).transpose()?,
+        experiment: experiment.map(|raw| parse_text(raw, 5)).transpose()?,
+        status: parse_text(status, 6)?,
         created_at: Timestamp::from_millis(row.get(7)?),
     })
 }
 
 fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
-    let relation: String = row.get(1)?;
-    let relation = match relation.as_str() {
-        "created_by" => ProvenanceRelation::CreatedBy,
-        "caused_by" => ProvenanceRelation::CausedBy,
-        "belongs_to" => ProvenanceRelation::BelongsTo,
-        "produced" => ProvenanceRelation::Produced,
-        "tested_by" => ProvenanceRelation::TestedBy,
-        _ => ProvenanceRelation::PromotedTo,
-    };
+    let relation = parse_text(row.get::<_, String>(1)?, 1)?;
+    let from = parse_text(row.get::<_, String>(0)?, 0)?;
+    let to = parse_text(row.get::<_, String>(2)?, 2)?;
     Ok(ProvenanceEdge {
-        from: ObjectRef::new(row.get::<_, String>(0)?),
+        from,
         relation,
-        to: ObjectRef::new(row.get::<_, String>(2)?),
+        to,
         created_at: Timestamp::from_millis(row.get(3)?),
         note: row.get(4)?,
     })
@@ -519,6 +628,7 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentic_types::ProvenanceRelation;
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
@@ -534,6 +644,131 @@ mod tests {
         let second = store.migrate().expect("second migrate");
         assert!(second.is_empty(), "second migrate should be a no-op");
         assert_eq!(store.applied_migrations().unwrap().len(), MIGRATIONS.len());
+    }
+
+    #[test]
+    fn migration_two_normalizes_legacy_session_and_actor_state() {
+        let mut store = Store::open_in_memory().expect("open store");
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     applied_at INTEGER NOT NULL
+                 );",
+            )
+            .expect("create migration table");
+        store
+            .conn
+            .execute_batch(MIGRATIONS[0].sql)
+            .expect("apply legacy schema");
+        store
+            .conn
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (1, 'init', 1)",
+                [],
+            )
+            .expect("record legacy migration");
+
+        let session_id = SessionId::new();
+        store
+            .conn
+            .execute(
+                "INSERT INTO sessions
+                 (id, kind, state, created_by, created_at)
+                 VALUES (?1, 'local-pty', 'DETACHED', 'user', 1)",
+                params![session_id.as_str()],
+            )
+            .expect("insert legacy session");
+
+        let from_ref = session_id.to_string();
+        store
+            .conn
+            .execute(
+                "INSERT INTO provenance_edges
+                 (from_ref, relation, to_ref, created_at)
+                 VALUES (?1, 'created_by', 'user', 1)",
+                params![from_ref],
+            )
+            .expect("insert legacy actor edge");
+        store
+            .conn
+            .execute(
+                "INSERT INTO provenance_edges
+                 (from_ref, relation, to_ref, created_at)
+                 VALUES (?1, 'created_by', 'actor:user', 1)",
+                params![session_id.as_str()],
+            )
+            .expect("insert already-normalized duplicate");
+
+        let applied = store.migrate().expect("apply migration two");
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].version, 2);
+
+        let session = store
+            .get_session(&session_id)
+            .expect("read migrated session")
+            .expect("session exists");
+        assert_eq!(session.state, SessionState::Running);
+        assert_eq!(
+            session.presentation_state,
+            SessionPresentationState::Detached
+        );
+
+        let edges = store
+            .provenance_from(&ObjectRef::from(&session_id))
+            .expect("read migrated provenance");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].to.as_str(), "actor:user");
+    }
+
+    #[test]
+    fn file_backed_stores_share_the_same_state() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let mut writer = Store::open(&path).expect("open writer");
+        writer.migrate().expect("migrate writer");
+        let mut reader = Store::open(&path).expect("open reader");
+        reader.migrate().expect("migrate reader");
+
+        let flow = Flow::new("Shared", "test");
+        writer.insert_flow(&flow).expect("insert flow");
+
+        let loaded = reader
+            .get_flow(&flow.id)
+            .expect("read flow")
+            .expect("flow exists");
+        assert_eq!(loaded.id, flow.id);
+    }
+
+    #[test]
+    fn concurrent_migrators_converge_on_one_schema() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut store = Store::open(path).expect("open store");
+                    barrier.wait();
+                    store.migrate().expect("concurrent migration");
+                    store.applied_migrations().expect("migration list")
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let migrations = handle.join().expect("migration thread");
+            assert_eq!(migrations.len(), MIGRATIONS.len());
+        }
     }
 
     #[test]
@@ -556,9 +791,9 @@ mod tests {
         store.insert_flow(&flow).expect("insert flow");
 
         let edge = ProvenanceEdge {
-            from: ObjectRef::new(goal.id.to_string()),
+            from: ObjectRef::from(&goal.id),
             relation: ProvenanceRelation::BelongsTo,
-            to: ObjectRef::new(flow.id.to_string()),
+            to: ObjectRef::from(&flow.id),
             created_at: Timestamp::now(),
             note: None,
         };
@@ -567,10 +802,127 @@ mod tests {
         store.insert_provenance(&edge).expect("insert edge again");
 
         let edges = store
-            .provenance_from(&ObjectRef::new(goal.id.to_string()))
+            .provenance_from(&ObjectRef::from(&goal.id))
             .expect("query edges");
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].relation, ProvenanceRelation::BelongsTo);
+    }
+
+    #[test]
+    fn object_and_provenance_can_commit_atomically() {
+        let mut store = migrated_store();
+        let flow = Flow::new("Atomic", "user");
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&flow.id),
+            relation: ProvenanceRelation::CreatedBy,
+            to: ObjectRef::actor("user").expect("actor ref"),
+            created_at: Timestamp::now(),
+            note: None,
+        };
+
+        store
+            .insert_flow_with_provenance(&flow, &[edge])
+            .expect("atomic insert");
+
+        assert!(store.get_flow(&flow.id).expect("flow query").is_some());
+        assert_eq!(
+            store
+                .provenance_from(&ObjectRef::from(&flow.id))
+                .expect("provenance query")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn session_runtime_and_presentation_round_trip_independently() {
+        let store = migrated_store();
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "local-pty".to_owned(),
+            pid: Some(42),
+            cwd: Some("/tmp".to_owned()),
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        store.insert_session(&session).expect("insert session");
+        store
+            .update_session_state(&session.id, SessionState::Suspended)
+            .expect("suspend session");
+        store
+            .update_session_presentation_state(&session.id, SessionPresentationState::Attached)
+            .expect("attach presentation");
+
+        let loaded = store
+            .get_session(&session.id)
+            .expect("get session")
+            .expect("session exists");
+        assert_eq!(loaded.state, SessionState::Suspended);
+        assert_eq!(
+            loaded.presentation_state,
+            SessionPresentationState::Attached
+        );
+    }
+
+    #[test]
+    fn invalid_persisted_typed_id_is_not_silently_accepted() {
+        let store = migrated_store();
+        let flow = Flow::new("ID corruption test", "test");
+        store.insert_flow(&flow).expect("insert flow");
+        store
+            .conn
+            .execute(
+                "UPDATE flows SET id = 'not-a-flow-id' WHERE id = ?1",
+                params![flow.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.list_flows().is_err());
+    }
+
+    #[test]
+    fn invalid_persisted_goal_json_is_not_silently_accepted() {
+        let store = migrated_store();
+        let goal = Goal::new("Corruption test", "test");
+        store.insert_goal(&goal).expect("insert goal");
+        store
+            .conn
+            .execute(
+                "UPDATE goals SET constraints = 'not-json' WHERE id = ?1",
+                params![goal.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.get_goal(&goal.id).is_err());
+    }
+
+    #[test]
+    fn invalid_persisted_session_state_is_not_silently_accepted() {
+        let store = migrated_store();
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "local-pty".to_owned(),
+            pid: None,
+            cwd: None,
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        store.insert_session(&session).expect("insert session");
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET state = 'CORRUPT' WHERE id = ?1",
+                params![session.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.get_session(&session.id).is_err());
     }
 
     #[test]

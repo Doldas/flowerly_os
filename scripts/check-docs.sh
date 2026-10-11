@@ -29,11 +29,21 @@ required_adrs=(
     docs/adr/0007-kvm-evolution-world.md
     docs/adr/0008-flows-as-first-class-os-objects.md
     docs/adr/0009-project-name-flowerly-os.md
+    docs/adr/0010-unix-socket-json-ipc.md
+    docs/adr/0011-shared-local-state-database.md
+    docs/adr/0012-agenticctl-control-plane.md
+    docs/adr/0013-process-boundaries-require-justification.md
+)
+
+required_rfcs=(
+    docs/rfcs/index.md
+    docs/rfcs/0001-intent-as-first-class-domain.md
+    docs/rfcs/0002-flow-state-decomposition.md
 )
 
 failures=0
 
-for f in "${required_root[@]}" "${required_docs[@]}" "${required_adrs[@]}"; do
+for f in "${required_root[@]}" "${required_docs[@]}" "${required_adrs[@]}" "${required_rfcs[@]}"; do
     if [[ ! -s "$ROOT/$f" ]]; then
         echo "missing or empty: $f"
         failures=$((failures + 1))

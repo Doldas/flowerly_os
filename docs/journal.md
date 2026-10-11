@@ -113,3 +113,34 @@ the Flow activation lifecycle end to end. Not yet started.
 
 Planned: generation manifests, candidate creation, activation, and rollback.
 Not yet started.
+
+## 2026-10-11 — Architecture alignment hardening
+
+Reviewed the implemented repository against the Agentic OS grounding
+specifications before persistent PTY work. The review found the overall direction
+sound but identified four foundations that were cheap to correct now and
+expensive later.
+
+Implemented on issue #17 / PR #18:
+
+- replaced per-daemon physical SQLite files with one durable local `state.db`
+  while preserving logical service/domain ownership;
+- separated ephemeral runtime sockets from durable state through
+  `AGENTIC_STATE_DIR`;
+- made migrations safe for concurrently starting daemons;
+- split Session runtime state from ATTACHED/DETACHED presentation state;
+- made provenance `ObjectRef` values validated and introduced explicit
+  `actor:<name>` references;
+- reserved `IntentId` and RFC 0001 so transient Intent is not conflated with a
+  persistent Goal;
+- recorded that capabilities complement Linux authority rather than replacing
+  normal Linux execution;
+- recorded ADR-0013: conceptual domains do not automatically become daemons;
+- recorded RFC 0002 to keep Flow identity/config/runtime/presentation/policy
+  concerns separable as Flows grow;
+- merged the latest `master` ancestry into the active release work so release
+  history becomes monotonic again when the PR lands.
+
+The older journal entry referring to `main` reflects an earlier bootstrap
+state. The repository's current release policy uses `master` as the protected
+promotion branch and `release/N` as active integration branches.

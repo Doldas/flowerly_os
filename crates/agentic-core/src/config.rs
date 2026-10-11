@@ -41,8 +41,14 @@ impl fmt::Display for LogFormat {
 pub struct ServiceConfig {
     pub name: String,
 
+    /// Ephemeral runtime state such as Unix sockets and pid-related files.
     pub runtime_dir: PathBuf,
 
+    /// Durable machine/user state. All local Flowerly services share this
+    /// location by default while retaining logical ownership of their tables.
+    pub state_dir: PathBuf,
+
+    /// Explicit database override, primarily for tests and recovery tooling.
     pub database_path: Option<PathBuf>,
 
     pub log_format: LogFormat,
@@ -53,6 +59,7 @@ impl Default for ServiceConfig {
         Self {
             name: "service".to_owned(),
             runtime_dir: default_runtime_dir(),
+            state_dir: default_state_dir(),
             database_path: None,
             log_format: LogFormat::Text,
         }
@@ -89,6 +96,11 @@ impl ServiceConfig {
                 self.runtime_dir = PathBuf::from(dir);
             }
         }
+        if let Ok(dir) = env::var("AGENTIC_STATE_DIR") {
+            if !dir.is_empty() {
+                self.state_dir = PathBuf::from(dir);
+            }
+        }
         if let Ok(db) = env::var("AGENTIC_DATABASE_PATH") {
             if !db.is_empty() {
                 self.database_path = Some(PathBuf::from(db));
@@ -110,6 +122,13 @@ impl ServiceConfig {
     pub fn socket_path(&self) -> PathBuf {
         agentic_ipc::socket_path(&self.runtime_dir, &self.name)
     }
+
+    #[must_use]
+    pub fn database_path(&self) -> PathBuf {
+        self.database_path
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("state.db"))
+    }
 }
 
 #[must_use]
@@ -120,6 +139,26 @@ pub fn default_runtime_dir() -> PathBuf {
         }
     }
     std::env::temp_dir().join(format!("flowerly-{}", user_slug()))
+}
+
+#[must_use]
+pub fn default_state_dir() -> PathBuf {
+    if let Ok(dir) = env::var("XDG_STATE_HOME") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("flowerly");
+        }
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("flowerly");
+        }
+    }
+
+    std::env::temp_dir().join(format!("flowerly-state-{}", user_slug()))
 }
 
 #[must_use]
@@ -148,6 +187,14 @@ mod tests {
         assert_eq!(config.name, "service");
         assert_eq!(config.log_format, LogFormat::Text);
         assert!(config.socket_path().ends_with("service.sock"));
+        assert!(config.database_path().ends_with("state.db"));
+    }
+
+    #[test]
+    fn services_share_the_default_database_path() {
+        let flowd = ServiceConfig::for_service("flowd");
+        let goald = ServiceConfig::for_service("goald");
+        assert_eq!(flowd.database_path(), goald.database_path());
     }
 
     #[test]

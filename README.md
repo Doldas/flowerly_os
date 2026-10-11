@@ -41,7 +41,8 @@ today:
 - Rust services: `agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`,
   `capabilityd`, `generationd`, and `evolutiond`.
 - The `agenticctl` control-plane CLI.
-- SQLite persistence with an ordered migration mechanism.
+- A shared local SQLite `state.db` with ordered, concurrent-safe migrations
+  and a separate durable state directory.
 - Unix-domain-socket, length-prefixed JSON IPC (protocol v1).
 
 Planned, not yet implemented: PTY-backed persistent sessions, the agent

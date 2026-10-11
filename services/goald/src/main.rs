@@ -46,10 +46,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config
-        .database_path
-        .clone()
-        .unwrap_or_else(|| config.runtime_dir.join("goald.db"));
+    let db_path = config.database_path();
     let mut store = Store::open(&db_path).context("opening goald database")?;
     store.migrate().context("running goald migrations")?;
     store
@@ -62,17 +59,17 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
-    let store = match store.lock() {
+    let mut store = match store.lock() {
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    match run_command(&store, name, args) {
+    match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(message) => error_envelope(request.id.clone(), message),
     }
 }
 
-fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "goal.create" => {
             let objective = args
@@ -91,8 +88,16 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .get("rationale")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            store.insert_goal(&goal).map_err(err_str)?;
-            link_created(store, &goal.id, created_by)?;
+            let created_edge = ProvenanceEdge {
+                from: ObjectRef::from(&goal.id),
+                relation: ProvenanceRelation::CreatedBy,
+                to: ObjectRef::actor(created_by).map_err(err_str)?,
+                created_at: Timestamp::now(),
+                note: None,
+            };
+            store
+                .insert_goal_with_provenance(&goal, &[created_edge])
+                .map_err(err_str)?;
             tracing::info!(goal_id = %goal.id, objective, "goal created");
             Ok(serde_json::json!({
                 "id": goal.id,
@@ -117,15 +122,22 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .unwrap_or("agent");
             let mut child = Goal::new(objective, created_by);
             child.parent_goal = Some(parent.clone());
-            store.insert_goal(&child).map_err(err_str)?;
+            let created_edge = ProvenanceEdge {
+                from: ObjectRef::from(&child.id),
+                relation: ProvenanceRelation::CreatedBy,
+                to: ObjectRef::actor(created_by).map_err(err_str)?,
+                created_at: Timestamp::now(),
+                note: None,
+            };
+            let parent_edge = ProvenanceEdge {
+                from: ObjectRef::from(&child.id),
+                relation: ProvenanceRelation::BelongsTo,
+                to: ObjectRef::from(&parent),
+                created_at: Timestamp::now(),
+                note: Some("child goal".to_owned()),
+            };
             store
-                .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::new(child.id.to_string()),
-                    relation: ProvenanceRelation::BelongsTo,
-                    to: ObjectRef::new(parent.to_string()),
-                    created_at: Timestamp::now(),
-                    note: Some("child goal".to_owned()),
-                })
+                .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
                 .map_err(err_str)?;
             Ok(
                 serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent }),
@@ -180,18 +192,6 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
         }
         other => Err(format!("goald: unknown command `{other}`")),
     }
-}
-
-fn link_created(store: &Store, goal_id: &GoalId, actor: &str) -> Result<(), String> {
-    store
-        .insert_provenance(&ProvenanceEdge {
-            from: ObjectRef::new(goal_id.to_string()),
-            relation: ProvenanceRelation::CreatedBy,
-            to: ObjectRef::new(actor.to_owned()),
-            created_at: Timestamp::now(),
-            note: None,
-        })
-        .map_err(err_str)
 }
 
 fn err_str(error: impl std::fmt::Display) -> String {

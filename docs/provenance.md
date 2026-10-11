@@ -21,9 +21,34 @@ ProvenanceEdge {
 }
 ```
 
-Endpoints are `ObjectRef` strings: an object's typed id, optionally tagged with
-its kind (for example `flow-flow-abc123`, `goal-goal-def456`). Using strings keeps
-provenance decoupled from any single object table while remaining inspectable.
+`ObjectRef` is a strongly typed Rust enum whose variants carry the corresponding
+typed ID (`FlowId`, `GoalId`, `SessionId`, and so on) or an explicit Actor
+value. It serializes to a compact string for SQLite/wire inspectability and
+backwards compatibility. Accepted serialized forms are:
+
+```text
+flow-...
+intent-...
+goal-...
+agent-...
+session-...
+gen-...
+exp-...
+exec-...
+obs-...
+finding-...
+decision-...
+artifact-...
+project-...
+actor:<name>
+```
+
+Arbitrary untyped strings are rejected. Parsing reconstructs the enum variant,
+so a valid `goal-...` reference is represented as `ObjectRef::Goal(GoalId)`
+rather than losing its domain type. Domain code constructs references from typed
+IDs (`ObjectRef::from(&goal_id)`) and uses the explicit `actor:` namespace for
+human/system/agent actor labels. Migration 0002 normalizes legacy
+`created_by` targets into that actor namespace.
 
 ## Relation vocabulary
 
@@ -66,8 +91,9 @@ storage lives in `crates/agentic-storage` (`insert_provenance`,
 
 ## Implementation status
 
-- **Implemented:** the `ProvenanceEdge`/`ProvenanceRelation` model, the idempotent
-  edge store, `provenanced` with `provenance.add`/`provenance.from`, and
-  automatic `created_by` edges for Flows and Goals.
+- **Implemented:** the `ProvenanceEdge`/`ProvenanceRelation` model, validated
+  `ObjectRef` endpoints, explicit actor references, the idempotent edge store,
+  `provenanced` with `provenance.add`/`provenance.from`, and automatic
+  `created_by` edges for Flows, Goals and Sessions.
 - **Planned:** reverse traversal and graph queries, richer `note`/actor metadata,
   and enforcing an edge for every autonomous action as the agent runtime lands.

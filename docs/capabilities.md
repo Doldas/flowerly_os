@@ -1,9 +1,18 @@
 # Flowerly OS — Capabilities
 
-Capabilities are the units of authority in Flowerly OS. An agent (or Flow, or
-user session) may perform an action only if it holds the matching capability.
-The default is no authority: agents start with nothing and must be explicitly
-bound to what they need. This is the primary limit on autonomous action.
+Capabilities are Flowerly OS's explicit vocabulary for identity, delegated
+authority, scope and provenance. They complement Linux authority rather than
+replacing it.
+
+An agent (or Flow, or user session) may request an Agentic privileged action only
+when it holds the matching capability. The default is no delegated Agentic
+authority: agents start with nothing and are explicitly bound to what they need.
+
+Linux remains the execution substrate and final enforcement layer for many real
+operations through process identity, file permissions, namespaces, cgroups,
+seccomp, sockets and other kernel/userspace mechanisms. This layering is an
+accepted architectural decision; see
+[ADR-0014](adr/0014-linux-authority-is-the-enforcement-substrate.md).
 
 ## Capability model
 
@@ -18,9 +27,14 @@ Capability {
 }
 ```
 
-Capabilities are checked at the boundary of every privileged operation: before
-an agent reads a file, runs a process, creates a child goal or launches an
-experiment, `capabilityd` is consulted.
+Capabilities are checked at Agentic privilege/delegation boundaries: before an
+agent is given authority to read a workspace, launch a process, create a child
+goal, or start an experiment, policy can evaluate the requested capability and
+scope.
+
+This must **not** turn `capabilityd` into a proxy for every Linux syscall. Once
+an execution is legitimately delegated, the process should use ordinary Linux
+interfaces directly according to its real OS credentials and containment.
 
 ## Initial catalog
 
@@ -50,6 +64,9 @@ An agent is bound to a set of capabilities for the duration of its work and
 cannot escalate beyond that set. Authority can be delegated downward but never
 silently upward: a child agent receives a subset of its parent's capabilities.
 There is no ambient authority inherited from being "the agent layer".
+Conversely, a capability grant is not magic permission that bypasses Linux: the
+execution environment must also possess the corresponding real system
+authority.
 
 ## Policy and authorization (planned)
 

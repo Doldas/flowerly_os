@@ -1,9 +1,42 @@
 # Flowerly OS — Session Model
 
-A terminal session is not a window. The window (or any other presentation) is a
-view onto a persistent Session that survives the presentation closing. Sessions
-are durable system objects owned by `sessiond`, so a user can later ask to
-reattach to the terminal where a long build is still running.
+A terminal session is not a window. The window (or another presentation) is a
+view onto a persistent Session. Closing that presentation must not imply that the
+underlying shell/process exits.
+
+## Two independent state dimensions
+
+A Session has two orthogonal state machines.
+
+### Runtime state
+
+```text
+RUNNING
+SUSPENDED
+EXITED
+```
+
+- `RUNNING` — the underlying session/process is alive.
+- `SUSPENDED` — execution is intentionally stopped/frozen but resumable.
+- `EXITED` — the underlying session has terminated.
+
+### Presentation state
+
+```text
+ATTACHED
+DETACHED
+```
+
+- `ATTACHED` — at least the current presentation is attached to the session.
+- `DETACHED` — no presentation is attached; the runtime may still be RUNNING.
+
+This separation is essential to the Flowerly OS model:
+
+```text
+RUNNING + DETACHED
+```
+
+is the normal state of a persistent terminal after its window disappears.
 
 ## Data model
 
@@ -12,56 +45,50 @@ Defined in `crates/agentic-types` (`Session`) and persisted through
 
 ```text
 Session {
-    id:         SessionId      // session-<uuid>
-    flow_id:    Option<FlowId> // the Flow this session belongs to
-    kind:       String         // session kind, see below
-    pid:        Option<i32>    // OS process id while running
-    cwd:        Option<String> // working directory the session started in
-    state:      SessionState
-    created_by: String         // "user", "agent", ...
-    created_at: Timestamp
+    id:                 SessionId
+    flow_id:            Option<FlowId>
+    kind:               String
+    pid:                Option<i32>
+    cwd:                Option<String>
+    state:              SessionState
+    presentation_state: SessionPresentationState
+    created_by:         String
+    created_at:         Timestamp
 }
 ```
 
-## States
-
-The intended lifecycle is `ACTIVE`, `SUSPENDED` and `EXITED`: a session is
-`ACTIVE` while its process tree runs (attached or detached), `SUSPENDED` while
-its process is stopped or frozen, and `EXITED` once it terminates.
-
-> Implementation note: the current `crates/agentic-types::SessionState` enum uses
-> `RUNNING`, `EXITED` and `DETACHED`. In practice `DETACHED` corresponds to an
-> `ACTIVE` session with no attached presentation. Reconciling the names is
-> planned; the distinction between "alive but detached" and "exited" is the
-> important one and is already modelled.
+Migration 0002 converts legacy `DETACHED` runtime rows to
+`RUNNING + DETACHED`.
 
 ## Session kinds
 
-Sessions are typed by `kind`. The intended vocabulary is:
+The intended vocabulary is:
 
 ```text
-local-pty   a local pseudo-terminal running a shell or process tree
-ssh         a remote session reached over SSH
-container   a console into a container
-vm-console  a console into a virtual machine
+local-pty   local pseudo-terminal running a shell/process tree
+ssh         remote SSH session
+container   console into a container
+vm-console  virtual-machine console
 ```
 
-`kind` is currently a free-form string on the record; the vocabulary above is the
-target and will be validated when the real session backends land.
+`kind` remains a free-form string during bootstrap; validation lands with the
+real backends.
 
 ## Persistence and Flow association
 
-Session records are durable and survive service restart. Each session optionally
-belongs to a Flow through `flow_id`, which is how a Flow gathers "its"
-terminals. Closing a presentation detaches it from the session; it does not
-terminate the process tree.
+Session records are durable and optionally belong to a Flow through `flow_id`.
+The records live in the shared Flowerly `state.db`, so Flow foreign keys and
+session relationships represent real local state rather than copies in separate
+service databases.
 
 ## Implementation status
 
-- **Implemented:** the `Session`/`SessionState` model, persistence across
-  restarts, Flow association, state transitions and storage CRUD in `sessiond`.
-- **Not implemented:** real PTY allocation, attach/detach/reattach plumbing and
-  process-tree survival. PTY reattachment is the Sprint 3 vertical slice and is
-  explicitly **not implemented** yet.
-- **Planned:** SSH/container/VM-console backends, session reconnect ergonomics
-  and resource accounting per session.
+- **Implemented:** durable Session identity, Flow association, independent
+  runtime/presentation state, migration compatibility, storage CRUD and
+  `sessiond` metadata operations.
+- **Not implemented:** PTY allocation, process-tree ownership and real
+  attach/detach/reattach plumbing.
+- **Planned for 0.0.4:** prove the vertical slice: create Flow → start shell →
+  detach presentation → switch Flow → return → reattach to the same live
+  process.
+- **Later:** SSH/container/VM-console backends and resource accounting.

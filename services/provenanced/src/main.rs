@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
@@ -47,10 +48,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config
-        .database_path
-        .clone()
-        .unwrap_or_else(|| config.runtime_dir.join("provenanced.db"));
+    let db_path = config.database_path();
     let mut store = Store::open(&db_path).context("opening provenanced database")?;
     store.migrate().context("running provenanced migrations")?;
     store
@@ -90,9 +88,9 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .ok_or("missing string arg `to`")?;
             let relation = parse_relation(relation)?;
             let edge = ProvenanceEdge {
-                from: ObjectRef::new(from.to_owned()),
+                from: ObjectRef::from_str(from).map_err(err_str)?,
                 relation,
-                to: ObjectRef::new(to.to_owned()),
+                to: ObjectRef::from_str(to).map_err(err_str)?,
                 created_at: Timestamp::now(),
                 note: args.get("note").and_then(Value::as_str).map(str::to_owned),
             };
@@ -106,9 +104,8 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .or_else(|| args.get("from"))
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `ref`")?;
-            let edges = store
-                .provenance_from(&ObjectRef::new(from.to_owned()))
-                .map_err(err_str)?;
+            let object_ref = ObjectRef::from_str(from).map_err(err_str)?;
+            let edges = store.provenance_from(&object_ref).map_err(err_str)?;
             let items: Vec<Value> = edges
                 .iter()
                 .map(|e| {
@@ -148,15 +145,15 @@ async fn self_test() -> anyhow::Result<()> {
     let mut store = Store::open(&db).context("opening self-test db")?;
     let applied = store.migrate()?;
     let edge = ProvenanceEdge {
-        from: ObjectRef::new("exec-123".to_owned()),
+        from: ObjectRef::from_str("exec-123")?,
         relation: ProvenanceRelation::Produced,
-        to: ObjectRef::new("artifact-456".to_owned()),
+        to: ObjectRef::from_str("artifact-456")?,
         created_at: Timestamp::now(),
         note: None,
     };
     store.insert_provenance(&edge)?;
     store.insert_provenance(&edge)?;
-    let edges = store.provenance_from(&ObjectRef::new("exec-123".to_owned()))?;
+    let edges = store.provenance_from(&ObjectRef::from_str("exec-123")?)?;
     assert_eq!(edges.len(), 1);
     println!(
         "provenanced self-test ok: migrations={} edges={}",

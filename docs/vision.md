@@ -20,6 +20,25 @@ and the system switches context, restores the relevant sessions, projects, and
 applications, and continues where they left off, without exposing the machinery
 that makes it possible.
 
+## Intent before operations
+
+The user should not have to translate a human goal into application, file, menu,
+package or command operations. Flowerly OS performs that translation.
+
+```text
+human expression
+      ↓
+    Intent
+      ↓
+context resolution
+   ↙       ↘
+action     persistent Goal
+```
+
+Intent is distinct from Goal. "Show the servers" may only switch context;
+"reduce boot time by 20%" may create a durable Goal with evidence and success
+criteria. See [RFC 0001](rfcs/0001-intent-as-first-class-domain.md).
+
 ## The system should understand itself
 
 Behind that experience, Flowerly OS should be able to:

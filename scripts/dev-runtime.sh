@@ -9,20 +9,23 @@
 #   status  print `agenticctl status` for every service
 #   restart stop + start
 #
-# The runtime directory defaults to $XDG_RUNTIME_DIR/flowerly-dev and can be
-# overridden with RUNTIME_DIR. Binaries are resolved from $BIN_DIR (default
-# target/release of the repository root).
+# The runtime directory defaults to $XDG_RUNTIME_DIR/flowerly-dev and contains
+# ephemeral IPC/log files. Durable development state defaults to
+# target/flowerly-state and can be overridden with STATE_DIR. Binaries are
+# resolved from $BIN_DIR (default target/release of the repository root).
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$REPO_ROOT/target/release}"
 RUNTIME_DIR="${RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$REPO_ROOT/target}/flowerly-dev}"
+STATE_DIR="${STATE_DIR:-$REPO_ROOT/target/flowerly-state}"
 
 SERVICES=(agenticd flowd sessiond goald provenanced capabilityd generationd evolutiond)
 
-mkdir -p "$RUNTIME_DIR"
+mkdir -p "$RUNTIME_DIR" "$STATE_DIR"
 export AGENTIC_RUNTIME_DIR="$RUNTIME_DIR"
+export AGENTIC_STATE_DIR="$STATE_DIR"
 export AGENTIC_LOG_FORMAT="${AGENTIC_LOG_FORMAT:-text}"
 
 ctl() {

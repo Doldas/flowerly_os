@@ -47,6 +47,11 @@ The service boundaries below stay clear even when an implementation combines res
 
 Each daemon is a foreground process with a uniform status/shutdown contract.
 
+These rows describe current process boundaries, not a rule that every conceptual
+domain must become a daemon. ADR-0013 requires concrete lifecycle, security,
+isolation, resource-accounting, or runtime reasons before adding another
+process boundary.
+
 ## Typed IDs (see `crates/agentic-types`)
 
 Durable objects share strongly typed, prefixed, UUID-backed identifiers from
@@ -54,20 +59,27 @@ Durable objects share strongly typed, prefixed, UUID-backed identifiers from
 the same stable value instead of raw strings:
 
 ```text
-flow-…  goal-…  agent-…  session-…  gen-…  exp-…  exec-…  obs-…
-finding-…  decision-…  artifact-…  project-…
+flow-…  intent-…  goal-…  agent-…  session-…  gen-…  exp-…  exec-…
+obs-…   finding-… decision-… artifact-… project-…
 ```
 
-`ObjectRef` strings (for example `flow-flow-abc123`) are the endpoints of
-provenance edges.
+`ObjectRef` is a typed enum carrying the corresponding typed ID or an explicit
+Actor variant. It serializes as compact values such as `flow-abc123` or
+`actor:system`, while arbitrary untyped strings are rejected when parsed.
 
 ## Persistent storage
 
-Each service owns a SQLite database. Schema is owned by an ordered, idempotent
-migration mechanism in `crates/agentic-storage/migrations/`; the production
-schema is never mutated by hand. `rusqlite` is built with the `bundled` feature,
-and foreign keys and WAL are enabled by the storage layer. See
-[ADR-0005](adr/0005-sqlite-as-initial-state-store.md).
+Local services share one physical SQLite `state.db` by default while retaining
+logical ownership of their domain APIs/tables. Durable state is separated from
+ephemeral socket/runtime state through `AGENTIC_STATE_DIR` and
+`AGENTIC_RUNTIME_DIR`.
+
+Schema is owned by ordered migrations in
+`crates/agentic-storage/migrations/`; the production schema is never mutated by
+hand. `rusqlite` is built with the `bundled` feature, foreign keys and WAL are
+enabled, and concurrent daemon startup serializes migration writers safely.
+See [ADR-0005](adr/0005-sqlite-as-initial-state-store.md) and
+[ADR-0011](adr/0011-shared-local-state-database.md).
 
 ## IPC: Unix sockets, Protocol v1
 
