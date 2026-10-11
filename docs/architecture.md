@@ -25,10 +25,11 @@ services/evolutiond       experiment status (stub)
 services/agenticctl       human/agent control plane CLI
 ```
 
-Domain crates (`agentic-flows`, `agentic-goals`, `agentic-sessions`,
-`agentic-provenance`, `agentic-generations`, `agentic-capabilities`) exist as
-directories and will join the workspace as bounded logic moves out of the
-services.
+Additional domain crates such as `agentic-flows`, `agentic-goals`,
+`agentic-sessions`, `agentic-provenance`, `agentic-generations`, and
+`agentic-capabilities` are **planned, not currently present**. They should only
+be introduced when bounded reusable logic actually needs to move out of a
+service; conceptual domains do not justify empty crates by themselves.
 
 ## Typed identifiers and models
 
