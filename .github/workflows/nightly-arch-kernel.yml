@@ -1,0 +1,237 @@
+name: nightly-arch-kernel
+
+on:
+  schedule:
+    # 02:17 UTC avoids the busiest top-of-hour scheduler window.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Branch target to validate
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - master
+          - latest-release
+      force:
+        description: Run even when this code fingerprint already passed
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-arch-kernel
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Select branches
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Resolve master and latest release branch
+        id: plan
+        env:
+          REPOSITORY: ${{ github.repository }}
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'both' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          remote="https://github.com/${REPOSITORY}.git"
+          latest_release="$(
+            git ls-remote --heads "$remote" 'refs/heads/release/*' |
+              awk '{sub("refs/heads/", "", $2); print $2}' |
+              grep -E '^release/[0-9]+$' |
+              sort -t/ -k2,2n |
+              tail -n1 || true
+          )"
+
+          python3 - "$TARGET" "$latest_release" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import sys
+
+          target, latest = sys.argv[1:3]
+          refs = []
+
+          if target in ("both", "master"):
+              refs.append("master")
+
+          if target in ("both", "latest-release"):
+              if not latest:
+                  if target == "latest-release":
+                      raise SystemExit("no release/N branch exists")
+              elif latest not in refs:
+                  refs.append(latest)
+
+          matrix = {
+              "include": [
+                  {"ref": ref, "slug": ref.replace("/", "-")}
+                  for ref in refs
+              ]
+          }
+          print("matrix=" + json.dumps(matrix, separators=(",", ":")))
+          PY
+
+          echo "latest release: ${latest_release:-none}"
+          echo "target mode: $TARGET"
+
+  arch-kernel:
+    name: Arch kernel / ${{ matrix.ref }}
+    needs: plan
+    if: ${{ needs.plan.outputs.matrix != '{"include":[]}' }}
+    runs-on: flowerly-runner
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 1
+
+      - name: Compute code fingerprint
+        id: fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit="$(git rev-parse HEAD)"
+          fingerprint="$(
+            git ls-files -s -- \
+              Cargo.toml Cargo.lock rust-toolchain.toml justfile Makefile \
+              crates services tools scripts image tests \
+              .github/workflows/nightly-arch-kernel.yml |
+              sha256sum |
+              awk '{print $1}'
+          )"
+
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "value=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "Target: ${{ matrix.ref }}"
+          echo "Commit: $commit"
+          echo "Code fingerprint: $fingerprint"
+
+      - name: Look up successful Arch-kernel validation
+        id: previous
+        uses: actions/cache/restore@v4
+        with:
+          path: .arch-kernel-nightly-marker
+          key: arch-kernel-nightly-v1-${{ matrix.slug }}-${{ steps.fingerprint.outputs.value }}
+          lookup-only: true
+
+      - name: Decide whether VM test is needed
+        id: decision
+        env:
+          CACHE_HIT: ${{ steps.previous.outputs.cache-hit }}
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$CACHE_HIT" == "true" && "$FORCE_RUN" != "true" ]]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "No relevant code/image/build changes since the last successful Arch-kernel run."
+          else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              echo "Arch-kernel VM validation is required."
+          fi
+
+      - name: Install QEMU host dependencies
+        if: ${{ steps.decision.outputs.run == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(qemu-system-x86_64 qemu-img cloud-localds)
+          missing=0
+          for tool in "${required[@]}"; do
+              command -v "$tool" >/dev/null 2>&1 || missing=1
+          done
+
+          if [[ ! -f /usr/share/OVMF/OVMF_CODE_4M.fd &&
+                ! -f /usr/share/OVMF/OVMF_CODE.fd &&
+                ! -f /usr/share/edk2/ovmf/OVMF_CODE.fd &&
+                ! -f /usr/share/edk2/x64/OVMF_CODE.4m.fd ]]; then
+              missing=1
+          fi
+
+          if [[ "$missing" -eq 1 ]]; then
+              if ! command -v apt-get >/dev/null 2>&1; then
+                  echo "The self-hosted runner is missing QEMU/cloud-init tools and has no apt-get." >&2
+                  echo "Install qemu-system-x86, qemu-utils, ovmf and cloud-image-utils." >&2
+                  exit 1
+              fi
+
+              if [[ "${EUID}" -eq 0 ]]; then
+                  apt-get update
+                  apt-get install -y qemu-system-x86 qemu-utils ovmf cloud-image-utils openssh-client curl
+              else
+                  sudo apt-get update
+                  sudo apt-get install -y qemu-system-x86 qemu-utils ovmf cloud-image-utils openssh-client curl
+              fi
+          fi
+
+      - name: Boot Arch and verify the whole project
+        id: arch_test
+        if: ${{ steps.decision.outputs.run == 'true' }}
+        env:
+          FLOWERLY_TEST_REF: ${{ matrix.ref }}
+          FLOWERLY_TEST_SHA: ${{ steps.fingerprint.outputs.commit }}
+          FLOWERLY_TEST_SLUG: ${{ matrix.slug }}
+        shell: bash
+        run: bash ./scripts/arch-kernel-vm-test.sh
+
+      - name: Mark fingerprint as successfully tested
+        if: ${{ steps.decision.outputs.run == 'true' && success() && steps.previous.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          printf '%s\n' "${{ steps.fingerprint.outputs.value }}" > .arch-kernel-nightly-marker
+
+      - name: Save successful fingerprint
+        if: ${{ steps.decision.outputs.run == 'true' && success() && steps.previous.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .arch-kernel-nightly-marker
+          key: arch-kernel-nightly-v1-${{ matrix.slug }}-${{ steps.fingerprint.outputs.value }}
+
+      - name: Upload Arch VM evidence
+        if: ${{ always() && steps.decision.outputs.run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-kernel-${{ matrix.slug }}-${{ steps.fingerprint.outputs.commit }}
+          path: target/arch-kernel/${{ matrix.slug }}/report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+              echo "## Arch kernel validation — ${{ matrix.ref }}"
+              echo
+              echo "- commit: ${{ steps.fingerprint.outputs.commit }}"
+              echo "- code fingerprint: ${{ steps.fingerprint.outputs.value }}"
+              if [[ "${{ steps.decision.outputs.run }}" == "false" ]]; then
+                  echo "- result: skipped; this fingerprint already passed"
+              elif [[ -f "target/arch-kernel/${{ matrix.slug }}/report/host-metadata.txt" ]]; then
+                  echo "- result: VM test executed"
+                  echo
+                  echo '~~~text'
+                  cat "target/arch-kernel/${{ matrix.slug }}/report/host-metadata.txt"
+                  echo '~~~'
+              else
+                  echo "- result: VM test did not produce final metadata; inspect the uploaded QEMU log"
+              fi
+          } >> "$GITHUB_STEP_SUMMARY"
