@@ -81,8 +81,12 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             let mut goal = Goal::new(objective, created_by);
-            if let Some(priority) = args.get("priority").and_then(Value::as_i64) {
-                goal.priority = i32::try_from(priority).unwrap_or_default();
+            if let Some(value) = args.get("priority") {
+                let priority = value
+                    .as_i64()
+                    .ok_or("arg `priority` must be an integer")?;
+                goal.priority = i32::try_from(priority)
+                    .map_err(|_| format!("priority out of range for i32: {priority}"))?;
             }
             goal.rationale = args
                 .get("rationale")
@@ -112,6 +116,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
+            if store.get_goal(&parent).map_err(err_str)?.is_none() {
+                return Err(format!("goal not found: {parent}"));
+            }
             let objective = args
                 .get("objective")
                 .and_then(Value::as_str)
@@ -212,4 +219,78 @@ async fn self_test() -> anyhow::Result<()> {
     assert_eq!(store.list_goals()?.len(), 2);
     println!("goald self-test ok: migrations={}", applied.len());
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migrated_store() -> Store {
+        let mut store = Store::open_in_memory().expect("open store");
+        store.migrate().expect("migrate store");
+        store
+    }
+
+    #[test]
+    fn out_of_range_priority_is_rejected_instead_of_defaulted() {
+        let mut store = migrated_store();
+        let error = run_command(
+            &mut store,
+            "goal.create",
+            &serde_json::json!({ "objective": "test", "priority": i64::from(i32::MAX) + 1 }),
+        )
+        .expect_err("out-of-range priority must fail");
+
+        assert!(error.contains("out of range"), "unexpected error: {error}");
+        assert!(store.list_goals().expect("list goals").is_empty());
+    }
+
+    #[test]
+    fn non_integer_priority_is_rejected() {
+        let mut store = migrated_store();
+        let error = run_command(
+            &mut store,
+            "goal.create",
+            &serde_json::json!({ "objective": "test", "priority": "high" }),
+        )
+        .expect_err("non-integer priority must fail");
+
+        assert_eq!(error, "arg `priority` must be an integer");
+        assert!(store.list_goals().expect("list goals").is_empty());
+    }
+
+    #[test]
+    fn child_requires_an_existing_parent_goal() {
+        let mut store = migrated_store();
+        let missing = GoalId::new();
+        let error = run_command(
+            &mut store,
+            "goal.child",
+            &serde_json::json!({ "id": missing, "objective": "child" }),
+        )
+        .expect_err("missing parent must fail");
+
+        assert_eq!(error, format!("goal not found: {missing}"));
+        assert!(store.list_goals().expect("list goals").is_empty());
+    }
+
+    #[test]
+    fn child_of_existing_parent_is_created() {
+        let mut store = migrated_store();
+        let parent = Goal::new("parent", "test");
+        store.insert_goal(&parent).expect("insert parent");
+
+        let response = run_command(
+            &mut store,
+            "goal.child",
+            &serde_json::json!({ "id": parent.id, "objective": "child" }),
+        )
+        .expect("create child");
+
+        assert_eq!(response["parent"], serde_json::json!(parent.id));
+        let goals = store.list_goals().expect("list goals");
+        assert_eq!(goals.len(), 2);
+        assert!(goals.iter().any(|goal| goal.parent_goal.as_ref() == Some(&parent.id)));
+    }
 }
