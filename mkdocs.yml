@@ -47,6 +47,7 @@ nav:
       - Decisions: decisions.md
       - Engineering Journal: journal.md
       - ADRs: adr/index.md
+      - RFCs: rfcs/index.md
   - Project:
       - Project Overview: project/index.md
       - Roadmap: roadmap.md
