@@ -5,9 +5,9 @@ This page is the public planning overview. The detailed acceptance criteria rema
 | Release | Theme | Status | Tracking |
 | --- | --- | --- | --- |
 | 0.0.1 | Repository Foundation | Done | — |
-| 0.0.2 | Core Runtime Skeleton | Mostly done | [#6](https://github.com/Doldas/flowerly_os/issues/6) |
-| 0.0.3 | Persistent State | Next | [#7](https://github.com/Doldas/flowerly_os/issues/7) |
-| 0.0.4 | Flows and Sessions | Planned | [#8](https://github.com/Doldas/flowerly_os/issues/8) |
+| 0.0.2 | Core Runtime Skeleton | Done | [#6](https://github.com/Doldas/flowerly_os/issues/6) |
+| 0.0.3 | Persistent State | Done | [#7](https://github.com/Doldas/flowerly_os/issues/7) |
+| 0.0.4 | Flows and Sessions | Next | [#8](https://github.com/Doldas/flowerly_os/issues/8) |
 | 0.0.5 | Generations | Planned | [#9](https://github.com/Doldas/flowerly_os/issues/9) |
 | 0.0.6 | Evolution Lab | Planned | [#10](https://github.com/Doldas/flowerly_os/issues/10) |
 | 0.0.7 | Goal Runtime | Planned | [#11](https://github.com/Doldas/flowerly_os/issues/11) |
