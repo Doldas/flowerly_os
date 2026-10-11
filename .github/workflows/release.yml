@@ -13,7 +13,7 @@ env:
 jobs:
   release:
     name: Release ${{ github.ref_name }}
-    runs-on: ubuntu-latest
+    runs-on: flowerly-runner
     steps:
       - name: Checkout
         uses: actions/checkout@v4
