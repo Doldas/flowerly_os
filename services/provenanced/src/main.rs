@@ -177,7 +177,6 @@ async fn self_test() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,12 +211,8 @@ mod tests {
         assert_eq!(from["count"], 1);
         assert_eq!(from["edges"][0]["to"], serde_json::json!(goal));
 
-        let to = run_command(
-            &store,
-            "provenance.to",
-            &serde_json::json!({ "ref": goal }),
-        )
-        .expect("query incoming");
+        let to = run_command(&store, "provenance.to", &serde_json::json!({ "ref": goal }))
+            .expect("query incoming");
         assert_eq!(to["count"], 1);
         assert_eq!(to["edges"][0]["from"], serde_json::json!(execution));
     }
@@ -231,6 +226,9 @@ mod tests {
             &serde_json::json!({ "ref": "plain-string" }),
         )
         .expect_err("untyped reference must fail");
-        assert!(error.contains("object reference"), "unexpected error: {error}");
+        assert!(
+            error.contains("object reference"),
+            "unexpected error: {error}"
+        );
     }
 }
