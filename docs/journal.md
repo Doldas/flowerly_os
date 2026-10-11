@@ -168,3 +168,20 @@ branch from current `release/2`:
 
 This establishes a core invariant for future agent-facing APIs: typed domain
 data must remain typed and validated when it crosses JSON/IPC boundaries.
+
+
+## 2026-10-11 — Arch userspace substrate selected
+
+Accepted ADR-0015: Flowerly OS uses Arch Linux as its initial userspace/package
+substrate while retaining ADR-0004's upstream Linux kernel policy.
+
+The decision intentionally does not turn Stable World into a conventional
+rolling Arch installation. Arch repository changes become candidate-generation
+inputs; Flowerly resolves and records an exact package set, tests the candidate
+in Evolution World, and promotes or rejects the generation.
+
+Added the first `image/arch/` scaffold with a minimal package list, expected
+Flowerly binaries, a declarative mkosi rootfs prototype and CI validation. The
+scaffold is explicitly not presented as a bootable image yet. Bootable disk
+output, Flowerly packages, initramfs/UKIs, exact package artifact retention and
+KVM boot tests remain roadmap work.
