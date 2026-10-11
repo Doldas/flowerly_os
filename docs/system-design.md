@@ -63,10 +63,9 @@ flow-…  intent-…  goal-…  agent-…  session-…  gen-…  exp-…  exec-�
 obs-…   finding-… decision-… artifact-… project-…
 ```
 
-`ObjectRef` values are validated strings containing either a typed Flowerly ID
-(for example `flow-abc123`) or an explicit actor namespace such as
-`actor:system`. Arbitrary untyped strings are rejected at the provenance
-boundary.
+`ObjectRef` is a typed enum carrying the corresponding typed ID or an explicit
+Actor variant. It serializes as compact values such as `flow-abc123` or
+`actor:system`, while arbitrary untyped strings are rejected when parsed.
 
 ## Persistent storage
 
