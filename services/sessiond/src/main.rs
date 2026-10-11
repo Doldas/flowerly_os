@@ -47,10 +47,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config
-        .database_path
-        .clone()
-        .unwrap_or_else(|| config.runtime_dir.join("sessiond.db"));
+    let db_path = config.database_path();
     let mut store = Store::open(&db_path).context("opening sessiond database")?;
     store.migrate().context("running sessiond migrations")?;
     store
