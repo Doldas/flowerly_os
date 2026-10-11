@@ -53,6 +53,18 @@ Behind that experience, Flowerly OS should be able to:
 - record provenance linking every change to its goal, evidence, and generation;
 - remove what no longer serves a purpose.
 
+## A moving upstream, a deliberate Stable World
+
+Flowerly begins with Arch Linux as its userspace/package substrate because the
+project benefits from staying close to current upstream Linux userspace,
+toolchains, virtualization and hardware enablement.
+
+That does not make Flowerly's user environment a conventional rolling install.
+Arch may move continuously; Flowerly turns those changes into candidate
+generations, tests them in the Evolution World, and promotes only accepted
+system states. The user's Stable World therefore evolves deliberately and
+remains reversible.
+
 ## Seed OS
 
 The first installation is a seed OS. Two people may install the same image and,
