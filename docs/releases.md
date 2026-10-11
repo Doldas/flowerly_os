@@ -57,11 +57,28 @@ Eventually releases will also provide bootable images, packages, an SBOM,
 signatures and provenance metadata. Until then, releases ship source and
 artifacts with checksums.
 
+## Final Arch-kernel validation
+
+The nightly Arch-kernel workflow can also be dispatched manually with
+`force=true` for `master`, the latest release branch, or both. It boots the
+official Arch cloud image, upgrades it fully, reboots into the installed Arch
+kernel, and runs the complete Flowerly verification inside the guest.
+
+The tagged release workflow also runs this Arch-kernel validation as a hard
+pre-publication gate. A GitHub Release is not created unless the tagged source
+passes inside the fully upgraded Arch guest. The manual forced path remains
+useful for validating `master` and/or the active release branch before the tag
+is created.
+
+Once Flowerly has a real generation image, this substrate-level gate remains
+useful but is joined by the stronger Flowerly image boot/rollback gate.
+
 ## Release gates
 
 A release cannot be tagged if:
 
 - CI is red,
+- the final real-Arch kernel validation is red,
 - the database migration path is broken,
 - the boot test fails,
 - the rollback test fails for generation-related releases,

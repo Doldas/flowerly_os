@@ -84,6 +84,11 @@ jobs:
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh
 
+      - name: Check Arch VM test scripts
+        run: |
+          bash -n ./scripts/arch-kernel-vm-test.sh
+          bash -n ./tests/arch-kernel/guest-verify.sh
+
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v19
         with:

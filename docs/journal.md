@@ -185,3 +185,22 @@ Flowerly binaries, a declarative mkosi rootfs prototype and CI validation. The
 scaffold is explicitly not presented as a bootable image yet. Bootable disk
 output, Flowerly packages, initramfs/UKIs, exact package artifact retention and
 KVM boot tests remain roadmap work.
+
+
+## 2026-10-11 — Nightly real-Arch kernel validation
+
+Added issue #24 and a heavyweight system-validation workflow for the selected
+Arch userspace direction.
+
+The scheduled workflow resolves `master` plus the highest-numbered
+`release/N` branch, fingerprints the code/build/image inputs, and skips the
+expensive VM path if that fingerprint already passed. When it runs, the
+self-hosted runner boots the official Arch cloud image under QEMU/KVM (with TCG
+fallback), verifies the published image SHA256, performs a full `pacman -Syu`,
+reboots into the installed Arch kernel, and executes the entire Flowerly
+build/test/runtime smoke suite inside the guest.
+
+The same workflow is manually dispatchable with a force option so it can serve
+as final pre-release evidence. It is an Evolution World precursor rather than
+the final generation-image test: the guest is still an upstream Arch image, not
+yet a Flowerly generation image.

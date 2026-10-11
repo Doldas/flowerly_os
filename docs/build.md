@@ -10,8 +10,9 @@ same targets.
   minimum supported Rust version is set intentionally in `Cargo.toml`.
 - **just:** the primary developer command runner (https://github.com/casey/just).
 - **Git** and build essentials; a C compiler is needed for the bundled SQLite.
-- **Optional, for later work:** Go, Python 3 and QEMU/KVM. None are required to
-  build or test the current Rust workspace.
+- **Optional:** Go and Python 3 for future components. QEMU/KVM plus OVMF and
+  cloud-image tooling are only required to run the heavyweight Arch-kernel
+  system test; they are not required for the normal Rust workspace.
 
 ## Developer commands
 
@@ -95,6 +96,57 @@ Go and Python checks (`go test`/`go vet`, `ruff`/`pytest`) run only when such co
 is present. Documentation checks validate required docs and relative links;
 security checks run `cargo audit` and `cargo deny`. A red CI cannot be
 released; see [releases.md](releases.md).
+
+### Nightly real-Arch kernel validation
+
+`.github/workflows/nightly-arch-kernel.yml` is the heavyweight system check.
+Once the workflow exists on the default branch, it runs every night at
+02:17 UTC and selects:
+
+- `master`;
+- the highest-numbered `release/N` branch.
+
+For each target it computes a fingerprint from Rust source, build tooling,
+image inputs and system-test code. If that exact fingerprint has already passed
+the Arch-kernel test, the VM work is skipped. Documentation-only commits
+therefore do not cause another full VM build.
+
+When work is required, the workflow uses the persistent `flowerly-runner` to:
+
+```text
+official Arch cloud image
+        ↓ SHA256 verification
+QEMU/KVM (TCG fallback)
+        ↓
+pacman -Syu
+        ↓
+reboot into installed Arch kernel
+        ↓
+copy exact checked-out Flowerly tree
+        ↓
+fmt + clippy + check + tests + release build
+        ↓
+docs/image validation
+        ↓
+start all Flowerly daemons and query them with agenticctl
+```
+
+The official base image is cached under the runner user's
+`~/.cache/flowerly/arch-images`, keyed by its published checksum. Per-run
+evidence contains the tested git commit, image checksum, running kernel/package
+information, QEMU accelerator, guest report and serial log.
+
+The workflow also supports `workflow_dispatch` with `force=true`, giving a
+manual final-validation path before tagging even if the same fingerprint passed
+overnight.
+
+Tagged releases go one step further: `.github/workflows/release.yml` performs a
+fresh Arch-kernel VM run for the exact tag and will not publish the GitHub
+Release unless that guest validation passes.
+
+The heavyweight VM test is deliberately not a per-PR gate: it performs a full
+rolling Arch upgrade, reboot and build inside a VM. Normal CI remains the fast
+pull-request gate.
 
 ### Runner caching and stale-run cancellation
 
