@@ -68,9 +68,9 @@ fn ensure_general_flow(store: &Store) -> anyhow::Result<()> {
     general.purpose = Some("The universal default context".to_owned());
     store.insert_flow(&general)?;
     store.insert_provenance(&ProvenanceEdge {
-        from: ObjectRef::new(general.id.to_string()),
+        from: ObjectRef::from(&general.id),
         relation: ProvenanceRelation::CreatedBy,
-        to: ObjectRef::new("system".to_owned()),
+        to: ObjectRef::actor("system")?,
         created_at: Timestamp::now(),
         note: Some("bootstrap default General flow".to_owned()),
     })?;
@@ -116,9 +116,9 @@ fn run_command(store: &Store, name: &str, args: &Value) -> std::result::Result<V
             store.insert_flow(&flow).map_err(err_str)?;
             store
                 .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::new(flow.id.to_string()),
+                    from: ObjectRef::from(&flow.id),
                     relation: ProvenanceRelation::CreatedBy,
-                    to: ObjectRef::new(created_by.to_owned()),
+                    to: ObjectRef::actor(created_by).map_err(err_str)?,
                     created_at: Timestamp::now(),
                     note: None,
                 })
