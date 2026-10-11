@@ -167,4 +167,5 @@ docs/       documentation, decisions, proposals
   rfcs/     design proposals
   specs/    grounding specifications
 scripts/    development tooling
+image/      Arch rootfs/image inputs and future generation image builder
 ```
