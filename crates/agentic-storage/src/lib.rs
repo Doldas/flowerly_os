@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use agentic_types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation,
-    Session, SessionId, SessionPresentationState, SessionState, Timestamp,
+    GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, Session, SessionId,
+    SessionPresentationState, SessionState, Timestamp,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -628,6 +628,7 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentic_types::ProvenanceRelation;
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
