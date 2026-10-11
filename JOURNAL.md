@@ -60,6 +60,45 @@ Wrote `agenticctl` as the thin control-plane client.
 starts `flowd`, queries it through `agenticctl status flowd`, creates and lists
 Flows (`General` plus a new one), and shuts down cleanly.
 
+## 2026-10-11 — Documentation, ADRs and RFCs
+
+Added the ten root documents (README, VISION, ARCHITECTURE, ROADMAP,
+CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, DECISIONS, JOURNAL, CHANGELOG), the
+thirteen `docs/` design documents, ADRs 0001–0009, and the RFC framework
+(`rfcs/README.md`, `0000-template.md`). Added explanatory READMEs for the
+scaffolded `go/`, `python/`, `c/`, `image/`, `packaging/`, `kernel/`, `shell/`,
+`schemas/`, `tests/`, `evolution/` and `scripts/` directories.
+
+## 2026-10-11 — Build system and CI
+
+Installed `just` 1.58 and wired `justfile` + `Makefile` (`fmt`, `fmt-check`,
+`lint`, `check`, `build`, `test`, `verify`, `run/serve/stop/status`; `image`,
+`vm`, `vm-test` and `release` documented and enforced as placeholders where
+unimplemented). `scripts/dev-runtime.sh` starts/stops/reports all daemons
+against a dev runtime directory. Added GPL-3.0 LICENSE, `deny.toml`, and
+GitHub Actions for ci, security (cargo-audit + cargo-deny), codeql, release,
+dependency-review and scorecard, plus issue/PR templates, CODEOWNERS, and
+dependabot.
+
+## 2026-10-11 — Pushed to GitHub, pipeline green
+
+Pushed `main` to `github.com/Doldas/flowerly_os`, made `main` the default
+branch (removed the orphaned `master`). `scripts/bootstrap-github.sh` created
+the issue labels (37), the ten milestones (0.0.1 → 0.1.0), the "Flowerly OS"
+Projects v2 board, and four initial roadmap issues. First CI run surfaced and
+fixed three integration problems: cargo-deny action repo did not exist
+(replaced with `taiki-e/install-action`), `deny.toml` used keys removed by
+cargo-deny 0.20 (fixed and verified locally), and `scorecard-action` needed a
+concrete `v2.4.4` tag. All four checks are now green. Tagged `v0.0.1`, which
+triggered the release workflow and published the first GitHub release with all
+nine binaries plus SHA256SUMS.
+
+## Upcoming — Release hardening
+
+Planned: enable branch protection on `main` (require status checks and
+conventional commit reviewers), add a `dependency-review` PR gate, and turn
+cargo-deny advisories from informational into a required check.
+
 ## Upcoming — Sprint 2: Persistent State
 
 Planned: complete migration-backed CRUD, provenance relationship queries, and
