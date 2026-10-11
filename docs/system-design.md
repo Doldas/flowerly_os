@@ -67,6 +67,15 @@ obs-…   finding-… decision-… artifact-… project-…
 Actor variant. It serializes as compact values such as `flow-abc123` or
 `actor:system`, while arbitrary untyped strings are rejected when parsed.
 
+Service IPC boundaries preserve those type guarantees. A supplied typed ID is
+parsed explicitly and rejected if malformed; it is never silently converted to
+`None` or another default. Integer values that cross into bounded domain types
+(for example process IDs or Goal priorities) are range-checked rather than
+truncated or defaulted. References that must already exist, such as a Session's
+Flow or a child Goal's parent, are validated before the durable object is
+created so callers receive a domain-level error rather than an accidental
+foreign-key failure.
+
 ## Persistent storage
 
 Local services share one physical SQLite `state.db` by default while retaining
