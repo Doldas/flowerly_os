@@ -81,6 +81,9 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Check Arch image inputs
+        run: bash ./scripts/check-image-inputs.sh
+
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v19
         with:
