@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a new capability for Flowerly OS.
+title: "[feature]: "
+labels: [type:feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals that involve consequential architecture should start as an
+        RFC or ADR (see rfcs/ and adr/) rather than a bare issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What is missing and why does it matter?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Implementation notes
+      description: Relevant areas, crates or services, risks, and testing approach.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and RFPs first
+        - label: I read the relevant ADRs

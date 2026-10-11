@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a defect in Flowerly OS.
+title: "[bug]: "
+labels: [type:bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Explain how to reproduce it and what you expected.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behaviour.
+      placeholder: "flowd does not start cleanly when …"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. just build
+        2. ./target/release/flowd
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Rust toolchain (`rustc -V`), commit (`git rev-parse HEAD`).
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues first
+        - label: This is not a security issue (use SECURITY.md reporting instead)

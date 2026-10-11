@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify
+        run: just verify
+
+      - name: Build release artifacts
+        run: |
+          just build
+          cd target/release
+          sha256sum agenticd flowd sessiond goald provenanced capabilityd generationd evolutiond agenticctl > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: |
+            target/release/agenticd
+            target/release/flowd
+            target/release/sessiond
+            target/release/goald
+            target/release/provenanced
+            target/release/capabilityd
+            target/release/generationd
+            target/release/evolutiond
+            target/release/agenticctl
+            target/release/SHA256SUMS

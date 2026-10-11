@@ -1,0 +1,10 @@
+# Code owners.
+#
+# Current maintainers review everything touching the core, state, or IPC
+# foundations. Add owners for a subsystem when it becomes active.
+
+*                       @Doldas
+crates/agentic-core/    @Doldas
+crates/agentic-storage/ @Doldas
+crates/agentic-ipc/     @Doldas
+crates/agentic-types/   @Doldas

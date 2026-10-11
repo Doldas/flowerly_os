@@ -1,0 +1,64 @@
+# Flowerly OS — self-evolving Linux distribution.
+# Repository: https://github.com/Doldas/flowerly_os
+#
+# The runtime components deliberately keep the `agentic-*` naming defined by the
+# architecture specification (AGENTIC_OS_REPOSITORY_ARCHITECTURE_SPRINTS_AND_OPENCODE.md).
+# See adr/0009-project-name-flowerly-os.md for the naming decision.
+
+[workspace]
+resolver = "2"
+members = [
+    # Shared infrastructure crates.
+    "crates/agentic-types",
+    "crates/agentic-storage",
+    "crates/agentic-ipc",
+    "crates/agentic-core",
+    # Runtime services and the control plane.
+    "services/agenticd",
+    "services/goald",
+    "services/flowd",
+    "services/sessiond",
+    "services/provenanced",
+    "services/capabilityd",
+    "services/generationd",
+    "services/evolutiond",
+    "services/agenticctl",
+    # Domain crates (agentic-flows, agentic-goals, agentic-sessions,
+    # agentic-provenance, agentic-generations, agentic-capabilities) join the
+    # workspace when their bounded logic moves out of the services.
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Doldas/flowerly_os"
+homepage = "https://github.com/Doldas/flowerly_os"
+authors = ["Flowerly OS Contributors"]
+description = "Flowerly OS — a self-evolving Linux distribution built around autonomous agents as first-class system actors."
+
+[workspace.dependencies]
+# Internal crates
+agentic-types = { path = "crates/agentic-types" }
+agentic-storage = { path = "crates/agentic-storage" }
+agentic-ipc = { path = "crates/agentic-ipc" }
+agentic-core = { path = "crates/agentic-core" }
+
+# External dependencies
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: just fmt-check
+
+      - name: Clippy (warnings as errors)
+        run: just lint
+
+      - name: Compile check
+        run: just check
+
+      - name: Test
+        run: just test
+
+      - name: Release build
+        run: just build
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Check required documentation
+        run: ./scripts/check-docs.sh
+
+      - name: Markdown lint
+        uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: |
+            "*.md"
+            "docs/**/*.md"
+            "adr/**/*.md"
+            "rfcs/**/*.md"
+
+      - name: Check documentation build references
+        run: |
+          for f in README.md VISION.md ARCHITECTURE.md ROADMAP.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md DECISIONS.md JOURNAL.md CHANGELOG.md; do
+            [ -s "$f" ] || { echo "missing or empty $f"; exit 1; }
+          done

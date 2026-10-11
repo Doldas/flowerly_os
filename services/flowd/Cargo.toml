@@ -1,0 +1,25 @@
+[package]
+name = "flowd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Flowerly OS Flow service: persistent activity contexts."
+
+[[bin]]
+name = "flowd"
+path = "src/main.rs"
+
+[dependencies]
+agentic-core.workspace = true
+agentic-ipc.workspace = true
+agentic-storage.workspace = true
+agentic-types.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio.workspace = true
+tracing.workspace = true
