@@ -149,11 +149,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
 }
 
 fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, String> {
-    let by_id = args
-        .get("id")
-        .and_then(Value::as_str)
-        .and_then(|raw| FlowId::from_str(raw).ok());
-    if let Some(id) = by_id.clone() {
+    if let Some(value) = args.get("id") {
+        let raw = value.as_str().ok_or("arg `id` must be a string")?;
+        let id = FlowId::from_str(raw).map_err(err_str)?;
         if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
             return Ok(flow);
         }
@@ -191,4 +189,36 @@ async fn self_test() -> anyhow::Result<()> {
         flows.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migrated_store() -> Store {
+        let mut store = Store::open_in_memory().expect("open store");
+        store.migrate().expect("migrate store");
+        store
+    }
+
+    #[test]
+    fn malformed_flow_id_is_rejected_instead_of_falling_back() {
+        let store = migrated_store();
+        let error = find_flow(&store, &serde_json::json!({ "id": "not-a-flow-id" }))
+            .expect_err("invalid flow id must fail");
+
+        assert!(
+            error.contains("flow"),
+            "unexpected invalid-id error: {error}"
+        );
+    }
+
+    #[test]
+    fn non_string_flow_id_is_rejected() {
+        let store = migrated_store();
+        let error = find_flow(&store, &serde_json::json!({ "id": 42 }))
+            .expect_err("non-string flow id must fail");
+
+        assert_eq!(error, "arg `id` must be a string");
+    }
 }
