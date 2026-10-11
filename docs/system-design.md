@@ -8,6 +8,32 @@ this directory, and the architecture decision records in `adr/`.
 Status labels used below: **Implemented** (present and tested), **In progress**
 (partially present), **Planned** (designed, not built), **Research** (exploratory).
 
+## Distribution and package substrate
+
+The initial Flowerly userspace is Arch Linux. Flowerly intentionally separates
+the rolling upstream from the stable machine state:
+
+```text
+Arch rolling repositories
+          ↓
+candidate generation builder
+          ↓
+Evolution World
+          ↓
+promote / reject
+          ↓
+Stable World
+```
+
+Arch package metadata and pacman are inputs to candidate construction. Stable
+World promotion and rollback remain Flowerly generation operations. The
+upstream Linux kernel policy remains independent of the userspace choice; early
+images may bootstrap with Arch's kernel package while the target remains a
+reproducible upstream Flowerly kernel build/config.
+
+See [image-model.md](image-model.md) and
+[ADR-0015](adr/0015-arch-linux-userspace-substrate.md).
+
 ## Stable World vs Evolution World
 
 Flowerly OS separates two execution worlds on the same physical machine:
@@ -124,8 +150,9 @@ operations. No privileged logic lives in the client.
 
 - systemd unit files live in `packaging/systemd/` — **Planned** (see
   [ADR-0006](adr/0006-systemd-service-supervision.md)).
-- Reproducible root filesystem, initramfs and bootable image work is **Planned**
-  (`image/`).
+- Arch rootfs/image inputs now live in `image/arch/` — **In progress**.
+  Reproducible bootable disk output, initramfs/UKI integration and KVM boot
+  validation remain **Planned**.
 - Kernel configuration is **Planned** in `kernel/config` (see
   [ADR-0004](adr/0004-upstream-linux-kernel-policy.md)).
 
