@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use agentic_ipc::Payload;
 
-fn start_daemon(runtime_dir: &std::path::Path) -> std::process::Child {
+fn start_daemon(runtime_dir: &std::path::Path, state_dir: &std::path::Path) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_flowd"))
         .env("AGENTIC_RUNTIME_DIR", runtime_dir)
+        .env("AGENTIC_STATE_DIR", state_dir)
         .env("AGENTIC_LOG_FORMAT", "text")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -44,7 +45,8 @@ fn flowd_self_test_passes() {
 fn flowd_starts_and_answers_status() {
     let dir = tempfile::tempdir().expect("temp dir");
     let socket = dir.path().join("flowd.sock");
-    let mut child = start_daemon(dir.path());
+    let state_dir = dir.path().join("state");
+    let mut child = start_daemon(dir.path(), &state_dir);
     wait_for_socket(&socket, Duration::from_secs(15));
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
