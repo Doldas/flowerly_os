@@ -6,8 +6,8 @@ use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service, Servi
 use agentic_ipc::{Envelope, Payload};
 use agentic_storage::Store;
 use agentic_types::{
-    FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId, SessionState,
-    Timestamp,
+    FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
+    SessionPresentationState, SessionState, Timestamp,
 };
 use anyhow::Context;
 use clap::Parser;
@@ -81,28 +81,31 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .get("created_by")
                 .and_then(Value::as_str)
                 .unwrap_or("user");
-            let mut session = Session {
+            let pid = args.get("pid").and_then(Value::as_i64).map(|v| v as i32);
+            let session = Session {
                 id: SessionId::new(),
                 flow_id: args
                     .get("flow_id")
                     .and_then(Value::as_str)
                     .and_then(|raw| FlowId::from_str(raw).ok()),
                 kind: kind.to_owned(),
-                pid: args.get("pid").and_then(Value::as_i64).map(|v| v as i32),
+                pid,
                 cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
                 state: SessionState::Running,
+                presentation_state: if pid.is_some() {
+                    SessionPresentationState::Attached
+                } else {
+                    SessionPresentationState::Detached
+                },
                 created_by: created_by.to_owned(),
                 created_at: Timestamp::now(),
             };
-            if session.pid.is_none() {
-                session.state = SessionState::Detached;
-            }
             store.insert_session(&session).map_err(err_str)?;
             store
                 .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::new(session.id.to_string()),
+                    from: ObjectRef::from(&session.id),
                     relation: ProvenanceRelation::CreatedBy,
-                    to: ObjectRef::new(created_by.to_owned()),
+                    to: ObjectRef::actor(created_by).map_err(err_str)?,
                     created_at: Timestamp::now(),
                     note: None,
                 })
@@ -112,6 +115,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 "id": session.id,
                 "kind": session.kind,
                 "state": session.state,
+                "presentation_state": session.presentation_state,
                 "flow_id": session.flow_id,
             }))
         }
@@ -124,6 +128,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                         "id": s.id,
                         "kind": s.kind,
                         "state": s.state,
+                        "presentation_state": s.presentation_state,
                         "flow_id": s.flow_id,
                         "pid": s.pid,
                         "created_by": s.created_by,
@@ -146,9 +151,19 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
             store
                 .update_session_state(&session_id, SessionState::Exited)
                 .map_err(err_str)?;
-            Ok(
-                serde_json::json!({ "id": session_id, "state": SessionState::Exited, "was": session.state }),
-            )
+            store
+                .update_session_presentation_state(
+                    &session_id,
+                    SessionPresentationState::Detached,
+                )
+                .map_err(err_str)?;
+            Ok(serde_json::json!({
+                "id": session_id,
+                "state": SessionState::Exited,
+                "presentation_state": SessionPresentationState::Detached,
+                "was": session.state,
+                "presentation_was": session.presentation_state,
+            }))
         }
         other => Err(format!("sessiond: unknown command `{other}`")),
     }
@@ -170,6 +185,7 @@ async fn self_test() -> anyhow::Result<()> {
         pid: Some(42),
         cwd: Some("/home".to_owned()),
         state: SessionState::Running,
+        presentation_state: SessionPresentationState::Attached,
         created_by: "self-test".to_owned(),
         created_at: Timestamp::now(),
     };
