@@ -513,18 +513,26 @@ fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()>
     Ok(())
 }
 
+fn parse_text<T>(raw: String, column: usize) -> rusqlite::Result<T>
+where
+    T: FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    raw.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+    })
+}
+
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
     let parent: Option<String> = row.get(3)?;
     let last_active: Option<i64> = row.get(7)?;
     let state: String = row.get(4)?;
     Ok(Flow {
-        id: FlowId::from_raw(row.get::<_, String>(0)?),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
         name: row.get(1)?,
         purpose: row.get(2)?,
-        parent_flow: parent.map(FlowId::from_raw),
-        state: state.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
-        })?,
+        parent_flow: parent.map(|raw| parse_text(raw, 3)).transpose()?,
+        state: parse_text(state, 4)?,
         created_by: row.get(5)?,
         created_at: Timestamp::from_millis(row.get(6)?),
         last_active: last_active.map(Timestamp::from_millis),
@@ -538,8 +546,8 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
     let metrics: String = row.get(5)?;
     let status: String = row.get(7)?;
     Ok(Goal {
-        id: GoalId::from_raw(row.get::<_, String>(0)?),
-        parent_goal: parent.map(GoalId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        parent_goal: parent.map(|raw| parse_text(raw, 1)).transpose()?,
         objective: row.get(2)?,
         rationale: row.get(3)?,
         constraints: serde_json::from_str(&constraints).map_err(|error| {
@@ -549,9 +557,7 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
             rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
         })?,
         priority: row.get(6)?,
-        status: status.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
-        })?,
+        status: parse_text(status, 7)?,
         created_by: row.get(8)?,
         created_at: Timestamp::from_millis(row.get(9)?),
     })
@@ -562,17 +568,13 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
     let state: String = row.get(5)?;
     let presentation_state: String = row.get(6)?;
     Ok(Session {
-        id: SessionId::from_raw(row.get::<_, String>(0)?),
-        flow_id: flow.map(FlowId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        flow_id: flow.map(|raw| parse_text(raw, 1)).transpose()?,
         kind: row.get(2)?,
         pid: row.get(3)?,
         cwd: row.get(4)?,
-        state: state.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
-        })?,
-        presentation_state: presentation_state.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
-        })?,
+        state: parse_text(state, 5)?,
+        presentation_state: parse_text(presentation_state, 6)?,
         created_by: row.get(7)?,
         created_at: Timestamp::from_millis(row.get(8)?),
     })
@@ -582,9 +584,9 @@ fn map_execution(row: &Row<'_>) -> rusqlite::Result<Execution> {
     let agent: Option<String> = row.get(1)?;
     let goal: Option<String> = row.get(2)?;
     Ok(Execution {
-        id: ExecutionId::from_raw(row.get::<_, String>(0)?),
-        agent_id: agent.map(AgentId::from_raw),
-        goal_id: goal.map(GoalId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        agent_id: agent.map(|raw| parse_text(raw, 1)).transpose()?,
+        goal_id: goal.map(|raw| parse_text(raw, 2)).transpose()?,
         reason: row.get(3)?,
         command: row.get(4)?,
         exit_code: row.get(5)?,
@@ -599,32 +601,21 @@ fn map_generation(row: &Row<'_>) -> rusqlite::Result<Generation> {
     let experiment: Option<String> = row.get(5)?;
     let status: String = row.get(6)?;
     Ok(Generation {
-        id: GenerationId::from_raw(row.get::<_, String>(0)?),
-        parent: parent.map(GenerationId::from_raw),
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        parent: parent.map(|raw| parse_text(raw, 1)).transpose()?,
         source_commit: row.get(2)?,
         system_manifest: row.get(3)?,
-        reason_goal: goal.map(GoalId::from_raw),
-        experiment: experiment.map(agentic_types::ExperimentId::from_raw),
-        status: status.parse().map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
-        })?,
+        reason_goal: goal.map(|raw| parse_text(raw, 4)).transpose()?,
+        experiment: experiment.map(|raw| parse_text(raw, 5)).transpose()?,
+        status: parse_text(status, 6)?,
         created_at: Timestamp::from_millis(row.get(7)?),
     })
 }
 
 fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
-    let relation_raw: String = row.get(1)?;
-    let relation = relation_raw.parse().map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
-    })?;
-    let from_raw: String = row.get(0)?;
-    let to_raw: String = row.get(2)?;
-    let from = ObjectRef::from_str(&from_raw).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(error))
-    })?;
-    let to = ObjectRef::from_str(&to_raw).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
-    })?;
+    let relation = parse_text(row.get::<_, String>(1)?, 1)?;
+    let from = parse_text(row.get::<_, String>(0)?, 0)?;
+    let to = parse_text(row.get::<_, String>(2)?, 2)?;
     Ok(ProvenanceEdge {
         from,
         relation,
@@ -873,6 +864,22 @@ mod tests {
             loaded.presentation_state,
             SessionPresentationState::Attached
         );
+    }
+
+    #[test]
+    fn invalid_persisted_typed_id_is_not_silently_accepted() {
+        let store = migrated_store();
+        let flow = Flow::new("ID corruption test", "test");
+        store.insert_flow(&flow).expect("insert flow");
+        store
+            .conn
+            .execute(
+                "UPDATE flows SET id = 'not-a-flow-id' WHERE id = ?1",
+                params![flow.id.as_str()],
+            )
+            .expect("corrupt test row");
+
+        assert!(store.list_flows().is_err());
     }
 
     #[test]
