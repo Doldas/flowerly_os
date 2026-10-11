@@ -1,9 +1,3 @@
-//! `capabilityd` — identity, authority and policy.
-//!
-//! At this milestone capabilityd exposes the initial capability catalog and a
-//! policy-evaluation stub. Agent identity and delegation arrive with the
-//! bounded agent runtime (Sprint 7).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -19,15 +13,13 @@ use clap::Parser;
     about = "Flowerly OS capability service"
 )]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test and exit.
+
     #[arg(long)]
     self_test: bool,
 }
 
-/// The initial catalog of capabilities agents may be granted.
 const CAPABILITIES: &[&str] = &[
     "file.read",
     "file.write_workspace",

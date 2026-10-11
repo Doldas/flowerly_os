@@ -4,7 +4,7 @@ A Flow is a persistent, evolvable operating environment representing one
 coherent human activity context: General, Development, Server Operations, Art,
 Gaming, Research, or a project-specific environment. Flows are first-class
 objects, not windows, so users switch contexts instead of reconstructing them.
-See [`../adr/0008-flows-as-first-class-os-objects.md`](../adr/0008-flows-as-first-class-os-objects.md).
+See [ADR-0008](adr/0008-flows-as-first-class-os-objects.md).
 
 ## Data model
 
@@ -58,7 +58,7 @@ remain. Operations are exposed through `agenticctl flow create|list|activate|arc
 
 Creating or promoting a Flow records a provenance edge whose relation is
 `created_by` (relation `CreatedBy`), with the creating actor recorded in both the
-`created_by` field and the edge. See [`PROVENANCE.md`](PROVENANCE.md).
+`created_by` field and the edge. See [provenance.md](provenance.md).
 
 ## Implemented status and planned extensions
 

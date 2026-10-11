@@ -1,9 +1,3 @@
-//! `evolutiond` — experiments and candidate promotion.
-//!
-//! Evolution World orchestration (build -> KVM boot -> test -> measure ->
-//! review) arrives with Sprint 5. This milestone establishes the daemon and
-//! its health contract; the workflow lives behind `just vm-test`.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,10 +9,9 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(name = "evolutiond", version, about = "Flowerly OS evolution service")]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test and exit.
+
     #[arg(long)]
     self_test: bool,
 }

@@ -1,9 +1,3 @@
-//! Configuration loading for Flowerly OS services.
-//!
-//! Configuration is intentionally minimal: a TOML file for static values and
-//! environment variables for the few things that vary between runs. Services
-//! must be runnable with zero model/network configuration.
-
 use std::env;
 use std::fmt;
 use std::path::PathBuf;
@@ -11,35 +5,25 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 
-/// Errors produced during configuration loading.
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    /// The configuration file could not be read.
     #[error("cannot read config file `{path}`: {source}")]
     Read {
-        /// Path of the offending file.
         path: String,
-        /// Underlying error.
+
         source: std::io::Error,
     },
-    /// The TOML file was malformed.
+
     #[error("invalid config file `{path}`: {message}")]
-    Parse {
-        /// Path of the offending file.
-        path: String,
-        /// Toml error message.
-        message: String,
-    },
+    Parse { path: String, message: String },
 }
 
-/// Output format for structured logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
-    /// Human readable, newline separated (default).
     #[default]
     Text,
-    /// JSON lines, suitable for journald/vector pipelines.
+
     Json,
 }
 
@@ -52,17 +36,15 @@ impl fmt::Display for LogFormat {
     }
 }
 
-/// Static configuration for a single service.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServiceConfig {
-    /// Human-facing service name (e.g. `flowd`).
     pub name: String,
-    /// Directory holding the service's Unix sockets and runtime state.
+
     pub runtime_dir: PathBuf,
-    /// Path to the durable SQLite database, when the service persists state.
+
     pub database_path: Option<PathBuf>,
-    /// Log output format.
+
     pub log_format: LogFormat,
 }
 
@@ -78,9 +60,6 @@ impl Default for ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// Load a config from a TOML file, overriding static values with the
-    /// `AGENTIC_RUNTIME_DIR`, `AGENTIC_DATABASE_PATH` and `AGENTIC_LOG_FORMAT`
-    /// environment variables when present.
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
         let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
             path: path.display().to_string(),
@@ -94,8 +73,6 @@ impl ServiceConfig {
         Ok(config)
     }
 
-    /// Build a configuration for the named service using defaults, then apply
-    /// environment overrides. Equivalent to `load` without a config file.
     #[must_use]
     pub fn for_service(name: &str) -> Self {
         let mut config = Self {
@@ -129,14 +106,12 @@ impl ServiceConfig {
         }
     }
 
-    /// The full path of this service's IPC socket.
     #[must_use]
     pub fn socket_path(&self) -> PathBuf {
         agentic_ipc::socket_path(&self.runtime_dir, &self.name)
     }
 }
 
-/// The location under which Flowerly OS creates runtime sockets and state.
 #[must_use]
 pub fn default_runtime_dir() -> PathBuf {
     if let Ok(dir) = env::var("XDG_RUNTIME_DIR") {
@@ -147,8 +122,6 @@ pub fn default_runtime_dir() -> PathBuf {
     std::env::temp_dir().join(format!("flowerly-{}", user_slug()))
 }
 
-/// A stable, filesystem-safe slug identifying the current user, derived from
-/// the `USER`/`LOGNAME` environment and falling back to a constant.
 #[must_use]
 fn user_slug() -> String {
     for key in ["LOGNAME", "USER"] {

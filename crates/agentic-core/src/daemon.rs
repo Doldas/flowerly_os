@@ -1,8 +1,3 @@
-//! Service runner shared by every Flowerly OS daemon.
-//!
-//! A daemon is a local IPC server with a uniform status contract and graceful
-//! shutdown on SIGTERM or an explicit IPC `shutdown` command.
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,21 +7,18 @@ use tracing::Instrument;
 
 use crate::config::ServiceConfig;
 
-/// Immutable facts every service exposes in its status payload.
 #[derive(Debug, Clone)]
 pub struct ServiceContext {
-    /// Service name, e.g. `flowd`.
     pub name: String,
-    /// Package version.
+
     pub version: String,
-    /// Operating-system process id.
+
     pub pid: u32,
-    /// When the service started.
+
     pub started_at: Instant,
 }
 
 impl ServiceContext {
-    /// Build a context for the current process.
     #[must_use]
     pub fn for_current_process(name: &str) -> Self {
         Self {
@@ -37,13 +29,11 @@ impl ServiceContext {
         }
     }
 
-    /// Uptime in whole seconds.
     #[must_use]
     pub fn uptime_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
     }
 
-    /// The standard status object for this service.
     #[must_use]
     pub fn status(&self, extra: Value) -> Value {
         serde_json::json!({
@@ -57,7 +47,6 @@ impl ServiceContext {
     }
 }
 
-/// Build a well-formed error envelope.
 #[must_use]
 pub fn error_envelope(id: String, message: impl Into<String>) -> Envelope {
     Envelope {
@@ -69,7 +58,6 @@ pub fn error_envelope(id: String, message: impl Into<String>) -> Envelope {
     }
 }
 
-/// Build a well-formed success envelope carrying `data`.
 #[must_use]
 pub fn ok_envelope(id: String, data: Value) -> Envelope {
     Envelope {
@@ -79,11 +67,6 @@ pub fn ok_envelope(id: String, data: Value) -> Envelope {
     }
 }
 
-/// Serve requests for a service until shut down.
-///
-/// `extra_status` is merged into the standard service status object. The
-/// handler is called for every inbound envelope and must never block on a
-/// network or an AI provider.
 pub async fn run_service(
     config: ServiceConfig,
     extra_status: Value,

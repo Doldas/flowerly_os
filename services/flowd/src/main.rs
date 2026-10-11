@@ -1,9 +1,3 @@
-//! `flowd` — persistent Flow contexts.
-//!
-//! A Flow is a coherent human activity context (`Development`, `Art`,
-//! `Gaming`, ...). This service owns the Flow object lifecycle and starts with
-//! a `General` flow so every installation has a safe default context.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -21,10 +15,9 @@ use serde_json::Value;
 #[derive(Debug, Parser)]
 #[command(name = "flowd", version, about = "Flowerly OS Flow service")]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
+
     #[arg(long)]
     self_test: bool,
 }

@@ -2,9 +2,9 @@ name: security
 
 on:
   push:
-    branches: [main]
+    branches: [master, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [master, 'release/**']
   schedule:
     - cron: "0 2 * * 1"
 
@@ -49,6 +49,5 @@ jobs:
 
       - name: cargo-deny check ${{ matrix.checks }}
         run: cargo deny --all-features check ${{ matrix.checks }}
-        # Advisory results are reported but do not gate merges until the
-        # dependency set is stable; bans/licenses/sources are mandatory.
+
         continue-on-error: ${{ matrix.checks == 'advisories' }}

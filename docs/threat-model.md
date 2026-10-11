@@ -39,7 +39,7 @@ threats being tracked. It is a starting point, not a solved problem.
 ## Limiting autonomous action
 
 - **Capabilities:** agents hold only the capabilities they were granted; see
-  [`CAPABILITIES.md`](CAPABILITIES.md). The initial catalog has no root-modifying
+  [capabilities.md](capabilities.md). The initial catalog has no root-modifying
   capability.
 - **Goal bounds:** an agent acts within a goal's constraints, success criteria
   and priority; work outside the goal is out of scope.
@@ -52,7 +52,7 @@ threats being tracked. It is a starting point, not a solved problem.
 
 Every meaningful autonomous action must be attributable. Provenance answers who
 did what, why, under which goal, agent, model, command, source, test and
-generation. See [`PROVENANCE.md`](PROVENANCE.md). An action that cannot be
+generation. See [provenance.md](provenance.md). An action that cannot be
 recorded should not happen autonomously.
 
 ## Supply chain

@@ -1,8 +1,8 @@
-# Cargo deny configuration.
-#
-# Policy: prefer fewer, maintained dependencies. Licenses must be compatible
-# with a GPL-3.0-or-later project. The advisory check is reported but not
-# fatal in CI until the dependency set stabilizes.
+
+
+
+
+
 
 [graph]
 targets = [
@@ -11,8 +11,8 @@ targets = [
 
 [bans]
 multiple-versions = "warn"
-# Workspace-internal crates are intentionally versionless path dependencies,
-# which cargo-deny classes as wildcards; warn instead of fail.
+
+
 wildcards = "warn"
 
 [licenses]

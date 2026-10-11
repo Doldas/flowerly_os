@@ -1,10 +1,3 @@
-//! Minimal, versionable local IPC for Flowerly OS daemons.
-//!
-//! The protocol is deliberately simple: a length-prefixed UTF-8 JSON body over
-//! a Unix domain socket. Length is a little-endian `u32`. Keeping framing
-//! trivial means the wire format is inspectable with `nc`/`socat` and easy to
-//! evolve through schema versioning on the JSON objects themselves.
-
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -16,75 +9,54 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
-/// Maximum accepted frame size (8 MiB). Guards against runaway allocations.
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
-/// Protocol version carried by every request/response.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Errors produced by the IPC layer.
 #[derive(Debug, Error)]
 pub enum IpcError {
-    /// I/O failure.
     #[error("ipc io error: {0}")]
     Io(#[from] std::io::Error),
-    /// JSON (de)serialization failure.
+
     #[error("ipc serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    /// Received frame violates the framing contract.
+
     #[error("invalid frame: {0}")]
     InvalidFrame(String),
-    /// The connection was closed by the peer mid-frame.
+
     #[error("connection closed: {0}")]
     Closed(String),
 }
 
-/// Result alias for the IPC layer.
 pub type Result<T> = std::result::Result<T, IpcError>;
 
-/// Versioned request envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
-    /// Protocol version (must equal [`PROTOCOL_VERSION`]).
     pub version: u32,
-    /// Correlation id echoed back by the server.
+
     pub id: String,
-    /// The payload.
+
     #[serde(flatten)]
     pub payload: Payload,
 }
 
-/// A request or response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Payload {
-    /// Liveness probe.
     Ping,
-    /// Request structured health/status.
+
     Status,
-    /// Ordered graceful shutdown.
+
     Shutdown,
-    /// An operation addressed to the service.
-    Command {
-        /// Operation name.
-        name: String,
-        /// Operation arguments.
-        args: Value,
-    },
-    /// Positive outcome carrying data.
-    Ok {
-        /// Result data.
-        data: Value,
-    },
-    /// Failed outcome carrying a message.
-    Err {
-        /// Human-readable error.
-        message: String,
-    },
+
+    Command { name: String, args: Value },
+
+    Ok { data: Value },
+
+    Err { message: String },
 }
 
 impl Envelope {
-    /// Create a fresh envelope for `payload`.
     #[must_use]
     pub fn new(payload: Payload) -> Self {
         Self {
@@ -95,7 +67,6 @@ impl Envelope {
     }
 }
 
-/// Write an envelope as a length-prefixed JSON frame.
 pub async fn write_frame(
     stream: &mut (impl AsyncWriteExt + Unpin),
     envelope: &Envelope,
@@ -115,7 +86,6 @@ pub async fn write_frame(
     Ok(())
 }
 
-/// Read one envelope from the stream.
 pub async fn read_frame(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Envelope> {
     let mut len_buf = [0u8; 4];
     stream
@@ -143,16 +113,8 @@ pub async fn read_frame(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Enve
     Ok(envelope)
 }
 
-/// Request handler signature. Handlers are synchronous by design: status
-/// queries touch local state only and must never depend on a network or an AI
-/// provider.
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
-/// Serve requests on the given socket path until a shutdown signal arrives.
-///
-/// The handler must be cheaply clonable-free: it is shared behind an [`Arc`]
-/// across all accepted connections. The socket file is removed on clean
-/// shutdown.
 pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Result<()> {
     let path = socket_path.as_ref().to_path_buf();
     if let Some(dir) = path.parent() {
@@ -208,19 +170,16 @@ async fn handle_connection(mut stream: UnixStream, handler: Arc<Handler>) -> Res
     }
 }
 
-/// A minimal client handle over a single connection.
 pub struct Client {
     stream: UnixStream,
 }
 
 impl Client {
-    /// Connect to a running service.
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
         Ok(Self { stream })
     }
 
-    /// Send one request and await the response.
     pub async fn request(&mut self, payload: Payload) -> Result<Envelope> {
         let request = Envelope::new(payload);
         write_frame(&mut self.stream, &request).await?;
@@ -228,13 +187,11 @@ impl Client {
     }
 }
 
-/// One-shot call: open a connection, send the request, return the response.
 pub async fn call(path: impl AsRef<Path>, payload: Payload) -> Result<Envelope> {
     let mut client = Client::connect(path).await?;
     client.request(payload).await
 }
 
-/// Path of the socket for a named service under a runtime root.
 #[must_use]
 pub fn socket_path(runtime_dir: impl AsRef<Path>, service: &str) -> PathBuf {
     runtime_dir.as_ref().join(format!("{service}.sock"))

@@ -1,9 +1,3 @@
-//! Durable SQLite-backed state for Flowerly OS.
-//!
-//! Every schema change is expressed as an ordered [`Migration`]. The
-//! migration runner is idempotent: applying it twice is safe and only records
-//! the migrations that were not already applied.
-
 #![forbid(unsafe_code)]
 
 use std::path::Path;
@@ -16,66 +10,55 @@ use agentic_types::{
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use thiserror::Error;
 
-/// Errors produced by the storage layer.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// Underlying SQLite failure.
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    /// (De)serialization failure for embedded JSON columns.
+
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    /// A record was requested but does not exist.
+
     #[error("record not found: {0}")]
     NotFound(String),
 }
 
-/// Result alias for the storage layer.
 pub type Result<T> = std::result::Result<T, StorageError>;
 
-/// A single, ordered schema migration.
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
-    /// Monotonic version number.
     pub version: i64,
-    /// Human-readable name.
+
     pub name: &'static str,
-    /// SQL to execute.
+
     pub sql: &'static str,
 }
 
-/// The complete, ordered migration set.
 pub const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     name: "init",
     sql: include_str!("../migrations/0001_init.sql"),
 }];
 
-/// A migration that has been applied to a database.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
-    /// Version number.
     pub version: i64,
-    /// Name recorded when applied.
+
     pub name: String,
-    /// When it was applied.
+
     pub applied_at: Timestamp,
 }
 
-/// A handle to a durable Flowerly OS state store.
 pub struct Store {
     conn: Connection,
 }
 
 impl Store {
-    /// Open (creating if necessary) a database at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::configure(&conn)?;
         Ok(Self { conn })
     }
 
-    /// Open an ephemeral, in-memory database (used by tests).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::configure(&conn)?;
@@ -84,13 +67,12 @@ impl Store {
 
     fn configure(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        // WAL improves concurrent read behaviour; harmless for in-memory DBs.
+
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(())
     }
 
-    /// Apply all pending migrations, returning the ones that were newly applied.
     pub fn migrate(&mut self) -> Result<Vec<AppliedMigration>> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -133,7 +115,6 @@ impl Store {
         Ok(applied)
     }
 
-    /// List migrations already applied to this database.
     pub fn applied_migrations(&self) -> Result<Vec<AppliedMigration>> {
         let mut stmt = self
             .conn
@@ -148,7 +129,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Verify that the database answers a trivial query (integrity smoke test).
     pub fn health_check(&self) -> Result<()> {
         let value: i64 = self.conn.query_row("SELECT 1", [], |row| row.get(0))?;
         if value != 1 {
@@ -157,9 +137,6 @@ impl Store {
         Ok(())
     }
 
-    // ---------------------------------------------------------------- flows
-
-    /// Insert a Flow.
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
         self.conn.execute(
             "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
@@ -179,7 +156,6 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch a Flow by id.
     pub fn get_flow(&self, id: &FlowId) -> Result<Option<Flow>> {
         self.conn
             .query_row(
@@ -192,7 +168,6 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    /// List all Flows ordered by creation time.
     pub fn list_flows(&self) -> Result<Vec<Flow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision
@@ -202,7 +177,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Update a Flow's lifecycle state.
     pub fn set_flow_state(&self, id: &FlowId, state: FlowState) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE flows SET state = ?2 WHERE id = ?1",
@@ -214,9 +188,6 @@ impl Store {
         Ok(())
     }
 
-    // ---------------------------------------------------------------- goals
-
-    /// Insert a Goal.
     pub fn insert_goal(&self, goal: &Goal) -> Result<()> {
         self.conn.execute(
             "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
@@ -237,7 +208,6 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch a Goal by id.
     pub fn get_goal(&self, id: &GoalId) -> Result<Option<Goal>> {
         self.conn
             .query_row(
@@ -250,7 +220,6 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    /// List all Goals.
     pub fn list_goals(&self) -> Result<Vec<Goal>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at
@@ -260,7 +229,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Update a Goal's status.
     pub fn set_goal_status(&self, id: &GoalId, status: GoalStatus) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE goals SET status = ?2 WHERE id = ?1",
@@ -272,9 +240,6 @@ impl Store {
         Ok(())
     }
 
-    // ------------------------------------------------------------- sessions
-
-    /// Insert a Session.
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, created_by, created_at)
@@ -293,7 +258,6 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch a Session by id.
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         self.conn
             .query_row(
@@ -306,7 +270,6 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    /// List all Sessions.
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, flow_id, kind, pid, cwd, state, created_by, created_at
@@ -316,7 +279,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Update a Session's lifecycle state.
     pub fn update_session_state(&self, id: &SessionId, state: SessionState) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE sessions SET state = ?2 WHERE id = ?1",
@@ -328,9 +290,6 @@ impl Store {
         Ok(())
     }
 
-    // ----------------------------------------------------------- executions
-
-    /// Insert an Execution record.
     pub fn insert_execution(&self, exec: &Execution) -> Result<()> {
         self.conn.execute(
             "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
@@ -349,7 +308,6 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch an Execution by id.
     pub fn get_execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
         self.conn
             .query_row(
@@ -362,9 +320,15 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    // ---------------------------------------------------------- generations
+    pub fn list_executions(&self) -> Result<Vec<Execution>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at
+             FROM executions ORDER BY started_at",
+        )?;
+        let rows = stmt.query_map([], map_execution)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 
-    /// Insert a Generation.
     pub fn insert_generation(&self, generation: &Generation) -> Result<()> {
         self.conn.execute(
             "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
@@ -383,7 +347,6 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch a Generation by id.
     pub fn get_generation(&self, id: &GenerationId) -> Result<Option<Generation>> {
         self.conn
             .query_row(
@@ -396,7 +359,6 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    /// List all Generations, newest last.
     pub fn list_generations(&self) -> Result<Vec<Generation>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at
@@ -406,7 +368,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Update a Generation's lifecycle status.
     pub fn set_generation_status(&self, id: &GenerationId, status: GenerationStatus) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE generations SET status = ?2 WHERE id = ?1",
@@ -418,9 +379,6 @@ impl Store {
         Ok(())
     }
 
-    // -------------------------------------------------------- provenance
-
-    /// Insert a provenance edge. Duplicate edges are ignored.
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO provenance_edges (from_ref, relation, to_ref, created_at, note)
@@ -436,7 +394,6 @@ impl Store {
         Ok(())
     }
 
-    /// List provenance edges originating from an object.
     pub fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
         let mut stmt = self.conn.prepare(
             "SELECT from_ref, relation, to_ref, created_at, note
@@ -606,7 +563,7 @@ mod tests {
             note: None,
         };
         store.insert_provenance(&edge).expect("insert edge");
-        // Idempotent.
+
         store.insert_provenance(&edge).expect("insert edge again");
 
         let edges = store

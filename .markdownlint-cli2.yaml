@@ -1,6 +1,6 @@
-# Markdownlint configuration for Flowerly OS documentation.
 
-# We intentionally do not enforce a line-length limit.
+
+
 MD013: false
 MD024: false
 MD033: false

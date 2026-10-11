@@ -1,10 +1,3 @@
-//! `generationd` — system generations.
-//!
-//! A generation is a reproducible, reversible snapshot of system state with
-//! causal links back to source commits, goals and experiments. Sprint 4 turns
-//! these records into real root-filesystem snapshots; this milestone provides
-//! the durable model and lifecycle.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -24,10 +17,9 @@ use serde_json::Value;
     about = "Flowerly OS generation service"
 )]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
+
     #[arg(long)]
     self_test: bool,
 }
@@ -152,7 +144,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
             store
                 .set_generation_status(&generation_id, GenerationStatus::Stable)
                 .map_err(err_str)?;
-            // Any previously stable generation becomes superseded.
+
             let generations = store.list_generations().map_err(err_str)?;
             for other in generations {
                 if other.id != generation_id && matches!(other.status, GenerationStatus::Stable) {

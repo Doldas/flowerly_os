@@ -8,3 +8,8 @@ crates/agentic-core/    @Doldas
 crates/agentic-storage/ @Doldas
 crates/agentic-ipc/     @Doldas
 crates/agentic-types/   @Doldas
+services/               @Doldas
+tools/                  @Doldas
+docs/                   @Doldas
+scripts/                @Doldas
+.github/workflows/      @Doldas

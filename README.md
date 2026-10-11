@@ -46,7 +46,7 @@ today:
 
 Planned, not yet implemented: PTY-backed persistent sessions, the agent
 runtime, the KVM Evolution World, generation building, and self-modification.
-See [ROADMAP.md](ROADMAP.md).
+See [docs/roadmap.md](docs/roadmap.md).
 
 ## Getting started
 
@@ -75,15 +75,10 @@ just stop     # shuts the dev runtime down cleanly
 | Path | Contents |
 | --- | --- |
 | `crates/` | Shared Rust crates: `agentic-types`, `agentic-storage`, `agentic-ipc`, `agentic-core` |
-| `services/` | Daemons (`agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`, `capabilityd`, `generationd`, `evolutiond`) and `agenticctl` |
-| `docs/` | Architecture specifications and design updates |
-| `adr/` | Architecture Decision Records |
-| `rfcs/` | Design proposals under discussion |
-| `evolution/` | KVM Evolution World, benchmarks, promotion (planned) |
-| `image/` | Root filesystem, initramfs, installer (planned) |
-| `kernel/`, `packaging/` | Kernel configuration (planned); systemd units and distribution packaging (planned) |
-| `tests/` | Unit, integration, boot, upgrade, generation, and evolution tests |
-| `go/`, `python/`, `c/`, `shell/`, `schemas/` | Language-specific and schema areas for future components |
+| `services/` | Daemons (`agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`, `capabilityd`, `generationd`, `evolutiond`) |
+| `tools/` | `agenticctl` control-plane CLI |
+| `docs/` | Architecture specifications, design updates, ADRs, RFCs, specs |
+| `scripts/` | Development tooling |
 
 ## Language policy
 
@@ -96,24 +91,24 @@ just stop     # shuts the dev runtime down cleanly
 
 ## Project documents
 
-- [VISION.md](VISION.md) — long-term direction.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — what exists today and the target.
-- [ROADMAP.md](ROADMAP.md) — the execution plan.
-- [DECISIONS.md](DECISIONS.md) — index of major decisions.
-- [JOURNAL.md](JOURNAL.md) — chronological engineering notes.
+- [docs/vision.md](docs/vision.md) — long-term direction.
+- [docs/architecture.md](docs/architecture.md) — what exists today and the target.
+- [docs/roadmap.md](docs/roadmap.md) — the execution plan.
+- [docs/decisions.md](docs/decisions.md) — index of major decisions.
+- [docs/journal.md](docs/journal.md) — chronological engineering notes.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
 - [SECURITY.md](SECURITY.md) — reporting and security policy.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community expectations.
 - [docs/](docs/) — specifications and design updates.
-- [adr/](adr/) — Architecture Decision Records.
+- [docs/adr/](docs/adr/) — Architecture Decision Records.
 
 ## Release model
 
 Releases are semantic-ish and pre-1.0. `0.0.x` marks foundational internal
 capability; `0.1.0` will be the first coherent, real Flowerly OS development
 release. Each release carries a source tag, release notes, build manifest, test
-summary, known limitations, and artifact checksums. See [ROADMAP.md](ROADMAP.md).
+summary, known limitations, and artifact checksums. See [docs/roadmap.md](docs/roadmap.md).
 
 ## License
 

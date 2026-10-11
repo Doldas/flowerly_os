@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [master, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [master, 'release/**']
   workflow_dispatch:
 
 permissions:
@@ -81,11 +81,11 @@ jobs:
           globs: |
             "*.md"
             "docs/**/*.md"
-            "adr/**/*.md"
-            "rfcs/**/*.md"
+            "docs/adr/**/*.md"
+            "docs/rfcs/**/*.md"
 
       - name: Check documentation build references
         run: |
-          for f in README.md VISION.md ARCHITECTURE.md ROADMAP.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md DECISIONS.md JOURNAL.md CHANGELOG.md; do
+          for f in README.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md CHANGELOG.md; do
             [ -s "$f" ] || { echo "missing or empty $f"; exit 1; }
           done

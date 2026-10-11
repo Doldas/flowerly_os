@@ -1,9 +1,3 @@
-//! `provenanced` — causal history.
-//!
-//! Every meaningful autonomous change should be able to answer WHO, WHY,
-//! WHICH GOAL, WHICH AGENT, WHICH GENERATION. This service stores the
-//! directed edges between durable objects and can answer `from` queries.
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -22,10 +16,9 @@ use serde_json::Value;
     about = "Flowerly OS provenance service"
 )]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
+
     #[arg(long)]
     self_test: bool,
 }
@@ -162,7 +155,7 @@ async fn self_test() -> anyhow::Result<()> {
         note: None,
     };
     store.insert_provenance(&edge)?;
-    store.insert_provenance(&edge)?; // idempotent
+    store.insert_provenance(&edge)?;
     let edges = store.provenance_from(&ObjectRef::new("exec-123".to_owned()))?;
     assert_eq!(edges.len(), 1);
     println!(

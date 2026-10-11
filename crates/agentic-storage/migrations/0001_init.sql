@@ -1,9 +1,3 @@
--- Flowerly OS initial durable schema.
---
--- All timestamps are Unix milliseconds (INTEGER).
--- All identifiers are prefixed strings produced by agentic-types.
--- Schema is owned by migrations; never mutate the production database by hand.
-
 CREATE TABLE IF NOT EXISTS flows (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,

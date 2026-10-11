@@ -1,0 +1,25 @@
+name: release-source-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check-source-branch:
+    name: Verify PR originates from release/* branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check head branch pattern
+        if: "!startsWith(github.head_ref, 'release/')"
+        run: |
+          echo "::error::PRs to master must originate from a release/* branch (e.g., release/1, release/2)"
+          echo "Current head branch: ${{ github.head_ref }}"
+          exit 1
+
+      - name: OK - PR from release/* branch
+        if: startsWith(github.head_ref, 'release/')
+        run: echo "PR originates from release branch ${{ github.head_ref }}"

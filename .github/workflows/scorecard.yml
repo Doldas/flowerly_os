@@ -2,7 +2,7 @@ name: scorecard
 
 on:
   push:
-    branches: [main]
+    branches: [master, 'release/**']
   workflow_dispatch:
 
 permissions:

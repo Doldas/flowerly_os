@@ -11,7 +11,7 @@ integration and system APIs. It gives memory and thread safety without a garbage
 collector, predictable performance, and mostly static single-binary services.
 The workspace is pinned to `stable` in `rust-toolchain.toml`. `unsafe` is
 avoided; every unavoidable `unsafe` block carries a safety comment.
-See [`../adr/0001-rust-as-primary-system-language.md`](../adr/0001-rust-as-primary-system-language.md).
+See [ADR-0001](adr/0001-rust-as-primary-system-language.md).
 
 ## Go — distributed and orchestration services (planned)
 
@@ -20,7 +20,7 @@ services: remote execution, Flow sync, cluster coordination, model routing and
 machine-to-machine APIs. It is **not used yet**; a Go service is introduced only
 through an RFC that justifies the choice. Go must not replace a Rust system
 service without a concrete reason.
-See [`../adr/0002-go-for-distributed-orchestration.md`](../adr/0002-go-for-distributed-orchestration.md).
+See [ADR-0002](adr/0002-go-for-distributed-orchestration.md).
 
 ## Python — research, prototyping and tooling
 
@@ -29,7 +29,7 @@ prototype agents, migration tools, evaluation harnesses and temporary scripts,
 under `python/`. A useful prototype that becomes permanent infrastructure is
 reimplemented in Rust or Go. Python is never used for the core runtime or
 security-critical paths.
-See [`../adr/0003-python-for-experimentation.md`](../adr/0003-python-for-experimentation.md).
+See [ADR-0003](adr/0003-python-for-experimentation.md).
 
 ## C — low-level only when justified
 

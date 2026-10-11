@@ -24,13 +24,34 @@ autonomous evolution, multi-machine) is described in the grounding specification
 Every release contains:
 
 ```text
-source tag            an annotated Git tag on main
+source tag            an annotated Git tag on master
 release notes         what changed, and what is now possible
 build manifest        the exact inputs and toolchain used
 test result summary   which suites passed, and any skipped
 known limitations     incomplete or unverified behavior, stated plainly
 artifact checksums    checksums of every published artifact
 ```
+
+## Release branch model
+
+Flowerly OS uses a release-branch workflow to keep `master` stable and ensure
+every release inherits the full history of its predecessors:
+
+- `master` is the integration branch. It is protected: direct pushes are
+  forbidden; only merges from `release/*` branches are allowed.
+- Feature development happens on `release/N` branches (e.g., `release/1`,
+  `release/2`). PRs target the active release branch.
+- When a release is ready, `release/N` is merged into `master` via a PR that
+  passes the `release-source-check` gate (which enforces the head branch is
+  `release/*`).
+- The next release branch is cut from `master` with `scripts/release-cut.sh N+1`.
+  This ensures `release/N+1` contains everything merged into `release/N` and
+  promoted to `master`.
+- A release is tagged on `master` after the merge. Use `scripts/release-promote.sh`
+  to tag and build artifacts.
+
+This model guarantees that content flows monotonically:
+`release/1` → `master` → `release/2` → `master` → `release/3` → ...
 
 Eventually releases will also provide bootable images, packages, an SBOM,
 signatures and provenance metadata. Until then, releases ship source and
@@ -50,4 +71,4 @@ A release cannot be tagged if:
 Pre-1.0 releases may contain incomplete features, but failures must be explicit.
 Do not market unfinished capabilities as already implemented; mark things
 Implemented, In progress, Planned or Research as in
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+[architecture.md](architecture.md).

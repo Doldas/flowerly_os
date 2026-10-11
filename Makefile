@@ -1,7 +1,7 @@
-# Flowerly OS — developer command interface.
-#
-# `just` is the primary interface (see justfile); these Make targets mirror the
-# same commands for environments without `just`.
+
+
+
+
 
 CARGO ?= cargo
 TARGET ?= target

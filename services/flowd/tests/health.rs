@@ -1,5 +1,3 @@
-//! End-to-end smoke tests for the `flowd` binary.
-
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -88,7 +86,7 @@ fn flowd_starts_and_answers_status() {
         Payload::Ok { data } => data,
         other => panic!("expected ok, got {other:?}"),
     };
-    assert_eq!(list["count"], 2); // General + Development
+    assert_eq!(list["count"], 2);
 
     let _ = rt.block_on(agentic_ipc::call(&socket, Payload::Shutdown));
 

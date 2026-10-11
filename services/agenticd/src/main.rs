@@ -1,9 +1,3 @@
-//! `agenticd` — the Flowerly OS orchestration daemon.
-//!
-//! Responsible for agent lifecycle, model invocation and execution tracking.
-//! The current milestone implements the durable execution record store; model
-//! routing and bounded autonomous agents arrive with Sprint 7.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -19,10 +13,8 @@ use serde_json::Value;
 #[derive(Debug, Parser)]
 #[command(name = "agenticd", version, about = "Flowerly OS orchestration daemon")]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
     #[arg(long)]
     self_test: bool,
 }
@@ -80,11 +72,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
 fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "execution.create" => {
-            let command = args
-                .get("command")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let execution = Execution {
+            let exec = Execution {
                 id: ExecutionId::new(),
                 agent_id: args
                     .get("agent_id")
@@ -98,34 +86,42 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                     .get("reason")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                command,
+                command: args
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 exit_code: args
                     .get("exit_code")
                     .and_then(Value::as_i64)
-                    .map(|v| v as i32),
+                    .map(|code| code as i32),
                 duration_ms: args.get("duration_ms").and_then(Value::as_i64),
                 started_at: Timestamp::now(),
             };
-            store.insert_execution(&execution).map_err(err_str)?;
+            store.insert_execution(&exec).map_err(err_str)?;
             tracing::info!(
-                execution_id = %execution.id,
-                agent_id = ?execution.agent_id,
-                goal_id = ?execution.goal_id,
+                execution_id = %exec.id,
+                agent_id = ?exec.agent_id,
+                goal_id = ?exec.goal_id,
                 "execution recorded"
             );
-            Ok(serde_json::json!({ "id": execution.id }))
+            Ok(serde_json::json!({ "id": exec.id }))
+        }
+        "execution.show" => {
+            let raw = args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("missing `id`")?;
+            let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
+            let record = store.get_execution(&exec_id).map_err(err_str)?;
+            let data = match record {
+                Some(record) => serde_json::to_value(&record).map_err(err_str)?,
+                None => serde_json::json!(null),
+            };
+            Ok(serde_json::json!({ "execution": data }))
         }
         "execution.list" => {
-            let mut items = Vec::new();
-            // List is intentionally minimal at this milestone; a dedicated
-            // query method is added when the agent runtime lands.
-            if let Some(exec) = args.get("id").and_then(Value::as_str) {
-                let exec_id = ExecutionId::from_str(exec).map_err(err_str)?;
-                if let Some(record) = store.get_execution(&exec_id).map_err(err_str)? {
-                    items.push(serde_json::to_value(&record).map_err(err_str)?);
-                }
-            }
-            Ok(serde_json::json!({ "executions": items, "count": items.len() }))
+            let records = store.list_executions().map_err(err_str)?;
+            Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`")),
     }

@@ -6,8 +6,8 @@ release process, and provenance.
 
 ## Ground rules
 
-- Read [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md), the relevant
-  records in [adr/](adr/), and the current milestone in [ROADMAP.md](ROADMAP.md)
+- Read [docs/vision.md](docs/vision.md), [docs/architecture.md](docs/architecture.md), the relevant
+  records in [docs/adr/](docs/adr/), and the current milestone in [docs/roadmap.md](docs/roadmap.md)
   before designing a change.
 - Keep changes scoped to the current milestone and leave the repository
   buildable.
@@ -17,9 +17,16 @@ release process, and provenance.
 
 ## Branches
 
-- The default branch is `main`. There is no permanent development branch.
-- Use short-lived branches named for their purpose: `feat/flow-model`,
-  `fix/generation-rollback`, `docs/ambient-interaction`, `ci/rust-clippy`.
+- The default branch is `master`. It is protected: only release branches may
+  merge into it, and CI must pass.
+- Feature work lands on `release/N` branches (e.g., `release/1`, `release/2`).
+  Open PRs against the current release branch.
+- Only `release/*` branches may target `master`. The `release-source-check`
+  workflow enforces this.
+- Each new release branch is cut from `master` so it inherits all previously
+  merged content. Use `scripts/release-cut.sh` to create the next release branch.
+- Short-lived topic branches (`feat/...`, `fix/...`, `docs/...`, `ci/...`) are
+  opened against the active release branch, not directly against `master`.
 
 ## Commits
 
@@ -65,13 +72,13 @@ Keep the description honest about what is and is not implemented.
 
 ## Architecture decisions
 
-- Check the existing records in [adr/](adr/) before changing architecture.
+- Check the existing records in [docs/adr/](docs/adr/) before changing architecture.
 - For a consequential decision, add a new ADR. Filenames follow
   `NNNN-short-title.md` (for example
   `0001-rust-as-primary-system-language.md`). Record the decision, the
   alternatives considered, the evidence, the consequences, and whether it is
   reversible.
-- Use [rfcs/](rfcs/) for larger proposals that need discussion before a
+- Use [docs/rfcs/](docs/rfcs/) for larger proposals that need discussion before a
   decision. An RFC that is accepted becomes an ADR plus implementation issues.
 
 ## Issue labels

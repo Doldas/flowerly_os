@@ -1,9 +1,3 @@
-//! `goald` — persistent Goals.
-//!
-//! Goals are first-class operating-system objects with parent/child
-//! relationships, priorities, status and provenance. Later sprints attach
-//! executions, experiments and generations to these records.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -21,10 +15,9 @@ use serde_json::Value;
 #[derive(Debug, Parser)]
 #[command(name = "goald", version, about = "Flowerly OS goal service")]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
+
     #[arg(long)]
     self_test: bool,
 }

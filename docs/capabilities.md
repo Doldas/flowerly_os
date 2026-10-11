@@ -66,5 +66,5 @@ intended design:
 
 Until policy exists, autonomous privileged action is not permitted; the system's
 own services perform their bounded operations directly and record provenance.
-See [`THREAT_MODEL.md`](THREAT_MODEL.md): AI providers are replaceable and never
+See [threat-model.md](threat-model.md): AI providers are replaceable and never
 trusted with root, so authority stays explicit, bounded and recorded.

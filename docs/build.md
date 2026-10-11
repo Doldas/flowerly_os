@@ -56,7 +56,7 @@ cargo build --workspace --release
 Go and Python checks (`go test`/`go vet`, `ruff`/`pytest`) run only when such code
 is present. Documentation checks validate required docs and relative links;
 security checks (`cargo audit`, `cargo deny`) are added once dependencies
-stabilize. A red CI cannot be released; see [`RELEASES.md`](RELEASES.md).
+stabilize. A red CI cannot be released; see [releases.md](releases.md).
 
 ## Current status
 

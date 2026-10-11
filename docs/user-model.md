@@ -34,7 +34,7 @@ reasons over them. `memoryd` (the future durable-memory service) is **planned**.
 ## De-identified ambient observation model (planned)
 
 The ambient interaction model — see
-[`AGENTIC_OS_UPDATE_01_AMBIENT_INTERACTION.md`](AGENTIC_OS_UPDATE_01_AMBIENT_INTERACTION.md)
+[`specs/AGENTIC_OS_UPDATE_01_AMBIENT_INTERACTION.md`](specs/AGENTIC_OS_UPDATE_01_AMBIENT_INTERACTION.md)
 — extends the user model with ambient observation. The intended structure is:
 
 - **threads** — a coherent interaction context over time (a conversation, a

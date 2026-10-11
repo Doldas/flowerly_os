@@ -6,7 +6,7 @@ from the Stable World the user depends on, so aggressive or destructive
 experiments cannot harm the real environment. Evolution is evidence-driven:
 failed experiments are kept as useful history rather than discarded.
 
-See [`../adr/0007-kvm-evolution-world.md`](../adr/0007-kvm-evolution-world.md).
+See [ADR-0007](adr/0007-kvm-evolution-world.md).
 
 ## Pipeline
 
@@ -56,14 +56,14 @@ provenance so any promoted change answers: which source commit, which generation
 which experiment, which build, which VM run, and which test output produced the
 decision. Concretely, `provenanced` records edges such as `produced`,
 `tested_by`, `caused_by` and `promoted_to` connecting experiments, artifacts,
-generations and goals. See [`PROVENANCE.md`](PROVENANCE.md).
+generations and goals. See [provenance.md](provenance.md).
 
 ## Implementation status and requirements
 
 - **Implemented:** `evolutiond` stub; the `Generation` and experiment storage
   models that the pipeline will populate.
 - **Planned:** the KVM boot harness, `just vm-test`, health and integration test
-  suites in `evolution/`, benchmarks, multidimensional fitness evaluation, and
+  suites under `scripts/`, benchmarks, multidimensional fitness evaluation, and
   promotion/rejection policy.
 - **Environment requirement:** KVM-capable hardware and QEMU. QEMU is not yet
   installed in the current development environment.

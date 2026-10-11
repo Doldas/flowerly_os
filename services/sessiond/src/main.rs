@@ -1,10 +1,3 @@
-//! `sessiond` — persistent session identity.
-//!
-//! A terminal window is only a presentation of a persistent session. This
-//! service owns the durable session records that later sprints attach to real
-//! PTYs (`crates/agentic-sessions`). At the current milestone it manages the
-//! records and state transitions; the PTY plumbing ships with Sprint 3.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -23,10 +16,9 @@ use serde_json::Value;
 #[derive(Debug, Parser)]
 #[command(name = "sessiond", version, about = "Flowerly OS session service")]
 struct Cli {
-    /// Path to a TOML configuration file.
     #[arg(long, env = "AGENTIC_CONFIG")]
     config: Option<PathBuf>,
-    /// Run a bounded self-test against a temporary database and exit.
+
     #[arg(long)]
     self_test: bool,
 }
@@ -106,8 +98,6 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 created_at: Timestamp::now(),
             };
             if session.pid.is_none() {
-                // No process handle yet: keep the record but mark detached until
-                // a real PTY is attached (Sprint 3).
                 session.state = SessionState::Detached;
             }
             store.insert_session(&session).map_err(err_str)?;
@@ -155,7 +145,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .get_session(&session_id)
                 .map_err(err_str)?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            // Sprint 3 replaces this transition with real PTY process handling.
+
             store
                 .update_session_state(&session_id, SessionState::Exited)
                 .map_err(err_str)?;

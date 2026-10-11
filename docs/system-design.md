@@ -3,7 +3,7 @@
 This document describes the technical architecture of Flowerly OS: what exists
 today and what is planned. For long-term direction see the grounding
 specification `AGENTIC_OS_REPOSITORY_ARCHITECTURE_SPRINTS_AND_OPENCODE.md` in
-this directory, and the architecture decision records in `../adr/`.
+this directory, and the architecture decision records in `adr/`.
 
 Status labels used below: **Implemented** (present and tested), **In progress**
 (partially present), **Planned** (designed, not built), **Research** (exploratory).
@@ -28,7 +28,7 @@ The Stable World is what the user depends on; it changes only through promoted,
 reversible generations. The Evolution World is an isolated KVM sandbox where
 aggressive, potentially destructive experiments run without risk to the Stable
 World. Evidence from the Evolution World drives a promote/reject decision. See
-[`EVOLUTION.md`](EVOLUTION.md) and [`GENERATIONS.md`](GENERATIONS.md).
+[evolution.md](evolution.md) and [generations.md](generations.md).
 
 ## Agentic runtime daemons
 
@@ -67,7 +67,7 @@ Each service owns a SQLite database. Schema is owned by an ordered, idempotent
 migration mechanism in `crates/agentic-storage/migrations/`; the production
 schema is never mutated by hand. `rusqlite` is built with the `bundled` feature,
 and foreign keys and WAL are enabled by the storage layer. See
-[`../adr/0005-sqlite-as-initial-state-store.md`](../adr/0005-sqlite-as-initial-state-store.md).
+[ADR-0005](adr/0005-sqlite-as-initial-state-store.md).
 
 ## IPC: Unix sockets, Protocol v1
 
@@ -102,20 +102,21 @@ operations. No privileged logic lives in the client.
 ## Packaging and image
 
 - systemd unit files live in `packaging/systemd/` — **Planned** (see
-  [`../adr/0006-systemd-service-supervision.md`](../adr/0006-systemd-service-supervision.md)).
+  [ADR-0006](adr/0006-systemd-service-supervision.md)).
 - Reproducible root filesystem, initramfs and bootable image work is **Planned**
   (`image/`).
 - Kernel configuration is **Planned** in `kernel/config` (see
-  [`../adr/0004-upstream-linux-kernel-policy.md`](../adr/0004-upstream-linux-kernel-policy.md)).
+  [ADR-0004](adr/0004-upstream-linux-kernel-policy.md)).
 
 ## Workspace layout
 
 ```text
 crates/     shared Rust infrastructure (types, storage, ipc, core) and domain crates
-services/   daemons and agenticctl
-go/ python/ c/   future Go, Python and low-level C code
-image/ kernel/ packaging/   OS image, kernel config, packaging
-evolution/  KVM harness, benchmarks, fitness, promotion
-tests/      unit, integration, boot, upgrade, generation, evolution
-docs/ adr/ rfcs/   documentation, decisions, proposals
+services/   system daemons
+tools/      agenticctl control plane
+docs/       documentation, decisions, proposals
+  adr/      architecture decision records
+  rfcs/     design proposals
+  specs/    grounding specifications
+scripts/    development tooling
 ```

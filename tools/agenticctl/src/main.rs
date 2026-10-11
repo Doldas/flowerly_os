@@ -1,10 +1,3 @@
-//! `agenticctl` — the command-line control plane for Flowerly OS.
-//!
-//! Humans and agents use the same interface: a thin client that talks the
-//! local IPC protocol to the running daemons and renders their JSON replies.
-//! No privileged logic lives here — this binary only inspects and drives the
-//! same API the GUI shell will use.
-
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -18,8 +11,12 @@ use tokio::runtime::Runtime;
 #[derive(Debug, Parser)]
 #[command(name = "agenticctl", version, about = "Flowerly OS control plane")]
 struct Cli {
-    /// Override the runtime directory holding the daemon sockets.
-    #[arg(long, global = true, env = "AGENTIC_RUNTIME_DIR")]
+    #[arg(
+        long,
+        global = true,
+        env = "AGENTIC_RUNTIME_DIR",
+        help = "Override the runtime directory holding the daemon sockets."
+    )]
     runtime_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
@@ -27,31 +24,35 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Liveness probe for a service.
+    #[command(about = "Liveness probe for a service.")]
     Ping {
-        /// Service to ping (default: agenticd).
-        #[arg(default_value = "agenticd")]
+        #[arg(
+            default_value = "agenticd",
+            help = "Service to ping (default: agenticd)."
+        )]
         service: String,
     },
-    /// Fetch structured status from a service.
+    #[command(about = "Fetch structured status from a service.")]
     Status {
-        /// Service to query (default: agenticd).
-        #[arg(default_value = "agenticd")]
+        #[arg(
+            default_value = "agenticd",
+            help = "Service to query (default: agenticd)."
+        )]
         service: String,
     },
-    /// Flow operations.
+    #[command(about = "Flow operations.")]
     Flow(FlowArgs),
-    /// Goal operations.
+    #[command(about = "Goal operations.")]
     Goal(GoalArgs),
-    /// Session operations.
+    #[command(about = "Session operations.")]
     Session(SessionArgs),
-    /// Generation operations.
+    #[command(about = "Generation operations.")]
     Generation(GenerationArgs),
-    /// Provenance operations.
+    #[command(about = "Provenance operations.")]
     Provenance(ProvenanceArgs),
-    /// Execution operations.
+    #[command(about = "Execution operations.")]
     Execution(ExecutionArgs),
-    /// List the capability catalog.
+    #[command(about = "List the capability catalog.")]
     Capability,
 }
 
@@ -63,21 +64,21 @@ struct FlowArgs {
 
 #[derive(Debug, Subcommand)]
 enum FlowAction {
-    /// Create a Flow.
+    #[command(about = "Create a Flow.")]
     Create {
-        /// Flow name.
+        #[arg(help = "Flow name.")]
         name: String,
     },
-    /// List Flows.
+    #[command(about = "List Flows.")]
     List,
-    /// Activate a Flow (by id or name).
+    #[command(about = "Activate a Flow (by id or name).")]
     Activate {
-        /// Flow id or name.
+        #[arg(help = "Flow id or name.")]
         target: String,
     },
-    /// Archive a Flow (by id or name).
+    #[command(about = "Archive a Flow (by id or name).")]
     Archive {
-        /// Flow id or name.
+        #[arg(help = "Flow id or name.")]
         target: String,
     },
 }
@@ -90,29 +91,28 @@ struct GoalArgs {
 
 #[derive(Debug, Subcommand)]
 enum GoalAction {
-    /// Create a Goal.
+    #[command(about = "Create a Goal.")]
     Create {
-        /// Objective.
+        #[arg(help = "Objective.")]
         objective: String,
-        /// Priority.
-        #[arg(long)]
+        #[arg(long, help = "Priority.")]
         priority: Option<i32>,
     },
-    /// List Goals.
+    #[command(about = "List Goals.")]
     List,
-    /// Show a Goal.
+    #[command(about = "Show a Goal.")]
     Show {
-        /// Goal id.
+        #[arg(help = "Goal id.")]
         id: String,
     },
-    /// Mark a Goal completed.
+    #[command(about = "Mark a Goal completed.")]
     Complete {
-        /// Goal id.
+        #[arg(help = "Goal id.")]
         id: String,
     },
-    /// Abandon a Goal.
+    #[command(about = "Abandon a Goal.")]
     Abandon {
-        /// Goal id.
+        #[arg(help = "Goal id.")]
         id: String,
     },
 }
@@ -125,20 +125,22 @@ struct SessionArgs {
 
 #[derive(Debug, Subcommand)]
 enum SessionAction {
-    /// Register a session.
+    #[command(about = "Register a session.")]
     Create {
-        /// Session kind (local-pty, ssh, container, vm-console).
-        #[arg(long, default_value = "local-pty")]
+        #[arg(
+            long,
+            default_value = "local-pty",
+            help = "Session kind (local-pty, ssh, container, vm-console)."
+        )]
         kind: String,
-        /// Working directory.
-        #[arg(long)]
+        #[arg(long, help = "Working directory.")]
         cwd: Option<String>,
     },
-    /// List registered sessions.
+    #[command(about = "List registered sessions.")]
     List,
-    /// Mark a session exited.
+    #[command(about = "Mark a session exited.")]
     Terminate {
-        /// Session id.
+        #[arg(help = "Session id.")]
         id: String,
     },
 }
@@ -151,22 +153,21 @@ struct GenerationArgs {
 
 #[derive(Debug, Subcommand)]
 enum GenerationAction {
-    /// Create a candidate generation.
+    #[command(about = "Create a candidate generation.")]
     Create {
-        /// Source commit.
-        #[arg(long)]
+        #[arg(long, help = "Source commit.")]
         source_commit: Option<String>,
     },
-    /// List generations.
+    #[command(about = "List generations.")]
     List,
-    /// Inspect a generation.
+    #[command(about = "Inspect a generation.")]
     Inspect {
-        /// Generation id.
+        #[arg(help = "Generation id.")]
         id: String,
     },
-    /// Activate a generation.
+    #[command(about = "Activate a generation.")]
     Activate {
-        /// Generation id.
+        #[arg(help = "Generation id.")]
         id: String,
     },
 }
@@ -179,24 +180,20 @@ struct ProvenanceArgs {
 
 #[derive(Debug, Subcommand)]
 enum ProvenanceAction {
-    /// Add a provenance edge.
+    #[command(about = "Add a provenance edge.")]
     Add {
-        /// Source object reference.
-        #[arg(long)]
+        #[arg(long, help = "Source object reference.")]
         from: String,
-        /// Relation name.
-        #[arg(long)]
+        #[arg(long, help = "Relation name.")]
         relation: String,
-        /// Destination object reference.
-        #[arg(long)]
+        #[arg(long, help = "Destination object reference.")]
         to: String,
-        /// Optional note.
-        #[arg(long)]
+        #[arg(long, help = "Optional note.")]
         note: Option<String>,
     },
-    /// Query edges originating from an object.
+    #[command(about = "Query edges originating from an object.")]
     From {
-        /// Object reference.
+        #[arg(help = "Object reference.")]
         reference: String,
     },
 }
@@ -209,26 +206,24 @@ struct ExecutionArgs {
 
 #[derive(Debug, Subcommand)]
 enum ExecutionAction {
-    /// Record an execution.
+    #[command(about = "Record an execution.")]
     Create {
-        /// Command or operation executed.
-        #[arg(long)]
+        #[arg(long, help = "Command or operation executed.")]
         command: String,
-        /// Agent id.
-        #[arg(long)]
+        #[arg(long, help = "Agent id.")]
         agent_id: Option<String>,
-        /// Goal id.
-        #[arg(long)]
+        #[arg(long, help = "Goal id.")]
         goal_id: Option<String>,
-        /// Exit code.
-        #[arg(long)]
+        #[arg(long, help = "Exit code.")]
         exit_code: Option<i32>,
     },
-    /// Show an execution.
+    #[command(about = "Show an execution.")]
     Show {
-        /// Execution id.
+        #[arg(help = "Execution id.")]
         id: String,
     },
+    #[command(about = "List executions.")]
+    List,
 }
 
 fn main() -> Result<()> {
@@ -241,7 +236,6 @@ fn main() -> Result<()> {
     let mut out = std::io::stdout().lock();
     match writeln!(out, "{pretty}") {
         Ok(()) => {}
-        // Piping into `head`/`jq` and closing early is normal CLI usage.
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
         Err(err) => return Err(err.into()),
     }
@@ -251,13 +245,11 @@ fn main() -> Result<()> {
 async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Value> {
     match command {
         Command::Ping { service } => {
-            let socket = socket(runtime_dir, &service);
-            let response = call(&socket, Payload::Ping).await?;
+            let response = call(&socket(runtime_dir, &service), Payload::Ping).await?;
             reply_value(response)
         }
         Command::Status { service } => {
-            let socket = socket(runtime_dir, &service);
-            let response = call(&socket, Payload::Status).await?;
+            let response = call(&socket(runtime_dir, &service), Payload::Status).await?;
             reply_value(response)
         }
         Command::Flow(action) => dispatch_flow(runtime_dir, action.action).await,
@@ -267,9 +259,8 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
         Command::Provenance(action) => dispatch_provenance(runtime_dir, action.action).await,
         Command::Execution(action) => dispatch_execution(runtime_dir, action.action).await,
         Command::Capability => {
-            let socket = socket(runtime_dir, "capabilityd");
             let response = call(
-                &socket,
+                &socket(runtime_dir, "capabilityd"),
                 Payload::Command {
                     name: "capability.list".into(),
                     args: serde_json::json!({}),
@@ -294,11 +285,11 @@ async fn dispatch_flow(runtime_dir: &std::path::Path, action: FlowAction) -> Res
         },
         FlowAction::Activate { target } => Payload::Command {
             name: "flow.activate".into(),
-            args: lookup_args(&target),
+            args: flow_reference(&target),
         },
         FlowAction::Archive { target } => Payload::Command {
             name: "flow.archive".into(),
-            args: lookup_args(&target),
+            args: flow_reference(&target),
         },
     };
     reply_value(call(&socket, payload).await?)
@@ -427,15 +418,18 @@ async fn dispatch_execution(
             }),
         },
         ExecutionAction::Show { id } => Payload::Command {
-            name: "execution.list".into(),
+            name: "execution.show".into(),
             args: serde_json::json!({ "id": id }),
+        },
+        ExecutionAction::List => Payload::Command {
+            name: "execution.list".into(),
+            args: serde_json::json!({}),
         },
     };
     reply_value(call(&socket, payload).await?)
 }
 
-fn lookup_args(target: &str) -> Value {
-    // `flow-...` is a valid FlowId prefix; anything else is treated as a name.
+fn flow_reference(target: &str) -> Value {
     if target.starts_with("flow-") {
         serde_json::json!({ "id": target })
     } else {
