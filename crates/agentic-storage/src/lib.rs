@@ -1029,4 +1029,248 @@ mod tests {
         let loaded = store.get_flow(&flow.id).unwrap().unwrap();
         assert_eq!(loaded.state, FlowState::Archived);
     }
+
+    #[test]
+    fn all_core_persistent_objects_survive_store_reopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let flow = Flow::new("Persistent", "test");
+        let goal = Goal::new("Persist the domain graph", "test");
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: Some(flow.id.clone()),
+            kind: "local-pty".to_owned(),
+            pid: Some(4242),
+            cwd: Some("/tmp".to_owned()),
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: Some(goal.id.clone()),
+            reason: Some("persistence test".to_owned()),
+            command: Some("true".to_owned()),
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            started_at: Timestamp::now(),
+        };
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("deadbeef".to_owned()),
+            system_manifest: Some("sha256:test".to_owned()),
+            reason_goal: Some(goal.id.clone()),
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&execution.id),
+            relation: ProvenanceRelation::CausedBy,
+            to: ObjectRef::from(&goal.id),
+            created_at: Timestamp::now(),
+            note: Some("durable causal link".to_owned()),
+        };
+
+        {
+            let mut writer = Store::open(&path).expect("open writer");
+            writer.migrate().expect("migrate writer");
+            writer.insert_flow(&flow).expect("insert flow");
+            writer.insert_goal(&goal).expect("insert goal");
+            writer.insert_session(&session).expect("insert session");
+            writer
+                .insert_execution_with_provenance(&execution, &[edge.clone()])
+                .expect("insert execution");
+            writer.insert_generation(&generation).expect("insert generation");
+        }
+
+        let mut reader = Store::open(&path).expect("reopen state");
+        reader.migrate().expect("reopen migrations");
+
+        assert_eq!(
+            reader
+                .get_flow(&flow.id)
+                .expect("flow query")
+                .expect("flow exists")
+                .id,
+            flow.id
+        );
+        assert_eq!(
+            reader
+                .get_goal(&goal.id)
+                .expect("goal query")
+                .expect("goal exists")
+                .id,
+            goal.id
+        );
+        assert_eq!(
+            reader
+                .get_session(&session.id)
+                .expect("session query")
+                .expect("session exists")
+                .id,
+            session.id
+        );
+        assert_eq!(
+            reader
+                .get_execution(&execution.id)
+                .expect("execution query")
+                .expect("execution exists")
+                .id,
+            execution.id
+        );
+        assert_eq!(
+            reader
+                .get_generation(&generation.id)
+                .expect("generation query")
+                .expect("generation exists")
+                .id,
+            generation.id
+        );
+
+        let outgoing = reader
+            .provenance_from(&ObjectRef::from(&execution.id))
+            .expect("outgoing provenance");
+        let incoming = reader
+            .provenance_to(&ObjectRef::from(&goal.id))
+            .expect("incoming provenance");
+        assert_eq!(outgoing, vec![edge.clone()]);
+        assert_eq!(incoming, vec![edge]);
+    }
+
+    #[test]
+    fn generation_activation_keeps_exactly_one_stable_generation() {
+        let mut store = migrated_store();
+        let first = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("first".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Stable,
+            created_at: Timestamp::now(),
+        };
+        let second = Generation {
+            id: GenerationId::new(),
+            parent: Some(first.id.clone()),
+            source_commit: Some("second".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        store.insert_generation(&first).expect("insert first");
+        store.insert_generation(&second).expect("insert second");
+
+        store
+            .activate_generation(&second.id)
+            .expect("activate second");
+
+        let first = store
+            .get_generation(&first.id)
+            .expect("query first")
+            .expect("first exists");
+        let second = store
+            .get_generation(&second.id)
+            .expect("query second")
+            .expect("second exists");
+
+        assert_eq!(first.status, GenerationStatus::Superseded);
+        assert_eq!(second.status, GenerationStatus::Stable);
+        assert_eq!(
+            store
+                .list_generations()
+                .expect("list generations")
+                .iter()
+                .filter(|generation| generation.status == GenerationStatus::Stable)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_generation_activation_does_not_supersede_current_stable() {
+        let mut store = migrated_store();
+        let stable = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("stable".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Stable,
+            created_at: Timestamp::now(),
+        };
+        store.insert_generation(&stable).expect("insert stable");
+
+        let missing = GenerationId::new();
+        let error = store
+            .activate_generation(&missing)
+            .expect_err("missing generation must fail");
+        assert!(matches!(error, StorageError::NotFound(_)));
+
+        let stable = store
+            .get_generation(&stable.id)
+            .expect("query stable")
+            .expect("stable exists");
+        assert_eq!(stable.status, GenerationStatus::Stable);
+    }
+
+    #[test]
+    fn invalid_persisted_generation_reference_is_not_silently_accepted() {
+        let store = migrated_store();
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: None,
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        store
+            .insert_generation(&generation)
+            .expect("insert generation");
+        store
+            .conn
+            .execute(
+                "UPDATE generations SET experiment = 'not-an-experiment-id' WHERE id = ?1",
+                params![generation.id.as_str()],
+            )
+            .expect("corrupt generation");
+
+        assert!(store.get_generation(&generation.id).is_err());
+    }
+
+    #[test]
+    fn invalid_persisted_execution_reference_is_not_silently_accepted() {
+        let store = migrated_store();
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: None,
+            reason: None,
+            command: Some("true".to_owned()),
+            exit_code: Some(0),
+            duration_ms: None,
+            started_at: Timestamp::now(),
+        };
+        store.insert_execution(&execution).expect("insert execution");
+        store
+            .conn
+            .execute(
+                "UPDATE executions SET goal_id = 'not-a-goal-id' WHERE id = ?1",
+                params![execution.id.as_str()],
+            )
+            .expect("corrupt execution");
+
+        assert!(store.get_execution(&execution.id).is_err());
+    }
 }
