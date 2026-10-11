@@ -117,9 +117,9 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
             store.insert_goal(&child).map_err(err_str)?;
             store
                 .insert_provenance(&ProvenanceEdge {
-                    from: ObjectRef::new(child.id.to_string()),
+                    from: ObjectRef::from(&child.id),
                     relation: ProvenanceRelation::BelongsTo,
-                    to: ObjectRef::new(parent.to_string()),
+                    to: ObjectRef::from(&parent),
                     created_at: Timestamp::now(),
                     note: Some("child goal".to_owned()),
                 })
@@ -182,9 +182,9 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
 fn link_created(store: &Store, goal_id: &GoalId, actor: &str) -> Result<(), String> {
     store
         .insert_provenance(&ProvenanceEdge {
-            from: ObjectRef::new(goal_id.to_string()),
+            from: ObjectRef::from(goal_id),
             relation: ProvenanceRelation::CreatedBy,
-            to: ObjectRef::new(actor.to_owned()),
+            to: ObjectRef::actor(actor).map_err(err_str)?,
             created_at: Timestamp::now(),
             note: None,
         })
