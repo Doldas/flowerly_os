@@ -18,23 +18,28 @@ release process, and provenance.
 ## Branches
 
 - The default branch is `master`. It is protected: only release branches may
-  merge into it, and CI must pass.
+  merge into it, and CI must pass. Direct pushes and merges from non-release
+  branches are blocked.
 - Feature work lands on `release/N` branches (e.g., `release/1`, `release/2`).
   Open PRs against the current release branch.
 - Only `release/*` branches may target `master`. The `release-source-check`
   workflow enforces this.
 - Each new release branch is cut from `master` so it inherits all previously
   merged content. Use `scripts/release-cut.sh` to create the next release branch.
-- Short-lived topic branches (`feat/...`, `fix/...`, `docs/...`, `ci/...`) are
-  opened against the active release branch, not directly against `master`.
+- Topic branches follow this naming convention and must target a release branch:
+  - `feature/<short-description>` — new capability
+  - `bugfix/<short-description>` — bug fix
+  - `docs/<short-description>` — documentation only
+- The `pr-validation` workflow enforces naming and requires every PR to
+  reference an issue (e.g., `Fixes #123` or `Relates to #456` in the PR body).
 
 ## Commits
 
-Use conventional-style prefixes:
+Use conventional-style prefixes aligned with branch types:
 
 ```text
-feat:      a new capability
-fix:       a bug fix
+feature:   a new capability
+bugfix:    a bug fix
 docs:      documentation only
 test:      tests only
 refactor:  behavior-preserving change
@@ -44,8 +49,8 @@ ci:        continuous integration
 chore:     maintenance
 ```
 
-Examples: `feat(flow): add persistent Flow metadata store`,
-`fix(generation): return previous state on rollback`. A commit should represent
+Examples: `feature(flow): add persistent Flow metadata store`,
+`bugfix(generation): return previous state on rollback`. A commit should represent
 one coherent change.
 
 ## Development loop
