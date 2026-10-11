@@ -15,6 +15,15 @@ This page is the public planning overview. The detailed acceptance criteria rema
 | 0.0.9 | Minimal Agentic Environment | Planned | [#13](https://github.com/Doldas/flowerly_os/issues/13) |
 | 0.1.0 | First Real Agentic OS | Planned | [#14](https://github.com/Doldas/flowerly_os/issues/14) |
 
+## Distribution substrate
+
+Arch Linux is the selected initial userspace/package substrate. The rolling
+upstream feeds candidate generations; Flowerly Stable World changes only through
+tested promotion. This affects the Generations, Evolution Lab and Minimal
+Agentic Environment milestones. See
+[Image & Userspace Model](../image-model.md) and
+[ADR-0015](../adr/0015-arch-linux-userspace-substrate.md).
+
 ## Post-0.1 direction
 
 The current long-range themes are:
