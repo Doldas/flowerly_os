@@ -33,7 +33,7 @@ services.
 ## Typed identifiers and models
 
 `agentic-types` defines prefixed, UUID-backed identifier newtypes: `FlowId`,
-`GoalId`, `AgentId`, `SessionId`, `GenerationId`, `ExperimentId`,
+`IntentId`, `GoalId`, `AgentId`, `SessionId`, `GenerationId`, `ExperimentId`,
 `ExecutionId`, `ObservationId`, `FindingId`, `DecisionId`, `ArtifactId`, and
 `ProjectId`. They serialize transparently and parse from strings with prefix
 validation. Durable models (`Flow`, `Goal`, `Session`, `Execution`,
@@ -43,15 +43,22 @@ code in the shared crates.
 
 ## Persistent state
 
-Each service owns its own SQLite database under the service runtime directory
-(`AGENTIC_RUNTIME_DIR`, defaulting to `$XDG_RUNTIME_DIR/flowerly`). The initial
-schema is `crates/agentic-storage/migrations/0001_init.sql`, applied by an
-ordered, idempotent migration runner that records applied versions in
-`schema_migrations`. The schema is owned by migrations; production databases are
-never mutated by hand. Tables cover flows, projects, goals, agents, sessions,
-executions, generations, observations, findings, experiments, decisions,
-artifacts, provenance edges, and the user-model categories (facts,
-observations, inferences).
+Local services share one physical SQLite database, `state.db`, by default.
+`AGENTIC_RUNTIME_DIR` is reserved for ephemeral sockets/runtime files while
+`AGENTIC_STATE_DIR` holds durable state. `AGENTIC_DATABASE_PATH` remains an
+explicit test/recovery override.
+
+Services still own their domain APIs and tables logically; sharing the physical
+database does not authorize arbitrary cross-domain access. The shared store
+keeps local causal relationships transactional and makes cross-domain foreign
+keys meaningful without inventing distributed transactions.
+
+The initial schema is `crates/agentic-storage/migrations/0001_init.sql`, with
+subsequent changes in numbered migrations. Migrations run inside an IMMEDIATE
+transaction and re-check their version after acquiring the writer lock, making
+concurrent daemon startup safe. The schema is owned by migrations; production
+databases are never mutated by hand. See
+[ADR-0011](adr/0011-shared-local-state-database.md).
 
 ## IPC
 
@@ -66,10 +73,18 @@ handler. The wire format stays inspectable with ordinary tools.
 ## Daemon lifecycle
 
 Every daemon uses `ServiceConfig` (a TOML file plus `AGENTIC_RUNTIME_DIR`,
-`AGENTIC_DATABASE_PATH`, and `AGENTIC_LOG_FORMAT` environment overrides) and
-`run_service`. Services start, answer health and status without network or AI
-access, and shut down cleanly on either SIGTERM or an IPC `shutdown` command.
-`ServiceContext` reports name, version, pid, uptime, and protocol version.
+`AGENTIC_STATE_DIR`, `AGENTIC_DATABASE_PATH`, and `AGENTIC_LOG_FORMAT`
+environment overrides) and `run_service`. Services start, answer health and
+status without network or AI access, and shut down cleanly on either SIGTERM or
+an IPC `shutdown` command. `ServiceContext` reports name, version, pid,
+uptime, and protocol version.
+
+Conceptual domains do not automatically imply process boundaries. A future
+component becomes a daemon only when privilege separation, fault isolation,
+independent lifecycle, trust boundaries, resource accounting, or materially
+different runtime needs justify IPC. Otherwise prefer a crate/module behind an
+explicit interface. See
+[ADR-0013](adr/0013-process-boundaries-require-justification.md).
 
 ## Observability
 
