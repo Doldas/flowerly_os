@@ -590,6 +590,53 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_stores_share_the_same_state() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let mut writer = Store::open(&path).expect("open writer");
+        writer.migrate().expect("migrate writer");
+        let mut reader = Store::open(&path).expect("open reader");
+        reader.migrate().expect("migrate reader");
+
+        let flow = Flow::new("Shared", "test");
+        writer.insert_flow(&flow).expect("insert flow");
+
+        let loaded = reader
+            .get_flow(&flow.id)
+            .expect("read flow")
+            .expect("flow exists");
+        assert_eq!(loaded.id, flow.id);
+    }
+
+    #[test]
+    fn concurrent_migrators_converge_on_one_schema() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut store = Store::open(path).expect("open store");
+                    barrier.wait();
+                    store.migrate().expect("concurrent migration");
+                    store.applied_migrations().expect("migration list")
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let migrations = handle.join().expect("migration thread");
+            assert_eq!(migrations.len(), MIGRATIONS.len());
+        }
+    }
+
+    #[test]
     fn flow_persists_and_round_trips() {
         let store = migrated_store();
         let flow = Flow::new("Development", "user");
