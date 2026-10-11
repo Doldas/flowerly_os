@@ -81,13 +81,11 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .get("created_by")
                 .and_then(Value::as_str)
                 .unwrap_or("user");
-            let pid = args.get("pid").and_then(Value::as_i64).map(|v| v as i32);
+            let flow_id = parse_optional_flow_id(store, args)?;
+            let pid = parse_optional_pid(args)?;
             let session = Session {
                 id: SessionId::new(),
-                flow_id: args
-                    .get("flow_id")
-                    .and_then(Value::as_str)
-                    .and_then(|raw| FlowId::from_str(raw).ok()),
+                flow_id,
                 kind: kind.to_owned(),
                 pid,
                 cwd: args.get("cwd").and_then(Value::as_str).map(str::to_owned),
@@ -166,6 +164,37 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
     }
 }
 
+fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>, String> {
+    let Some(value) = args.get("flow_id") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let raw = value
+        .as_str()
+        .ok_or("arg `flow_id` must be a string or null")?;
+    let flow_id = FlowId::from_str(raw).map_err(err_str)?;
+    if store.get_flow(&flow_id).map_err(err_str)?.is_none() {
+        return Err(format!("flow not found: {flow_id}"));
+    }
+    Ok(Some(flow_id))
+}
+
+fn parse_optional_pid(args: &Value) -> Result<Option<i32>, String> {
+    let Some(value) = args.get("pid") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let raw = value.as_i64().ok_or("arg `pid` must be an integer or null")?;
+    let pid = i32::try_from(raw).map_err(|_| format!("pid out of range for i32: {raw}"))?;
+    Ok(Some(pid))
+}
+
 fn err_str(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -191,4 +220,78 @@ async fn self_test() -> anyhow::Result<()> {
     assert_eq!(store.list_sessions()?.len(), 1);
     println!("sessiond self-test ok: migrations={}", applied.len());
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migrated_store() -> Store {
+        let mut store = Store::open_in_memory().expect("open store");
+        store.migrate().expect("migrate store");
+        store
+    }
+
+    #[test]
+    fn malformed_flow_id_is_rejected() {
+        let mut store = migrated_store();
+        let error = run_command(
+            &mut store,
+            "session.create",
+            &serde_json::json!({ "flow_id": "not-a-flow-id" }),
+        )
+        .expect_err("malformed flow id must fail");
+
+        assert!(error.contains("flow"), "unexpected error: {error}");
+        assert!(store.list_sessions().expect("list sessions").is_empty());
+    }
+
+    #[test]
+    fn nonexistent_flow_is_rejected_before_insert() {
+        let mut store = migrated_store();
+        let missing = FlowId::new();
+        let error = run_command(
+            &mut store,
+            "session.create",
+            &serde_json::json!({ "flow_id": missing }),
+        )
+        .expect_err("missing flow must fail");
+
+        assert_eq!(error, format!("flow not found: {missing}"));
+        assert!(store.list_sessions().expect("list sessions").is_empty());
+    }
+
+    #[test]
+    fn out_of_range_pid_is_rejected_instead_of_truncated() {
+        let mut store = migrated_store();
+        let error = run_command(
+            &mut store,
+            "session.create",
+            &serde_json::json!({ "pid": i64::from(i32::MAX) + 1 }),
+        )
+        .expect_err("out-of-range pid must fail");
+
+        assert!(error.contains("out of range"), "unexpected error: {error}");
+        assert!(store.list_sessions().expect("list sessions").is_empty());
+    }
+
+    #[test]
+    fn valid_existing_flow_is_preserved_on_session() {
+        let mut store = migrated_store();
+        let flow = agentic_types::Flow::new("Development", "test");
+        store.insert_flow(&flow).expect("insert flow");
+
+        let response = run_command(
+            &mut store,
+            "session.create",
+            &serde_json::json!({ "flow_id": flow.id, "pid": 42 }),
+        )
+        .expect("create session");
+
+        assert_eq!(response["flow_id"], serde_json::json!(flow.id));
+        let sessions = store.list_sessions().expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].flow_id.as_ref(), Some(&flow.id));
+    }
 }
