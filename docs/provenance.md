@@ -73,11 +73,12 @@ operations are:
 ```text
 provenance.add    record an edge
 provenance.from   list edges originating from an object
+provenance.to     list edges pointing to an object
 ```
 
 Operations are reachable through `agenticctl provenance ...`. The underlying
 storage lives in `crates/agentic-storage` (`insert_provenance`,
-`provenance_from`).
+`provenance_from`, `provenance_to`).
 
 ## Why provenance exists
 
@@ -93,7 +94,9 @@ storage lives in `crates/agentic-storage` (`insert_provenance`,
 
 - **Implemented:** the `ProvenanceEdge`/`ProvenanceRelation` model, validated
   `ObjectRef` endpoints, explicit actor references, the idempotent edge store,
-  `provenanced` with `provenance.add`/`provenance.from`, and automatic
-  `created_by` edges for Flows, Goals and Sessions.
-- **Planned:** reverse traversal and graph queries, richer `note`/actor metadata,
-  and enforcing an edge for every autonomous action as the agent runtime lands.
+  outgoing and incoming lookup through `provenance.from`/`provenance.to`,
+  automatic `created_by` edges for Flows, Goals and Sessions, causal Execution
+  edges to Goals/Agents, and causal Generation edges to parent generations,
+  reason Goals and Experiments.
+- **Planned:** multi-hop graph traversal, richer `note`/actor metadata, and
+  enforcing provenance for every autonomous action as the agent runtime lands.
