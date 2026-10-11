@@ -38,10 +38,19 @@ experiment result ──►  Experiment record with metrics
 promotion decision ──►  promote to STABLE or reject
 ```
 
-One command, `just vm-test`, is intended to build a candidate, boot it, verify a
-service, exit, and record success or failure. This workflow is **planned and not
-implemented**. `evolutiond` currently ships as a stub that only exposes a health
-contract (`evolution.experiment-status` returns `idle`).
+One command, `just vm-test`, is intended to build a Flowerly candidate
+generation, boot it, verify services, exit, and record success or failure. That
+full generation workflow is still **planned**.
+
+A precursor is now implemented as the nightly Arch-kernel system test. It boots
+the official Arch Linux cloud image under QEMU/KVM, performs a full
+`pacman -Syu`, reboots into the installed Arch kernel, and runs the complete
+Flowerly build/test/runtime smoke suite inside that guest. It validates the real
+rolling substrate while the Flowerly generation image builder is being built;
+it does not yet claim to boot a Flowerly generation.
+
+`evolutiond` currently remains a stub that exposes a health contract
+(`evolution.experiment-status` returns `idle`).
 
 ## Experiment record
 
@@ -62,8 +71,12 @@ generations and goals. See [provenance.md](provenance.md).
 
 - **Implemented:** `evolutiond` stub; the `Generation` and experiment storage
   models that the pipeline will populate.
-- **Planned:** the KVM boot harness, `just vm-test`, health and integration test
-  suites under `scripts/`, benchmarks, multidimensional fitness evaluation, and
+- **Implemented precursor:** nightly/manual official-Arch VM harness with
+  KVM-preferred/QEMU-TCG fallback, rolling upgrade + reboot, whole-project
+  verification, daemon smoke test and retained evidence artifacts.
+- **Planned:** the Flowerly candidate-image builder, `just vm-test`, generation
+  manifest verification, benchmarks, multidimensional fitness evaluation, and
   promotion/rejection policy.
-- **Environment requirement:** KVM-capable hardware and QEMU. QEMU is not yet
-  installed in the current development environment.
+- **Environment requirement:** the heavyweight nightly test uses the
+  `flowerly-runner` with QEMU; KVM is preferred when available and TCG is a
+  correctness fallback.
