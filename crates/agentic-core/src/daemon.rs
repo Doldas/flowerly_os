@@ -158,6 +158,7 @@ mod tests {
         let config = ServiceConfig {
             name: "flowd".to_owned(),
             runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
             database_path: None,
             log_format: crate::config::LogFormat::Text,
         };
