@@ -77,7 +77,7 @@ pub async fn run_service(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_tx = shutdown_tx.clone();
 
-    let status_json = context.status(extra_status);
+    let status_context = context.clone();
     let socket = config.socket_path();
 
     let handler = Arc::clone(&handler);
@@ -95,7 +95,7 @@ pub async fn run_service(
                 version: agentic_ipc::PROTOCOL_VERSION,
                 id: request.id.clone(),
                 payload: Payload::Ok {
-                    data: status_json.clone(),
+                    data: status_context.status(extra_status.clone()),
                 },
             },
             Payload::Shutdown => {
@@ -143,7 +143,6 @@ pub async fn run_service(
         }
     };
 
-    let _ = std::fs::remove_file(&socket);
     outcome
 }
 

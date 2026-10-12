@@ -207,7 +207,42 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Atomically move the foreground to one Flow in the shared state scope.
+    /// Missing or archived targets leave the current foreground unchanged.
+    pub fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let target: Option<String> = tx
+            .query_row(
+                "SELECT state FROM flows WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let target = target.ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+        if target == "ARCHIVED" {
+            return Err(StorageError::NotFound(format!("archived flow: {id}")));
+        }
+        tx.execute(
+            "UPDATE flows SET state = 'ACTIVE', revision = revision + 1 WHERE state = 'FOREGROUND' AND id != ?1",
+            params![id.as_str()],
+        )?;
+        tx.execute(
+            "UPDATE flows SET state = 'FOREGROUND', last_active = ?2, revision = revision + 1 WHERE id = ?1",
+            params![id.as_str(), Timestamp::now().as_millis()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_flow_state(&self, id: &FlowId, state: FlowState) -> Result<()> {
+        if state == FlowState::Foreground {
+            return Err(StorageError::NotFound(
+                "use activate_flow for foreground transitions".to_owned(),
+            ));
+        }
+
         let changed = self.conn.execute(
             "UPDATE flows SET state = ?2 WHERE id = ?1",
             params![id.as_str(), state.to_string()],

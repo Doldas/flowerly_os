@@ -12,6 +12,7 @@ use tokio::net::{UnixListener, UnixStream};
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 pub const PROTOCOL_VERSION: u32 = 1;
+const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum IpcError {
@@ -26,6 +27,9 @@ pub enum IpcError {
 
     #[error("connection closed: {0}")]
     Closed(String),
+
+    #[error("ipc operation timed out")]
+    Timeout,
 }
 
 pub type Result<T> = std::result::Result<T, IpcError>;
@@ -176,14 +180,26 @@ pub struct Client {
 
 impl Client {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
-        let stream = UnixStream::connect(path.as_ref()).await?;
+        let stream = tokio::time::timeout(IO_DEADLINE, UnixStream::connect(path.as_ref()))
+            .await
+            .map_err(|_| IpcError::Timeout)??;
         Ok(Self { stream })
     }
 
     pub async fn request(&mut self, payload: Payload) -> Result<Envelope> {
         let request = Envelope::new(payload);
-        write_frame(&mut self.stream, &request).await?;
-        read_frame(&mut self.stream).await
+        tokio::time::timeout(IO_DEADLINE, write_frame(&mut self.stream, &request))
+            .await
+            .map_err(|_| IpcError::Timeout)??;
+        let response = tokio::time::timeout(IO_DEADLINE, read_frame(&mut self.stream))
+            .await
+            .map_err(|_| IpcError::Timeout)??;
+        if response.id != request.id {
+            return Err(IpcError::InvalidFrame(
+                "response correlation id mismatch".into(),
+            ));
+        }
+        Ok(response)
     }
 }
 
@@ -231,7 +247,7 @@ mod tests {
             .request(Payload::Status)
             .await
             .expect("request status");
-        assert_eq!(response.id, response.id.clone());
+        assert!(!response.id.is_empty());
         assert!(matches!(response.payload, Payload::Ok { .. }));
 
         server.abort();
