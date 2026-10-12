@@ -210,8 +210,8 @@ async fn self_test() -> anyhow::Result<()> {
     let applied = store.migrate()?;
     let execution = Execution {
         id: ExecutionId::new(),
-        agent_id: Some(AgentId::new()),
-        goal_id: Some(GoalId::new()),
+        agent_id: None,
+        goal_id: None,
         reason: Some("self-test".to_owned()),
         command: Some("cargo test".to_owned()),
         exit_code: Some(0),
