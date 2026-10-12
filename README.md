@@ -33,6 +33,10 @@ decide what reaches Stable World.
 9. Complexity is earned by use; the environment grows with the user.
 10. Evolution is evidence-driven, and failed experiments remain useful history.
 
+## Proposed future deployment model
+
+Flowerly may eventually support **location-independent operation**: the user interface on a laptop/tablet/browser, Flow and Session runtime on a local workstation or remote Linux VM/server, and AI models on local hardware, an organizational inference service or explicitly approved provider APIs. Users would choose human-readable AI capability profiles and expert-configurable per-agent resource/model policies; organizations could administer shared defaults and security ceilings. These are **proposals, not implemented features**. See [RFC 0004](docs/rfcs/0004-location-independent-flowerly-ai-compute.md); current 0.0.4 work still focuses on truthful local PTY/session ownership and release gates.
+
 ## Current status
 
 Sprint 0 and Sprint 1 are substantially complete at version 0.0.1. Implemented
