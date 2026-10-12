@@ -16,6 +16,9 @@ pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Total response budget after a complete frame is received: includes queueing,
+/// the blocking handler and socket write, not a fresh ten seconds per stage.
+pub const REQUEST_DEADLINE: std::time::Duration = IO_DEADLINE;
 /// Maximum concurrently connected IPC clients per daemon.
 pub const MAX_CONNECTIONS: usize = 64;
 /// Limits synchronous handlers (including SQLite) occupying blocking threads.
@@ -322,6 +325,17 @@ pub async fn serve_with_shutdown_authenticated(
     Ok(())
 }
 
+fn unavailable_response(request: &Envelope) -> Envelope {
+    Envelope {
+        version: PROTOCOL_VERSION,
+        id: request.id.clone(),
+        payload: Payload::Err {
+            message: "request deadline exceeded while waiting for a handler".to_owned(),
+            code: Some(ErrorCode::Unavailable),
+        },
+    }
+}
+
 async fn handle_connection(
     mut stream: UnixStream,
     handler: Arc<AuthenticatedHandler>,
@@ -335,20 +349,37 @@ async fn handle_connection(
             Ok(Err(err)) => return Err(err),
             Err(_) => return Err(IpcError::Timeout),
         };
-        // Permit travels into the blocking closure, so cancellation cannot
-        // free capacity while a synchronous SQLite request is still running.
-        let permit = Arc::clone(&blocking)
-            .acquire_owned()
-            .await
-            .map_err(|_| IpcError::Closed("handler pool shut down".into()))?;
-        let handler_ref = Arc::clone(&handler);
-        let request_for_handler = request.clone();
-        let response = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            handler_ref(&request_for_handler, &peer)
-        })
-        .await?;
-        tokio::time::timeout(IO_DEADLINE, write_frame(&mut stream, &response))
+        // Set the clock before waiting for a handler slot. A busy SQLite
+        // writer can keep a synchronous worker occupied, but it must not
+        // extend the IPC caller's budget or consume another async worker.
+        let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
+        let response = match tokio::time::timeout_at(
+            deadline,
+            Arc::clone(&blocking).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => {
+                // The permit remains with the worker even when the request
+                // expires; do not count a still-running SQLite write as free.
+                let handler_ref = Arc::clone(&handler);
+                let request_for_handler = request.clone();
+                let task = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    handler_ref(&request_for_handler, &peer)
+                });
+                match tokio::time::timeout_at(deadline, task).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => return Err(IpcError::Task(error)),
+                    Err(_) => unavailable_response(&request),
+                }
+            }
+            Ok(Err(_)) => return Err(IpcError::Closed("handler pool shut down".into())),
+            Err(_) => unavailable_response(&request),
+        };
+        // Responses that themselves cannot be written before the deadline
+        // close the connection. The client has the same bounded budget.
+        tokio::time::timeout_at(deadline, write_frame(&mut stream, &response))
             .await
             .map_err(|_| IpcError::Timeout)??;
         if matches!(request.payload, Payload::Shutdown) {
@@ -371,10 +402,11 @@ impl Client {
 
     pub async fn request(&mut self, payload: Payload) -> Result<Envelope> {
         let request = Envelope::new(payload);
-        tokio::time::timeout(IO_DEADLINE, write_frame(&mut self.stream, &request))
+        let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
+        tokio::time::timeout_at(deadline, write_frame(&mut self.stream, &request))
             .await
             .map_err(|_| IpcError::Timeout)??;
-        let response = tokio::time::timeout(IO_DEADLINE, read_frame(&mut self.stream))
+        let response = tokio::time::timeout_at(deadline, read_frame(&mut self.stream))
             .await
             .map_err(|_| IpcError::Timeout)??;
         if response.id != request.id {
