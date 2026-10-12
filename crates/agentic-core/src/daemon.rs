@@ -192,5 +192,6 @@ mod tests {
         assert!(matches!(shut.payload, Payload::Ok { .. }));
 
         server.await.expect("server exits").expect("clean exit");
+        assert!(!socket.exists(), "shutdown must remove the owned socket");
     }
 }
