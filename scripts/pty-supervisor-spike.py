@@ -6,6 +6,7 @@ Kernel SO_PEERCRED verifies same-UID admission; production authorization,
 recovery and process-group identity hardening remain unimplemented.
 """
 import argparse
+from contextlib import closing
 import os
 import selectors
 import signal
@@ -120,7 +121,8 @@ def test():
     if sys.platform != "linux":
         raise SystemExit("Linux only")
     # Negative authorization proof without needing a privileged CI runner.
-    with socket.socketpair() as (server, client):
+    server, client = socket.socketpair()
+    with closing(server), closing(client):
         assert admitted_peer(server, os.getuid())
         assert not admitted_peer(server, os.getuid() + 1)
         assert admitted_peer(client, os.getuid())
