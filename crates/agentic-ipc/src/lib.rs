@@ -358,7 +358,6 @@ mod tests {
         drop(original);
     }
 
-
     #[tokio::test]
     async fn silent_client_times_out_without_blocking_other_clients() {
         let dir = tempdir().unwrap();
@@ -370,7 +369,9 @@ mod tests {
         });
         let server = tokio::spawn(serve(path.clone(), handler));
         for _ in 0..50 {
-            if path.exists() { break; }
+            if path.exists() {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let mut silent = Client::connect(&path).await.unwrap();
@@ -378,7 +379,10 @@ mod tests {
         let healthy = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             call(&path, Payload::Ping),
-        ).await.expect("healthy client must not block").unwrap();
+        )
+        .await
+        .expect("healthy client must not block")
+        .unwrap();
         assert!(matches!(healthy.payload, Payload::Ok { .. }));
         drop(silent);
         server.abort();
