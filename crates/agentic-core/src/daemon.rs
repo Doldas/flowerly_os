@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentic_ipc::{Envelope, Payload};
+use agentic_ipc::{Envelope, Payload, PeerIdentity};
 use serde_json::Value;
 use tracing::Instrument;
 
@@ -92,7 +92,7 @@ pub async fn run_service_with_status(
 
     let handler = Arc::clone(&handler);
 
-    let request_handler = Arc::new(move |request: &Envelope| -> Envelope {
+    let request_handler = Arc::new(move |request: &Envelope, peer: &PeerIdentity| -> Envelope {
         let reply = match &request.payload {
             Payload::Ping => Envelope {
                 version: agentic_ipc::PROTOCOL_VERSION,
@@ -118,14 +118,26 @@ pub async fn run_service_with_status(
                     },
                 }
             }
-            Payload::Command { name, args } => handler(&Envelope {
-                version: agentic_ipc::PROTOCOL_VERSION,
-                id: request.id.clone(),
-                payload: Payload::Command {
-                    name: name.clone(),
-                    args: args.clone(),
-                },
-            }),
+            Payload::Command { name, args } => {
+                // The connected client's asserted created_by is a label, not
+                // authority. Use the UID supplied by the Unix kernel for
+                // durable creator fields and CreatedBy provenance.
+                let mut trusted_args = args.clone();
+                if let Value::Object(fields) = &mut trusted_args {
+                    fields.insert(
+                        "created_by".to_owned(),
+                        Value::String(format!("uid:{}", peer.uid)),
+                    );
+                }
+                handler(&Envelope {
+                    version: agentic_ipc::PROTOCOL_VERSION,
+                    id: request.id.clone(),
+                    payload: Payload::Command {
+                        name: name.clone(),
+                        args: trusted_args,
+                    },
+                })
+            }
             other => error_envelope(
                 request.id.clone(),
                 format!("request type not handled by core runner: {other:?}"),
@@ -134,7 +146,7 @@ pub async fn run_service_with_status(
         reply
     });
 
-    agentic_ipc::serve_with_shutdown(&socket, request_handler, shutdown_rx)
+    agentic_ipc::serve_with_shutdown_authenticated(&socket, request_handler, shutdown_rx)
         .instrument(tracing::info_span!("service", service = %context.name))
         .await
         .map_err(anyhow::Error::from)
@@ -144,6 +156,59 @@ pub async fn run_service_with_status(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn creator_identity_is_attested_not_client_controlled() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir().unwrap();
+        let config = ServiceConfig {
+            name: "trusted-actor".to_owned(),
+            runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+            database_path: None,
+            log_format: crate::config::LogFormat::Text,
+        };
+        let server = tokio::spawn(run_service(
+            config,
+            serde_json::json!({}),
+            Arc::new(|request| match &request.payload {
+                Payload::Command { args, .. } => ok_envelope(request.id.clone(), args.clone()),
+                _ => error_envelope(request.id.clone(), "unexpected request"),
+            }),
+        ));
+
+        let socket = dir.path().join("trusted-actor.sock");
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let expected_actor = format!("uid:{}", std::fs::metadata(&socket).unwrap().uid());
+        for args in [
+            serde_json::json!({"created_by": "forged-admin", "objective": "test"}),
+            serde_json::json!({"objective": "test"}),
+        ] {
+            let response = agentic_ipc::call(
+                &socket,
+                Payload::Command {
+                    name: "goal.create".to_owned(),
+                    args,
+                },
+            )
+            .await
+            .unwrap();
+            match response.payload {
+                Payload::Ok { data } => {
+                    assert_eq!(data["created_by"], expected_actor);
+                }
+                _ => panic!("expected echoed command arguments"),
+            }
+        }
+        agentic_ipc::call(&socket, Payload::Shutdown).await.unwrap();
+        server.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn status_provider_is_evaluated_per_request() {
