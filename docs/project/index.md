@@ -55,7 +55,7 @@ Status
 Target release
 Sprint
 Area
-Type
+Work type
 Priority
 Risk
 Owner
@@ -70,7 +70,7 @@ The [Project bootstrap guide](bootstrap.md) and
 [`scripts/bootstrap-github-project.py`](../../scripts/bootstrap-github-project.py)
 create a real GitHub Projects v2 board and import all issues and pull requests,
 including historical closed items. The helper is idempotent: re-running it
-does not overwrite already-imported items.
+fills only unset fields on already-imported items and preserves populated values.
 
 The current active release is **0.0.4**. The earlier proposed statuses in
 [issue #15](https://github.com/Doldas/flowerly_os/issues/15) predate the

@@ -14,7 +14,17 @@ gh auth refresh -s project
 python3 scripts/bootstrap-github-project.py
 ```
 
-Run from a checkout that includes the helper (the feature branch until its PR is merged). The script creates the Project if no Project with the exact title `Flowerly OS — Engineering Roadmap` exists. It reuses that Project on later runs, links it to `flowerly_os`, creates any missing planning fields/views, and imports the repository's **complete issues and pull-request lists including closed items**. Rerun to import newly created issues or PRs. Existing Project items and their human-edited field values are left untouched.
+Run from a checkout that includes the helper (`release/2` after the bootstrap and fixes are merged). The script creates the Project if no Project with the exact title `Flowerly OS — Engineering Roadmap` exists. It reuses that Project on later runs, links it to `flowerly_os`, creates any missing planning fields/views, and imports issues and pull requests including closed items (up to 1,000 of each). Rerun to import newly created issues or PRs. Existing populated field values are left untouched; unset fields are initialized, including on items left partially imported by an interrupted run.
+
+If an earlier run created project 7 and then failed, resume that exact board:
+
+```sh
+python3 scripts/bootstrap-github-project.py --project 7
+```
+
+Do not delete the partially created Project. The helper verifies its title before changing it, reuses existing fields case-insensitively, and reports incompatible field types or missing options rather than replacing them. Field errors include the attempted field name.
+
+GitHub reserves **Type** for its built-in issue-type field, including when it is hidden. The bootstrap's separate custom category field is named **Work type**. An error from `createProjectV2Field` about a reserved/taken name in older bootstrap versions is addressed by updating the script; do not try to delete or recreate GitHub's built-in Type field.
 
 ## Project schema
 
@@ -22,7 +32,7 @@ Run from a checkout that includes the helper (the feature branch until its PR is
 - **Delivery stage:** Backlog, Ready, In progress, Review, Done
 - **Sprint:** free-text sprint association when present in an issue title
 - **Area:** Core, Flow, Session, Storage, Evolution, Goal, Agent, Image, Docs, CI, Security, Planning, Other
-- **Type:** Roadmap, Feature, Bug, Security, Test, Docs, Research, Planning, Chore, Pull request
+- **Work type:** Roadmap, Feature, Bug, Security, Test, Docs, Research, Planning, Chore, Pull request (separate from GitHub's built-in Type)
 - **Priority:** P0–P3 or Unassigned, based on issue labels
 - **Risk:** initially Unassessed; human triage required
 - **Owner:** derived from issue assignees when available
@@ -52,5 +62,12 @@ The post-0.1 roadmap is directional only. Do not create fake delivery dates or d
 ## Notes
 
 - The script imports already-closed issues and PRs to preserve project history. Filter Delivery stage = Done out of active boards.
-- Re-running skips already imported items, preserving human-owned delivery stages and Risk assessments. GitHub Projects' built-in workflows can update status when issues close.
+- Re-running fills only unset fields on imported items, preserving human-owned delivery stages and Risk assessments. GitHub Projects' built-in workflows can update status when issues close.
 - Project creation uses the authenticated user's GitHub CLI permissions; the ChatGPT GitHub connector cannot perform Projects v2 mutations.
+
+Offline regression checks (no GitHub credentials required):
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_bootstrap_github_project.py' -v
+```
+
