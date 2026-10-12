@@ -254,16 +254,13 @@ pub async fn serve_with_shutdown(
     // Stop accepting new connections before draining workers. The task that
     // requested shutdown has time to flush its OK response to the client.
     drop(listener);
-    if tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async {
-            while let Some(result) = connections_tasks.join_next().await {
-                if let Err(error) = result {
-                    tracing::warn!(%error, "IPC connection task failed on shutdown");
-                }
+    if tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(result) = connections_tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "IPC connection task failed on shutdown");
             }
-        },
-    )
+        }
+    })
     .await
     .is_err()
     {
