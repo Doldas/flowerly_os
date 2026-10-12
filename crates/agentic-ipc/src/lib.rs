@@ -9,11 +9,16 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const IO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Maximum concurrently connected IPC clients per daemon.
+pub const MAX_CONNECTIONS: usize = 64;
+/// Limits synchronous handlers (including SQLite) occupying blocking threads.
+pub const MAX_BLOCKING_HANDLERS: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum IpcError {
@@ -31,6 +36,9 @@ pub enum IpcError {
 
     #[error("ipc operation timed out")]
     Timeout,
+
+    #[error("ipc handler task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
 }
 
 pub type Result<T> = std::result::Result<T, IpcError>;
@@ -165,6 +173,8 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
     tracing::info!(socket = %path.display(), "ipc server listening");
 
     let mut shutdown = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let blocking_handlers = Arc::new(Semaphore::new(MAX_BLOCKING_HANDLERS));
 
     loop {
         tokio::select! {
@@ -175,12 +185,20 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        let handler_ref = Arc::clone(&handler);
-                        tokio::spawn(async move {
-                            if let Err(err) = handle_connection(stream, handler_ref).await {
-                                tracing::debug!(error = %err, "ipc connection ended");
-                            }
-                        });
+                        // Refuse excess clients before spawning a task. A slow
+                        // or silent client cannot consume unbounded memory.
+                        if let Ok(permit) = Arc::clone(&connections).try_acquire_owned() {
+                            let handler_ref = Arc::clone(&handler);
+                            let blocking = Arc::clone(&blocking_handlers);
+                            tokio::spawn(async move {
+                                let _connection = permit;
+                                if let Err(err) = handle_connection(stream, handler_ref, blocking).await {
+                                    tracing::debug!(error = %err, "ipc connection ended");
+                                }
+                            });
+                        } else {
+                            tracing::warn!("ipc connection limit reached; refusing client");
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, "accept failed");
@@ -194,15 +212,34 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
     Ok(())
 }
 
-async fn handle_connection(mut stream: UnixStream, handler: Arc<Handler>) -> Result<()> {
+async fn handle_connection(
+    mut stream: UnixStream,
+    handler: Arc<Handler>,
+    blocking: Arc<Semaphore>,
+) -> Result<()> {
     loop {
-        let request = match read_frame(&mut stream).await {
-            Ok(frame) => frame,
-            Err(IpcError::Closed(_)) => return Ok(()),
-            Err(err) => return Err(err),
+        let request = match tokio::time::timeout(IO_DEADLINE, read_frame(&mut stream)).await {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(IpcError::Closed(_))) => return Ok(()),
+            Ok(Err(err)) => return Err(err),
+            Err(_) => return Err(IpcError::Timeout),
         };
-        let response = handler(&request);
-        write_frame(&mut stream, &response).await?;
+        // Permit travels into the blocking closure, so cancellation cannot
+        // free capacity while a synchronous SQLite request is still running.
+        let permit = Arc::clone(&blocking)
+            .acquire_owned()
+            .await
+            .map_err(|_| IpcError::Closed("handler pool shut down".into()))?;
+        let handler_ref = Arc::clone(&handler);
+        let request_for_handler = request.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            handler_ref(&request_for_handler)
+        })
+        .await?;
+        tokio::time::timeout(IO_DEADLINE, write_frame(&mut stream, &response))
+            .await
+            .map_err(|_| IpcError::Timeout)??;
         if matches!(request.payload, Payload::Shutdown) {
             return Ok(());
         }
@@ -319,6 +356,36 @@ mod tests {
         assert!(path.exists());
         drop(replacement);
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn silent_client_times_out_without_blocking_other_clients() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bounded.sock");
+        let handler: Arc<Handler> = Arc::new(|req: &Envelope| Envelope {
+            version: PROTOCOL_VERSION,
+            id: req.id.clone(),
+            payload: Payload::Ok { data: Value::Null },
+        });
+        let server = tokio::spawn(serve(path.clone(), handler));
+        for _ in 0..50 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let mut silent = Client::connect(&path).await.unwrap();
+        silent.stream.write_all(&[100, 0, 0, 0]).await.unwrap();
+        let healthy = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            call(&path, Payload::Ping),
+        )
+        .await
+        .expect("healthy client must not block")
+        .unwrap();
+        assert!(matches!(healthy.payload, Payload::Ok { .. }));
+        drop(silent);
+        server.abort();
     }
 
     #[test]
