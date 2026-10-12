@@ -23,7 +23,7 @@ jobs:
         os: [flowerly-runner]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install just
         uses: taiki-e/install-action@v2
@@ -36,7 +36,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -65,7 +65,7 @@ jobs:
     runs-on: flowerly-runner
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install just
         uses: taiki-e/install-action@v2
@@ -76,7 +76,7 @@ jobs:
         run: ./scripts/check-docs.sh
 
       - name: Markdown lint
-        uses: DavidAnson/markdownlint-cli2-action@v19
+        uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           globs: |
             "*.md"
