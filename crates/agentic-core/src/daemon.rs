@@ -146,6 +146,45 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn status_provider_is_evaluated_per_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempdir().unwrap();
+        let config = ServiceConfig {
+            name: "dynamic-status".to_owned(),
+            runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+            database_path: None,
+            log_format: crate::config::LogFormat::Text,
+        };
+        let count = Arc::new(AtomicUsize::new(1));
+        let status_count = Arc::clone(&count);
+        let server = tokio::spawn(run_service_with_status(
+            config,
+            Arc::new(move || serde_json::json!({"item_count": status_count.load(Ordering::SeqCst)})),
+            Arc::new(|req| error_envelope(req.id.clone(), "not implemented")),
+        ));
+        let socket = dir.path().join("dynamic-status.sock");
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let first = agentic_ipc::call(&socket, Payload::Status).await.unwrap();
+        count.store(2, Ordering::SeqCst);
+        let second = agentic_ipc::call(&socket, Payload::Status).await.unwrap();
+        match (first.payload, second.payload) {
+            (Payload::Ok { data: before }, Payload::Ok { data: after }) => {
+                assert_eq!(before["details"]["item_count"], 1);
+                assert_eq!(after["details"]["item_count"], 2);
+            }
+            _ => panic!("expected status responses"),
+        }
+        agentic_ipc::call(&socket, Payload::Shutdown).await.unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn service_status_is_reported() {
         let dir = tempdir().unwrap();
         let config = ServiceConfig {
