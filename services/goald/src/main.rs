@@ -46,7 +46,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(count) => serde_json::json!({"goal_count": count, "ready": true}),
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
-        Err(_) => serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"}),
+        Err(_) => {
+            serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
+        }
     });
     let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
 
@@ -141,7 +143,10 @@ struct CommandFailure {
 
 impl From<String> for CommandFailure {
     fn from(message: String) -> Self {
-        Self { code: ErrorCode::Internal, message }
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
     }
 }
 
@@ -154,7 +159,11 @@ impl From<&str> for CommandFailure {
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
-            code: if error.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal },
+            code: if error.is_busy() {
+                ErrorCode::Unavailable
+            } else {
+                ErrorCode::Internal
+            },
             message: error.to_string(),
         }
     }
