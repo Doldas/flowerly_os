@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::Store;
+use agentic_storage::{StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -94,8 +94,8 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
     let data = match run_command(&mut store, name, args) {
         Ok(data) => data,
-        Err(message) => {
-            return error_envelope(request.id.clone(), message);
+        Err(error) => {
+            return coded_error_envelope(request.id.clone(), error.code, error.message);
         }
     };
     ok_envelope(request.id.clone(), data)
@@ -178,7 +178,34 @@ fn validate_flow_command(
     Ok(())
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Result<Value, String> {
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self { code: ErrorCode::Internal, message }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: if error.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal },
+            message: error.to_string(),
+        }
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
             let name = args
@@ -205,7 +232,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
             };
             store
                 .insert_flow_with_provenance(&flow, &[provenance])
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
         }
@@ -234,7 +261,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
             }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
-        other => Err(format!("flowd: unknown command `{other}`")),
+        other => Err(format!("flowd: unknown command `{other}`").into()),
     }
 }
 
@@ -245,7 +272,7 @@ fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::
         if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
             return Ok(flow);
         }
-        return Err(format!("flow not found: {id}"));
+        return Err(format!("flow not found: {id}").into());
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
         let flows = store.list_flows().map_err(err_str)?;
@@ -256,7 +283,7 @@ fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::
             }
             return Ok(flow);
         }
-        return Err(format!("flow not found: {by_name}"));
+        return Err(format!("flow not found: {by_name}").into());
     }
     Err("provide either `id` or `name`".to_owned())
 }
