@@ -220,12 +220,6 @@ impl std::fmt::Display for CommandFailure {
     }
 }
 
-impl CommandFailure {
-    fn contains(&self, pattern: &str) -> bool {
-        self.message.contains(pattern)
-    }
-}
-
 impl PartialEq<&str> for CommandFailure {
     fn eq(&self, other: &&str) -> bool {
         self.message == *other
