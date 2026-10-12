@@ -256,12 +256,12 @@ ssh "${ssh_opts[@]}" "$guest" \
 
 # Recreate a tiny git identity so the guest report can still name the exact
 # source commit even though we intentionally exported without .git.
-ssh "${ssh_opts[@]}" "$guest" \
-    "printf '%s\n' '$TEST_SHA' > '$HOME/flowerly_os/.flowerly-tested-commit'"
+printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
+    'cat > "$HOME/flowerly_os/.flowerly-tested-commit"'
 
 echo "running complete Flowerly verification inside Arch VM"
 ssh "${ssh_opts[@]}" "$guest" \
-    "cd '$HOME/flowerly_os' && FLOWERLY_TEST_SHA='$TEST_SHA' bash tests/arch-kernel/guest-verify.sh '$HOME/flowerly_os'"
+    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash tests/arch-kernel/guest-verify.sh "$HOME/flowerly_os"'
 
 scp "${scp_opts[@]}" \
     "$guest:flowerly_os/target/arch-kernel-report.txt" \
