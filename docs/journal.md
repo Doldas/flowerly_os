@@ -231,3 +231,29 @@ Completed the remaining 0.0.3 Persistent State work on issue #7:
 
 With durable state complete, the next implementation milestone is 0.0.4:
 PTY-backed persistent Sessions with detach/reattach semantics.
+
+
+## 2026-10-12 — Review-driven release implementation plan
+
+Converted the independent technical review of `release/2` at merge commit
+`0d008f9e3764e5781aba9e0d2ab5678c63108278` into a durable, release-by-release
+implementation plan.
+
+The project now explicitly completes one release before starting implementation
+of the next. Future review findings are preserved in
+`docs/review-implementation-plan-2026-10-12.md`, while issue #8 and #31 own the
+active 0.0.4 checklist.
+
+0.0.4 now has two hardening gates before persistent PTY ownership: repository
+trust/current-user-path correctness, then runtime safety. The first tranche
+starts by removing PR-metadata shell interpolation, making promotion rules
+coherent, moving pull-request builds off the persistent self-hosted runner,
+repairing the Goal default-priority contract and agenticd self-test, executing
+all daemon self-tests in CI, and fixing host-vs-guest HOME expansion in the Arch
+VM harness.
+
+Later release requirements are recorded but intentionally not implemented yet:
+0.0.5 gains a minimal bootable candidate fixture and stronger Generation
+semantics; 0.0.6 consumes that fixture in Evolution World; 0.0.7 focuses on Goal
+execution semantics; 0.0.8 requires authenticated/bounded authority before
+agents; and 0.0.9 becomes the distribution-grade image milestone.
