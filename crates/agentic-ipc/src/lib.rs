@@ -448,6 +448,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_handler_receives_kernel_attested_peer() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer-handler.sock");
+        let (shutdown, receiver) = watch::channel(false);
+        let handler: Arc<AuthenticatedHandler> =
+            Arc::new(|request: &Envelope, peer: &PeerIdentity| Envelope {
+                version: PROTOCOL_VERSION,
+                id: request.id.clone(),
+                payload: Payload::Ok {
+                    data: serde_json::json!({
+                        "uid": peer.uid,
+                        "gid": peer.gid,
+                        "pid": peer.pid,
+                    }),
+                },
+            });
+        let server = tokio::spawn(serve_with_shutdown_authenticated(
+            path.clone(),
+            handler,
+            receiver,
+        ));
+        for _ in 0..50 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let expected_uid = std::fs::metadata(&path).unwrap().uid();
+        let response = call(&path, Payload::Ping).await.unwrap();
+        match response.payload {
+            Payload::Ok { data } => {
+                assert_eq!(data["uid"], expected_uid);
+                assert_eq!(data["pid"], std::process::id());
+            }
+            _ => panic!("expected authenticated IPC response"),
+        }
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn kernel_peer_credentials_match_socket_owner_for_same_user() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("credentials.sock");
