@@ -5,10 +5,13 @@ Creates a real session leader with forkpty, keeps the master open while the
 simulated frontend detaches, observes output after reattachment, then terminates
 and reaps the owned process group. Run only on Linux as an unprivileged user.
 """
+import fcntl
 import os
 import select
 import signal
+import struct
 import sys
+import termios
 import time
 
 
@@ -40,10 +43,15 @@ def main() -> None:
     pid, master = os.forkpty()
     if pid == 0:
         code = (
-            "import os,signal,time,sys;"
+            "import os,time,fcntl,termios,struct;"
             "print('CHILD_READY', flush=True);"
             "time.sleep(.15);"
             "print('OUTPUT_DURING_DETACH', flush=True);"
+            "request=os.read(0,256);"
+            "print('RECEIVED:'+request.decode().strip(), flush=True);"
+            "rows,cols,_,_=struct.unpack('HHHH',"
+            "fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8)));"
+            "print(f'SIZE_{rows}x{cols}', flush=True);"
             "time.sleep(30)"
         )
         os.execv(sys.executable, [sys.executable, "-u", "-c", code])
@@ -62,11 +70,16 @@ def main() -> None:
         # 'Reattach': the same owned master and PID deliver pending output.
         output = read_until(master, b"OUTPUT_DURING_DETACH")
         assert b"OUTPUT_DURING_DETACH" in output
+        # Exercise actual PTY master -> child input and kernel terminal resize.
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 31, 109, 0, 0))
+        os.write(master, b"ping\\n")
+        response = read_until(master, b"SIZE_31x109")
+        assert b"RECEIVED:ping" in response
         os.killpg(pid, signal.SIGTERM)
         _, status = os.waitpid(pid, 0)
         waited = True
         assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM
-        print("PTY spike OK: forkpty, process group, detach, output replay, termination/reap")
+        print("PTY spike OK: forkpty, process group, detach, replay, input, resize, termination/reap")
     finally:
         if not waited:
             try:
