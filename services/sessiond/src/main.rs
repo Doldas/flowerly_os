@@ -3,9 +3,10 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use agentic_core::{
-    error_envelope, init_tracing, ok_envelope, run_service_with_status, ServiceConfig,
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service_with_status,
+    ServiceConfig,
 };
-use agentic_ipc::{Envelope, Payload};
+use agentic_ipc::{Envelope, ErrorCode, Payload};
 use agentic_storage::Store;
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
@@ -73,10 +74,68 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
+    if let Err((code, message)) = validate_session_command(&store, name, args) {
+        return coded_error_envelope(request.id.clone(), code, message);
+    }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(message) => error_envelope(request.id.clone(), message),
     }
+}
+
+/// Validate API errors under the same storage mutex used for the mutation.
+/// Storage failures remain internal; no string-based classification.
+fn validate_session_command(
+    store: &Store,
+    name: &str,
+    args: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
+    match name {
+        "session.create" => {
+            if let Some(value) = args.get("flow_id").filter(|value| !value.is_null()) {
+                let raw = value
+                    .as_str()
+                    .ok_or_else(|| invalid("arg `flow_id` must be a string or null"))?;
+                let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+                if store
+                    .get_flow(&flow_id)
+                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .is_none()
+                {
+                    return Err((ErrorCode::NotFound, format!("flow not found: {flow_id}")));
+                }
+            }
+            if let Some(value) = args.get("pid").filter(|value| !value.is_null()) {
+                let raw = value
+                    .as_i64()
+                    .ok_or_else(|| invalid("arg `pid` must be an integer or null"))?;
+                i32::try_from(raw).map_err(|_| invalid("pid out of range for i32"))?;
+            }
+        }
+        "session.list" => {}
+        "session.terminate" => {
+            let raw = args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `id`"))?;
+            let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+            if store
+                .get_session(&id)
+                .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                .is_none()
+            {
+                return Err((ErrorCode::NotFound, format!("session not found: {raw}")));
+            }
+        }
+        other => {
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("sessiond: unknown command `{other}`"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
@@ -241,6 +300,52 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
         store
+    }
+
+    #[test]
+    fn session_command_validation_returns_explicit_codes() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.migrate().unwrap();
+        let cases = [
+            (
+                "session.create",
+                serde_json::json!({"flow_id": 42}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "session.create",
+                serde_json::json!({"pid": 9223372036854775807i64}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "session.create",
+                serde_json::json!({"flow_id": "flow-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "session.terminate",
+                serde_json::json!({"id": "session-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "session.terminate",
+                serde_json::json!({"id": 42}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "unknown",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+        ];
+        for (command, args, expected) in cases {
+            assert_eq!(
+                validate_session_command(&store, command, &args)
+                    .unwrap_err()
+                    .0,
+                expected
+            );
+        }
     }
 
     #[test]
