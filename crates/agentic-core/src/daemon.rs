@@ -72,6 +72,16 @@ pub async fn run_service(
     extra_status: Value,
     handler: Arc<dyn Fn(&Envelope) -> Envelope + Send + Sync>,
 ) -> anyhow::Result<()> {
+    run_service_with_status(config, Arc::new(move || extra_status.clone()), handler).await
+}
+
+/// Status details are recomputed for each request by the bounded IPC handler,
+/// rather than reporting counts captured at service startup.
+pub async fn run_service_with_status(
+    config: ServiceConfig,
+    status_details: Arc<dyn Fn() -> Value + Send + Sync>,
+    handler: Arc<dyn Fn(&Envelope) -> Envelope + Send + Sync>,
+) -> anyhow::Result<()> {
     let context = ServiceContext::for_current_process(&config.name);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -95,7 +105,7 @@ pub async fn run_service(
                 version: agentic_ipc::PROTOCOL_VERSION,
                 id: request.id.clone(),
                 payload: Payload::Ok {
-                    data: status_context.status(extra_status.clone()),
+                    data: status_context.status(status_details()),
                 },
             },
             Payload::Shutdown => {
