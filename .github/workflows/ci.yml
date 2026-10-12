@@ -68,6 +68,9 @@ jobs:
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
 
+      - name: Black-box external SQLite writer contention across daemons
+        run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
+
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
 
