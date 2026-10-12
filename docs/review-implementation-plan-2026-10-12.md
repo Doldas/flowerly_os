@@ -63,6 +63,25 @@ complete.
    - Never expand the host `$HOME` in commands intended for the guest.
    - Prove the VM runs the exact intended source commit.
 
+### Gate B implementation note — socket/PID ownership tranche
+
+The runtime ownership PR makes Unix-socket binding fail closed if the pathname
+already exists (including a stale socket). Operators must stop the process,
+verify the old instance is dead, and explicitly remove a stale socket before
+restarting. **Automatic stale socket recovery is not yet implemented** because
+a connectivity probe followed by unlink would race with a concurrent binder.
+This remains an open Gate B criterion. The server only unlinks its own socket
+inode; a replacement path is left alone.
+
+The dev script records per-runtime PID and Linux process start ticks and checks
+the daemon name and `AGENTIC_RUNTIME_DIR` before signaling. It no longer uses
+host-global process name searches. For production use, a supervisor with
+stronger process handles (pidfd/systemd) is still preferred.
+
+Server-side IPC limits, SQLite worker isolation and trusted peer-credential
+context remain separate Gate B requirements. Do not mark Gate B complete on
+the strength of this tranche alone.
+
 ### Gate B — runtime safety
 
 1. **Socket ownership**
