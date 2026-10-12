@@ -62,3 +62,16 @@ Owner
 ```
 
 Each release tracking issue should link back to the authoritative roadmap section and contain a checklist of its exit criteria.
+
+
+## Native GitHub Project setup
+
+The [Project bootstrap guide](bootstrap.md) and
+[`scripts/bootstrap-github-project.py`](../../scripts/bootstrap-github-project.py)
+create a real GitHub Projects v2 board and import all issues and pull requests,
+including historical closed items. The helper is idempotent: re-running it
+does not overwrite already-imported items.
+
+The current active release is **0.0.4**. The earlier proposed statuses in
+[issue #15](https://github.com/Doldas/flowerly_os/issues/15) predate the
+completion of 0.0.2 and 0.0.3 and must not be reused.
