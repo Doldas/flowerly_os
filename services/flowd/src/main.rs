@@ -70,20 +70,8 @@ fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
 }
 
 fn ensure_general_flow(store: &mut Store) -> anyhow::Result<()> {
-    if store.list_flows()?.iter().any(|f| f.name == "General") {
-        return Ok(());
-    }
-    let mut general = Flow::new("General", "system");
-    general.purpose = Some("The universal default context".to_owned());
-    let provenance = ProvenanceEdge {
-        from: ObjectRef::from(&general.id),
-        relation: ProvenanceRelation::CreatedBy,
-        to: ObjectRef::actor("system")?,
-        created_at: Timestamp::now(),
-        note: Some("bootstrap default General flow".to_owned()),
-    };
-    store.insert_flow_with_provenance(&general, &[provenance])?;
-    tracing::info!(flow_id = %general.id, "created General flow");
+    let id = store.ensure_general_flow()?;
+    tracing::debug!(flow_id = %id, "General system Flow verified");
     Ok(())
 }
 

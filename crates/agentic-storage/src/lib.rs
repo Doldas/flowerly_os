@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "single_foreground_flow",
         sql: include_str!("../migrations/0003_single_foreground_flow.sql"),
     },
+    Migration {
+        version: 4,
+        name: "protect_general",
+        sql: include_str!("../migrations/0004_protect_general.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +174,66 @@ impl Store {
             return Err(StorageError::NotFound("database health check".into()));
         }
         Ok(())
+    }
+
+    /// Bootstrap or recover the unique General system Flow transactionally.
+    /// A pre-existing General keeps its durable ID, including legacy IDs.
+    /// For a fresh database General has a deterministic ID. If no Flow is
+    /// foreground, General becomes the default; otherwise preserve the
+    /// user's active Flow and only repair an archived General.
+    pub fn ensure_general_flow(&mut self) -> Result<FlowId> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<String> = tx
+            .query_row("SELECT id FROM flows WHERE name = 'General'", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let id = if let Some(raw) = existing {
+            FlowId::from_str(&raw).map_err(|error| {
+                StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+            })?
+        } else {
+            let mut general = Flow::new("General", "system");
+            general.id = FlowId::from_raw("flow-general");
+            general.purpose = Some("The universal default context".to_owned());
+            insert_flow_row(&tx, &general)?;
+            insert_provenance_row(
+                &tx,
+                &ProvenanceEdge {
+                    from: ObjectRef::from(&general.id),
+                    relation: agentic_types::ProvenanceRelation::CreatedBy,
+                    to: ObjectRef::actor("system").map_err(|error| {
+                        StorageError::Sqlite(rusqlite::Error::InvalidParameterName(
+                            error.to_string(),
+                        ))
+                    })?,
+                    created_at: Timestamp::now(),
+                    note: Some("bootstrap default General flow".to_owned()),
+                },
+            )?;
+            general.id
+        };
+        tx.execute(
+            "UPDATE flows SET state = 'ACTIVE', revision = revision + 1
+             WHERE id = ?1 AND state = 'ARCHIVED'",
+            params![id.as_str()],
+        )?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM flows WHERE state = 'FOREGROUND')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !active {
+            tx.execute(
+                "UPDATE flows SET state = 'FOREGROUND',
+                 last_active = ?2, revision = revision + 1 WHERE id = ?1",
+                params![id.as_str(), Timestamp::now().as_millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
@@ -830,9 +895,10 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 2);
+        assert_eq!(applied.len(), 3);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
+        assert_eq!(applied[2].version, 4);
 
         let session = store
             .get_session(&session_id)
@@ -1002,6 +1068,88 @@ mod tests {
             2,
             "failed index migration must not silently change legacy Flow state"
         );
+    }
+
+    #[test]
+    fn general_bootstrap_is_stable_across_restart_and_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let original = {
+            let mut store = Store::open(&path).unwrap();
+            store.migrate().unwrap();
+            let id = store.ensure_general_flow().unwrap();
+            assert_eq!(id.as_str(), "flow-general");
+            assert_eq!(
+                store.get_flow(&id).unwrap().unwrap().state,
+                FlowState::Foreground
+            );
+            id
+        };
+        let mut second = Store::open(&path).unwrap();
+        second.migrate().unwrap();
+        assert_eq!(second.ensure_general_flow().unwrap(), original);
+        assert_eq!(
+            second
+                .list_flows()
+                .unwrap()
+                .iter()
+                .filter(|f| f.name == "General")
+                .count(),
+            1
+        );
+        let other = Flow::new("Other", "test");
+        second.insert_flow(&other).unwrap();
+        second.activate_flow(&other.id).unwrap();
+        assert_eq!(second.ensure_general_flow().unwrap(), original);
+        assert_eq!(
+            second.get_flow(&other.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+    }
+
+    #[test]
+    fn existing_legacy_general_id_is_preserved_and_archived_state_recovers() {
+        let mut store = migrated_store();
+        let mut general = Flow::new("General", "system");
+        general.state = FlowState::Archived;
+        let legacy_id = general.id.clone();
+        store.insert_flow(&general).unwrap();
+        assert_eq!(store.ensure_general_flow().unwrap(), legacy_id);
+        assert_eq!(
+            store.get_flow(&legacy_id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+    }
+
+    #[test]
+    fn general_identity_is_protected_against_sql_writers() {
+        let mut store = migrated_store();
+        let id = store.ensure_general_flow().unwrap();
+        assert!(store.insert_flow(&Flow::new("General", "user")).is_err());
+        assert!(store.set_flow_state(&id, FlowState::Archived).is_err());
+        assert!(store
+            .conn
+            .execute("DELETE FROM flows WHERE id = ?1", params![id.as_str()])
+            .is_err());
+        assert!(store
+            .conn
+            .execute(
+                "UPDATE flows SET name = 'Renamed' WHERE id = ?1",
+                params![id.as_str()],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn duplicate_legacy_general_rows_fail_migration_without_mutation() {
+        let store = Store::open_in_memory().unwrap();
+        store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+        store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
+        store.conn.execute_batch(MIGRATIONS[2].sql).unwrap();
+        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        assert!(store.conn.execute_batch(MIGRATIONS[3].sql).is_err());
+        assert_eq!(store.list_flows().unwrap().len(), 2);
     }
 
     #[test]
