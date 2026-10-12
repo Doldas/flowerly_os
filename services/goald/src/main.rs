@@ -175,6 +175,7 @@ impl std::fmt::Display for CommandFailure {
     }
 }
 
+#[cfg(test)]
 impl CommandFailure {
     fn contains(&self, pattern: &str) -> bool {
         self.message.contains(pattern)
