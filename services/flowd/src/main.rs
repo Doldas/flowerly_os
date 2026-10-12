@@ -205,6 +205,30 @@ impl CommandFailure {
     }
 }
 
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl PartialEq<&str> for CommandFailure {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        self.message == *other
+    }
+}
+
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
@@ -217,10 +241,10 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             if name.trim().is_empty() {
-                return Err("flow name must not be empty".to_owned());
+                return Err("flow name must not be empty".into());
             }
             if name == "General" {
-                return Err("General is reserved for the system Flow".to_owned());
+                return Err("General is reserved for the system Flow".into());
             }
             let flow = Flow::new(name, created_by);
             let provenance = ProvenanceEdge {
@@ -252,7 +276,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 FlowState::Archived
             };
             if state == FlowState::Archived && flow.name == "General" {
-                return Err("General cannot be archived".to_owned());
+                return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
                 store.activate_flow(&flow.id).map_err(err_str)?;
@@ -272,7 +296,7 @@ fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::
         if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
             return Ok(flow);
         }
-        return Err(format!("flow not found: {id}").into());
+        return Err(format!("flow not found: {id}"));
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
         let flows = store.list_flows().map_err(err_str)?;
@@ -283,7 +307,7 @@ fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::
             }
             return Ok(flow);
         }
-        return Err(format!("flow not found: {by_name}").into());
+        return Err(format!("flow not found: {by_name}"));
     }
     Err("provide either `id` or `name`".to_owned())
 }
