@@ -74,7 +74,7 @@ pub async fn run_service(
 ) -> anyhow::Result<()> {
     let context = ServiceContext::for_current_process(&config.name);
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let shutdown_tx = shutdown_tx.clone();
 
     let status_context = context.clone();
@@ -124,26 +124,10 @@ pub async fn run_service(
         reply
     });
 
-    let serve_fut = agentic_ipc::serve(&socket, request_handler)
-        .instrument(tracing::info_span!("service", service = %context.name));
-
-    tokio::pin!(serve_fut);
-
-    let outcome: anyhow::Result<()> = tokio::select! {
-        result = &mut serve_fut => result.map_err(anyhow::Error::from),
-        changed = shutdown_rx.changed() => {
-            match changed {
-                Ok(()) if *shutdown_rx.borrow() => {
-                    tracing::info!("shutdown requested over ipc");
-                    Ok(())
-                }
-                Ok(()) => Ok(()),
-                Err(_) => Ok(()),
-            }
-        }
-    };
-
-    outcome
+    agentic_ipc::serve_with_shutdown(&socket, request_handler, shutdown_rx)
+        .instrument(tracing::info_span!("service", service = %context.name))
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]
@@ -207,5 +191,6 @@ mod tests {
         assert!(matches!(shut.payload, Payload::Ok { .. }));
 
         server.await.expect("server exits").expect("clean exit");
+        assert!(!socket.exists(), "shutdown must remove the owned socket");
     }
 }

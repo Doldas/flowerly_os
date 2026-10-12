@@ -9,7 +9,8 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
@@ -160,6 +161,17 @@ impl Drop for SocketOwnership {
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
 pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Result<()> {
+    let (_tx, rx) = watch::channel(false);
+    serve_with_shutdown(socket_path, handler, rx).await
+}
+
+/// Stop accepting new clients when shutdown is requested; drain accepted
+/// connections up to a bounded deadline before removing our socket.
+pub async fn serve_with_shutdown(
+    socket_path: impl AsRef<Path>,
+    handler: Arc<Handler>,
+    mut shutdown_requested: watch::Receiver<bool>,
+) -> Result<()> {
     let path = socket_path.as_ref().to_path_buf();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -178,12 +190,24 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
     let mut shutdown = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let blocking_handlers = Arc::new(Semaphore::new(MAX_BLOCKING_HANDLERS));
+    let mut connections_tasks = JoinSet::new();
 
     loop {
         tokio::select! {
+            changed = shutdown_requested.changed() => {
+                if changed.is_err() || *shutdown_requested.borrow() {
+                    tracing::info!("IPC shutdown requested; draining connections");
+                    break;
+                }
+            }
             _signal = shutdown.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 break;
+            }
+            finished = connections_tasks.join_next(), if !connections_tasks.is_empty() => {
+                if let Some(Err(error)) = finished {
+                    tracing::warn!(%error, "IPC connection task failed");
+                }
             }
             accepted = listener.accept() => {
                 match accepted {
@@ -209,7 +233,7 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
                         if let Ok(permit) = Arc::clone(&connections).try_acquire_owned() {
                             let handler_ref = Arc::clone(&handler);
                             let blocking = Arc::clone(&blocking_handlers);
-                            tokio::spawn(async move {
+                            connections_tasks.spawn(async move {
                                 let _connection = permit;
                                 if let Err(err) = handle_connection(stream, handler_ref, blocking).await {
                                     tracing::debug!(error = %err, "ipc connection ended");
@@ -227,6 +251,23 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
         }
     }
 
+    // Stop accepting new connections before draining workers. The task that
+    // requested shutdown has time to flush its OK response to the client.
+    drop(listener);
+    if tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(result) = connections_tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "IPC connection task failed on shutdown");
+            }
+        }
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!("IPC drain deadline expired; aborting remaining connections");
+        connections_tasks.abort_all();
+        while connections_tasks.join_next().await.is_some() {}
+    }
     drop(ownership);
     Ok(())
 }
