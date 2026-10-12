@@ -353,8 +353,11 @@ async fn handle_connection(
         // writer can keep a synchronous worker occupied, but it must not
         // extend the IPC caller's budget or consume another async worker.
         let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
+        // Reserve a short response window so expired queued work can still
+        // return a correlated, machine-readable Unavailable response.
+        let handler_deadline = deadline - std::time::Duration::from_millis(250);
         let response = match tokio::time::timeout_at(
-            deadline,
+            handler_deadline,
             Arc::clone(&blocking).acquire_owned(),
         )
         .await
@@ -368,7 +371,7 @@ async fn handle_connection(
                     let _permit = permit;
                     handler_ref(&request_for_handler, &peer)
                 });
-                match tokio::time::timeout_at(deadline, task).await {
+                match tokio::time::timeout_at(handler_deadline, task).await {
                     Ok(Ok(response)) => response,
                     Ok(Err(error)) => return Err(IpcError::Task(error)),
                     Err(_) => unavailable_response(&request),
