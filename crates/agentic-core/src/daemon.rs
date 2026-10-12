@@ -48,11 +48,7 @@ impl ServiceContext {
 }
 
 #[must_use]
-pub fn coded_error_envelope(
-    id: String,
-    code: ErrorCode,
-    message: impl Into<String>,
-) -> Envelope {
+pub fn coded_error_envelope(id: String, code: ErrorCode, message: impl Into<String>) -> Envelope {
     Envelope {
         version: agentic_ipc::PROTOCOL_VERSION,
         id,
