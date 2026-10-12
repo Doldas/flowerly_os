@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,40 @@ pub async fn read_frame(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Enve
     Ok(envelope)
 }
 
+
+struct SocketOwnership {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl SocketOwnership {
+    fn new(path: &Path) -> std::io::Result<Self> {
+        let meta = std::fs::symlink_metadata(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            device: meta.dev(),
+            inode: meta.ino(),
+        })
+    }
+}
+
+impl Drop for SocketOwnership {
+    fn drop(&mut self) {
+        // A replacement at the same pathname belongs to another instance.
+        if let Ok(meta) = std::fs::symlink_metadata(&self.path) {
+            if meta.file_type().is_socket()
+                && meta.dev() == self.device
+                && meta.ino() == self.inode
+            {
+                if let Err(error) = std::fs::remove_file(&self.path) {
+                    tracing::warn!(socket = %self.path.display(), %error, "socket cleanup failed");
+                }
+            }
+        }
+    }
+}
+
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
 pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Result<()> {
@@ -124,9 +159,12 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let _ = std::fs::remove_file(&path);
-
+    // Bind without unlinking: an existing socket (active OR stale) must not be
+    // silently replaced. Stale sockets require explicit operator recovery.
     let listener = UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let ownership = SocketOwnership::new(&path)?;
+
     tracing::info!(socket = %path.display(), "ipc server listening");
 
     let mut shutdown = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -155,7 +193,7 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
         }
     }
 
-    let _ = std::fs::remove_file(&path);
+    drop(ownership);
     Ok(())
 }
 
@@ -251,6 +289,40 @@ mod tests {
         assert!(matches!(response.payload, Payload::Ok { .. }));
 
         server.abort();
+    }
+
+
+    #[tokio::test]
+    async fn never_replaces_a_regular_file_or_live_socket() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("safe.sock");
+        std::fs::write(&path, "do not delete").unwrap();
+        let handler: Arc<Handler> = Arc::new(|req: &Envelope| Envelope {
+            version: PROTOCOL_VERSION,
+            id: req.id.clone(),
+            payload: Payload::Ok { data: Value::Null },
+        });
+        assert!(serve(&path, Arc::clone(&handler)).await.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "do not delete");
+        std::fs::remove_file(&path).unwrap();
+        let listener = UnixListener::bind(&path).unwrap();
+        assert!(serve(&path, handler).await.is_err());
+        assert!(path.exists());
+        drop(listener);
+    }
+
+    #[test]
+    fn cleanup_does_not_remove_a_replacement_socket() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("replace.sock");
+        let original = UnixListener::bind(&path).unwrap();
+        let guard = SocketOwnership::new(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let replacement = UnixListener::bind(&path).unwrap();
+        drop(guard);
+        assert!(path.exists());
+        drop(replacement);
+        drop(original);
     }
 
     #[test]
