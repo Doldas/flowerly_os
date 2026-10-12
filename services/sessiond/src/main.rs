@@ -332,11 +332,7 @@ mod tests {
                 serde_json::json!({"id": 42}),
                 ErrorCode::InvalidArgument,
             ),
-            (
-                "unknown",
-                serde_json::json!({}),
-                ErrorCode::InvalidArgument,
-            ),
+            ("unknown", serde_json::json!({}), ErrorCode::InvalidArgument),
         ];
         for (command, args, expected) in cases {
             assert_eq!(
