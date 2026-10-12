@@ -307,8 +307,8 @@ mod tests {
         drop(listener);
     }
 
-    #[test]
-    fn cleanup_does_not_remove_a_replacement_socket() {
+    #[tokio::test]
+    async fn cleanup_does_not_remove_a_replacement_socket() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("replace.sock");
         let original = UnixListener::bind(&path).unwrap();
