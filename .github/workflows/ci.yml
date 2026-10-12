@@ -68,6 +68,9 @@ jobs:
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
 
+      - name: Check development runtime ownership isolation
+        run: bash ./scripts/test-dev-runtime-ownership.sh
+
   docs:
     name: docs
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'flowerly-runner' }}
