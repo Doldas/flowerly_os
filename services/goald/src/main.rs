@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::Store;
+use agentic_storage::{StorageError, Store};
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -78,7 +78,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(message) => error_envelope(request.id.clone(), message),
+        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
@@ -133,7 +133,34 @@ fn validate_goal_command(
     Ok(())
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self { code: ErrorCode::Internal, message }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: if error.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal },
+            message: error.to_string(),
+        }
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "goal.create" => {
             let objective = args
@@ -163,7 +190,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
             };
             store
                 .insert_goal_with_provenance(&goal, &[created_edge])
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             tracing::info!(goal_id = %goal.id, objective, "goal created");
             Ok(serde_json::json!({
                 "id": goal.id,
@@ -179,7 +206,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
             if store.get_goal(&parent).map_err(err_str)?.is_none() {
-                return Err(format!("goal not found: {parent}"));
+                return Err(format!("goal not found: {parent}").into());
             }
             let objective = args
                 .get("objective")
@@ -259,7 +286,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
             store.set_goal_status(&goal_id, status).map_err(err_str)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
-        other => Err(format!("goald: unknown command `{other}`")),
+        other => Err(format!("goald: unknown command `{other}`").into()),
     }
 }
 
