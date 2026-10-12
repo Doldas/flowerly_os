@@ -68,26 +68,39 @@ instead of an abstract future distribution.
   are stable; provenance edges are queryable; corruption is not silently
   ignored.
 
-## 0.0.4 — Flows and Sessions
+## 0.0.4 — Flows and Sessions (in progress)
 
-- **Goal:** the first distinctive Flowerly OS primitive.
-- **Key deliverables:** General Flow plus create/rename/list/activate/archive;
-  states FOREGROUND/ACTIVE/ARCHIVED; persistent PTY sessions whose runtime
-  lifecycle is independent from ATTACHED/DETACHED presentation state; attach,
-  detach, reattach, terminate, and Flow association; CLI operations.
-- **Entry criteria:** persistent state (0.0.3).
-- **Exit criteria:** an integration test proves create Flow, start a persistent
-  shell, run a long process, detach, switch Flow, reattach, and find the process
-  still alive.
+- **Goal:** the first distinctive Flowerly OS primitive, built on a runtime safe
+  enough to own real PTYs and processes.
+- **Entry hardening gate:** safe PR/workflow trust boundary; coherent
+  release-promotion rules; disposable PR runners; repaired CLI/self-test/Arch-VM
+  paths; exclusive socket/process ownership; bounded IPC with deadlines;
+  blocking SQLite isolated from Tokio workers; explicit local peer identity;
+  dynamic readiness/status; machine-readable errors for touched APIs.
+- **Flow deliverables:** stable General Flow semantics; unambiguous lookup;
+  atomic foreground activation in the user/state scope; `last_active` and
+  revision updates in the same transaction; concurrency tests.
+- **Session deliverables:** persistent PTY ownership whose runtime lifecycle is
+  independent from ATTACHED/DETACHED presentation state; attach, detach,
+  reattach, resize, bounded output buffering, terminate/exit observation, Flow
+  association and safe process-group identity.
+- **Entry criteria:** persistent state (0.0.3) plus the review-driven runtime
+  hardening gates.
+- **Exit criteria:** a black-box integration test proves create Flow, start a
+  real shell, run a long process, detach, switch Flow, reattach, and find the
+  same process alive under the same Session id; foreground/runtime ownership
+  invariants also hold.
+- **Detailed plan:** [Review-driven implementation plan](review-implementation-plan-2026-10-12.md).
 
 ## 0.0.5 — Generations
 
 - **Goal:** a reproducible model for system state and rollback.
-- **Key deliverables:** Generation manifest; create/list/inspect/activate/
-  rollback; integration with source commit, build manifest, parent generation,
-  reason, and provenance; initially over a constrained Arch Linux test root
-  filesystem. The manifest must be able to carry the exact resolved package
-  set and kernel/build identities needed to explain a candidate.
+- **Key deliverables:** Generation manifest; create/list/inspect/test/promote/
+  activate/rollback semantics; integration with source commit, build manifest,
+  parent generation, reason, provenance and activation history; exact resolved
+  Arch package/kernel/build identities; schema/recovery guards; and a minimal
+  bootable candidate fixture suitable for 0.0.6 KVM testing. This fixture is
+  test infrastructure, not the distribution-grade 0.0.9 image.
 - **Entry criteria:** Flows and sessions plus provenance (0.0.3–0.0.4).
 - **Exit criteria:** manifests are reproducible; a candidate can be created;
   activation is recorded; rollback returns a known previous state; history
@@ -105,10 +118,11 @@ instead of an abstract future distribution.
 
 ## 0.0.7 — Goal Runtime
 
-- **Goal:** persistent goals as operating-system objects.
-- **Key deliverables:** Goal model (parent, objective, rationale, constraints,
-  success metrics, priority, status); create/show/child/complete/abandon;
-  goal/provenance links to executions and generations.
+- **Goal:** turn persistent Goals into an execution/runtime contract.
+- **Key deliverables:** legal Goal transitions, decomposition/parent-child
+  semantics, constraints, dependencies/scheduling, success evidence, and
+  Goal/provenance links to executions, experiments and generations. Basic Goal
+  persistence/CRUD already exists and is not reimplemented here.
 - **Entry criteria:** provenance and generations (0.0.5).
 - **Exit criteria:** a goal can produce a child goal, execution, experiment, and
   generation relationship.
@@ -120,15 +134,17 @@ instead of an abstract future distribution.
   provider-neutral model interface; initial tools (read file, write workspace
   file, run command, query state, query goals, create child goal); every action
   produces an Execution record.
-- **Entry criteria:** goal runtime and the capability service.
+- **Entry criteria:** goal runtime, working Evolution World, authenticated IPC
+  context, real capability/delegation policy, and bounded execution.
 - **Exit criteria:** an agent can receive a goal, inspect a test project, modify
   source, run tests, record an execution, and produce a finding without losing
   provenance.
 
 ## 0.0.9 — Minimal Agentic Environment
 
-- **Goal:** a bootable Flowerly OS image, still without autonomous
-  self-modification.
+- **Goal:** a distribution-grade Flowerly OS image, still without autonomous
+  self-modification. Earlier milestones may boot minimal test fixtures; this
+  milestone turns them into an operational system image.
 - **Key deliverables:** reproducible Arch Linux root filesystem; initramfs;
   systemd; networking; users; a VM-first installable image carrying the
   Flowerly services and `agenticctl`; exact resolved Arch package manifest;

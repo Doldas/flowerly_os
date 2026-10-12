@@ -15,11 +15,15 @@ jobs:
     steps:
       - name: Check head branch pattern
         if: "!startsWith(github.head_ref, 'release/')"
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           echo "::error::PRs to master must originate from a release/* branch (e.g., release/1, release/2)"
-          echo "Current head branch: ${{ github.head_ref }}"
+          printf 'Current head branch: %s\n' "$HEAD_REF"
           exit 1
 
-      - name: OK - PR from release/* branch
+      - name: Accept release branch
         if: startsWith(github.head_ref, 'release/')
-        run: echo "PR originates from release branch ${{ github.head_ref }}"
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: printf 'PR originates from release branch %s\n' "$HEAD_REF"

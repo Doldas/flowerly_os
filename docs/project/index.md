@@ -1,13 +1,13 @@
 # Project & Release Roadmap
 
-This page is the public planning overview. The detailed acceptance criteria remain in [Roadmap](../roadmap.md), and release policy is defined in [Releases](../releases.md).
+This page is the public planning overview. The detailed acceptance criteria remain in [Roadmap](../roadmap.md), release policy is defined in [Releases](../releases.md), and the review-derived implementation order is preserved in the [Review-driven implementation plan](../review-implementation-plan-2026-10-12.md).
 
 | Release | Theme | Status | Tracking |
 | --- | --- | --- | --- |
 | 0.0.1 | Repository Foundation | Done | — |
 | 0.0.2 | Core Runtime Skeleton | Done | [#6](https://github.com/Doldas/flowerly_os/issues/6) |
 | 0.0.3 | Persistent State | Done | [#7](https://github.com/Doldas/flowerly_os/issues/7) |
-| 0.0.4 | Flows and Sessions | Next | [#8](https://github.com/Doldas/flowerly_os/issues/8) |
+| 0.0.4 | Flows, Sessions & Runtime Hardening | In progress | [#8](https://github.com/Doldas/flowerly_os/issues/8) |
 | 0.0.5 | Generations | Planned | [#9](https://github.com/Doldas/flowerly_os/issues/9) |
 | 0.0.6 | Evolution Lab | Planned | [#10](https://github.com/Doldas/flowerly_os/issues/10) |
 | 0.0.7 | Goal Runtime | Planned | [#11](https://github.com/Doldas/flowerly_os/issues/11) |

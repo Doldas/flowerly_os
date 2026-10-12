@@ -20,12 +20,8 @@ env:
 
 jobs:
   rust:
-    name: rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [flowerly-runner]
+    name: rust
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'flowerly-runner' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,9 +62,15 @@ jobs:
       - name: Release build
         run: just build
 
+      - name: Run daemon self-tests
+        run: bash ./scripts/check-daemon-self-tests.sh target/release
+
+      - name: Check CLI-to-daemon contracts
+        run: bash ./scripts/check-cli-contracts.sh target/release
+
   docs:
     name: docs
-    runs-on: flowerly-runner
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'flowerly-runner' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
