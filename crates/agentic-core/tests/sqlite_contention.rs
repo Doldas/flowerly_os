@@ -57,31 +57,58 @@ async fn sqlite_writer_lock_does_not_starve_other_service_ping() {
                 );
             };
             let begin = Instant::now();
-            let result = store.lock().unwrap().insert_flow(&Flow::new("Contended", "test"));
+            let result = store
+                .lock()
+                .unwrap()
+                .insert_flow(&Flow::new("Contended", "test"));
             active_for_handler.lock().unwrap().push(begin.elapsed());
             match result {
                 Ok(()) => ok_envelope(req.id.clone(), serde_json::json!({"written": true})),
-                Err(err) => coded_error_envelope(req.id.clone(), ErrorCode::Unavailable, err.to_string()),
+                Err(err) => {
+                    coded_error_envelope(req.id.clone(), ErrorCode::Unavailable, err.to_string())
+                }
             }
         });
-        servers.push(tokio::spawn(run_service(cfg.clone(), serde_json::json!({}), handler)));
+        servers.push(tokio::spawn(run_service(
+            cfg.clone(),
+            serde_json::json!({}),
+            handler,
+        )));
         wait_for_socket(&cfg.socket_path()).await;
     }
 
     let socket_a = first.socket_path();
     let socket_b = second.socket_path();
     let stalled_a = tokio::spawn(async move {
-        call(&socket_a, Payload::Command { name: "write".into(), args: serde_json::json!({}) }).await
+        call(
+            &socket_a,
+            Payload::Command {
+                name: "write".into(),
+                args: serde_json::json!({}),
+            },
+        )
+        .await
     });
     let stalled_b = tokio::spawn(async move {
-        call(&socket_b, Payload::Command { name: "write".into(), args: serde_json::json!({}) }).await
+        call(
+            &socket_b,
+            Payload::Command {
+                name: "write".into(),
+                args: serde_json::json!({}),
+            },
+        )
+        .await
     });
 
     tokio::time::sleep(Duration::from_millis(180)).await;
     let started = Instant::now();
-    let pong = tokio::time::timeout(Duration::from_secs(2), call(&first.socket_path(), Payload::Ping))
-        .await.expect("Ping must not wait for contended SQLite handler")
-        .expect("Ping should be delivered");
+    let pong = tokio::time::timeout(
+        Duration::from_secs(2),
+        call(&first.socket_path(), Payload::Ping),
+    )
+    .await
+    .expect("Ping must not wait for contended SQLite handler")
+    .expect("Ping should be delivered");
     assert!(matches!(pong.payload, Payload::Ok { .. }));
     assert!(started.elapsed() < Duration::from_secs(2));
 
