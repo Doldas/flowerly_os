@@ -356,30 +356,28 @@ async fn handle_connection(
         // Reserve a short response window so expired queued work can still
         // return a correlated, machine-readable Unavailable response.
         let handler_deadline = deadline - std::time::Duration::from_millis(250);
-        let response = match tokio::time::timeout_at(
-            handler_deadline,
-            Arc::clone(&blocking).acquire_owned(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => {
-                // The permit remains with the worker even when the request
-                // expires; do not count a still-running SQLite write as free.
-                let handler_ref = Arc::clone(&handler);
-                let request_for_handler = request.clone();
-                let task = tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    handler_ref(&request_for_handler, &peer)
-                });
-                match tokio::time::timeout_at(handler_deadline, task).await {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(error)) => return Err(IpcError::Task(error)),
-                    Err(_) => unavailable_response(&request),
+        let response =
+            match tokio::time::timeout_at(handler_deadline, Arc::clone(&blocking).acquire_owned())
+                .await
+            {
+                Ok(Ok(permit)) => {
+                    // The permit remains with the worker even when the request
+                    // expires; do not count a still-running SQLite write as free.
+                    let handler_ref = Arc::clone(&handler);
+                    let request_for_handler = request.clone();
+                    let task = tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        handler_ref(&request_for_handler, &peer)
+                    });
+                    match tokio::time::timeout_at(handler_deadline, task).await {
+                        Ok(Ok(response)) => response,
+                        Ok(Err(error)) => return Err(IpcError::Task(error)),
+                        Err(_) => unavailable_response(&request),
+                    }
                 }
-            }
-            Ok(Err(_)) => return Err(IpcError::Closed("handler pool shut down".into())),
-            Err(_) => unavailable_response(&request),
-        };
+                Ok(Err(_)) => return Err(IpcError::Closed("handler pool shut down".into())),
+                Err(_) => unavailable_response(&request),
+            };
         // Responses that themselves cannot be written before the deadline
         // close the connection. The client has the same bounded budget.
         tokio::time::timeout_at(deadline, write_frame(&mut stream, &response))
@@ -648,7 +646,9 @@ mod tests {
         let mut requests = Vec::new();
         for _ in 0..MAX_BLOCKING_HANDLERS {
             let socket = path.clone();
-            requests.push(tokio::spawn(async move { call(socket, Payload::Ping).await }));
+            requests.push(tokio::spawn(
+                async move { call(socket, Payload::Ping).await },
+            ));
         }
         // Wait for all slots to be occupied by the first eight handlers.
         for _ in 0..100 {
