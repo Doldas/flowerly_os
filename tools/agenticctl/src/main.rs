@@ -504,7 +504,10 @@ async fn call(socket: &std::path::Path, payload: Payload) -> Result<Envelope> {
 fn reply_value(envelope: Envelope) -> Result<Value> {
     match envelope.payload {
         Payload::Ok { data } => Ok(data),
-        Payload::Err { message } => anyhow::bail!("service error: {message}"),
+        Payload::Err { message, code } => match code {
+            Some(code) => anyhow::bail!("service error ({code:?}): {message}"),
+            None => anyhow::bail!("service error: {message}"),
+        },
         other => Ok(serde_json::json!({ "type": format!("{other:?}") })),
     }
 }
