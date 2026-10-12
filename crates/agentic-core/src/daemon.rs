@@ -72,6 +72,16 @@ pub async fn run_service(
     extra_status: Value,
     handler: Arc<dyn Fn(&Envelope) -> Envelope + Send + Sync>,
 ) -> anyhow::Result<()> {
+    run_service_with_status(config, Arc::new(move || extra_status.clone()), handler).await
+}
+
+/// Status details are recomputed for each request by the bounded IPC handler,
+/// rather than reporting counts captured at service startup.
+pub async fn run_service_with_status(
+    config: ServiceConfig,
+    status_details: Arc<dyn Fn() -> Value + Send + Sync>,
+    handler: Arc<dyn Fn(&Envelope) -> Envelope + Send + Sync>,
+) -> anyhow::Result<()> {
     let context = ServiceContext::for_current_process(&config.name);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -95,7 +105,7 @@ pub async fn run_service(
                 version: agentic_ipc::PROTOCOL_VERSION,
                 id: request.id.clone(),
                 payload: Payload::Ok {
-                    data: status_context.status(extra_status.clone()),
+                    data: status_context.status(status_details()),
                 },
             },
             Payload::Shutdown => {
@@ -134,6 +144,47 @@ pub async fn run_service(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn status_provider_is_evaluated_per_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempdir().unwrap();
+        let config = ServiceConfig {
+            name: "dynamic-status".to_owned(),
+            runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+            database_path: None,
+            log_format: crate::config::LogFormat::Text,
+        };
+        let count = Arc::new(AtomicUsize::new(1));
+        let status_count = Arc::clone(&count);
+        let server = tokio::spawn(run_service_with_status(
+            config,
+            Arc::new(
+                move || serde_json::json!({"item_count": status_count.load(Ordering::SeqCst)}),
+            ),
+            Arc::new(|req| error_envelope(req.id.clone(), "not implemented")),
+        ));
+        let socket = dir.path().join("dynamic-status.sock");
+        for _ in 0..50 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let first = agentic_ipc::call(&socket, Payload::Status).await.unwrap();
+        count.store(2, Ordering::SeqCst);
+        let second = agentic_ipc::call(&socket, Payload::Status).await.unwrap();
+        match (first.payload, second.payload) {
+            (Payload::Ok { data: before }, Payload::Ok { data: after }) => {
+                assert_eq!(before["details"]["item_count"], 1);
+                assert_eq!(after["details"]["item_count"], 2);
+            }
+            _ => panic!("expected status responses"),
+        }
+        agentic_ipc::call(&socket, Payload::Shutdown).await.unwrap();
+        server.await.unwrap().unwrap();
+    }
 
     #[tokio::test]
     async fn service_status_is_reported() {
