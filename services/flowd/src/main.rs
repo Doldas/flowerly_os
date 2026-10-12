@@ -245,7 +245,15 @@ mod tests {
         assert_eq!(current.state, FlowState::Foreground);
         assert!(current.last_active.is_some());
         assert!(current.revision > b.revision);
-        assert_eq!(store.list_flows().unwrap().iter().filter(|f| f.state == FlowState::Foreground).count(), 1);
+        assert_eq!(
+            store
+                .list_flows()
+                .unwrap()
+                .iter()
+                .filter(|f| f.state == FlowState::Foreground)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -256,9 +264,15 @@ mod tests {
             store.insert_flow(&Flow::new("Duplicate", "user")).unwrap();
         }
         assert!(find_flow(&store, &serde_json::json!({"name":"Duplicate"}))
-            .unwrap_err().contains("ambiguous"));
-        assert!(run_command(&mut store, "flow.archive", &serde_json::json!({"name":"General"}))
-            .unwrap_err().contains("cannot be archived"));
+            .unwrap_err()
+            .contains("ambiguous"));
+        assert!(run_command(
+            &mut store,
+            "flow.archive",
+            &serde_json::json!({"name":"General"})
+        )
+        .unwrap_err()
+        .contains("cannot be archived"));
     }
 
     #[test]
