@@ -369,13 +369,32 @@ mod tests {
         let mut store = migrated_store();
         ensure_general_flow(&mut store).unwrap();
         let cases = [
-            ("flow.create", serde_json::json!({"name": "General"}), ErrorCode::Conflict),
-            ("flow.activate", serde_json::json!({"id": "flow-missing"}), ErrorCode::NotFound),
-            ("flow.archive", serde_json::json!({"name": "General"}), ErrorCode::PermissionDenied),
-            ("flow.activate", serde_json::json!({"id": 42}), ErrorCode::InvalidArgument),
+            (
+                "flow.create",
+                serde_json::json!({"name": "General"}),
+                ErrorCode::Conflict,
+            ),
+            (
+                "flow.activate",
+                serde_json::json!({"id": "flow-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "flow.archive",
+                serde_json::json!({"name": "General"}),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "flow.activate",
+                serde_json::json!({"id": 42}),
+                ErrorCode::InvalidArgument,
+            ),
         ];
         for (command, args, expected) in cases {
-            assert_eq!(validate_flow_command(&store, command, &args).unwrap_err().0, expected);
+            assert_eq!(
+                validate_flow_command(&store, command, &args).unwrap_err().0,
+                expected
+            );
         }
         for _ in 0..2 {
             store.insert_flow(&Flow::new("Collision", "user")).unwrap();
