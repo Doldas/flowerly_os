@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentic_ipc::{Envelope, Payload, PeerIdentity};
+use agentic_ipc::{Envelope, ErrorCode, Payload, PeerIdentity};
 use serde_json::Value;
 use tracing::Instrument;
 
@@ -48,14 +48,24 @@ impl ServiceContext {
 }
 
 #[must_use]
-pub fn error_envelope(id: String, message: impl Into<String>) -> Envelope {
+pub fn coded_error_envelope(
+    id: String,
+    code: ErrorCode,
+    message: impl Into<String>,
+) -> Envelope {
     Envelope {
         version: agentic_ipc::PROTOCOL_VERSION,
         id,
         payload: Payload::Err {
             message: message.into(),
+            code: Some(code),
         },
     }
+}
+
+#[must_use]
+pub fn error_envelope(id: String, message: impl Into<String>) -> Envelope {
+    coded_error_envelope(id, ErrorCode::Internal, message)
 }
 
 #[must_use]
@@ -124,8 +134,9 @@ pub async fn run_service_with_status(
                 // durable creator fields and CreatedBy provenance.
                 let mut trusted_args = args.clone();
                 let Value::Object(fields) = &mut trusted_args else {
-                    return error_envelope(
+                    return coded_error_envelope(
                         request.id.clone(),
+                        ErrorCode::InvalidArgument,
                         "command args must be a JSON object",
                     );
                 };
@@ -142,8 +153,9 @@ pub async fn run_service_with_status(
                     },
                 })
             }
-            other => error_envelope(
+            other => coded_error_envelope(
                 request.id.clone(),
+                ErrorCode::InvalidArgument,
                 format!("request type not handled by core runner: {other:?}"),
             ),
         };
