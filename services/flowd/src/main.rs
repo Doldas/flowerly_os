@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::Store;
+use agentic_storage::{StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -43,14 +43,16 @@ async fn main() -> anyhow::Result<()> {
 
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.lock() {
+    let status = Arc::new(move || match status_store.try_lock() {
         Ok(store) => match count_flows(&store) {
             Ok(count) => {
                 serde_json::json!({"flow_count": count, "ready": true, "default_flow": "General"})
             }
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
-        Err(_) => serde_json::json!({"ready": false, "error": "storage lock poisoned"}),
+        Err(_) => {
+            serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
+        }
     });
     let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
 
@@ -94,8 +96,8 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
     let data = match run_command(&mut store, name, args) {
         Ok(data) => data,
-        Err(message) => {
-            return error_envelope(request.id.clone(), message);
+        Err(error) => {
+            return coded_error_envelope(request.id.clone(), error.code, error.message);
         }
     };
     ok_envelope(request.id.clone(), data)
@@ -178,7 +180,59 @@ fn validate_flow_command(
     Ok(())
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Result<Value, String> {
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: if error.is_busy() {
+                ErrorCode::Unavailable
+            } else {
+                ErrorCode::Internal
+            },
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl PartialEq<&str> for CommandFailure {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        self.message == *other
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
             let name = args
@@ -190,10 +244,10 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             if name.trim().is_empty() {
-                return Err("flow name must not be empty".to_owned());
+                return Err("flow name must not be empty".into());
             }
             if name == "General" {
-                return Err("General is reserved for the system Flow".to_owned());
+                return Err("General is reserved for the system Flow".into());
             }
             let flow = Flow::new(name, created_by);
             let provenance = ProvenanceEdge {
@@ -205,7 +259,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
             };
             store
                 .insert_flow_with_provenance(&flow, &[provenance])
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
         }
@@ -225,7 +279,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
                 FlowState::Archived
             };
             if state == FlowState::Archived && flow.name == "General" {
-                return Err("General cannot be archived".to_owned());
+                return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
                 store.activate_flow(&flow.id).map_err(err_str)?;
@@ -234,7 +288,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
             }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
-        other => Err(format!("flowd: unknown command `{other}`")),
+        other => Err(format!("flowd: unknown command `{other}`").into()),
     }
 }
 
@@ -349,6 +403,7 @@ mod tests {
             &serde_json::json!({"name":"General"})
         )
         .unwrap_err()
+        .message
         .contains("cannot be archived"));
     }
 

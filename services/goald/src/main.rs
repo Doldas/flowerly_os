@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::Store;
+use agentic_storage::{StorageError, Store};
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -41,12 +41,14 @@ async fn main() -> anyhow::Result<()> {
     let store = open_store(&config)?;
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.lock() {
+    let status = Arc::new(move || match status_store.try_lock() {
         Ok(store) => match store.list_goals().map(|items| items.len()) {
             Ok(count) => serde_json::json!({"goal_count": count, "ready": true}),
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
-        Err(_) => serde_json::json!({"ready": false, "error": "storage lock poisoned"}),
+        Err(_) => {
+            serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
+        }
     });
     let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
 
@@ -78,7 +80,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(message) => error_envelope(request.id.clone(), message),
+        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
@@ -133,7 +135,66 @@ fn validate_goal_command(
     Ok(())
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: if error.is_busy() {
+                ErrorCode::Unavailable
+            } else {
+                ErrorCode::Internal
+            },
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl PartialEq<&str> for CommandFailure {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        self.message == *other
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "goal.create" => {
             let objective = args
@@ -163,7 +224,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
             };
             store
                 .insert_goal_with_provenance(&goal, &[created_edge])
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             tracing::info!(goal_id = %goal.id, objective, "goal created");
             Ok(serde_json::json!({
                 "id": goal.id,
@@ -179,7 +240,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
             if store.get_goal(&parent).map_err(err_str)?.is_none() {
-                return Err(format!("goal not found: {parent}"));
+                return Err(format!("goal not found: {parent}").into());
             }
             let objective = args
                 .get("objective")
@@ -259,7 +320,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
             store.set_goal_status(&goal_id, status).map_err(err_str)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
-        other => Err(format!("goald: unknown command `{other}`")),
+        other => Err(format!("goald: unknown command `{other}`").into()),
     }
 }
 

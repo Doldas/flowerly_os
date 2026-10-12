@@ -27,6 +27,22 @@ pub enum StorageError {
     NotFound(String),
 }
 
+impl StorageError {
+    /// SQLite writer contention is a transient availability condition, not
+    /// corrupt user input or an internal application error.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+        )
+    }
+}
+
 pub type Result<T> = std::result::Result<T, StorageError>;
 
 #[derive(Debug, Clone, Copy)]
