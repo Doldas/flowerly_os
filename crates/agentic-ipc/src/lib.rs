@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-use std::path::{Path, PathBuf};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -118,7 +118,6 @@ pub async fn read_frame(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Enve
     Ok(envelope)
 }
 
-
 struct SocketOwnership {
     path: PathBuf,
     device: u64,
@@ -140,9 +139,7 @@ impl Drop for SocketOwnership {
     fn drop(&mut self) {
         // A replacement at the same pathname belongs to another instance.
         if let Ok(meta) = std::fs::symlink_metadata(&self.path) {
-            if meta.file_type().is_socket()
-                && meta.dev() == self.device
-                && meta.ino() == self.inode
+            if meta.file_type().is_socket() && meta.dev() == self.device && meta.ino() == self.inode
             {
                 if let Err(error) = std::fs::remove_file(&self.path) {
                     tracing::warn!(socket = %self.path.display(), %error, "socket cleanup failed");
@@ -290,7 +287,6 @@ mod tests {
 
         server.abort();
     }
-
 
     #[tokio::test]
     async fn never_replaces_a_regular_file_or_live_socket() {
