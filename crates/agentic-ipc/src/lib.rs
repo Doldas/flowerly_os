@@ -243,7 +243,7 @@ pub async fn serve_with_shutdown_authenticated(
                                 PeerIdentity {
                                     uid: peer.uid(),
                                     gid: peer.gid(),
-                                    pid: peer.pid(),
+                                    pid: peer.pid().and_then(|pid| u32::try_from(pid).ok()),
                                 }
                             }
                             Ok(peer) => {
