@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "single_foreground_flow",
         sql: include_str!("../migrations/0003_single_foreground_flow.sql"),
     },
+    Migration {
+        version: 4,
+        name: "protect_general",
+        sql: include_str!("../migrations/0004_protect_general.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +174,68 @@ impl Store {
             return Err(StorageError::NotFound("database health check".into()));
         }
         Ok(())
+    }
+
+    /// Bootstrap or recover the unique General system Flow transactionally.
+    /// A pre-existing General keeps its durable ID, including legacy IDs.
+    /// For a fresh database General has a deterministic ID. If no Flow is
+    /// foreground, General becomes the default; otherwise preserve the
+    /// user's active Flow and only repair an archived General.
+    pub fn ensure_general_flow(&mut self) -> Result<FlowId> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT id FROM flows WHERE name = 'General'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let id = if let Some(raw) = existing {
+            FlowId::from_str(&raw).map_err(|error| {
+                StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+            })?
+        } else {
+            let mut general = Flow::new("General", "system");
+            general.id = FlowId::from_raw("flow-general");
+            general.purpose = Some("The universal default context".to_owned());
+            insert_flow_row(&tx, &general)?;
+            insert_provenance_row(
+                &tx,
+                &ProvenanceEdge {
+                    from: ObjectRef::from(&general.id),
+                    relation: agentic_types::ProvenanceRelation::CreatedBy,
+                    to: ObjectRef::actor("system").map_err(|error| {
+                        StorageError::Sqlite(rusqlite::Error::InvalidParameterName(
+                            error.to_string(),
+                        ))
+                    })?,
+                    created_at: Timestamp::now(),
+                    note: Some("bootstrap default General flow".to_owned()),
+                },
+            )?;
+            general.id
+        };
+        tx.execute(
+            "UPDATE flows SET state = 'ACTIVE', revision = revision + 1
+             WHERE id = ?1 AND state = 'ARCHIVED'",
+            params![id.as_str()],
+        )?;
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM flows WHERE state = 'FOREGROUND')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !active {
+            tx.execute(
+                "UPDATE flows SET state = 'FOREGROUND',
+                 last_active = ?2, revision = revision + 1 WHERE id = ?1",
+                params![id.as_str(), Timestamp::now().as_millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(id)
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
