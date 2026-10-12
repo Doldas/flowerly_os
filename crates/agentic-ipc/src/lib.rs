@@ -63,9 +63,14 @@ pub enum Payload {
 
     Shutdown,
 
-    Command { name: String, args: Value },
+    Command {
+        name: String,
+        args: Value,
+    },
 
-    Ok { data: Value },
+    Ok {
+        data: Value,
+    },
 
     Err {
         message: String,
