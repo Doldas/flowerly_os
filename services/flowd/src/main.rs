@@ -43,14 +43,14 @@ async fn main() -> anyhow::Result<()> {
 
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.lock() {
+    let status = Arc::new(move || match status_store.try_lock() {
         Ok(store) => match count_flows(&store) {
             Ok(count) => {
                 serde_json::json!({"flow_count": count, "ready": true, "default_flow": "General"})
             }
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
-        Err(_) => serde_json::json!({"ready": false, "error": "storage lock poisoned"}),
+        Err(_) => serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"}),
     });
     let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
 
