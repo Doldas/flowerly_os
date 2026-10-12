@@ -49,6 +49,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "session_presentation_and_actor_refs",
         sql: include_str!("../migrations/0002_session_presentation_and_actor_refs.sql"),
     },
+    Migration {
+        version: 3,
+        name: "single_foreground_flow",
+        sql: include_str!("../migrations/0003_single_foreground_flow.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
