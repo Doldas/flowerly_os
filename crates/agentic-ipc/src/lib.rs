@@ -183,8 +183,7 @@ pub async fn serve_with_shutdown(
     handler: Arc<Handler>,
     shutdown_requested: watch::Receiver<bool>,
 ) -> Result<()> {
-    let wrapped: Arc<AuthenticatedHandler> =
-        Arc::new(move |request, _peer| handler(request));
+    let wrapped: Arc<AuthenticatedHandler> = Arc::new(move |request, _peer| handler(request));
     serve_with_shutdown_authenticated(socket_path, wrapped, shutdown_requested).await
 }
 
