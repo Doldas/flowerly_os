@@ -160,7 +160,9 @@ mod tests {
         let status_count = Arc::clone(&count);
         let server = tokio::spawn(run_service_with_status(
             config,
-            Arc::new(move || serde_json::json!({"item_count": status_count.load(Ordering::SeqCst)})),
+            Arc::new(
+                move || serde_json::json!({"item_count": status_count.load(Ordering::SeqCst)}),
+            ),
             Arc::new(|req| error_envelope(req.id.clone(), "not implemented")),
         ));
         let socket = dir.path().join("dynamic-status.sock");
