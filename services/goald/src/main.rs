@@ -100,8 +100,7 @@ fn validate_goal_command(
                     let raw = value
                         .as_i64()
                         .ok_or_else(|| invalid("arg `priority` must be an integer"))?;
-                    i32::try_from(raw)
-                        .map_err(|_| invalid("priority out of range for i32"))?;
+                    i32::try_from(raw).map_err(|_| invalid("priority out of range for i32"))?;
                 }
             }
         }
@@ -328,17 +327,11 @@ mod tests {
                 serde_json::json!({"id": 42}),
                 ErrorCode::InvalidArgument,
             ),
-            (
-                "unknown",
-                serde_json::json!({}),
-                ErrorCode::InvalidArgument,
-            ),
+            ("unknown", serde_json::json!({}), ErrorCode::InvalidArgument),
         ];
         for (command, args, expected) in cases {
             assert_eq!(
-                validate_goal_command(&store, command, &args)
-                    .unwrap_err()
-                    .0,
+                validate_goal_command(&store, command, &args).unwrap_err().0,
                 expected
             );
         }
