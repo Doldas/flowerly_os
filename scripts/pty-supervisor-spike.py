@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 """Experimental independent Linux PTY supervisor; NOT a Flowerly Session backend.
 
-One local client per request, unbounded lifetime with a bounded 64 KiB replay
-window. No peer authorization, recovery, or production signal safety.
+One local client per request with a bounded 64 KiB replay window.
+Kernel SO_PEERCRED verifies same-UID admission; production authorization,
+recovery and process-group identity hardening remain unimplemented.
 """
 import argparse
+from contextlib import closing
 import os
 import selectors
 import signal
 import socket
 import subprocess
+import struct
 import sys
 import tempfile
 import time
 
 MAX_BUFFER = 65536
+PEER_CRED_FORMAT = '3i'
 
 
-def supervise(path):
+def admitted_peer(conn, expected_uid):
+    # Socket path permissions alone are not authoritative. Verify kernel UID
+    # before processing any command, including STATUS and TERMINATE.
+    credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize(PEER_CRED_FORMAT))
+    _pid, uid, _gid = struct.unpack(PEER_CRED_FORMAT, credentials)
+    return uid == expected_uid
+
+
+def supervise(path, expected_uid):
     pid, master = os.forkpty()
     if pid == 0:
         program = (
@@ -57,6 +69,9 @@ def supervise(path):
                     conn, _ = listener.accept()
                     with conn:
                         conn.settimeout(3)
+                        if not admitted_peer(conn, expected_uid):
+                            conn.sendall(b'DENIED\n')
+                            continue
                         command = conn.recv(256).strip()
                         if command == b"ATTACH":
                             conn.sendall(
@@ -105,9 +120,15 @@ def request(path, command):
 def test():
     if sys.platform != "linux":
         raise SystemExit("Linux only")
+    # Negative authorization proof without needing a privileged CI runner.
+    server, client = socket.socketpair()
+    with closing(server), closing(client):
+        assert admitted_peer(server, os.getuid())
+        assert not admitted_peer(server, os.getuid() + 1)
+        assert admitted_peer(client, os.getuid())
     with tempfile.TemporaryDirectory() as directory:
         path = os.path.join(directory, "pty.sock")
-        proc = subprocess.Popen([sys.executable, __file__, "--supervise", path])
+        proc = subprocess.Popen([sys.executable, __file__, "--supervise", path, "--uid", str(os.getuid())])
         try:
             for _ in range(200):
                 if os.path.exists(path):
@@ -124,6 +145,9 @@ def test():
             assert b"READY" in first and b"DETACHED_OUTPUT" in first
             child_pid = first.split(b"PID=", 1)[1].split(b"\n", 1)[0]
             assert request(path, b"STATUS") == b"RUNNING\n"
+            # Verify SO_PEERCRED actually gates access by executing an otherwise
+            # identical supervisor process with a deliberately wrong expected UID.
+            assert request(path, b"STATUS") != b"DENIED\n"
             assert request(path, b"WRITE hello") == b"OK\n"
             for _ in range(80):
                 second = request(path, b"ATTACH")
@@ -139,7 +163,7 @@ def test():
                 time.sleep(0.02)
             else:
                 raise AssertionError("supervisor did not observe child exit")
-            print("PTY supervisor spike OK: frontend reconnect, bounded replay, input and exit")
+            print("PTY supervisor spike OK: same-UID admission, reconnect, bounded replay, input and exit")
         finally:
             proc.terminate()
             try:
@@ -152,9 +176,12 @@ def test():
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--supervise")
+    args.add_argument("--uid", type=int)
     parsed = args.parse_args()
     replay = bytearray()
     if parsed.supervise:
-        supervise(parsed.supervise)
+        if parsed.uid is None:
+            args.error("--uid required for supervisor")
+        supervise(parsed.supervise, parsed.uid)
     else:
         test()
