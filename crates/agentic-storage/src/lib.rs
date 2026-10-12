@@ -338,20 +338,22 @@ impl Store {
     }
 
     pub fn insert_execution(&self, exec: &Execution) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                exec.id.as_str(),
-                exec.agent_id.as_ref().map(AgentId::as_str),
-                exec.goal_id.as_ref().map(GoalId::as_str),
-                exec.reason,
-                exec.command,
-                exec.exit_code,
-                exec.duration_ms,
-                exec.started_at.as_millis(),
-            ],
-        )?;
+        insert_execution_row(&self.conn, exec)
+    }
+
+    pub fn insert_execution_with_provenance(
+        &mut self,
+        exec: &Execution,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_execution_row(&tx, exec)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -377,20 +379,22 @@ impl Store {
     }
 
     pub fn insert_generation(&self, generation: &Generation) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                generation.id.as_str(),
-                generation.parent.as_ref().map(GenerationId::as_str),
-                generation.source_commit,
-                generation.system_manifest,
-                generation.reason_goal.as_ref().map(GoalId::as_str),
-                generation.experiment.as_ref().map(|e| e.to_string()),
-                generation.status.to_string(),
-                generation.created_at.as_millis(),
-            ],
-        )?;
+        insert_generation_row(&self.conn, generation)
+    }
+
+    pub fn insert_generation_with_provenance(
+        &mut self,
+        generation: &Generation,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_generation_row(&tx, generation)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -426,6 +430,43 @@ impl Store {
         Ok(())
     }
 
+    /// Promote one generation to STABLE and supersede any previous STABLE
+    /// generation in the same SQLite transaction.
+    pub fn activate_generation(&mut self, id: &GenerationId) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let exists = tx
+            .query_row(
+                "SELECT id FROM generations WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+
+        tx.execute(
+            "UPDATE generations
+             SET status = ?1
+             WHERE status = ?2 AND id <> ?3",
+            params![
+                GenerationStatus::Superseded.to_string(),
+                GenerationStatus::Stable.to_string(),
+                id.as_str(),
+            ],
+        )?;
+        tx.execute(
+            "UPDATE generations SET status = ?2 WHERE id = ?1",
+            params![id.as_str(), GenerationStatus::Stable.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
         insert_provenance_row(&self.conn, edge)
     }
@@ -436,6 +477,15 @@ impl Store {
              FROM provenance_edges WHERE from_ref = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![from.as_str()], map_provenance)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn provenance_to(&self, to: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT from_ref, relation, to_ref, created_at, note
+             FROM provenance_edges WHERE to_ref = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![to.as_str()], map_provenance)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
@@ -493,6 +543,42 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
             session.presentation_state.to_string(),
             session.created_by,
             session.created_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
+    conn.execute(
+        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            exec.id.as_str(),
+            exec.agent_id.as_ref().map(AgentId::as_str),
+            exec.goal_id.as_ref().map(GoalId::as_str),
+            exec.reason,
+            exec.command,
+            exec.exit_code,
+            exec.duration_ms,
+            exec.started_at.as_millis(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<()> {
+    conn.execute(
+        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            generation.id.as_str(),
+            generation.parent.as_ref().map(GenerationId::as_str),
+            generation.source_commit,
+            generation.system_manifest,
+            generation.reason_goal.as_ref().map(GoalId::as_str),
+            generation.experiment.as_ref().map(|e| e.to_string()),
+            generation.status.to_string(),
+            generation.created_at.as_millis(),
         ],
     )?;
     Ok(())
@@ -942,5 +1028,261 @@ mod tests {
             .expect("update state");
         let loaded = store.get_flow(&flow.id).unwrap().unwrap();
         assert_eq!(loaded.state, FlowState::Archived);
+    }
+
+    #[test]
+    fn all_core_persistent_objects_survive_store_reopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let flow = Flow::new("Persistent", "test");
+        let goal = Goal::new("Persist the domain graph", "test");
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: Some(flow.id.clone()),
+            kind: "local-pty".to_owned(),
+            pid: Some(4242),
+            cwd: Some("/tmp".to_owned()),
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "test".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: Some(goal.id.clone()),
+            reason: Some("persistence test".to_owned()),
+            command: Some("true".to_owned()),
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            started_at: Timestamp::now(),
+        };
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("deadbeef".to_owned()),
+            system_manifest: Some("sha256:test".to_owned()),
+            reason_goal: Some(goal.id.clone()),
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&execution.id),
+            relation: ProvenanceRelation::CausedBy,
+            to: ObjectRef::from(&goal.id),
+            created_at: Timestamp::now(),
+            note: Some("durable causal link".to_owned()),
+        };
+
+        {
+            let mut writer = Store::open(&path).expect("open writer");
+            writer.migrate().expect("migrate writer");
+            writer.insert_flow(&flow).expect("insert flow");
+            writer.insert_goal(&goal).expect("insert goal");
+            writer.insert_session(&session).expect("insert session");
+            writer
+                .insert_execution_with_provenance(&execution, std::slice::from_ref(&edge))
+                .expect("insert execution");
+            writer
+                .insert_generation(&generation)
+                .expect("insert generation");
+        }
+
+        let mut reader = Store::open(&path).expect("reopen state");
+        reader.migrate().expect("reopen migrations");
+
+        assert_eq!(
+            reader
+                .get_flow(&flow.id)
+                .expect("flow query")
+                .expect("flow exists")
+                .id,
+            flow.id
+        );
+        assert_eq!(
+            reader
+                .get_goal(&goal.id)
+                .expect("goal query")
+                .expect("goal exists")
+                .id,
+            goal.id
+        );
+        assert_eq!(
+            reader
+                .get_session(&session.id)
+                .expect("session query")
+                .expect("session exists")
+                .id,
+            session.id
+        );
+        assert_eq!(
+            reader
+                .get_execution(&execution.id)
+                .expect("execution query")
+                .expect("execution exists")
+                .id,
+            execution.id
+        );
+        assert_eq!(
+            reader
+                .get_generation(&generation.id)
+                .expect("generation query")
+                .expect("generation exists")
+                .id,
+            generation.id
+        );
+
+        let outgoing = reader
+            .provenance_from(&ObjectRef::from(&execution.id))
+            .expect("outgoing provenance");
+        let incoming = reader
+            .provenance_to(&ObjectRef::from(&goal.id))
+            .expect("incoming provenance");
+        assert_eq!(outgoing, vec![edge.clone()]);
+        assert_eq!(incoming, vec![edge]);
+    }
+
+    #[test]
+    fn generation_activation_keeps_exactly_one_stable_generation() {
+        let mut store = migrated_store();
+        let first = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("first".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Stable,
+            created_at: Timestamp::now(),
+        };
+        let second = Generation {
+            id: GenerationId::new(),
+            parent: Some(first.id.clone()),
+            source_commit: Some("second".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        store.insert_generation(&first).expect("insert first");
+        store.insert_generation(&second).expect("insert second");
+
+        store
+            .activate_generation(&second.id)
+            .expect("activate second");
+
+        let first = store
+            .get_generation(&first.id)
+            .expect("query first")
+            .expect("first exists");
+        let second = store
+            .get_generation(&second.id)
+            .expect("query second")
+            .expect("second exists");
+
+        assert_eq!(first.status, GenerationStatus::Superseded);
+        assert_eq!(second.status, GenerationStatus::Stable);
+        assert_eq!(
+            store
+                .list_generations()
+                .expect("list generations")
+                .iter()
+                .filter(|generation| generation.status == GenerationStatus::Stable)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_generation_activation_does_not_supersede_current_stable() {
+        let mut store = migrated_store();
+        let stable = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("stable".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Stable,
+            created_at: Timestamp::now(),
+        };
+        store.insert_generation(&stable).expect("insert stable");
+
+        let missing = GenerationId::new();
+        let error = store
+            .activate_generation(&missing)
+            .expect_err("missing generation must fail");
+        assert!(matches!(error, StorageError::NotFound(_)));
+
+        let stable = store
+            .get_generation(&stable.id)
+            .expect("query stable")
+            .expect("stable exists");
+        assert_eq!(stable.status, GenerationStatus::Stable);
+    }
+
+    #[test]
+    fn invalid_persisted_generation_reference_is_not_silently_accepted() {
+        let store = migrated_store();
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: None,
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+        };
+        store
+            .insert_generation(&generation)
+            .expect("insert generation");
+        store
+            .conn
+            .execute(
+                "UPDATE generations SET experiment = 'not-an-experiment-id' WHERE id = ?1",
+                params![generation.id.as_str()],
+            )
+            .expect("corrupt generation");
+
+        assert!(store.get_generation(&generation.id).is_err());
+    }
+
+    #[test]
+    fn invalid_persisted_execution_reference_is_not_silently_accepted() {
+        let store = migrated_store();
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: None,
+            reason: None,
+            command: Some("true".to_owned()),
+            exit_code: Some(0),
+            duration_ms: None,
+            started_at: Timestamp::now(),
+        };
+        store
+            .insert_execution(&execution)
+            .expect("insert execution");
+        store
+            .conn
+            .pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable foreign keys for corruption simulation");
+        store
+            .conn
+            .execute(
+                "UPDATE executions SET goal_id = 'not-a-goal-id' WHERE id = ?1",
+                params![execution.id.as_str()],
+            )
+            .expect("corrupt execution");
+        store
+            .conn
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("restore foreign keys");
+
+        assert!(store.get_execution(&execution.id).is_err());
     }
 }

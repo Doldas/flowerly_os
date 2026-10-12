@@ -42,7 +42,7 @@ instead of an abstract future distribution.
 - **Exit criteria:** `just check` and `just test` succeed from a clean clone; CI
   is green; the repository explains the project.
 
-## 0.0.2 — Core Runtime Skeleton (mostly done)
+## 0.0.2 — Core Runtime Skeleton (done)
 
 - **Goal:** shared Rust foundations used by every service.
 - **Key deliverables:** `agentic-types`, `agentic-storage`, `agentic-ipc`,
@@ -54,12 +54,13 @@ instead of an abstract future distribution.
   request/response works; no daemon needs AI or network; an integration test
   starts a service and queries status.
 
-## 0.0.3 — Persistent State
+## 0.0.3 — Persistent State (done)
 
 - **Goal:** make the system remember durable objects.
 - **Key deliverables:** migration-backed CRUD for Flow, Goal, Session,
   Execution, Generation, and ProvenanceEdge; the `agenticctl` admin CLI;
-  validated typed provenance endpoints; provenance relationships
+  validated typed provenance endpoints with incoming/outgoing lookup;
+  transactional generation activation; provenance relationships
   (`created_by`, `caused_by`, `belongs_to`, `produced`, `tested_by`,
   `promoted_to`).
 - **Entry criteria:** 0.0.2 runtime and migrations in place.

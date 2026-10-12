@@ -106,21 +106,35 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .ok_or("missing string arg `ref`")?;
             let object_ref = ObjectRef::from_str(from).map_err(err_str)?;
             let edges = store.provenance_from(&object_ref).map_err(err_str)?;
-            let items: Vec<Value> = edges
-                .iter()
-                .map(|e| {
-                    serde_json::json!({
-                        "from": e.from,
-                        "relation": e.relation.to_string(),
-                        "to": e.to,
-                        "note": e.note,
-                    })
-                })
-                .collect();
-            Ok(serde_json::json!({ "edges": items, "count": items.len() }))
+            Ok(edges_response(&edges))
+        }
+        "provenance.to" => {
+            let to = args
+                .get("ref")
+                .or_else(|| args.get("to"))
+                .and_then(Value::as_str)
+                .ok_or("missing string arg `ref`")?;
+            let object_ref = ObjectRef::from_str(to).map_err(err_str)?;
+            let edges = store.provenance_to(&object_ref).map_err(err_str)?;
+            Ok(edges_response(&edges))
         }
         other => Err(format!("provenanced: unknown command `{other}`")),
     }
+}
+
+fn edges_response(edges: &[ProvenanceEdge]) -> Value {
+    let items: Vec<Value> = edges
+        .iter()
+        .map(|edge| {
+            serde_json::json!({
+                "from": edge.from,
+                "relation": edge.relation.to_string(),
+                "to": edge.to,
+                "note": edge.note,
+            })
+        })
+        .collect();
+    serde_json::json!({ "edges": items, "count": items.len() })
 }
 
 fn parse_relation(raw: &str) -> Result<ProvenanceRelation, String> {
@@ -161,4 +175,60 @@ async fn self_test() -> anyhow::Result<()> {
         edges.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agentic_types::{ExecutionId, GoalId};
+
+    fn migrated_store() -> Store {
+        let mut store = Store::open_in_memory().expect("open store");
+        store.migrate().expect("migrate store");
+        store
+    }
+
+    #[test]
+    fn provenance_queries_work_in_both_directions() {
+        let store = migrated_store();
+        let execution = ExecutionId::new();
+        let goal = GoalId::new();
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&execution),
+            relation: ProvenanceRelation::CausedBy,
+            to: ObjectRef::from(&goal),
+            created_at: Timestamp::now(),
+            note: Some("test edge".to_owned()),
+        };
+        store.insert_provenance(&edge).expect("insert edge");
+
+        let from = run_command(
+            &store,
+            "provenance.from",
+            &serde_json::json!({ "ref": execution }),
+        )
+        .expect("query outgoing");
+        assert_eq!(from["count"], 1);
+        assert_eq!(from["edges"][0]["to"], serde_json::json!(goal));
+
+        let to = run_command(&store, "provenance.to", &serde_json::json!({ "ref": goal }))
+            .expect("query incoming");
+        assert_eq!(to["count"], 1);
+        assert_eq!(to["edges"][0]["from"], serde_json::json!(execution));
+    }
+
+    #[test]
+    fn provenance_query_rejects_untyped_references() {
+        let store = migrated_store();
+        let error = run_command(
+            &store,
+            "provenance.to",
+            &serde_json::json!({ "ref": "plain-string" }),
+        )
+        .expect_err("untyped reference must fail");
+        assert!(
+            error.contains("object reference"),
+            "unexpected error: {error}"
+        );
+    }
 }
