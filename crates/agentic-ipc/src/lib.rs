@@ -619,6 +619,64 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn queued_request_receives_unavailable_within_total_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("queue-deadline.sock");
+        let started = Arc::new(AtomicUsize::new(0));
+        let worker_count = Arc::clone(&started);
+        let handler: Arc<Handler> = Arc::new(move |req: &Envelope| {
+            let n = worker_count.fetch_add(1, Ordering::SeqCst);
+            if n < MAX_BLOCKING_HANDLERS {
+                std::thread::sleep(REQUEST_DEADLINE + std::time::Duration::from_secs(2));
+            }
+            Envelope {
+                version: PROTOCOL_VERSION,
+                id: req.id.clone(),
+                payload: Payload::Ok { data: Value::Null },
+            }
+        });
+        let (shutdown, rx) = watch::channel(false);
+        let server = tokio::spawn(serve_with_shutdown(path.clone(), handler, rx));
+        for _ in 0..100 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let mut requests = Vec::new();
+        for _ in 0..MAX_BLOCKING_HANDLERS {
+            let socket = path.clone();
+            requests.push(tokio::spawn(async move { call(socket, Payload::Ping).await }));
+        }
+        // Wait for all slots to be occupied by the first eight handlers.
+        for _ in 0..100 {
+            if started.load(Ordering::SeqCst) == MAX_BLOCKING_HANDLERS {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), MAX_BLOCKING_HANDLERS);
+        let began = std::time::Instant::now();
+        let response = call(&path, Payload::Ping).await.unwrap();
+        assert!(began.elapsed() <= REQUEST_DEADLINE + std::time::Duration::from_secs(1));
+        assert!(matches!(
+            response.payload,
+            Payload::Err {
+                code: Some(ErrorCode::Unavailable),
+                ..
+            }
+        ));
+        for request in requests {
+            // First eight responses may time out because their handlers
+            // deliberately remain blocked beyond the single response budget.
+            let _ = request.await.unwrap();
+        }
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
     #[test]
     fn socket_path_is_deterministic() {
         let p = socket_path("/tmp/agentic", "flowd");
