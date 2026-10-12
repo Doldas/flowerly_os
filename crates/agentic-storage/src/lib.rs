@@ -49,6 +49,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "session_presentation_and_actor_refs",
         sql: include_str!("../migrations/0002_session_presentation_and_actor_refs.sql"),
     },
+    Migration {
+        version: 3,
+        name: "single_foreground_flow",
+        sql: include_str!("../migrations/0003_single_foreground_flow.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,9 +829,10 @@ mod tests {
             )
             .expect("insert already-normalized duplicate");
 
-        let applied = store.migrate().expect("apply migration two");
-        assert_eq!(applied.len(), 1);
+        let applied = store.migrate().expect("apply remaining migrations");
+        assert_eq!(applied.len(), 2);
         assert_eq!(applied[0].version, 2);
+        assert_eq!(applied[1].version, 3);
 
         let session = store
             .get_session(&session_id)
@@ -890,6 +896,112 @@ mod tests {
             let migrations = handle.join().expect("migration thread");
             assert_eq!(migrations.len(), MIGRATIONS.len());
         }
+    }
+
+    #[test]
+    fn database_rejects_second_foreground_from_separate_connection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+        let mut first = Store::open(&path).expect("open first");
+        first.migrate().expect("migrate");
+        let second = Store::open(&path).expect("open second");
+        let a = Flow::new("A", "test");
+        let b = Flow::new("B", "test");
+        first.insert_flow(&a).expect("insert A");
+        first.insert_flow(&b).expect("insert B");
+
+        first.activate_flow(&a.id).expect("activate A");
+        let rejected = second.conn.execute(
+            "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
+            params![b.id.as_str()],
+        );
+        assert!(
+            rejected.is_err(),
+            "unique index must reject second foreground"
+        );
+        assert_eq!(
+            first.get_flow(&a.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+        assert_ne!(
+            first.get_flow(&b.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+
+        let mut second = second;
+        second.activate_flow(&b.id).expect("atomic switch to B");
+        assert_eq!(
+            first.get_flow(&b.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+        assert_eq!(
+            first.get_flow(&a.id).unwrap().unwrap().state,
+            FlowState::Active
+        );
+    }
+
+    #[test]
+    fn concurrent_connections_serialize_flow_activation() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+        let mut setup = Store::open(&path).unwrap();
+        setup.migrate().unwrap();
+        let first = Flow::new("First", "test");
+        let second = Flow::new("Second", "test");
+        setup.insert_flow(&first).unwrap();
+        setup.insert_flow(&second).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = [first.id.clone(), second.id.clone()]
+            .into_iter()
+            .map(|id| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut store = Store::open(path).expect("open concurrent writer");
+                    barrier.wait();
+                    store.activate_flow(&id).expect("serialized activation");
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("activation thread");
+        }
+        let reloaded = Store::open(&path).unwrap();
+        let flows = reloaded.list_flows().unwrap();
+        assert_eq!(
+            flows
+                .iter()
+                .filter(|flow| flow.state == FlowState::Foreground)
+                .count(),
+            1
+        );
+        assert_eq!(flows.iter().filter(|flow| flow.revision > 1).count(), 2);
+    }
+
+    #[test]
+    fn migration_rejects_legacy_multiple_foregrounds_without_data_loss() {
+        let store = Store::open_in_memory().unwrap();
+        store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+        store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
+        let mut a = Flow::new("A", "test");
+        let mut b = Flow::new("B", "test");
+        a.state = FlowState::Foreground;
+        b.state = FlowState::Foreground;
+        store.insert_flow(&a).unwrap();
+        store.insert_flow(&b).unwrap();
+        assert!(store.conn.execute_batch(MIGRATIONS[2].sql).is_err());
+        assert_eq!(
+            store
+                .list_flows()
+                .unwrap()
+                .iter()
+                .filter(|flow| flow.state == FlowState::Foreground)
+                .count(),
+            2,
+            "failed index migration must not silently change legacy Flow state"
+        );
     }
 
     #[test]
