@@ -186,11 +186,9 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing: Option<String> = tx
-            .query_row(
-                "SELECT id FROM flows WHERE name = 'General'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM flows WHERE name = 'General'", [], |row| {
+                row.get(0)
+            })
             .optional()?;
         let id = if let Some(raw) = existing {
             FlowId::from_str(&raw).map_err(|error| {
@@ -1081,14 +1079,22 @@ mod tests {
             store.migrate().unwrap();
             let id = store.ensure_general_flow().unwrap();
             assert_eq!(id.as_str(), "flow-general");
-            assert_eq!(store.get_flow(&id).unwrap().unwrap().state, FlowState::Foreground);
+            assert_eq!(
+                store.get_flow(&id).unwrap().unwrap().state,
+                FlowState::Foreground
+            );
             id
         };
         let mut second = Store::open(&path).unwrap();
         second.migrate().unwrap();
         assert_eq!(second.ensure_general_flow().unwrap(), original);
         assert_eq!(
-            second.list_flows().unwrap().iter().filter(|f| f.name == "General").count(),
+            second
+                .list_flows()
+                .unwrap()
+                .iter()
+                .filter(|f| f.name == "General")
+                .count(),
             1
         );
         let other = Flow::new("Other", "test");
@@ -1121,11 +1127,17 @@ mod tests {
         let id = store.ensure_general_flow().unwrap();
         assert!(store.insert_flow(&Flow::new("General", "user")).is_err());
         assert!(store.set_flow_state(&id, FlowState::Archived).is_err());
-        assert!(store.conn.execute("DELETE FROM flows WHERE id = ?1", params![id.as_str()]).is_err());
-        assert!(store.conn.execute(
-            "UPDATE flows SET name = 'Renamed' WHERE id = ?1",
-            params![id.as_str()],
-        ).is_err());
+        assert!(store
+            .conn
+            .execute("DELETE FROM flows WHERE id = ?1", params![id.as_str()])
+            .is_err());
+        assert!(store
+            .conn
+            .execute(
+                "UPDATE flows SET name = 'Renamed' WHERE id = ?1",
+                params![id.as_str()],
+            )
+            .is_err());
     }
 
     #[test]
