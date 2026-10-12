@@ -82,6 +82,21 @@ Server-side IPC limits, SQLite worker isolation and trusted peer-credential
 context remain separate Gate B requirements. Do not mark Gate B complete on
 the strength of this tranche alone.
 
+### Gate B implementation note — same-UID kernel peer boundary
+
+The peer-identity tranche requires a Unix peer's kernel-reported UID to match
+the owning daemon's socket UID. This runs at accept time, before allocating a
+connection handler. A peer-credential lookup failure is denied. It preserves
+the current single-user deployment model and avoids trusting user-provided
+identity fields for **admission**.
+
+This is *not* full actor authorization: existing `created_by` fields remain
+client-supplied labels rather than authenticated provenance, and per-command
+authorization / cross-user delegation are not implemented. Before agent
+execution or shared-user service deployment, propagate trusted peer context to
+domain handlers and derive security actors from that context. Keep shutdown
+and process-control operations inside the authenticated boundary.
+
 ### Gate B — runtime safety
 
 1. **Socket ownership**

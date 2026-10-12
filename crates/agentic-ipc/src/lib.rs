@@ -170,6 +170,9 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let ownership = SocketOwnership::new(&path)?;
 
+    // The socket owner is the daemon's effective filesystem identity.
+    // Credentials come from the kernel, never request JSON.
+    let server_uid = std::fs::metadata(&path)?.uid();
     tracing::info!(socket = %path.display(), "ipc server listening");
 
     let mut shutdown = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -185,6 +188,22 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
+                        // Fail closed if the kernel cannot identify the peer or
+                        // its UID differs from the socket owner's UID.
+                        // This is an explicitly single-user IPC boundary.
+                        match stream.peer_cred() {
+                            Ok(peer) if peer.uid() == server_uid => {
+                                tracing::trace!(peer_uid = peer.uid(), peer_pid = ?peer.pid(), "authorized local IPC peer");
+                            }
+                            Ok(peer) => {
+                                tracing::warn!(peer_uid = peer.uid(), server_uid, "rejecting IPC peer from another UID");
+                                continue;
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "cannot authenticate IPC peer");
+                                continue;
+                            }
+                        }
                         // Refuse excess clients before spawning a task. A slow
                         // or silent client cannot consume unbounded memory.
                         if let Ok(permit) = Arc::clone(&connections).try_acquire_owned() {
@@ -356,6 +375,19 @@ mod tests {
         assert!(path.exists());
         drop(replacement);
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn kernel_peer_credentials_match_socket_owner_for_same_user() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server_uid = std::fs::metadata(&path).unwrap().uid();
+        let client = UnixStream::connect(&path).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        let peer = accepted.peer_cred().expect("kernel peer credentials");
+        assert_eq!(peer.uid(), server_uid);
+        assert_eq!(peer.uid(), client.peer_cred().unwrap().uid());
     }
 
     #[tokio::test]
