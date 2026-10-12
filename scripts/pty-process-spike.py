@@ -72,7 +72,7 @@ def main() -> None:
         assert b"OUTPUT_DURING_DETACH" in output
         # Exercise actual PTY master -> child input and kernel terminal resize.
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 31, 109, 0, 0))
-        os.write(master, b"ping\\n")
+        os.write(master, b"ping\n")
         response = read_until(master, b"SIZE_31x109")
         assert b"RECEIVED:ping" in response
         os.killpg(pid, signal.SIGTERM)
