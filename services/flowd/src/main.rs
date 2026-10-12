@@ -403,7 +403,8 @@ mod tests {
             &serde_json::json!({"name":"General"})
         )
         .unwrap_err()
-        .message.contains("cannot be archived"));
+        .message
+        .contains("cannot be archived"));
     }
 
     #[test]
