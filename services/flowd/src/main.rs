@@ -8,9 +8,7 @@ use agentic_core::{
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
 use agentic_storage::Store;
-use agentic_types::{
-    Flow, FlowId, FlowState,
-};
+use agentic_types::{Flow, FlowId, FlowState};
 use anyhow::Context;
 use clap::Parser;
 use serde_json::Value;
