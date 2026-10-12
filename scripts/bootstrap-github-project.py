@@ -5,7 +5,7 @@ Requires GitHub CLI authenticated with 'project' scope:
   gh auth refresh -s project
   python3 scripts/bootstrap-github-project.py
 
-Safe to rerun: reuses the project and existing items; never edits issues or PRs.
+Safe to rerun: reuses the project, skips existing items, and never edits issues/PRs.
 """
 import json
 import re
@@ -179,10 +179,11 @@ def sync(number):
     for is_pr, items, path in [(False, issues, "issues"), (True, prs, "pull")]:
         for item in items:
             url = "https://github.com/" + REPO + "/" + path + "/" + str(item["number"])
-            if url not in urls:
-                gh("project", "item-add", number, "--owner", OWNER, "--url", url)
-                urls.add(url)
-                added += 1
+            if url in urls:
+                continue  # Preserve human-edited Project field values.
+            gh("project", "item-add", number, "--owner", OWNER, "--url", url)
+            urls.add(url)
+            added += 1
             for key, value in fields(item, is_pr).items():
                 if not value:
                     continue
@@ -192,8 +193,8 @@ def sync(number):
                     "--value", value]
                 gh(*args)
             print("Synced", path, item["number"])
-    print("Synced", len(issues), "issues and", len(prs),
-          "PRs;", added, "new Project items.")
+    print("Found", len(issues), "issues and", len(prs),
+          "PRs;", added, "new Project items. Existing items were left unchanged.")
 
 
 def main():
