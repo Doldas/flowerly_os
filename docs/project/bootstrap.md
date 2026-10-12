@@ -14,7 +14,7 @@ gh auth refresh -s project
 python3 scripts/bootstrap-github-project.py
 ```
 
-Run from a checkout that includes the helper (the feature branch until its PR is merged). The script creates the Project if no Project with the exact title `Flowerly OS — Engineering Roadmap` exists. It reuses that Project on later runs, links it to `flowerly_os`, creates any missing planning fields/views, and imports the repository's **complete issues and pull-request lists including closed items**. Rerun to import new items or refresh stage classifications.
+Run from a checkout that includes the helper (the feature branch until its PR is merged). The script creates the Project if no Project with the exact title `Flowerly OS — Engineering Roadmap` exists. It reuses that Project on later runs, links it to `flowerly_os`, creates any missing planning fields/views, and imports the repository's **complete issues and pull-request lists including closed items**. Rerun to import newly created issues or PRs. Existing Project items and their human-edited field values are left untouched.
 
 ## Project schema
 
@@ -52,5 +52,5 @@ The post-0.1 roadmap is directional only. Do not create fake delivery dates or d
 ## Notes
 
 - The script imports already-closed issues and PRs to preserve project history. Filter Delivery stage = Done out of active boards.
-- Re-running can overwrite the script-maintained custom field values. Human-owned Risk assessments should therefore be made after bootstrap or the script adapted for ongoing sync.
+- Re-running skips already imported items, preserving human-owned delivery stages and Risk assessments. GitHub Projects' built-in workflows can update status when issues close.
 - Project creation uses the authenticated user's GitHub CLI permissions; the ChatGPT GitHub connector cannot perform Projects v2 mutations.
