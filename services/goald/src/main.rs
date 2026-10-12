@@ -3,9 +3,10 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use agentic_core::{
-    error_envelope, init_tracing, ok_envelope, run_service_with_status, ServiceConfig,
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service_with_status,
+    ServiceConfig,
 };
-use agentic_ipc::{Envelope, Payload};
+use agentic_ipc::{Envelope, ErrorCode, Payload};
 use agentic_storage::Store;
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
@@ -72,10 +73,65 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
+    if let Err((code, message)) = validate_goal_command(&store, name, args) {
+        return coded_error_envelope(request.id.clone(), code, message);
+    }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(message) => error_envelope(request.id.clone(), message),
     }
+}
+
+/// Validate client-facing Goal errors while the store lock is held.
+/// SQLite errors remain internal instead of being inferred from error messages.
+fn validate_goal_command(
+    store: &Store,
+    name: &str,
+    args: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
+    match name {
+        "goal.create" | "goal.child" => {
+            if args.get("objective").and_then(Value::as_str).is_none() {
+                return Err(invalid("missing string arg `objective`"));
+            }
+            if name == "goal.create" {
+                if let Some(value) = args.get("priority").filter(|value| !value.is_null()) {
+                    let raw = value
+                        .as_i64()
+                        .ok_or_else(|| invalid("arg `priority` must be an integer"))?;
+                    i32::try_from(raw)
+                        .map_err(|_| invalid("priority out of range for i32"))?;
+                }
+            }
+        }
+        "goal.list" => return Ok(()),
+        "goal.show" | "goal.complete" | "goal.abandon" => {}
+        other => {
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("goald: unknown command `{other}`"),
+            ));
+        }
+    }
+    if matches!(
+        name,
+        "goal.child" | "goal.show" | "goal.complete" | "goal.abandon"
+    ) {
+        let raw = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("missing string arg `id`"))?;
+        let id = GoalId::from_str(raw).map_err(|error| invalid(&error.to_string()))?;
+        if store
+            .get_goal(&id)
+            .map_err(|error| (ErrorCode::Internal, error.to_string()))?
+            .is_none()
+        {
+            return Err((ErrorCode::NotFound, format!("goal not found: {raw}")));
+        }
+    }
+    Ok(())
 }
 
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
@@ -236,6 +292,62 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
         store
+    }
+
+    #[test]
+    fn goal_contract_failures_use_typed_error_codes() {
+        let store = migrated_store();
+        let cases = [
+            (
+                "goal.create",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "goal.create",
+                serde_json::json!({"objective": "hello", "priority": "high"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "goal.create",
+                serde_json::json!({"objective": "hello", "priority": i64::MAX}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "goal.child",
+                serde_json::json!({"id": "goal-missing", "objective": "child"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "goal.show",
+                serde_json::json!({"id": "goal-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "goal.complete",
+                serde_json::json!({"id": 42}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "unknown",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+        ];
+        for (command, args, expected) in cases {
+            assert_eq!(
+                validate_goal_command(&store, command, &args)
+                    .unwrap_err()
+                    .0,
+                expected
+            );
+        }
+        assert!(validate_goal_command(
+            &store,
+            "goal.create",
+            &serde_json::json!({"objective": "valid", "priority": null}),
+        )
+        .is_ok());
     }
 
     #[test]
