@@ -17,7 +17,7 @@ required_docs=(
     docs/evolution.md docs/provenance.md docs/capabilities.md
     docs/user-model.md docs/threat-model.md docs/build.md docs/releases.md
     docs/vision.md docs/roadmap.md docs/decisions.md docs/journal.md
-    docs/image-model.md
+    docs/image-model.md docs/review-implementation-plan-2026-10-12.md
 )
 
 required_adrs=(
