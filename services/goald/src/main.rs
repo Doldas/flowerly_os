@@ -81,7 +81,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             let mut goal = Goal::new(objective, created_by);
-            if let Some(value) = args.get("priority") {
+            if let Some(value) = args.get("priority").filter(|value| !value.is_null()) {
                 let priority = value.as_i64().ok_or("arg `priority` must be an integer")?;
                 goal.priority = i32::try_from(priority)
                     .map_err(|_| format!("priority out of range for i32: {priority}"))?;
@@ -227,6 +227,28 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
         store
+    }
+
+    #[test]
+    fn null_priority_uses_model_default() {
+        let mut store = migrated_store();
+        let response = run_command(
+            &mut store,
+            "goal.create",
+            &serde_json::json!({ "objective": "default priority", "priority": null }),
+        )
+        .expect("null optional priority should use default");
+
+        let id: GoalId = response["id"]
+            .as_str()
+            .expect("goal id")
+            .parse()
+            .expect("typed goal id");
+        let goal = store
+            .get_goal(&id)
+            .expect("goal query")
+            .expect("goal exists");
+        assert_eq!(goal.priority, 0);
     }
 
     #[test]
