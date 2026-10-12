@@ -119,6 +119,11 @@ def request(path, command):
 def test():
     if sys.platform != "linux":
         raise SystemExit("Linux only")
+    # Negative authorization proof without needing a privileged CI runner.
+    with socket.socketpair() as (server, client):
+        assert admitted_peer(server, os.getuid())
+        assert not admitted_peer(server, os.getuid() + 1)
+        assert admitted_peer(client, os.getuid())
     with tempfile.TemporaryDirectory() as directory:
         path = os.path.join(directory, "pty.sock")
         proc = subprocess.Popen([sys.executable, __file__, "--supervise", path, "--uid", str(os.getuid())])
