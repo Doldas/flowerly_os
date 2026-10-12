@@ -128,7 +128,6 @@ pub async fn run_service(
         .instrument(tracing::info_span!("service", service = %context.name))
         .await
         .map_err(anyhow::Error::from)
-
 }
 
 #[cfg(test)]
