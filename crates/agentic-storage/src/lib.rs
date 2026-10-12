@@ -897,9 +897,10 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 2);
+        assert_eq!(applied.len(), 3);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
+        assert_eq!(applied[2].version, 4);
 
         let session = store
             .get_session(&session_id)
@@ -1069,6 +1070,74 @@ mod tests {
             2,
             "failed index migration must not silently change legacy Flow state"
         );
+    }
+
+    #[test]
+    fn general_bootstrap_is_stable_across_restart_and_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let original = {
+            let mut store = Store::open(&path).unwrap();
+            store.migrate().unwrap();
+            let id = store.ensure_general_flow().unwrap();
+            assert_eq!(id.as_str(), "flow-general");
+            assert_eq!(store.get_flow(&id).unwrap().unwrap().state, FlowState::Foreground);
+            id
+        };
+        let mut second = Store::open(&path).unwrap();
+        second.migrate().unwrap();
+        assert_eq!(second.ensure_general_flow().unwrap(), original);
+        assert_eq!(
+            second.list_flows().unwrap().iter().filter(|f| f.name == "General").count(),
+            1
+        );
+        let other = Flow::new("Other", "test");
+        second.insert_flow(&other).unwrap();
+        second.activate_flow(&other.id).unwrap();
+        assert_eq!(second.ensure_general_flow().unwrap(), original);
+        assert_eq!(
+            second.get_flow(&other.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+    }
+
+    #[test]
+    fn existing_legacy_general_id_is_preserved_and_archived_state_recovers() {
+        let mut store = migrated_store();
+        let mut general = Flow::new("General", "system");
+        general.state = FlowState::Archived;
+        let legacy_id = general.id.clone();
+        store.insert_flow(&general).unwrap();
+        assert_eq!(store.ensure_general_flow().unwrap(), legacy_id);
+        assert_eq!(
+            store.get_flow(&legacy_id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+    }
+
+    #[test]
+    fn general_identity_is_protected_against_sql_writers() {
+        let mut store = migrated_store();
+        let id = store.ensure_general_flow().unwrap();
+        assert!(store.insert_flow(&Flow::new("General", "user")).is_err());
+        assert!(store.set_flow_state(&id, FlowState::Archived).is_err());
+        assert!(store.conn.execute("DELETE FROM flows WHERE id = ?1", params![id.as_str()]).is_err());
+        assert!(store.conn.execute(
+            "UPDATE flows SET name = 'Renamed' WHERE id = ?1",
+            params![id.as_str()],
+        ).is_err());
+    }
+
+    #[test]
+    fn duplicate_legacy_general_rows_fail_migration_without_mutation() {
+        let store = Store::open_in_memory().unwrap();
+        store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+        store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
+        store.conn.execute_batch(MIGRATIONS[2].sql).unwrap();
+        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        assert!(store.conn.execute_batch(MIGRATIONS[3].sql).is_err());
+        assert_eq!(store.list_flows().unwrap().len(), 2);
     }
 
     #[test]
