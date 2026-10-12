@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service_with_status, ServiceConfig};
+use agentic_core::{
+    error_envelope, init_tracing, ok_envelope, run_service_with_status, ServiceConfig,
+};
 use agentic_ipc::{Envelope, Payload};
 use agentic_storage::Store;
 use agentic_types::{
