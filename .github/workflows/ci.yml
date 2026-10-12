@@ -71,6 +71,9 @@ jobs:
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
 
+      - name: Experimental Linux PTY ownership spike
+        run: python3 ./scripts/pty-process-spike.py
+
   docs:
     name: docs
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'flowerly-runner' }}
