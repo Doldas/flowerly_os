@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.lock() {
         Ok(store) => match count_flows(&store) {
-            Ok(count) => serde_json::json!({"flow_count": count, "ready": true}, "default_flow": "General"),
+            Ok(count) => serde_json::json!({"flow_count": count, "ready": true, "default_flow": "General"}),
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
         Err(_) => serde_json::json!({"ready": false, "error": "storage lock poisoned"}),
