@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
+use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service_with_status, ServiceConfig};
 use agentic_ipc::{Envelope, Payload};
 use agentic_storage::Store;
 use agentic_types::{
@@ -38,14 +38,18 @@ async fn main() -> anyhow::Result<()> {
     let mut store = open_store(&config)?;
     ensure_general_flow(&mut store)?;
 
-    let extra = serde_json::json!({
-        "flow_count": count_flows(&store)?,
-        "default_flow": "General",
-    });
     let store = Arc::new(Mutex::new(store));
+    let status_store = Arc::clone(&store);
+    let status = Arc::new(move || match status_store.lock() {
+        Ok(store) => match count_flows(&store) {
+            Ok(count) => serde_json::json!({"flow_count": count, "ready": true}, "default_flow": "General"),
+            Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
+        },
+        Err(_) => serde_json::json!({"ready": false, "error": "storage lock poisoned"}),
+    });
     let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
 
-    run_service(config, extra, Arc::new(handler))
+    run_service_with_status(config, status, Arc::new(handler))
         .await
         .context("flowd terminated abnormally")
 }
