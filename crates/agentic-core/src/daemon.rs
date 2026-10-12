@@ -123,12 +123,16 @@ pub async fn run_service_with_status(
                 // authority. Use the UID supplied by the Unix kernel for
                 // durable creator fields and CreatedBy provenance.
                 let mut trusted_args = args.clone();
-                if let Value::Object(fields) = &mut trusted_args {
-                    fields.insert(
-                        "created_by".to_owned(),
-                        Value::String(format!("uid:{}", peer.uid)),
+                let Value::Object(fields) = &mut trusted_args else {
+                    return error_envelope(
+                        request.id.clone(),
+                        "command args must be a JSON object",
                     );
-                }
+                };
+                fields.insert(
+                    "created_by".to_owned(),
+                    Value::String(format!("uid:{}", peer.uid)),
+                );
                 handler(&Envelope {
                     version: agentic_ipc::PROTOCOL_VERSION,
                     id: request.id.clone(),
@@ -206,6 +210,16 @@ mod tests {
                 _ => panic!("expected echoed command arguments"),
             }
         }
+        let invalid = agentic_ipc::call(
+            &socket,
+            Payload::Command {
+                name: "goal.create".to_owned(),
+                args: serde_json::json!(["not", "an", "object"]),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(invalid.payload, Payload::Err { .. }));
         agentic_ipc::call(&socket, Payload::Shutdown).await.unwrap();
         server.await.unwrap().unwrap();
     }
