@@ -157,7 +157,7 @@ def main(bin_dir):
                 result = pending.result(timeout=TIMEOUT)
                 assert result["type"] == "err", (service, result)
                 assert result.get("code") == "unavailable", (service, result)
-            holder.stdin.write("\\n")
+            holder.stdin.write("\n")
             holder.stdin.flush()
             holder.communicate(timeout=5)
             assert holder.returncode == 0
