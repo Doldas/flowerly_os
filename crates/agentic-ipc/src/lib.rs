@@ -67,7 +67,25 @@ pub enum Payload {
 
     Ok { data: Value },
 
-    Err { message: String },
+    Err {
+        message: String,
+
+        /// Stable machine-readable error classification. Legacy peers omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
+    },
+}
+
+/// Stable error classes shared by all Flowerly IPC services.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    InvalidArgument,
+    NotFound,
+    Conflict,
+    PermissionDenied,
+    Unavailable,
+    Internal,
 }
 
 impl Envelope {
@@ -377,6 +395,37 @@ pub fn socket_path(runtime_dir: impl AsRef<Path>, service: &str) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn coded_errors_round_trip_and_legacy_errors_remain_readable() {
+        let error = Envelope {
+            version: PROTOCOL_VERSION,
+            id: "request-1".to_owned(),
+            payload: Payload::Err {
+                code: Some(ErrorCode::Conflict),
+                message: "already exists".to_owned(),
+            },
+        };
+        let serialized = serde_json::to_value(&error).unwrap();
+        assert_eq!(serialized["code"], "conflict");
+        let decoded: Envelope = serde_json::from_value(serialized).unwrap();
+        assert!(matches!(
+            decoded.payload,
+            Payload::Err {
+                code: Some(ErrorCode::Conflict),
+                ..
+            }
+        ));
+
+        let legacy = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "id": "request-2",
+            "type": "err",
+            "message": "old error"
+        });
+        let decoded: Envelope = serde_json::from_value(legacy).unwrap();
+        assert!(matches!(decoded.payload, Payload::Err { code: None, .. }));
+    }
 
     #[test]
     fn envelope_serializes_with_type_tag() {
