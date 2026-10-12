@@ -114,8 +114,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
 }
 
 /// Classify user-facing Flow contract failures before mutation, while the
-/// storage lock is held. Database/I/O failures remain internal errors rather
-/// than being misclassified by parsing error-message substrings.
+/// storage lock is held. Database errors are never inferred from text.
 fn validate_flow_command(
     store: &Store,
     command: &str,
@@ -124,46 +123,68 @@ fn validate_flow_command(
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match command {
         "flow.create" => {
-            let name = args.get("name").and_then(Value::as_str)
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
                 .ok_or_else(|| invalid("missing string arg `name`"))?;
             if name.trim().is_empty() {
                 return Err(invalid("flow name must not be empty"));
             }
             if name == "General" {
-                return Err((ErrorCode::Conflict, "General is reserved for the system Flow".to_owned()));
+                return Err((
+                    ErrorCode::Conflict,
+                    "General is reserved for the system Flow".to_owned(),
+                ));
             }
         }
         "flow.list" => {}
         "flow.activate" | "flow.archive" => {
             let flow = if let Some(value) = args.get("id") {
-                let raw = value.as_str().ok_or_else(|| invalid("arg `id` must be a string"))?;
+                let raw = value
+                    .as_str()
+                    .ok_or_else(|| invalid("arg `id` must be a string"))?;
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                store.get_flow(&id)
+                store
+                    .get_flow(&id)
                     .map_err(|e| (ErrorCode::Internal, e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
             } else if let Some(value) = args.get("name") {
-                let name = value.as_str().ok_or_else(|| invalid("arg `name` must be a string"))?;
-                let mut matches = store.list_flows()
+                let name = value
+                    .as_str()
+                    .ok_or_else(|| invalid("arg `name` must be a string"))?;
+                let mut matches = store
+                    .list_flows()
                     .map_err(|e| (ErrorCode::Internal, e.to_string()))?
                     .into_iter()
                     .filter(|flow| flow.name == name);
-                let found = matches.next().ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {name}")))?;
+                let found = matches
+                    .next()
+                    .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {name}")))?;
                 if matches.next().is_some() {
-                    return Err((ErrorCode::Conflict, format!("ambiguous flow name: {name}; use id")));
+                    return Err((
+                        ErrorCode::Conflict,
+                        format!("ambiguous flow name: {name}; use id"),
+                    ));
                 }
                 found
             } else {
                 return Err(invalid("provide either `id` or `name`"));
             };
             if command == "flow.archive" && flow.name == "General" {
-                return Err((ErrorCode::PermissionDenied, "General cannot be archived".to_owned()));
+                return Err((
+                    ErrorCode::PermissionDenied,
+                    "General cannot be archived".to_owned(),
+                ));
             }
             if command == "flow.activate" && flow.state == FlowState::Archived {
                 return Err((ErrorCode::Conflict, format!("archived flow: {}", flow.id)));
             }
         }
         other => {
-            return Err((ErrorCode::InvalidArgument, format!("flowd: unknown command `{other}`")));
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("flowd: unknown command `{other}`"),
+            ));
         }
     }
     Ok(())
@@ -347,34 +368,24 @@ mod tests {
     fn flow_errors_have_explicit_codes() {
         let mut store = migrated_store();
         ensure_general_flow(&mut store).unwrap();
-        assert_eq!(
-            validate_flow_command(&store, "flow.create", &serde_json::json!({"name": "General"}))
-                .unwrap_err().0,
-            ErrorCode::Conflict
-        );
-        assert_eq!(
-            validate_flow_command(&store, "flow.activate", &serde_json::json!({"id": "flow-missing"}))
-                .unwrap_err().0,
-            ErrorCode::NotFound
-        );
-        assert_eq!(
-            validate_flow_command(&store, "flow.archive", &serde_json::json!({"name": "General"}))
-                .unwrap_err().0,
-            ErrorCode::PermissionDenied
-        );
-        assert_eq!(
-            validate_flow_command(&store, "flow.activate", &serde_json::json!({"id": 42}))
-                .unwrap_err().0,
-            ErrorCode::InvalidArgument
-        );
+        let cases = [
+            ("flow.create", serde_json::json!({"name": "General"}), ErrorCode::Conflict),
+            ("flow.activate", serde_json::json!({"id": "flow-missing"}), ErrorCode::NotFound),
+            ("flow.archive", serde_json::json!({"name": "General"}), ErrorCode::PermissionDenied),
+            ("flow.activate", serde_json::json!({"id": 42}), ErrorCode::InvalidArgument),
+        ];
+        for (command, args, expected) in cases {
+            assert_eq!(validate_flow_command(&store, command, &args).unwrap_err().0, expected);
+        }
         for _ in 0..2 {
             store.insert_flow(&Flow::new("Collision", "user")).unwrap();
         }
-        assert_eq!(
-            validate_flow_command(&store, "flow.activate", &serde_json::json!({"name": "Collision"}))
-                .unwrap_err().0,
-            ErrorCode::Conflict
+        let ambiguous = validate_flow_command(
+            &store,
+            "flow.activate",
+            &serde_json::json!({"name": "Collision"}),
         );
+        assert_eq!(ambiguous.unwrap_err().0, ErrorCode::Conflict);
     }
 
     #[test]
