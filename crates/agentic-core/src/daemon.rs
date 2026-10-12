@@ -231,7 +231,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(invalid.payload, Payload::Err { .. }));
+        assert!(matches!(
+            invalid.payload,
+            Payload::Err {
+                code: Some(ErrorCode::InvalidArgument),
+                ..
+            }
+        ));
         agentic_ipc::call(&socket, Payload::Shutdown).await.unwrap();
         server.await.unwrap().unwrap();
     }
