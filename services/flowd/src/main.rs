@@ -112,6 +112,12 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
                 .get("created_by")
                 .and_then(Value::as_str)
                 .unwrap_or("user");
+            if name.trim().is_empty() {
+                return Err("flow name must not be empty".to_owned());
+            }
+            if name == "General" {
+                return Err("General is reserved for the system Flow".to_owned());
+            }
             let flow = Flow::new(name, created_by);
             let provenance = ProvenanceEdge {
                 from: ObjectRef::from(&flow.id),
@@ -141,7 +147,14 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> std::result::Resu
             } else {
                 FlowState::Archived
             };
-            store.set_flow_state(&flow.id, state).map_err(err_str)?;
+            if state == FlowState::Archived && flow.name == "General" {
+                return Err("General cannot be archived".to_owned());
+            }
+            if state == FlowState::Foreground {
+                store.activate_flow(&flow.id).map_err(err_str)?;
+            } else {
+                store.set_flow_state(&flow.id, state).map_err(err_str)?;
+            }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
         other => Err(format!("flowd: unknown command `{other}`")),
@@ -159,7 +172,11 @@ fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
         let flows = store.list_flows().map_err(err_str)?;
-        if let Some(flow) = flows.into_iter().find(|f| f.name == by_name) {
+        let mut matches = flows.into_iter().filter(|f| f.name == by_name);
+        if let Some(flow) = matches.next() {
+            if matches.next().is_some() {
+                return Err(format!("ambiguous flow name: {by_name}; use id"));
+            }
             return Ok(flow);
         }
         return Err(format!("flow not found: {by_name}"));
@@ -211,6 +228,37 @@ mod tests {
             error.contains("flow"),
             "unexpected invalid-id error: {error}"
         );
+    }
+
+    #[test]
+    fn activation_demotes_previous_and_records_activity() {
+        let mut store = migrated_store();
+        let a = Flow::new("Alpha", "user");
+        let b = Flow::new("Beta", "user");
+        store.insert_flow(&a).unwrap();
+        store.insert_flow(&b).unwrap();
+        store.activate_flow(&a.id).unwrap();
+        store.activate_flow(&b.id).unwrap();
+        let old = store.get_flow(&a.id).unwrap().unwrap();
+        let current = store.get_flow(&b.id).unwrap().unwrap();
+        assert_eq!(old.state, FlowState::Active);
+        assert_eq!(current.state, FlowState::Foreground);
+        assert!(current.last_active.is_some());
+        assert!(current.revision > b.revision);
+        assert_eq!(store.list_flows().unwrap().iter().filter(|f| f.state == FlowState::Foreground).count(), 1);
+    }
+
+    #[test]
+    fn ambiguous_names_and_general_archive_are_rejected() {
+        let mut store = migrated_store();
+        ensure_general_flow(&mut store).unwrap();
+        for _ in 0..2 {
+            store.insert_flow(&Flow::new("Duplicate", "user")).unwrap();
+        }
+        assert!(find_flow(&store, &serde_json::json!({"name":"Duplicate"}))
+            .unwrap_err().contains("ambiguous"));
+        assert!(run_command(&mut store, "flow.archive", &serde_json::json!({"name":"General"}))
+            .unwrap_err().contains("cannot be archived"));
     }
 
     #[test]
