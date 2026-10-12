@@ -915,14 +915,29 @@ mod tests {
             "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
             params![b.id.as_str()],
         );
-        assert!(rejected.is_err(), "unique index must reject second foreground");
-        assert_eq!(first.get_flow(&a.id).unwrap().unwrap().state, FlowState::Foreground);
-        assert_ne!(first.get_flow(&b.id).unwrap().unwrap().state, FlowState::Foreground);
+        assert!(
+            rejected.is_err(),
+            "unique index must reject second foreground"
+        );
+        assert_eq!(
+            first.get_flow(&a.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+        assert_ne!(
+            first.get_flow(&b.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
 
         let mut second = second;
         second.activate_flow(&b.id).expect("atomic switch to B");
-        assert_eq!(first.get_flow(&b.id).unwrap().unwrap().state, FlowState::Foreground);
-        assert_eq!(first.get_flow(&a.id).unwrap().unwrap().state, FlowState::Active);
+        assert_eq!(
+            first.get_flow(&b.id).unwrap().unwrap().state,
+            FlowState::Foreground
+        );
+        assert_eq!(
+            first.get_flow(&a.id).unwrap().unwrap().state,
+            FlowState::Active
+        );
     }
 
     #[test]
@@ -955,7 +970,13 @@ mod tests {
         }
         let reloaded = Store::open(&path).unwrap();
         let flows = reloaded.list_flows().unwrap();
-        assert_eq!(flows.iter().filter(|flow| flow.state == FlowState::Foreground).count(), 1);
+        assert_eq!(
+            flows
+                .iter()
+                .filter(|flow| flow.state == FlowState::Foreground)
+                .count(),
+            1
+        );
         assert_eq!(flows.iter().filter(|flow| flow.revision > 1).count(), 2);
     }
 
@@ -972,8 +993,12 @@ mod tests {
         store.insert_flow(&b).unwrap();
         assert!(store.conn.execute_batch(MIGRATIONS[2].sql).is_err());
         assert_eq!(
-            store.list_flows().unwrap().iter()
-                .filter(|flow| flow.state == FlowState::Foreground).count(),
+            store
+                .list_flows()
+                .unwrap()
+                .iter()
+                .filter(|flow| flow.state == FlowState::Foreground)
+                .count(),
             2,
             "failed index migration must not silently change legacy Flow state"
         );
