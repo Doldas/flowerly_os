@@ -210,12 +210,16 @@ impl Store {
     /// Atomically move the foreground to one Flow in the shared state scope.
     /// Missing or archived targets leave the current foreground unchanged.
     pub fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let target: Option<String> = tx.query_row(
-            "SELECT state FROM flows WHERE id = ?1",
-            params![id.as_str()],
-            |row| row.get(0),
-        ).optional()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let target: Option<String> = tx
+            .query_row(
+                "SELECT state FROM flows WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
         let target = target.ok_or_else(|| StorageError::NotFound(id.to_string()))?;
         if target == "ARCHIVED" {
             return Err(StorageError::NotFound(format!("archived flow: {id}")));
