@@ -160,6 +160,17 @@ impl Drop for SocketOwnership {
 
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
+/// Kernel-attested identity of the Unix socket peer. Never populated from
+/// JSON command arguments or client-supplied identity claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerIdentity {
+    pub uid: u32,
+    pub gid: u32,
+    pub pid: Option<u32>,
+}
+
+pub type AuthenticatedHandler = dyn Fn(&Envelope, &PeerIdentity) -> Envelope + Send + Sync;
+
 pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Result<()> {
     let (_tx, rx) = watch::channel(false);
     serve_with_shutdown(socket_path, handler, rx).await
@@ -170,6 +181,17 @@ pub async fn serve(socket_path: impl AsRef<Path>, handler: Arc<Handler>) -> Resu
 pub async fn serve_with_shutdown(
     socket_path: impl AsRef<Path>,
     handler: Arc<Handler>,
+    shutdown_requested: watch::Receiver<bool>,
+) -> Result<()> {
+    let wrapped: Arc<AuthenticatedHandler> = Arc::new(move |request, _peer| handler(request));
+    serve_with_shutdown_authenticated(socket_path, wrapped, shutdown_requested).await
+}
+
+/// Accept only same-UID Unix peers and preserve kernel-attested identity for
+/// each request throughout the lifetime of its accepted connection.
+pub async fn serve_with_shutdown_authenticated(
+    socket_path: impl AsRef<Path>,
+    handler: Arc<AuthenticatedHandler>,
     mut shutdown_requested: watch::Receiver<bool>,
 ) -> Result<()> {
     let path = socket_path.as_ref().to_path_buf();
@@ -215,9 +237,14 @@ pub async fn serve_with_shutdown(
                         // Fail closed if the kernel cannot identify the peer or
                         // its UID differs from the socket owner's UID.
                         // This is an explicitly single-user IPC boundary.
-                        match stream.peer_cred() {
+                        let peer = match stream.peer_cred() {
                             Ok(peer) if peer.uid() == server_uid => {
                                 tracing::trace!(peer_uid = peer.uid(), peer_pid = ?peer.pid(), "authorized local IPC peer");
+                                PeerIdentity {
+                                    uid: peer.uid(),
+                                    gid: peer.gid(),
+                                    pid: peer.pid().and_then(|pid| u32::try_from(pid).ok()),
+                                }
                             }
                             Ok(peer) => {
                                 tracing::warn!(peer_uid = peer.uid(), server_uid, "rejecting IPC peer from another UID");
@@ -227,7 +254,7 @@ pub async fn serve_with_shutdown(
                                 tracing::warn!(%error, "cannot authenticate IPC peer");
                                 continue;
                             }
-                        }
+                        };
                         // Refuse excess clients before spawning a task. A slow
                         // or silent client cannot consume unbounded memory.
                         if let Ok(permit) = Arc::clone(&connections).try_acquire_owned() {
@@ -235,7 +262,7 @@ pub async fn serve_with_shutdown(
                             let blocking = Arc::clone(&blocking_handlers);
                             connections_tasks.spawn(async move {
                                 let _connection = permit;
-                                if let Err(err) = handle_connection(stream, handler_ref, blocking).await {
+                                if let Err(err) = handle_connection(stream, handler_ref, blocking, peer).await {
                                     tracing::debug!(error = %err, "ipc connection ended");
                                 }
                             });
@@ -274,8 +301,9 @@ pub async fn serve_with_shutdown(
 
 async fn handle_connection(
     mut stream: UnixStream,
-    handler: Arc<Handler>,
+    handler: Arc<AuthenticatedHandler>,
     blocking: Arc<Semaphore>,
+    peer: PeerIdentity,
 ) -> Result<()> {
     loop {
         let request = match tokio::time::timeout(IO_DEADLINE, read_frame(&mut stream)).await {
@@ -294,7 +322,7 @@ async fn handle_connection(
         let request_for_handler = request.clone();
         let response = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            handler_ref(&request_for_handler)
+            handler_ref(&request_for_handler, &peer)
         })
         .await?;
         tokio::time::timeout(IO_DEADLINE, write_frame(&mut stream, &response))
@@ -416,6 +444,47 @@ mod tests {
         assert!(path.exists());
         drop(replacement);
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn authenticated_handler_receives_kernel_attested_peer() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("peer-handler.sock");
+        let (shutdown, receiver) = watch::channel(false);
+        let handler: Arc<AuthenticatedHandler> =
+            Arc::new(|request: &Envelope, peer: &PeerIdentity| Envelope {
+                version: PROTOCOL_VERSION,
+                id: request.id.clone(),
+                payload: Payload::Ok {
+                    data: serde_json::json!({
+                        "uid": peer.uid,
+                        "gid": peer.gid,
+                        "pid": peer.pid,
+                    }),
+                },
+            });
+        let server = tokio::spawn(serve_with_shutdown_authenticated(
+            path.clone(),
+            handler,
+            receiver,
+        ));
+        for _ in 0..50 {
+            if path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let expected_uid = std::fs::metadata(&path).unwrap().uid();
+        let response = call(&path, Payload::Ping).await.unwrap();
+        match response.payload {
+            Payload::Ok { data } => {
+                assert_eq!(data["uid"], expected_uid);
+                assert_eq!(data["pid"], std::process::id());
+            }
+            _ => panic!("expected authenticated IPC response"),
+        }
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]

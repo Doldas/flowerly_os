@@ -97,6 +97,26 @@ execution or shared-user service deployment, propagate trusted peer context to
 domain handlers and derive security actors from that context. Keep shutdown
 and process-control operations inside the authenticated boundary.
 
+### Gate B implementation note — trusted creator identity
+
+The authenticated IPC handler receives kernel-supplied UID, GID and PID from
+its accepted Unix peer, following the same-UID admission check. The shared
+daemon runner replaces client-supplied `created_by` in JSON object command
+arguments with `uid:<peer-uid>` before handing them to service handlers.
+This makes creator fields and `created_by` provenance recorded through the
+standard IPC path represent the authenticated OS user rather than arbitrary
+untrusted text. Non-object command arguments are rejected.
+
+The single-user trust model intentionally treats processes owned by the same
+UID as one principal. Peer PID is diagnostic context, not a durable process
+identity or delegation token. CLI-provided `created_by` is no longer an
+authoritative actor on the daemon IPC path. Domain functions invoked directly
+outside IPC must use explicitly trusted actor input.
+
+**Still open:** per-command capability policy, process control authorization
+beyond the same-UID admission baseline, delegated actors, and audit records
+that distinguish administrative callers sharing the same UID.
+
 ### Gate B — runtime safety
 
 1. **Socket ownership**
