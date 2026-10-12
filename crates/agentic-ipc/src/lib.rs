@@ -181,18 +181,23 @@ pub struct Client {
 impl Client {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let stream = tokio::time::timeout(IO_DEADLINE, UnixStream::connect(path.as_ref()))
-            .await.map_err(|_| IpcError::Timeout)??;
+            .await
+            .map_err(|_| IpcError::Timeout)??;
         Ok(Self { stream })
     }
 
     pub async fn request(&mut self, payload: Payload) -> Result<Envelope> {
         let request = Envelope::new(payload);
         tokio::time::timeout(IO_DEADLINE, write_frame(&mut self.stream, &request))
-            .await.map_err(|_| IpcError::Timeout)??;
+            .await
+            .map_err(|_| IpcError::Timeout)??;
         let response = tokio::time::timeout(IO_DEADLINE, read_frame(&mut self.stream))
-            .await.map_err(|_| IpcError::Timeout)??;
+            .await
+            .map_err(|_| IpcError::Timeout)??;
         if response.id != request.id {
-            return Err(IpcError::InvalidFrame("response correlation id mismatch".into()));
+            return Err(IpcError::InvalidFrame(
+                "response correlation id mismatch".into(),
+            ));
         }
         Ok(response)
     }
