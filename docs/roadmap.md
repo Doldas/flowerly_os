@@ -9,6 +9,14 @@ the implementation strategy is deliberately conservative.
 
 Status legend: done, in progress, planned.
 
+## Future direction — location-independent Flowerly and AI compute (proposed)
+
+[**RFC 0004**](rfcs/0004-location-independent-flowerly-ai-compute.md) records a long-term vision in which the user's interface, persistent Flowerly runtime and AI inference can be placed on different devices or hosts. A local workstation, a browser/thin-client tablet, a dedicated Flowerly VM, organizational model servers and permitted external APIs are **deployment choices**, not claims about implemented capabilities. Standalone/offline Linux remains a first-class configuration.
+
+User-friendly AI capability profiles (**Essential / Enhanced / Advanced / Custom**) should be separate from background-activity preferences. Expert users should be able to author portable, versioned per-agent model/resource profiles. Organizations may optionally centralize model registries, policy and inference, subject to user/tenant isolation and independently enforced OS authority.
+
+**No new 0.0.4 exit criteria:** this is exploratory future work. Do not confuse model inference placement with runtime/process ownership, browser clients with VMs, or an authenticated remote connection with local Unix-socket peer credentials. See the linked RFC for proposed milestones, threat model and open questions.
+
 ## Distribution substrate direction
 
 Arch Linux is the selected initial userspace/package substrate (ADR-0015). Its
