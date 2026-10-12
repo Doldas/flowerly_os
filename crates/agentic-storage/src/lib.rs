@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn migration_rejects_legacy_multiple_foregrounds_without_data_loss() {
-        let mut store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap();
         store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
         let mut a = Flow::new("A", "test");
