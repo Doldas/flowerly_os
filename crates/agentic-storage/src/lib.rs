@@ -342,6 +342,11 @@ impl Store {
         edges: &[ProvenanceEdge],
         operation: &MutationOperation<'_>,
     ) -> Result<String> {
+        if operation.actor != flow.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
         self.insert_once(operation, |conn| {
             insert_flow_row(conn, flow)?;
             for edge in edges {
@@ -357,6 +362,11 @@ impl Store {
         edges: &[ProvenanceEdge],
         operation: &MutationOperation<'_>,
     ) -> Result<String> {
+        if operation.actor != goal.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
         self.insert_once(operation, |conn| {
             insert_goal_row(conn, goal)?;
             for edge in edges {
@@ -372,6 +382,11 @@ impl Store {
         edges: &[ProvenanceEdge],
         operation: &MutationOperation<'_>,
     ) -> Result<String> {
+        if operation.actor != session.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
         self.insert_once(operation, |conn| {
             insert_session_row(conn, session)?;
             for edge in edges {
