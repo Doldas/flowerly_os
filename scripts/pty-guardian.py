@@ -21,21 +21,108 @@ import time
 REPLAY_LIMIT = 65536
 REQUEST_LIMIT = 32768
 
+def _kill_owned_terminal_session(shell_sid):
+    """Best-effort group-independent cleanup; pidfds prevent signaling reused PIDs.
+
+    This covers normal job-control background process groups sharing the TTY
+    session. A child deliberately calling setsid() needs cgroup containment.
+    """
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        return
+    uid = os.getuid()
+    until = time.monotonic() + 1.0
+    while time.monotonic() < until:
+        found = False
+        for raw in os.listdir("/proc"):
+            if not raw.isdigit():
+                continue
+            candidate = int(raw)
+            if candidate == os.getpid():
+                continue
+            try:
+                if os.stat("/proc/" + raw).st_uid != uid or os.getsid(candidate) != shell_sid:
+                    continue
+                fd = os.pidfd_open(candidate)
+            except (ProcessLookupError, PermissionError, FileNotFoundError):
+                continue
+            try:
+                # Do not signal a PID that changed identity or session between
+                # discovering it and opening its pidfd.
+                if os.getsid(candidate) == shell_sid:
+                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+                    found = True
+            except (ProcessLookupError, PermissionError):
+                pass
+            finally:
+                os.close(fd)
+        if not found:
+            break
+        time.sleep(.02)
+
+
+def _watch_guardian(shell_sid, parent_pid, ready_fd):
+    """A separate process cleans up terminal job groups after guardian SIGKILL."""
+    stopped = False
+
+    def stop(_sig, _frame):
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGTERM, stop)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
+        os._exit(127)
+    try:
+        os.write(ready_fd, b"1")
+    except OSError:
+        os._exit(127)
+    finally:
+        os.close(ready_fd)
+    while not stopped and os.getppid() == parent_pid:
+        time.sleep(.05)
+    _kill_owned_terminal_session(shell_sid)
+    os._exit(0)
+
+
 def supervise(path, shell, parent_pid):
     if shell not in ("/bin/sh", "/bin/bash") or os.path.lexists(path):
         raise ValueError("shell not allowlisted or socket already exists")
+    if os.geteuid() == 0:
+        # Until per-user UID delegation exists, a root sessiond must never
+        # produce an interactive root shell through a normal Session request.
+        raise PermissionError("refusing root-owned PTY shell; run as an unprivileged user")
     guardian_pid = os.getpid()
+    release_read, release_write = os.pipe()
+    ready_read, ready_write = os.pipe()
     pid, fd = os.forkpty()
     if pid == 0:
-        # SIGKILL on guardian skips finally. Linux kills directly-owned shell.
-        # Parent check closes the fork/prctl race.
+        os.close(release_write)
+        os.close(ready_read)
+        os.close(ready_write)
         libc = ctypes.CDLL(None, use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+        # Kill our direct shell even when guardian SIGKILL skips finally.
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
             os._exit(127)
-        if os.getppid() != guardian_pid:
+        if os.getppid() != guardian_pid or os.read(release_read, 1) != b"1":
             os._exit(127)
+        os.close(release_read)
         os.execv(shell, [shell, "-i"])
+    os.close(release_read)
+    watcher = os.fork()
+    if watcher == 0:
+        # Do not keep the PTY master open in the watcher.
+        os.close(fd)
+        os.close(release_write)
+        os.close(ready_read)
+        _watch_guardian(pid, guardian_pid, ready_write)
+    os.close(ready_write)
+    try:
+        if os.read(ready_read, 1) != b"1":
+            raise RuntimeError("PTY cleanup watcher failed to initialize")
+    finally:
+        os.close(ready_read)
+    os.write(release_write, b"1")
+    os.close(release_write)
     os.set_blocking(fd, False)
     listener = socket.socket(socket.AF_UNIX)
     listener.bind(path)
@@ -48,9 +135,12 @@ def supervise(path, shell, parent_pid):
 
     def harvest():
         nonlocal first, cursor
-        while True:
+        # A continuously noisy child must not starve terminal control requests.
+        # Give each event-loop tick a bounded 64 KiB PTY-drain budget.
+        budget = REPLAY_LIMIT
+        while budget:
             try:
-                chunk = os.read(fd, 4096)
+                chunk = os.read(fd, min(4096, budget))
             except BlockingIOError:
                 return
             except OSError as exc:
@@ -59,6 +149,7 @@ def supervise(path, shell, parent_pid):
                 raise
             if not chunk:
                 return
+            budget -= len(chunk)
             replay.extend(chunk)
             cursor += len(chunk)
             if len(replay) > REPLAY_LIMIT:

@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import subprocess
@@ -52,6 +53,22 @@ def test_forced_guardian_death(root):
             raise AssertionError("guardian startup timed out")
         child = exchange(crash_socket, {"op": "status"})["pid"]
         assert child > 0
+        # Interactive /bin/sh can run jobs in a different process group while
+        # retaining the same terminal session. The watcher must clean them too.
+        command = b"sleep 60 & echo FLOWERLY_DESCENDANT_PID:$!\n"
+        assert exchange(crash_socket, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+        for _ in range(100):
+            output = exchange(crash_socket, {"op": "read", "cursor": 0})
+            observed = re.search(rb"FLOWERLY_DESCENDANT_PID:(\d+)",
+                                 base64.b64decode(output["output_base64"]))
+            if observed:
+                break
+            time.sleep(.02)
+        else:
+            raise AssertionError("background job PID not observed")
+        background = int(observed.group(1))
+        with open(f"/proc/{background}/stat", encoding="utf-8") as child_stat:
+            assert child_stat.read().split(") ", 1)[1][0] != "Z"
         process.kill()
         process.wait(timeout=3)
         for _ in range(100):
@@ -65,7 +82,20 @@ def test_forced_guardian_death(root):
             time.sleep(.02)
         else:
             raise AssertionError("PTY child survived guardian SIGKILL")
-        print("PTY crash: direct shell killed by Linux parent death signal")
+        # The guardian's independent watcher must also clean the live
+        # background job; PDEATHSIG on the shell alone does not do this.
+        for _ in range(100):
+            try:
+                with open(f"/proc/{background}/stat", encoding="utf-8") as bg_stat:
+                    status = bg_stat.read().split(") ", 1)[1][0]
+            except FileNotFoundError:
+                break
+            if status in ("Z", "X"):
+                break
+            time.sleep(.02)
+        else:
+            raise AssertionError("background job survived guardian SIGKILL")
+        print("PTY crash: direct shell and background process terminated")
     finally:
         if process.poll() is None:
             process.kill()
@@ -107,6 +137,17 @@ def main():
             second = exchange(path, {"op": "attach", "cursor": 0})
             assert second["pid"] == pid and second["running"] is True
             assert b"FLOWERLY_PTY_STABLE" in base64.b64decode(second["output_base64"])
+            # Stress cursor truncation and bounded output under a noisy shell.
+            noisy = b"python3 -c 'import sys; sys.stdout.write(\"Q\"*150000); sys.stdout.flush()'\n"
+            assert exchange(path, {"op": "write", "data_hex": noisy.hex()})["written"] == len(noisy)
+            for _ in range(100):
+                burst = exchange(path, {"op": "read", "cursor": 0})
+                if burst["cursor"] > 150000 and burst["truncated"]:
+                    assert len(base64.b64decode(burst["output_base64"])) <= 65536
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("bounded replay/truncation not observed for noisy PTY")
             assert exchange(path, {"op": "terminate"})["terminated"] is True
             assert supervisor.wait(timeout=5) == 0
             print("PTY guardian: same live PID, reconnect, bounded replay, I/O, resize, terminate")
