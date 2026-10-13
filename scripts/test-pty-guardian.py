@@ -25,7 +25,6 @@ def exchange(path, payload):
 
 
 def test_same_uid_other_pid_denied(path):
-    # A separate process shares our UID but must not command the guardian.
     probe = subprocess.run(
         [sys.executable, "-c",
          "import socket,sys; s=socket.socket(socket.AF_UNIX); "
@@ -53,8 +52,6 @@ def test_forced_guardian_death(root):
             raise AssertionError("guardian startup timed out")
         child = exchange(crash_socket, {"op": "status"})["pid"]
         assert child > 0
-        # Interactive /bin/sh can run jobs in a different process group while
-        # retaining the same terminal session. The watcher must clean them too.
         command = b"sleep 60 & echo FLOWERLY_DESCENDANT_PID:$!\n"
         assert exchange(crash_socket, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
         for _ in range(100):
@@ -82,8 +79,6 @@ def test_forced_guardian_death(root):
             time.sleep(.02)
         else:
             raise AssertionError("PTY child survived guardian SIGKILL")
-        # The guardian's independent watcher must also clean the live
-        # background job; PDEATHSIG on the shell alone does not do this.
         for _ in range(100):
             try:
                 with open(f"/proc/{background}/stat", encoding="utf-8") as bg_stat:
@@ -112,8 +107,6 @@ def malformed_request(path, payload):
 
 
 def test_malformed_commands_are_isolated(path):
-    # All of these inputs come from the authorized controller PID; none may
-    # crash the owned guardian or disrupt its original PTY Session identity.
     for payload in (b"[]", b"null", b"42", b"true", b"\xff",
                     b"{not json}", b'{"op":"read","cursor":true}',
                     b'{"op":"write","data_hex":"not hex"}'):
@@ -124,7 +117,6 @@ def test_malformed_commands_are_isolated(path):
 
 
 def test_shell_limits(path):
-    # This executes within the actual PTY shell, not the Python test process.
     command = b"python3 -c 'import resource; print(\"FLOWERLY_LIMITS:%s:%s:%s\" % (resource.getrlimit(resource.RLIMIT_NOFILE)[0], resource.getrlimit(resource.RLIMIT_CORE)[0], resource.getrlimit(resource.RLIMIT_FSIZE)[0]))'\n"
     assert exchange(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
     for _ in range(100):
@@ -140,6 +132,7 @@ def test_shell_limits(path):
 
 def main():
     assert sys.platform == "linux"
+    os.environ["FLOWERLY_PTY_ISOLATION"] = "development"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-guardian-") as root:
         test_forced_guardian_death(root)
         path = Path(root) / "supervisor.sock"
@@ -175,7 +168,6 @@ def main():
             second = exchange(path, {"op": "attach", "cursor": 0})
             assert second["pid"] == pid and second["running"] is True
             assert b"FLOWERLY_PTY_STABLE" in base64.b64decode(second["output_base64"])
-            # Stress cursor truncation and bounded output under a noisy shell.
             noisy = b"python3 -c 'import sys; sys.stdout.write(\"Q\"*150000); sys.stdout.flush()'\n"
             assert exchange(path, {"op": "write", "data_hex": noisy.hex()})["written"] == len(noisy)
             for _ in range(100):
