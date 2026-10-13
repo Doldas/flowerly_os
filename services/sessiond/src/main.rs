@@ -209,11 +209,14 @@ fn parse_operation_id(args: &Value) -> Result<Option<&str>, CommandFailure> {
     })?;
     if raw.len() < 8
         || raw.len() > 128
-        || !raw.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        || !raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
         return Err(CommandFailure {
             code: ErrorCode::InvalidArgument,
-            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores".to_owned(),
+            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores"
+                .to_owned(),
         });
     }
     Ok(Some(raw))
