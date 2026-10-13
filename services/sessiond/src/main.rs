@@ -43,8 +43,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let store = open_store(&config)?;
-    // Reconcile stale supervised Sessions after sessiond restart. PID columns
-    // are historical metadata and are NEVER signal/reattach authority.
     #[cfg(target_os = "linux")]
     for session in store
         .list_sessions()
@@ -134,8 +132,6 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
 }
 
-/// Validate API errors under the same storage mutex used for the mutation.
-/// Storage failures remain internal; no string-based classification.
 fn validate_session_command(
     store: &Store,
     name: &str,
@@ -171,12 +167,16 @@ fn validate_session_command(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("missing string arg `id`"))?;
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            if store
+            let existing = store
                 .get_session(&id)
-                .map_err(|e| (storage_error_code(&e), e.to_string()))?
-                .is_none()
-            {
-                return Err((ErrorCode::NotFound, format!("session not found: {raw}")));
+                .map_err(|error| (storage_error_code(&error), error.to_string()))?;
+            let session = existing
+                .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
+            if session.kind == "local-pty" {
+                return Err((
+                    ErrorCode::Unavailable,
+                    "PTY Session has no currently owned guardian; termination is unavailable".to_owned(),
+                ));
             }
         }
         other => {
