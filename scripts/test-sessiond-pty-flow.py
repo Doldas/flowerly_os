@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import socket
 import sqlite3
@@ -157,6 +158,23 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
+            # A live daemon must detect the unexpectedly SIGKILLed guardian,
+            # persist lost supervision, and never claim the old shell is live.
+            crashed = ok(session, "session.spawn", {"flow_id": a})
+            crashed_id = crashed["id"]
+            assert crashed["supervisor_pid"] > 0, crashed
+            os.kill(crashed["supervisor_pid"], signal.SIGKILL)
+            for _ in range(100):
+                reply = call(session, "session.status", {"id": crashed_id})
+                if reply["type"] == "err" and reply["code"] == "unavailable":
+                    state_row = next(row for row in ok(session, "session.list", {})["sessions"]
+                                     if row["id"] == crashed_id)
+                    if state_row["state"].lower() == "suspended":
+                        assert state_row["presentation_state"].lower() == "detached"
+                        break
+                time.sleep(.03)
+            else:
+                raise AssertionError("guardian SIGKILL not reconciled to unavailable/detached")
             # The process supervisor is ephemeral: on restart the persisted
             # ID must NOT claim that its old shell is still attached/running.
             stale = ok(session, "session.spawn", {"flow_id": a})
