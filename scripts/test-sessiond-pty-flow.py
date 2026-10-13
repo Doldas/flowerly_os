@@ -146,6 +146,24 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
+            # The process supervisor is ephemeral: on restart the persisted
+            # ID must NOT claim that its old shell is still attached/running.
+            stale = ok(session, "session.spawn", {"flow_id": a})
+            stale_id = stale["id"]
+            session_process = children[-1]
+            session_process.terminate()
+            session_process.wait(timeout=5)
+            # The guardian parent-death path closes its own child; no stale
+            # PID may be used to attach or send signals on daemon restart.
+            session = start(bin_dir, "sessiond", env, children, root)
+            after_restart = ok(session, "session.list", {})["sessions"]
+            record = next(row for row in after_restart if row["id"] == stale_id)
+            assert record["state"].lower() == "suspended", record
+            assert record["presentation_state"].lower() == "detached", record
+            reattach = call(session, "session.attach", {"id": stale_id})
+            assert reattach["type"] == "err", reattach
+            assert reattach["code"] == "unavailable", reattach
+            print("PTY daemon restart: stale Session remains identified but unavailable/detached")
             print("Linux Flow A -> B -> A PTY: same Session/PID, replay, SQLite liveness, natural exit, termination")
         finally:
             for proc in children:
