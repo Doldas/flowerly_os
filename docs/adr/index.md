@@ -21,6 +21,11 @@ and the reasoning behind them.
 14. [Linux authority is the enforcement substrate](0014-linux-authority-is-the-enforcement-substrate.md)
 15. [Arch Linux as the initial userspace substrate](0015-arch-linux-userspace-substrate.md)
 
+## Proposed decisions under review
+
+- [0016: Supervised Linux PTY Session ownership](0016-pty-session-supervision.md)
+  — pending issue #50 release and security acceptance; not yet an accepted ADR.
+
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
 [../rfcs/](../rfcs/).
