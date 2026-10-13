@@ -261,7 +261,10 @@ impl Supervisor {
             .arg(&socket)
             .arg(shell)
             .arg(std::process::id().to_string())
-            .env("FLOWERLY_PTY_CGROUP_NAME", format!("pty-{}", session_id.as_str()))
+            .env(
+                "FLOWERLY_PTY_CGROUP_NAME",
+                format!("pty-{}", session_id.as_str()),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
