@@ -286,9 +286,13 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
-                store.activate_flow(&flow.id).map_err(CommandFailure::storage)?;
+                store
+                    .activate_flow(&flow.id)
+                    .map_err(CommandFailure::storage)?;
             } else {
-                store.set_flow_state(&flow.id, state).map_err(CommandFailure::storage)?;
+                store
+                    .set_flow_state(&flow.id, state)
+                    .map_err(CommandFailure::storage)?;
             }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
