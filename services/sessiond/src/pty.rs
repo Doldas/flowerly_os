@@ -207,6 +207,17 @@ impl Supervisor {
         )
     }
 
+    fn mark_unavailable(&self, store: &Arc<Mutex<Store>>, id: &SessionId) -> Result<(), Failure> {
+        // SUSPENDED here represents lost supervision, NOT proof of a paused
+        // or safely reattachable process; never signal a persisted child PID.
+        let mut db = store.lock().map_err(|_| internal("store lock poisoned"))?;
+        db.update_session_state(id, SessionState::Suspended)
+            .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+        db.update_session_presentation_state(id, SessionPresentationState::Detached)
+            .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+        Ok(())
+    }
+
     fn control(
         &self,
         store: &Arc<Mutex<Store>>,
@@ -225,12 +236,12 @@ impl Supervisor {
         // The core IPC boundary injects kernel-attested created_by on every
         // command. Authorize from the in-memory owner registry so PTY I/O
         // stays responsive while an unrelated SQLite writer is contended.
-        let socket = {
-            let sessions = self
+        let (socket, supervisor_exited) = {
+            let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| internal("registry lock poisoned"))?;
-            let guardian = sessions.get(raw).ok_or_else(|| {
+            let guardian = sessions.get_mut(raw).ok_or_else(|| {
                 (
                     ErrorCode::Unavailable,
                     "PTY guardian unavailable (restart or exit)".to_owned(),
@@ -242,8 +253,14 @@ impl Supervisor {
                     "session actor not authorized".to_owned(),
                 ));
             }
-            guardian.socket.clone()
+            let exited = guardian.process.try_wait()
+                .map_err(|error| internal(error.to_string()))?.is_some();
+            (guardian.socket.clone(), exited)
         };
+        if supervisor_exited {
+            self.mark_unavailable(store, &id)?;
+            return Err((ErrorCode::Unavailable, "PTY guardian exited; no reattachment possible".to_owned()));
+        }
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
             "attach" | "read" | "status" => json!({
@@ -271,7 +288,21 @@ impl Supervisor {
             "terminate" => json!({"op": "terminate"}),
             _ => return Err(invalid("unknown PTY command")),
         };
-        let response = exchange(&socket, &query)?;
+        let response = match exchange(&socket, &query) {
+            Ok(response) => response,
+            Err(error) => {
+                // Reconcile only when the actual owned guardian has exited.
+                // A transient socket timeout is not proof the child died.
+                let exited = self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?
+                    .get_mut(raw).is_some_and(|entry| {
+                        entry.process.try_wait().ok().flatten().is_some()
+                    });
+                if exited {
+                    self.mark_unavailable(store, &id)?;
+                }
+                return Err(error);
+            }
+        };
         if op == "terminate" || response.get("running") == Some(&Value::Bool(false)) {
             store
                 .lock()
