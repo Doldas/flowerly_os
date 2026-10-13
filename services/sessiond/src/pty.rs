@@ -17,6 +17,7 @@ use agentic_types::{
     SessionState, Timestamp,
 };
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 type Failure = (ErrorCode, String);
 
@@ -32,7 +33,15 @@ struct Guardian {
     process: Child,
     socket: PathBuf,
     actor: String,
+    writer: Option<WriterLease>,
 }
+
+struct WriterLease {
+    token: String,
+    expires_at: Instant,
+}
+
+const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
     runtime: PathBuf,
@@ -200,6 +209,7 @@ impl Supervisor {
                     process: guardian,
                     socket,
                     actor: actor.to_owned(),
+                    writer: None,
                 },
             );
         Ok(
@@ -236,6 +246,9 @@ impl Supervisor {
         // The core IPC boundary injects kernel-attested created_by on every
         // command. Authorize from the in-memory owner registry so PTY I/O
         // stays responsive while an unrelated SQLite writer is contended.
+        // Only one authenticated writer lease is valid per live Session.
+        // Observers can continue to use session.read/status without a token.
+        let mut issued_token = None;
         let (socket, supervisor_exited) = {
             let mut sessions = self
                 .sessions
@@ -258,6 +271,35 @@ impl Supervisor {
                 .try_wait()
                 .map_err(|error| internal(error.to_string()))?
                 .is_some();
+            if !exited {
+                if guardian.writer.as_ref().is_some_and(|lease| lease.expires_at <= Instant::now()) {
+                    guardian.writer = None;
+                }
+                match name.as_str() {
+                    "session.attach" => {
+                        if guardian.writer.is_some() {
+                            return Err((ErrorCode::Conflict, "Session already has an active writer".to_owned()));
+                        }
+                        let token = Uuid::new_v4().to_string();
+                        guardian.writer = Some(WriterLease {
+                            token: token.clone(),
+                            expires_at: Instant::now() + WRITER_LEASE,
+                        });
+                        issued_token = Some(token);
+                    }
+                    "session.write" | "session.resize" | "session.detach" => {
+                        let requested = args.get("attachment_token").and_then(Value::as_str)
+                            .ok_or_else(|| invalid("attachment_token required for terminal writer operations"))?;
+                        let lease = guardian.writer.as_mut()
+                            .ok_or_else(|| (ErrorCode::Conflict, "no active writer attachment".to_owned()))?;
+                        if requested != lease.token {
+                            return Err((ErrorCode::Conflict, "writer attachment token revoked or incorrect".to_owned()));
+                        }
+                        lease.expires_at = Instant::now() + WRITER_LEASE;
+                    }
+                    _ => {}
+                }
+            }
             (guardian.socket.clone(), exited)
         };
         if supervisor_exited {
@@ -305,6 +347,15 @@ impl Supervisor {
                     .map_err(|_| internal("registry lock poisoned"))?
                     .get_mut(raw)
                     .is_some_and(|entry| entry.process.try_wait().ok().flatten().is_some());
+                if let Some(ref token) = issued_token {
+                    if let Ok(mut entries) = self.sessions.lock() {
+                        if let Some(entry) = entries.get_mut(raw) {
+                            if entry.writer.as_ref().is_some_and(|lease| &lease.token == token) {
+                                entry.writer = None;
+                            }
+                        }
+                    }
+                }
                 if exited {
                     self.mark_unavailable(store, &id)?;
                 }
@@ -339,6 +390,18 @@ impl Supervisor {
             {
                 let _ = guardian.process.wait();
             }
+        }
+        if op == "detach" {
+            if let Ok(mut entries) = self.sessions.lock() {
+                if let Some(entry) = entries.get_mut(raw) {
+                    entry.writer = None;
+                }
+            }
+        }
+        if let Some(token) = issued_token {
+            let mut result = response;
+            result["attachment_token"] = json!(token);
+            return Ok(result);
         }
         Ok(response)
     }
