@@ -29,12 +29,14 @@ fn internal(message: impl Into<String>) -> Failure {
 }
 
 struct Guardian {
-    _process: Child,
+    process: Child,
     socket: PathBuf,
+    actor: String,
 }
 
 pub struct Supervisor {
     runtime: PathBuf,
+    launch: Mutex<()>,
     sessions: Mutex<HashMap<String, Guardian>>,
 }
 
@@ -42,6 +44,7 @@ impl Supervisor {
     pub fn new(runtime: PathBuf) -> Self {
         Self {
             runtime,
+            launch: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -87,6 +90,10 @@ impl Supervisor {
     }
 
     fn spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+        let _serial = self.launch.lock().map_err(|_| internal("launch lock poisoned"))?;
+        if self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?.len() >= 16 {
+            return Err((ErrorCode::Unavailable, "PTY session limit (16) reached".to_owned()));
+        }
         if args.get("operation_id").is_some_and(|v| !v.is_null()) {
             return Err(invalid(
                 "session.spawn cannot safely replay external process effects",
@@ -178,8 +185,9 @@ impl Supervisor {
             .insert(
                 session_id.to_string(),
                 Guardian {
-                    _process: guardian,
+                    process: guardian,
                     socket,
+                    actor: actor.to_owned(),
                 },
             );
         Ok(
@@ -202,31 +210,18 @@ impl Supervisor {
             .get("created_by")
             .and_then(Value::as_str)
             .unwrap_or("user");
-        {
-            let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
-            let record = db
-                .get_session(&id)
-                .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
-                .ok_or_else(|| (ErrorCode::NotFound, "session not found".to_owned()))?;
-            if record.created_by != actor {
-                return Err((
-                    ErrorCode::Unavailable,
-                    "session actor not authorized".to_owned(),
-                ));
+        // The core IPC boundary injects kernel-attested created_by on every
+        // command. Authorize from the in-memory owner registry so PTY I/O
+        // stays responsive while an unrelated SQLite writer is contended.
+        let socket = {
+            let sessions = self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?;
+            let guardian = sessions.get(raw)
+                .ok_or_else(|| (ErrorCode::Unavailable, "PTY guardian unavailable (restart or exit)".to_owned()))?;
+            if guardian.actor != actor {
+                return Err((ErrorCode::Unavailable, "session actor not authorized".to_owned()));
             }
-        }
-        let socket = self
-            .sessions
-            .lock()
-            .map_err(|_| internal("registry lock poisoned"))?
-            .get(raw)
-            .map(|guardian| guardian.socket.clone())
-            .ok_or_else(|| {
-                (
-                    ErrorCode::Unavailable,
-                    "PTY guardian unavailable (restart or exit)".to_owned(),
-                )
-            })?;
+            guardian.socket.clone()
+        };
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
             "attach" | "read" | "status" => json!({
@@ -273,6 +268,12 @@ impl Supervisor {
                 .map_err(|_| internal("store lock poisoned"))?
                 .update_session_presentation_state(&id, presentation)
                 .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+        }
+        if op == "terminate" {
+            if let Some(mut guardian) = self.sessions.lock()
+                .map_err(|_| internal("registry lock poisoned"))?.remove(raw) {
+                let _ = guardian.process.wait();
+            }
         }
         Ok(response)
     }
