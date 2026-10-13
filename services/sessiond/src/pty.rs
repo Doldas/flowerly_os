@@ -47,14 +47,16 @@ const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
     runtime: PathBuf,
+    cgroup_root: Option<PathBuf>,
     launch: Mutex<()>,
     sessions: Mutex<HashMap<String, Guardian>>,
 }
 
 impl Supervisor {
-    pub fn new(runtime: PathBuf) -> Self {
+    pub fn new(runtime: PathBuf, cgroup_root: Option<PathBuf>) -> Self {
         Self {
             runtime,
+            cgroup_root,
             launch: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
         }
@@ -256,7 +258,8 @@ impl Supervisor {
         if socket.as_os_str().as_bytes().len() > 100 {
             return Err(invalid("runtime socket path exceeds Linux limit"));
         }
-        let mut guardian = Command::new("python3")
+        let mut command = Command::new("python3");
+        command
             .args(["-u", "-c", include_str!("../../../scripts/pty-guardian.py")])
             .arg(&socket)
             .arg(shell)
@@ -267,7 +270,17 @@ impl Supervisor {
             )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(root) = &self.cgroup_root {
+            command
+                .env("FLOWERLY_PTY_ISOLATION", "required")
+                .env("FLOWERLY_PTY_CGROUP_ROOT", root);
+        } else {
+            command
+                .env("FLOWERLY_PTY_ISOLATION", "development")
+                .env_remove("FLOWERLY_PTY_CGROUP_ROOT");
+        }
+        let mut guardian = command
             .spawn()
             .map_err(|error| internal(format!("cannot launch PTY guardian: {error}")))?;
         let deadline = Instant::now() + Duration::from_secs(2);
