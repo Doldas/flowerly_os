@@ -269,6 +269,15 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(response)
         }
         "goal.child" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let parent_id = args
                 .get("id")
                 .and_then(Value::as_str)
@@ -305,12 +314,31 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: Some("child goal".to_owned()),
             };
-            store
-                .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
-                .map_err(CommandFailure::storage)?;
-            Ok(
-                serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent }),
-            )
+            let intended_response =
+                serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "goal.child",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_goal_with_provenance_once(&child, &[created_edge, parent_edge], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            Ok(response)
         }
         "goal.show" => {
             let id = args
