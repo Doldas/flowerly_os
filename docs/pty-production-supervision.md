@@ -4,10 +4,19 @@
 
 Production starts `sessiond` as an unprivileged dedicated Linux user
 under systemd. `FLOWERLY_PTY_ISOLATION` defaults to `required`.
-`FLOWERLY_PTY_CGROUP_ROOT` must point to an existing, explicitly delegated
-writable cgroup-v2 subtree owned by the supervision service, not a path
-supplied by the caller of `session.spawn`. The service never creates
-or takes ownership of the top-level cgroup hierarchy.
+A systemd service must use `Delegate=yes`. When
+`FLOWERLY_PTY_CGROUP_ROOT` is set, it must point to an existing,
+explicitly delegated writable cgroup-v2 subtree owned by the
+supervision service, never a path supplied by `session.spawn`.
+When unset, `sessiond` discovers its own cgroup from
+`/proc/self/cgroup` and uses that delegated unit scope.
+
+Before serving production requests, `sessiond` verifies the real
+cgroup-v2 filesystem, creates a separate management leaf, moves
+itself into that leaf, and enables delegated CPU, memory and process
+controllers. If any of those steps fail, production startup fails
+closed. The service never attempts to acquire the system cgroup
+hierarchy or elevate privileges.
 
 Every supervised PTY creates a new `pty-<random>` cgroup in that subtree.
 The guardian blocks the shell before exec, installs pids, memory and CPU
