@@ -87,6 +87,10 @@ def _watch_guardian(shell_sid, parent_pid, ready_fd):
 def supervise(path, shell, parent_pid):
     if shell not in ("/bin/sh", "/bin/bash") or os.path.lexists(path):
         raise ValueError("shell not allowlisted or socket already exists")
+    if os.geteuid() == 0:
+        # Until per-user UID delegation exists, a root sessiond must never
+        # produce an interactive root shell through a normal Session request.
+        raise PermissionError("refusing root-owned PTY shell; run as an unprivileged user")
     guardian_pid = os.getpid()
     release_read, release_write = os.pipe()
     ready_read, ready_write = os.pipe()
