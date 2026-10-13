@@ -95,6 +95,11 @@ jobs:
         with:
           tool: just
 
+      - name: Validate mandatory release-branch gate definitions
+        run: |
+          python3 scripts/release-gates.py validate
+          python3 scripts/test-release-gates.py
+
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
