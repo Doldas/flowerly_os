@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 GUARDIAN = Path(__file__).with_name("pty-guardian.py")
 
@@ -70,8 +71,11 @@ def require_explicit_delegation(root):
 def exercise_real_cgroup(root):
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-cgroup-") as folder:
         path = Path(folder) / "cgroup.sock"
+        group_name = "pty-session-" + uuid.uuid4().hex
+        group = Path(root) / group_name
         env = dict(os.environ, FLOWERLY_PTY_ISOLATION="required",
-                   FLOWERLY_PTY_CGROUP_ROOT=root)
+                   FLOWERLY_PTY_CGROUP_ROOT=root,
+                   FLOWERLY_PTY_CGROUP_NAME=group_name)
         guardian = subprocess.Popen(
             [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
             env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -89,6 +93,11 @@ def exercise_real_cgroup(root):
                 raise AssertionError("cgroup guardian startup timeout")
             identity = request(path, {"op": "status"})
             shell_pid = identity["pid"]
+            assert group.is_dir(), group
+            assert (group / "pids.max").read_text().strip() == "64"
+            assert (group / "memory.max").read_text().strip() == str(512 * 1024 * 1024)
+            assert (group / "cpu.max").read_text().strip() == "100000 100000"
+            assert str(shell_pid) in (group / "cgroup.procs").read_text().split()
             command = (
                 b"python3 -c 'import subprocess; p=subprocess.Popen("
                 b"[\"sleep\",\"60\"],start_new_session=True);"
@@ -111,6 +120,12 @@ def exercise_real_cgroup(root):
             guardian.wait(timeout=5)
             assert_not_running(shell_pid)
             assert_not_running(descendant_pid)
+            for _ in range(100):
+                if not group.exists():
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("owned PTY cgroup was not removed after guardian death")
             print("Real delegated cgroup v2: setsid descendant terminated after guardian SIGKILL")
         finally:
             if guardian.poll() is None:
