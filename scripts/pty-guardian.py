@@ -250,11 +250,20 @@ def supervise(path, shell, parent_pid):
             return {"error": "PTY request must be a JSON object"}
         poll()
         operation = command.get("op")
-        if operation in ("attach", "read", "status"):
+        if operation in ("attach", "read", "status", "follow"):
             harvest()
             position = command.get("cursor", first)
             if type(position) is not int or not 0 <= position <= cursor:
                 return {"error": "invalid cursor"}
+            if operation == "follow":
+                wait_ms = command.get("wait_ms", 100)
+                if type(wait_ms) is not int or not 0 <= wait_ms <= 250:
+                    return {"error": "invalid wait_ms"}
+                if position == cursor and exit_code is None and wait_ms:
+                    ready, _, _ = select.select([fd], [], [], wait_ms / 1000)
+                    if fd in ready:
+                        harvest()
+                    poll()
             return {"pid": pid, "running": exit_code is None,
                     "exit_code": exit_code, "cursor": cursor,
                     "truncated": position < first,
