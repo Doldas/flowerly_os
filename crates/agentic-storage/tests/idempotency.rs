@@ -29,7 +29,12 @@ fn actor_scoped_retry_replays_original_result_after_restart() {
 
     let first = Flow::new("Plan", "uid:1000");
     let original_result = format!(r#"{{"id":"{}"}}"#, first.id);
-    let key = operation("uid:1000", "request-1", r#"{"name":"Plan"}"#, &original_result);
+    let key = operation(
+        "uid:1000",
+        "request-1",
+        r#"{"name":"Plan"}"#,
+        &original_result,
+    );
     let result = store
         .insert_flow_with_provenance_once(&first, &[], &key)
         .expect("first commit");
@@ -47,7 +52,12 @@ fn actor_scoped_retry_replays_original_result_after_restart() {
     assert_eq!(replayed, original_result);
     assert_eq!(reopened.list_flows().expect("list").len(), 1);
 
-    let mismatch = operation("uid:1000", "request-1", r#"{"name":"Different"}"#, &retry_result);
+    let mismatch = operation(
+        "uid:1000",
+        "request-1",
+        r#"{"name":"Different"}"#,
+        &retry_result,
+    );
     assert!(matches!(
         reopened.insert_flow_with_provenance_once(&retry, &[], &mismatch),
         Err(StorageError::OperationConflict(_))
@@ -84,7 +94,12 @@ fn concurrent_same_actor_operation_only_creates_one_flow() {
                 let mut store = Store::open(path).expect("writer store");
                 let flow = Flow::new("One operation", "uid:42");
                 let response = format!(r#"{{"id":"{}"}}"#, flow.id);
-                let key = operation("uid:42", "the-same-key", r#"{"name":"One operation"}"#, &response);
+                let key = operation(
+                    "uid:42",
+                    "the-same-key",
+                    r#"{"name":"One operation"}"#,
+                    &response,
+                );
                 gate.wait();
                 store
                     .insert_flow_with_provenance_once(&flow, &[], &key)
