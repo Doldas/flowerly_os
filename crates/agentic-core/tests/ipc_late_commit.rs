@@ -1,8 +1,8 @@
 //! Prove that an IPC deadline cannot be treated as mutation rollback.
 //! A blocking worker intentionally commits after its caller stops waiting.
 //! This is a regression characterization, NOT idempotent request handling.
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agentic_core::{ok_envelope, run_service, ServiceConfig};
@@ -39,50 +39,89 @@ async fn a_timed_out_mutation_can_commit_later_and_naive_retry_duplicates_it() {
             std::thread::sleep(Duration::from_secs(11));
         }
         let flow = Flow::new("Same user intention", "timeout retry demonstration");
-        worker_store.lock().expect("lock").insert_flow(&flow).expect("insert");
+        worker_store
+            .lock()
+            .expect("lock")
+            .insert_flow(&flow)
+            .expect("insert");
         worker_completed.fetch_add(1, Ordering::SeqCst);
         ok_envelope(request.id.clone(), serde_json::json!({"id": flow.id}))
     });
     let server = tokio::spawn(run_service(config.clone(), serde_json::json!({}), handler));
     for _ in 0..100 {
-        if config.socket_path().exists() { break; }
+        if config.socket_path().exists() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(config.socket_path().exists(), "socket started");
 
     let began = std::time::Instant::now();
-    let first = call(&config.socket_path(), Payload::Command {
-        name: "create".into(), args: serde_json::json!({}),
-    }).await;
-    assert!(began.elapsed() < Duration::from_secs(11), "request must be bounded");
+    let first = call(
+        &config.socket_path(),
+        Payload::Command {
+            name: "create".into(),
+            args: serde_json::json!({}),
+        },
+    )
+    .await;
+    assert!(
+        began.elapsed() < Duration::from_secs(11),
+        "request must be bounded"
+    );
     // Depending on timing, server may send a typed unavailable, or the
     // client's own deadline may elapse before it receives that response.
     match first {
-        Ok(envelope) => assert!(matches!(
-            envelope.payload,
-            Payload::Err { code: Some(ErrorCode::Unavailable), .. }
-        ), "unexpected response: {envelope:?}"),
-        Err(agentic_ipc::IpcError::Timeout) => {},
+        Ok(envelope) => assert!(
+            matches!(
+                envelope.payload,
+                Payload::Err {
+                    code: Some(ErrorCode::Unavailable),
+                    ..
+                }
+            ),
+            "unexpected response: {envelope:?}"
+        ),
+        Err(agentic_ipc::IpcError::Timeout) => {}
         Err(other) => panic!("unexpected transport error: {other}"),
     }
     // The original mutation is still in flight: wait for the real commit.
     for _ in 0..300 {
-        if completed.load(Ordering::SeqCst) == 1 { break; }
+        if completed.load(Ordering::SeqCst) == 1 {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(completed.load(Ordering::SeqCst), 1, "late write committed");
 
-    let retry = call(&config.socket_path(), Payload::Command {
-        name: "create".into(), args: serde_json::json!({}),
-    }).await.expect("naive retry");
+    let retry = call(
+        &config.socket_path(),
+        Payload::Command {
+            name: "create".into(),
+            args: serde_json::json!({}),
+        },
+    )
+    .await
+    .expect("naive retry");
     assert!(matches!(retry.payload, Payload::Ok { .. }));
     assert_eq!(completed.load(Ordering::SeqCst), 2);
-    let stored = Store::open(&db_path).expect("reader").list_flows().expect("flows");
-    let duplicates = stored.iter().filter(|flow| flow.name == "Same user intention").count();
+    let stored = Store::open(&db_path)
+        .expect("reader")
+        .list_flows()
+        .expect("flows");
+    let duplicates = stored
+        .iter()
+        .filter(|flow| flow.name == "Same user intention")
+        .count();
     assert_eq!(duplicates, 2, "same intended operation was applied twice");
-    eprintln!("late-commit demonstration: first request timed out in {:?}; two distinct durable flow rows after retry", began.elapsed());
+    eprintln!(
+        "late-commit demonstration: first request timed out in {:?}; two distinct durable flow rows after retry",
+        began.elapsed()
+    );
 
-    let response = call(&config.socket_path(), Payload::Shutdown).await.expect("shutdown");
+    let response = call(&config.socket_path(), Payload::Shutdown)
+        .await
+        .expect("shutdown");
     assert!(matches!(response.payload, Payload::Ok { .. }));
     server.await.expect("server join").expect("server shutdown");
 }
