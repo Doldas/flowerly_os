@@ -25,12 +25,27 @@ pub enum StorageError {
 
     #[error("record not found: {0}")]
     NotFound(String),
+
+    #[error("operation key conflict: {0}")]
+    Conflict(String),
+
+    #[error("operation history capacity reached: {0}")]
+    Capacity(String),
 }
 
 impl StorageError {
     /// SQLite writer contention is a transient availability condition, not
     /// corrupt user input or an internal application error.
     #[must_use]
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Self::Conflict(_))
+    }
+
+    #[must_use]
+    pub fn is_capacity(&self) -> bool {
+        matches!(self, Self::Capacity(_))
+    }
+
     pub fn is_busy(&self) -> bool {
         matches!(
             self,
@@ -44,6 +59,15 @@ impl StorageError {
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
+
+/// Retry identity must be scoped to kernel-derived actor identity.
+pub struct OperationKey<'a> {
+    pub actor: &'a str,
+    pub command: &'a str,
+    pub operation_id: &'a str,
+    pub request_json: &'a str,
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
@@ -74,6 +98,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "protect_general",
         sql: include_str!("../migrations/0004_protect_general.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "command_dedup",
+        sql: include_str!("../migrations/0005_command_dedup.sql"),
     },
 ];
 
@@ -254,6 +283,109 @@ impl Store {
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
         insert_flow_row(&self.conn, flow)
+    }
+
+    /// Both domain object and optional operation replay are inserted atomically.
+    /// Replay records are not silently expired: doing so could duplicate writes.
+    fn insert_with_dedup<F>(
+        &mut self,
+        edges: &[ProvenanceEdge],
+        operation: Option<&OperationKey<'_>>,
+        response: &serde_json::Value,
+        insert: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce(&Connection) -> Result<()>,
+    {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(operation) = operation {
+            let previous = tx
+                .query_row(
+                    "SELECT request_json, response_json FROM command_dedup
+                     WHERE actor = ?1 AND command = ?2 AND operation_id = ?3",
+                    params![operation.actor, operation.command, operation.operation_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((old_request, old_response)) = previous {
+                if old_request != operation.request_json {
+                    return Err(StorageError::Conflict(
+                        "operation_id reused with different command arguments".to_owned(),
+                    ));
+                }
+                return Ok(serde_json::from_str(&old_response)?);
+            }
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM command_dedup WHERE actor = ?1",
+                params![operation.actor],
+                |row| row.get(0),
+            )?;
+            if count >= 100_000 {
+                return Err(StorageError::Capacity(
+                    "per-actor operation replay capacity reached".to_owned(),
+                ));
+            }
+        }
+
+        insert(&tx)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        if let Some(operation) = operation {
+            tx.execute(
+                "INSERT INTO command_dedup
+                 (actor, command, operation_id, request_json, response_json, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    operation.actor,
+                    operation.command,
+                    operation.operation_id,
+                    operation.request_json,
+                    serde_json::to_string(response)?,
+                    Timestamp::now().as_millis(),
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(response.clone())
+    }
+
+    pub fn insert_flow_once(
+        &mut self,
+        flow: &Flow,
+        edges: &[ProvenanceEdge],
+        operation: Option<&OperationKey<'_>>,
+        response: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.insert_with_dedup(edges, operation, response, |conn| {
+            insert_flow_row(conn, flow)
+        })
+    }
+
+    pub fn insert_goal_once(
+        &mut self,
+        goal: &Goal,
+        edges: &[ProvenanceEdge],
+        operation: Option<&OperationKey<'_>>,
+        response: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.insert_with_dedup(edges, operation, response, |conn| {
+            insert_goal_row(conn, goal)
+        })
+    }
+
+    pub fn insert_session_once(
+        &mut self,
+        session: &Session,
+        edges: &[ProvenanceEdge],
+        operation: Option<&OperationKey<'_>>,
+        response: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.insert_with_dedup(edges, operation, response, |conn| {
+            insert_session_row(conn, session)
+        })
     }
 
     pub fn insert_flow_with_provenance(
