@@ -8,7 +8,7 @@ fi
 
 if [[ -z "${FLOWERLY_PTY_CGROUP_ROOT:-}" && "${1:-}" != "--delegated" ]]; then
   exec systemd-run --user --scope --collect --property=Delegate=yes \
-    "$0" --delegated
+    bash "$0" --delegated
 fi
 
 if [[ "${1:-}" == "--delegated" ]]; then
