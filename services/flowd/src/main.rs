@@ -270,8 +270,11 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            let intended_response = serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
-            let response = if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+            let intended_response =
+                serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
                 let request_json = serde_json::to_string(args).map_err(err_str)?;
                 let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
                 let operation = MutationOperation {
