@@ -122,6 +122,12 @@ impl CommandFailure {
     }
 }
 
+impl PartialEq<&str> for CommandFailure {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+
 impl PartialEq<String> for CommandFailure {
     fn eq(&self, other: &String) -> bool {
         &self.message == other
