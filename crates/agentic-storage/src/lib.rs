@@ -28,6 +28,9 @@ pub enum StorageError {
 
     #[error("operation conflict: {0}")]
     OperationConflict(String),
+
+    #[error("invalid operation request: {0}")]
+    InvalidOperation(String),
 }
 
 impl StorageError {
@@ -286,8 +289,13 @@ impl Store {
                 .bytes()
                 .all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
         {
-            return Err(StorageError::OperationConflict(
+            return Err(StorageError::InvalidOperation(
                 "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
+            ));
+        }
+        if operation.request_payload.len() > 64 * 1024 || operation.response_payload.len() > 64 * 1024 {
+            return Err(StorageError::InvalidOperation(
+                "idempotent operation payload exceeds 64 KiB".into(),
             ));
         }
         let tx = self
