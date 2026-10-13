@@ -83,6 +83,12 @@ jobs:
       - name: Experimental independent PTY supervisor reconnect
         run: python3 ./scripts/pty-supervisor-spike.py
 
+      - name: Linux PTY guardian black-box ownership regression
+        run: python3 ./scripts/test-pty-guardian.py
+
+      - name: Flow A to B to A real sessiond PTY acceptance
+        run: python3 ./scripts/test-sessiond-pty-flow.py target/release
+
   docs:
     name: docs
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'flowerly-runner' }}
