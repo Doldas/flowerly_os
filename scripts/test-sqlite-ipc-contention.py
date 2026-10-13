@@ -85,7 +85,7 @@ def main(bin_dir):
         holder = None
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
         try:
-            for name in ("flowd", "goald", "sessiond"):
+            for name in ("flowd", "goald", "sessiond", "agenticd", "generationd", "provenanced"):
                 log_path = root / f"{name}.log"
                 log = log_path.open("wb")
                 proc = subprocess.Popen([str(bin_dir / name)], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -189,6 +189,12 @@ def main(bin_dir):
                 ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
                 ("goald", "goal.complete", {"id": created_ids["goald"]}),
                 ("sessiond", "session.terminate", {"id": session_id}),
+                ("agenticd", "execution.create", {}),
+                ("generationd", "generation.create", {}),
+                ("provenanced", "provenance.add", {
+                    "from": created_ids["goald"], "relation": "belongs_to",
+                    "to": created_ids["flowd"],
+                }),
             )
             pending_mutations = [
                 (service, executor.submit(
@@ -205,6 +211,10 @@ def main(bin_dir):
                 assert status["type"] == "ok", status
                 assert status["data"]["details"]["ready"] is False, status
                 assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
+            for service in ("agenticd", "generationd", "provenanced"):
+                before = time.monotonic()
+                assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
+                assert time.monotonic() - before < 2, service
             for service, pending in pending_mutations:
                 result = pending.result(timeout=TIMEOUT)
                 assert result["type"] == "err", (service, result)
@@ -214,11 +224,7 @@ def main(bin_dir):
             holder.communicate(timeout=5)
             assert holder.returncode == 0
             # Recovered writer must accept new requests after previous busy failures.
-            for service, name, args in (
-                ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
-                ("goald", "goal.complete", {"id": created_ids["goald"]}),
-                ("sessiond", "session.terminate", {"id": session_id}),
-            ):
+            for service, name, args in mutations:
                 result = request(runtime / f"{service}.sock", "command", name=name, args=args)
                 assert result["type"] == "ok", (service, result)
             for service, name, args in (
