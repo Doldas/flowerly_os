@@ -203,6 +203,15 @@ impl PartialEq<String> for CommandFailure {
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "goal.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let objective = args
                 .get("objective")
                 .and_then(Value::as_str)
@@ -256,7 +265,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?;
                 intended_response
             };
-            tracing::info!(goal_id = %goal.id, objective, "goal created");
+            tracing::info!(goal_id = %response["id"], objective, "goal create completed");
             Ok(response)
         }
         "goal.child" => {
