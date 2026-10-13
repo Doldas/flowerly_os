@@ -137,6 +137,17 @@ def main():
             second = exchange(path, {"op": "attach", "cursor": 0})
             assert second["pid"] == pid and second["running"] is True
             assert b"FLOWERLY_PTY_STABLE" in base64.b64decode(second["output_base64"])
+            # Stress cursor truncation and bounded output under a noisy shell.
+            noisy = b"python3 -c 'import sys; sys.stdout.write(\"Q\"*150000); sys.stdout.flush()'\n"
+            assert exchange(path, {"op": "write", "data_hex": noisy.hex()})["written"] == len(noisy)
+            for _ in range(100):
+                burst = exchange(path, {"op": "read", "cursor": 0})
+                if burst["cursor"] > 150000 and burst["truncated"]:
+                    assert len(base64.b64decode(burst["output_base64"])) <= 65536
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("bounded replay/truncation not observed for noisy PTY")
             assert exchange(path, {"op": "terminate"})["terminated"] is True
             assert supervisor.wait(timeout=5) == 0
             print("PTY guardian: same live PID, reconnect, bounded replay, I/O, resize, terminate")
