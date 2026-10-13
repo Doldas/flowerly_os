@@ -64,6 +64,7 @@ def supervise(path, shell, parent_pid):
                 exit_code = os.waitstatus_to_exitcode(status)
 
     def dispatch(command):
+        nonlocal exit_code
         poll()
         operation = command.get("op")
         if operation in ("attach", "read", "status"):
@@ -107,8 +108,12 @@ def supervise(path, shell, parent_pid):
                         break
                     time.sleep(.02)
                 if exit_code is None:
-                    os.killpg(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    _child, status = os.waitpid(pid, 0)
+                    exit_code = os.waitstatus_to_exitcode(status)
             return {"terminated": True}
         return {"error": "unknown operation"}
 
