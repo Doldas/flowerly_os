@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Full Linux process black box: Flow A -> B -> A and real PTY reattach."""
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -158,6 +159,22 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
+            # Competing client attach calls must not both obtain writer authority.
+            raced = ok(session, "session.spawn", {"flow_id": a})
+            race_id = raced["id"]
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(
+                    lambda _: call(session, "session.attach", {"id": race_id}),
+                    range(2),
+                ))
+            winners = [r for r in responses if r["type"] == "ok"]
+            losers = [r for r in responses if r["type"] == "err"]
+            assert len(winners) == 1 and len(losers) == 1, responses
+            assert losers[0]["code"] == "conflict", losers
+            assert ok(session, "session.read", {"id": race_id, "cursor": 0})["running"]
+            won_token = winners[0]["data"]["attachment_token"]
+            ok(session, "session.detach", {"id": race_id, "attachment_token": won_token})
+            ok(session, "session.terminate", {"id": race_id})
             # A live daemon must detect the unexpectedly SIGKILLed guardian,
             # persist lost supervision, and never claim the old shell is live.
             crashed = ok(session, "session.spawn", {"flow_id": a})
