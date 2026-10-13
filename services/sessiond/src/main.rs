@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+mod pty;
+
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -51,7 +54,17 @@ async fn main() -> anyhow::Result<()> {
             serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
         }
     });
-    let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
+    #[cfg(target_os = "linux")]
+    let supervisor = Arc::new(pty::Supervisor::new(config.runtime_dir.clone()));
+    let handler = move |request: &Envelope| -> Envelope {
+        #[cfg(target_os = "linux")]
+        if let Payload::Command { name, args } = &request.payload {
+            if supervisor.routes(name, args) {
+                return supervisor.handle(&store, request);
+            }
+        }
+        handle_command(&store, request)
+    };
 
     run_service_with_status(config, status, Arc::new(handler))
         .await
