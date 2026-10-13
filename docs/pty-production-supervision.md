@@ -98,6 +98,30 @@ The production release gate must additionally run the real cgroup
 positive test against the exact target commit inside the intended
 Arch/systemd guest.
 
+## Arch guest invocation
+
+In a booted Arch/systemd guest where the intended unprivileged
+Session account has an active user manager, invoke:
+
+```bash
+bash scripts/arch-pty-cgroup-acceptance.sh
+```
+
+The script creates a delegated transient systemd user scope, discovers
+its cgroup-v2 root, moves its own runner into a separate management
+leaf, enables CPU, memory and process controllers, and then runs the
+real `setsid()` guardian-crash test. It stops on missing kernel
+delegation or any unexpected surviving descendant. Run against the
+**exact commit** proposed for release, and archive the guest image,
+kernel, systemd unit configuration, workflow SHA, console and test
+output as review evidence.
+
+When a `sessiond` restart sees a durable PTY Session and a matching
+generated cgroup name, it writes `cgroup.kill` and waits for that
+cgroup to disappear before marking historical records unavailable.
+The new guard rejects legacy metadata-only `session.terminate` for
+a supervised PTY whose guardian is no longer owned.
+
 ## Open acceptance evidence
 
 Before marking issue #50 complete, require the positive delegated
