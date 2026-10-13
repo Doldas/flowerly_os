@@ -18,6 +18,38 @@ responsive PTY I/O without SQLite mutex waits. A 16-session guardian limit,
 Owned socket inodes are checked before unlink; an occupied socket is never
 replaced. The original child process group receives TERM then bounded KILL.
 
+## Writer ownership and restart contract (draft #75)
+
+`session.spawn` returns an ephemeral random `control_token`, which is
+not stored in `session.list` or durable SQLite data. `session.attach`,
+`session.read`, and supervised `session.terminate` require that secret
+in addition to a kernel-attested actor. A status inquiry without the
+secret can observe liveness but has its terminal replay removed.
+
+`session.attach` then returns a separate random `attachment_token`.
+Only one active writer is allowed per Session. A caller with the control
+secret may read without owning the writer lease, but `session.write`,
+`session.resize` and `session.detach` require the active writer token. A conflicting attach or revoked token fails with a typed
+conflict error. A detached token cannot be reused. Writer leases expire
+after 60 seconds without a writer action; clients must reattach. This
+is an **in-memory single-writer lease**, not full-duplex streaming.
+
+On `sessiond` restart, persisted RUNNING local-PTY records with a real
+PID become `SUSPENDED` / `DETACHED` instead of claiming the old shell
+remains under supervision. In this contract SUSPENDED means **unavailable /
+lost supervision**, not proven Linux process suspension or safe adoption.
+A newly started daemon cannot attach to a historical PID. A live daemon
+checks the owned guardian's actual `Child` handle and only reconciles
+unexpected process death; a socket timeout alone is not exit proof.
+
+The control secret is an **in-memory possession check**, not an isolated
+Linux authority when both processes share the same UID. Same-UID
+processes may have other means of obtaining each other's secrets;
+this mechanism does not substitute for delegated user credentials.
+
+The supervised-spawn response exposes `supervisor_pid` for diagnostics
+and fault injection. It is not authorization or a process identity token.
+
 ## Executable evidence
 
 - scripts/test-pty-guardian.py runs a real separate Linux shell and checks
@@ -33,16 +65,19 @@ replaced. The original child process group receives TERM then bounded KILL.
 ## Limitations preventing release acceptance
 
 - Attach/read are cursor-based request/reply snapshots, not a full-duplex
-  stream multiplexer or multi-client write arbitration.
+  stream multiplexer. Draft #75 adds a leased exclusive writer but not
+  continuous stream fanout, disconnect observation or all race proofs.
 - No PTY FD adoption after daemon restart: stale Session IDs fail closed
   as unavailable rather than spawning replacement processes.
-- No independent per-Session capability or delegation token on same-UID
-  Unix sockets, pidfd/cgroup descendant lifecycle guarantee, shell sandbox
-  or complete memory/CPU/process limits.
+- A leased writer token is not a cross-UID delegated capability or an
+  independent per-Session security principal. PID-bound guardian controls
+  and same-UID admission do not provide sandbox isolation. Linux cgroups,
+  descendant lifecycle guarantees and complete resource limits remain.
 - External spawn cannot atomically commit with SQLite; operation_id is
   rejected to avoid false exactly-once promises. A timed-out spawn may have
   executed and must be reconciled before retrying.
 - Legacy metadata-only Session operations are not proof of process execution.
-- Supervisor-crash, malicious peer, concurrent writer/terminate, target Arch
-  VM exact-commit validation and independent release security review are
-  outstanding. Keep #50/#31 and milestone 0.0.4 open.
+- Draft #75 adds guardian crash/daemon restart state tests and writer
+  revocation checks, but stronger failure/race tests, exact-commit Arch VM
+  validation and independent release review remain outstanding. Keep
+  #50/#31 and milestone 0.0.4 open.

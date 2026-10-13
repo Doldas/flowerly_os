@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Full Linux process black box: Flow A -> B -> A and real PTY reattach."""
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import socket
 import sqlite3
@@ -78,19 +80,38 @@ def main(bin_dir):
             ok(flow, "flow.activate", {"id": a})
             first = ok(session, "session.spawn", {"flow_id": a, "shell": "/bin/sh"})
             sid, pid = first["id"], first["pid"]
+            control = first["control_token"]
+            assert control
             assert pid > 0, first
-            attached = ok(session, "session.attach", {"id": sid, "cursor": 0})
+            denied_attach = call(session, "session.attach", {"id": sid})
+            assert denied_attach["type"] == "err", denied_attach
+            denied_read = call(session, "session.read", {"id": sid, "cursor": 0})
+            assert denied_read["type"] == "err", denied_read
+            denied_terminate = call(session, "session.terminate", {"id": sid})
+            assert denied_terminate["type"] == "err", denied_terminate
+            read_only_status = ok(session, "session.status", {"id": sid})
+            assert read_only_status["running"] is True
+            assert "output_base64" not in read_only_status, read_only_status
+            bad_control = call(session, "session.attach", {"id": sid, "control_token": "wrong"})
+            assert bad_control["type"] == "err", bad_control
+            attached = ok(session, "session.attach", {"id": sid, "cursor": 0, "control_token": control})
             assert attached["pid"] == pid and attached["running"] is True
-            ok(session, "session.resize", {"id": sid, "rows": 42, "cols": 92})
+            first_token = attached["attachment_token"]
+            assert first_token
+            double_attach = call(session, "session.attach", {"id": sid, "control_token": control})
+            assert double_attach["type"] == "err" and double_attach["code"] == "conflict", double_attach
+            without_token = call(session, "session.write", {"id": sid, "data": "ignored"})
+            assert without_token["type"] == "err", without_token
+            ok(session, "session.resize", {"id": sid, "attachment_token": first_token, "rows": 42, "cols": 92})
             marker = "FLOWERLY_A_B_A_STILL_ALIVE"
             text = "echo " + marker + "\n"
-            written = ok(session, "session.write", {"id": sid, "data": text})
+            written = ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": text})
             assert written["written"] == len(text), written
             # A separate, long-running Linux process must survive the switch.
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
-            ok(session, "session.write", {"id": sid, "data": job_command})
+            ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
-                observed = ok(session, "session.read", {"id": sid, "cursor": 0})
+                observed = ok(session, "session.read", {"id": sid, "cursor": 0, "control_token": control})
                 match = re.search(rb"FLOWERLY_JOB_PID:(\d+)",
                                   base64.b64decode(observed["output_base64"]))
                 if match:
@@ -99,18 +120,22 @@ def main(bin_dir):
             else:
                 raise AssertionError("background process PID not observed")
             job_pid = int(match.group(1))
-            ok(session, "session.detach", {"id": sid})
+            ok(session, "session.detach", {"id": sid, "attachment_token": first_token})
+            stale_writer = call(session, "session.write", {"id": sid, "attachment_token": first_token, "data": "ignored"})
+            assert stale_writer["type"] == "err", stale_writer
             ok(flow, "flow.activate", {"id": b})
             assert ok(flow, "flow.list", {})["count"] >= 3
             ok(flow, "flow.activate", {"id": a})
             for _ in range(100):
-                replay = ok(session, "session.attach", {"id": sid, "cursor": 0})
+                replay = ok(session, "session.attach", {"id": sid, "cursor": 0, "control_token": control})
                 if marker.encode() in base64.b64decode(replay["output_base64"]):
                     break
                 time.sleep(.03)
             else:
                 raise AssertionError("PTY output lost across Flow switch")
             assert replay["pid"] == pid and replay["running"] is True
+            second_token = replay["attachment_token"]
+            assert second_token and second_token != first_token
             os.kill(job_pid, 0)
             with open("/proc/" + str(job_pid) + "/stat", encoding="utf-8") as stat:
                 assert stat.read().split(") ", 1)[1][0] != "Z", "job is zombie"
@@ -129,13 +154,15 @@ def main(bin_dir):
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
             # Job control can place background children in separate groups.
             # Explicitly stop the job before tearing down its shell.
-            ok(session, "session.write", {"id": sid, "data": f"kill {job_pid}\n"})
-            stopped = ok(session, "session.terminate", {"id": sid})
+            ok(session, "session.write", {"id": sid, "attachment_token": second_token, "data": f"kill {job_pid}\n"})
+            stopped = ok(session, "session.terminate", {"id": sid, "control_token": control})
             assert stopped["terminated"] is True, stopped
             # Observe natural exit and reconcile the recorded Session state.
             second_shell = ok(session, "session.spawn", {"flow_id": a})
             another_id = second_shell["id"]
-            ok(session, "session.write", {"id": another_id, "data": "exit\n"})
+            another_control = second_shell["control_token"]
+            natural_attachment = ok(session, "session.attach", {"id": another_id, "control_token": another_control})
+            ok(session, "session.write", {"id": another_id, "attachment_token": natural_attachment["attachment_token"], "data": "exit\n"})
             for _ in range(100):
                 state_reply = ok(session, "session.status", {"id": another_id})
                 if state_reply["running"] is False:
@@ -146,6 +173,59 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
+            # Competing client attach calls must not both obtain writer authority.
+            raced = ok(session, "session.spawn", {"flow_id": a})
+            race_id = raced["id"]
+            race_control = raced["control_token"]
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(
+                    lambda _: call(session, "session.attach", {"id": race_id, "control_token": race_control}),
+                    range(2),
+                ))
+            winners = [r for r in responses if r["type"] == "ok"]
+            losers = [r for r in responses if r["type"] == "err"]
+            assert len(winners) == 1 and len(losers) == 1, responses
+            assert losers[0]["code"] == "conflict", losers
+            assert ok(session, "session.read", {"id": race_id, "cursor": 0, "control_token": race_control})["running"]
+            won_token = winners[0]["data"]["attachment_token"]
+            ok(session, "session.detach", {"id": race_id, "attachment_token": won_token})
+            ok(session, "session.terminate", {"id": race_id, "control_token": race_control})
+            # A live daemon must detect the unexpectedly SIGKILLed guardian,
+            # persist lost supervision, and never claim the old shell is live.
+            crashed = ok(session, "session.spawn", {"flow_id": a})
+            crashed_id = crashed["id"]
+            assert crashed["supervisor_pid"] > 0, crashed
+            os.kill(crashed["supervisor_pid"], signal.SIGKILL)
+            for _ in range(100):
+                reply = call(session, "session.status", {"id": crashed_id})
+                if reply["type"] == "err" and reply["code"] == "unavailable":
+                    state_row = next(row for row in ok(session, "session.list", {})["sessions"]
+                                     if row["id"] == crashed_id)
+                    if state_row["state"].lower() == "suspended":
+                        assert state_row["presentation_state"].lower() == "detached"
+                        break
+                time.sleep(.03)
+            else:
+                raise AssertionError("guardian SIGKILL not reconciled to unavailable/detached")
+            # The process supervisor is ephemeral: on restart the persisted
+            # ID must NOT claim that its old shell is still attached/running.
+            stale = ok(session, "session.spawn", {"flow_id": a})
+            stale_id = stale["id"]
+            stale_control = stale["control_token"]
+            session_process = children[-1]
+            session_process.terminate()
+            session_process.wait(timeout=5)
+            # The guardian parent-death path closes its own child; no stale
+            # PID may be used to attach or send signals on daemon restart.
+            session = start(bin_dir, "sessiond", env, children, root)
+            after_restart = ok(session, "session.list", {})["sessions"]
+            record = next(row for row in after_restart if row["id"] == stale_id)
+            assert record["state"].lower() == "suspended", record
+            assert record["presentation_state"].lower() == "detached", record
+            reattach = call(session, "session.attach", {"id": stale_id, "control_token": stale_control})
+            assert reattach["type"] == "err", reattach
+            assert reattach["code"] == "unavailable", reattach
+            print("PTY daemon restart: stale Session remains identified but unavailable/detached")
             print("Linux Flow A -> B -> A PTY: same Session/PID, replay, SQLite liveness, natural exit, termination")
         finally:
             for proc in children:
