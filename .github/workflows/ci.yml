@@ -91,6 +91,9 @@ jobs:
 
       - name: Flow A to B to A real sessiond PTY acceptance
         run: python3 ./scripts/test-sessiond-pty-flow.py target/release
+      - name: Release PTY kernel cgroup and escaped descendant acceptance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        run: bash ./scripts/arch-pty-cgroup-acceptance.sh
 
   docs:
     name: docs
