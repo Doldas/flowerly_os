@@ -210,7 +210,7 @@ impl Supervisor {
     fn mark_unavailable(&self, store: &Arc<Mutex<Store>>, id: &SessionId) -> Result<(), Failure> {
         // SUSPENDED here represents lost supervision, NOT proof of a paused
         // or safely reattachable process; never signal a persisted child PID.
-        let mut db = store.lock().map_err(|_| internal("store lock poisoned"))?;
+        let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
         db.update_session_state(id, SessionState::Suspended)
             .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
         db.update_session_presentation_state(id, SessionPresentationState::Detached)
