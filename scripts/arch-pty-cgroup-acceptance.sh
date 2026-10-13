@@ -20,5 +20,11 @@ if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
   exit 1
 fi
 
+if [[ "${1:-}" == "--delegated" ]]; then
+  mkdir -p "$FLOWERLY_PTY_CGROUP_ROOT/management"
+  printf '%s' "$" > "$FLOWERLY_PTY_CGROUP_ROOT/management/cgroup.procs"
+  printf '%s' '+cpu +memory +pids' > "$FLOWERLY_PTY_CGROUP_ROOT/cgroup.subtree_control"
+fi
+
 export FLOWERLY_PTY_ISOLATION=required
 python3 scripts/test-pty-cgroup.py
