@@ -178,6 +178,18 @@ def main():
                 time.sleep(.02)
             else:
                 raise AssertionError("bounded replay/truncation not observed for noisy PTY")
+            follow_cursor = exchange(path, {"op": "status"})["cursor"]
+            command = b"echo FLOWERLY_INCREMENTAL_FOLLOW\n"
+            assert exchange(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+            for _ in range(80):
+                frame = exchange(path, {"op": "follow", "cursor": follow_cursor, "wait_ms": 100})
+                if b"FLOWERLY_INCREMENTAL_FOLLOW" in base64.b64decode(frame["output_base64"]):
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("PTY incremental follow did not deliver new output")
+            invalid_wait = malformed_request(path, b'{"op":"follow","cursor":0,"wait_ms":999}')
+            assert invalid_wait.get("error") == "invalid wait_ms", invalid_wait
             assert exchange(path, {"op": "terminate"})["terminated"] is True
             assert supervisor.wait(timeout=5) == 0
             print("PTY guardian: same live PID, reconnect, bounded replay, I/O, resize, terminate")
