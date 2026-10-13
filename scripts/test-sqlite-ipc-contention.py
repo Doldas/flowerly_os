@@ -235,6 +235,7 @@ def main(bin_dir):
                 assert result["type"] == "ok", (service, result)
             # Opt-in idempotent creates: real daemons must replay the same
             # durable result, reject changed payloads and never ignore bad types.
+            idempotent_replays = {}
             for service, command, initial in (
                 ("flowd", "flow.create", {"name": "Retry-safe Flow"}),
                 ("goald", "goal.create", {"objective": "Retry-safe Goal"}),
@@ -247,6 +248,7 @@ def main(bin_dir):
                 assert second["type"] == "ok", (service, second)
                 assert first["data"] == second["data"], (service, first, second)
                 assert first["data"]["id"] == second["data"]["id"], service
+                idempotent_replays[service] = (command, args, first["data"])
                 modified = dict(args, ignored_extra_field="changed")
                 conflict = request(runtime / f"{service}.sock", "command", name=command, args=modified)
                 assert conflict["type"] == "err" and conflict.get("code") == "conflict", (service, conflict)
@@ -264,6 +266,26 @@ def main(bin_dir):
             child_retry = request(runtime / "goald.sock", "command", name="goal.child", args=child_args)
             assert child_first["type"] == "ok", child_first
             assert child_first["data"] == child_retry["data"], (child_first, child_retry)
+
+            # Restart the *real* Flow daemon: durable operation result must
+            # survive the service process, not only a Store object reopening.
+            flow_name, flow_process, _ = services[0]
+            assert flow_name == "flowd"
+            stopping = request(runtime / "flowd.sock", "shutdown")
+            assert stopping["type"] == "ok", stopping
+            flow_process.wait(timeout=5)
+            restart_log = root / "flowd-restart.log"
+            log_handle = restart_log.open("wb")
+            resumed = subprocess.Popen([str(bin_dir / "flowd")], env=env,
+                                       stdout=log_handle, stderr=subprocess.STDOUT)
+            log_handle.close()
+            services[0] = (flow_name, resumed, restart_log)
+            wait_ready(runtime / "flowd.sock", resumed, restart_log)
+            command, original_args, first_result = idempotent_replays["flowd"]
+            restarted_replay = request(runtime / "flowd.sock", "command",
+                                       name=command, args=original_args)
+            assert restarted_replay["type"] == "ok", restarted_replay
+            assert restarted_replay["data"] == first_result, (restarted_replay, first_result)
 
             print("IPC SQLite contention and idempotency OK: real daemons, typed busy, replay/conflict, recovery")
         finally:
