@@ -248,6 +248,15 @@ impl PartialEq<String> for CommandFailure {
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let name = args
                 .get("name")
                 .and_then(Value::as_str)
@@ -294,7 +303,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?;
                 intended_response
             };
-            tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
+            tracing::info!(flow_id = %response["id"], flow_name = name, "flow create completed");
             Ok(response)
         }
         "flow.list" => {
