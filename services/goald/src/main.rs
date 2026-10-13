@@ -243,7 +243,11 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
-            if store.get_goal(&parent).map_err(CommandFailure::storage)?.is_none() {
+            if store
+                .get_goal(&parent)
+                .map_err(CommandFailure::storage)?
+                .is_none()
+            {
                 return Err(format!("goal not found: {parent}").into());
             }
             let objective = args
@@ -321,7 +325,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             } else {
                 GoalStatus::Abandoned
             };
-            store.set_goal_status(&goal_id, status).map_err(CommandFailure::storage)?;
+            store
+                .set_goal_status(&goal_id, status)
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
         other => Err(format!("goald: unknown command `{other}`").into()),
