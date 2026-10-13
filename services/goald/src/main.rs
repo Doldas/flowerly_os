@@ -248,16 +248,25 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_goal_with_provenance(&goal, &[created_edge])
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(goal_id = %goal.id, objective, "goal created");
-            Ok(serde_json::json!({
+            let response = serde_json::json!({
                 "id": goal.id,
                 "objective": goal.objective,
                 "status": goal.status,
                 "parent_goal": goal.parent_goal,
-            }))
+            });
+            let operation_id = parse_operation_id(args)?;
+            let request_json = serde_json::to_string(args).map_err(err_str)?;
+            let operation = operation_id.map(|operation_id| OperationKey {
+                actor: created_by,
+                command: "goal.create",
+                operation_id,
+                request_json: &request_json,
+            });
+            let result = store
+                .insert_goal_once(&goal, &[created_edge], operation.as_ref(), &response)
+                .map_err(CommandFailure::storage)?;
+            tracing::info!(objective, "goal create request resolved");
+            Ok(result)
         }
         "goal.child" => {
             let parent_id = args
@@ -296,12 +305,27 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: Some("child goal".to_owned()),
             };
+            let response = serde_json::json!({
+                "id": child.id,
+                "objective": child.objective,
+                "parent": parent,
+            });
+            let operation_id = parse_operation_id(args)?;
+            let request_json = serde_json::to_string(args).map_err(err_str)?;
+            let operation = operation_id.map(|operation_id| OperationKey {
+                actor: created_by,
+                command: "goal.child",
+                operation_id,
+                request_json: &request_json,
+            });
             store
-                .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
-                .map_err(CommandFailure::storage)?;
-            Ok(
-                serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent }),
-            )
+                .insert_goal_once(
+                    &child,
+                    &[created_edge, parent_edge],
+                    operation.as_ref(),
+                    &response,
+                )
+                .map_err(CommandFailure::storage)
         }
         "goal.show" => {
             let id = args
