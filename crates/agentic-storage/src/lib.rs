@@ -282,7 +282,9 @@ impl Store {
         let id = operation.operation_id;
         if id.is_empty()
             || id.len() > 128
-            || !id.bytes().all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
+            || !id
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
         {
             return Err(StorageError::OperationConflict(
                 "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
