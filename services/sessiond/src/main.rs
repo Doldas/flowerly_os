@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
@@ -141,7 +141,9 @@ fn validate_session_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -232,17 +234,35 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_session_with_provenance(&session, &[provenance])
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(session_id = %session.id, kind, "session created");
-            Ok(serde_json::json!({
+            let intended_response = serde_json::json!({
                 "id": session.id,
                 "kind": session.kind,
                 "state": session.state,
                 "presentation_state": session.presentation_state,
                 "flow_id": session.flow_id,
-            }))
+            });
+            let response = if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "session.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_session_with_provenance_once(&session, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_session_with_provenance(&session, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(session_id = %session.id, kind, "session created");
+            Ok(response)
         }
         "session.list" => {
             let sessions = store.list_sessions().map_err(CommandFailure::storage)?;
