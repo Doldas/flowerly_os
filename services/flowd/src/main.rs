@@ -300,27 +300,27 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
     }
 }
 
-fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, String> {
+fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, CommandFailure> {
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
+        if let Some(flow) = store.get_flow(&id).map_err(CommandFailure::storage)? {
             return Ok(flow);
         }
-        return Err(format!("flow not found: {id}"));
+        return Err(format!("flow not found: {id}").into());
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
-        let flows = store.list_flows().map_err(err_str)?;
+        let flows = store.list_flows().map_err(CommandFailure::storage)?;
         let mut matches = flows.into_iter().filter(|f| f.name == by_name);
         if let Some(flow) = matches.next() {
             if matches.next().is_some() {
-                return Err(format!("ambiguous flow name: {by_name}; use id"));
+                return Err(format!("ambiguous flow name: {by_name}; use id").into());
             }
             return Ok(flow);
         }
-        return Err(format!("flow not found: {by_name}"));
+        return Err(format!("flow not found: {by_name}").into());
     }
-    Err("provide either `id` or `name`".to_owned())
+    Err("provide either `id` or `name`".into())
 }
 
 fn err_str(error: impl std::fmt::Display) -> String {
