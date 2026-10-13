@@ -24,10 +24,15 @@ fault response and PTY FD lifetime, consistent with ADR-0013.
 - `session.spawn` only accepts allowlisted shells; it persists RUNNING
   after the real child is started. No caller PID or external-operation
   idempotency key is accepted.
-- `session.attach` returns a random, in-memory writer lease token.
+- `session.spawn` returns a random, ephemeral control token not present
+  in `session.list`. It is required to attach, read terminal output or
+  terminate the owned shell. Without it, status exposes liveness only,
+  not replay bytes. This is possession-based authorization within a
+  shared Linux UID, **not independent credential isolation**.
+- `session.attach` returns a separate in-memory writer lease token.
   Only one unexpired writer exists. `session.write`, `session.resize`
-  and `session.detach` require it. Other authenticated callers can
-  use `session.read/status` as cursor-based read-only observers.
+  and `session.detach` require the active writer token. A caller with
+  the Session control token may read without owning the writer lease.
 - Writer leases expire after 60 seconds of inactivity. There is no
   claim of a durable attachment across `sessiond` restarts.
 - PTY output is bounded to a 64 KiB replay window. Cursors are monotonic
