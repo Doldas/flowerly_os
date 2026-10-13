@@ -136,7 +136,7 @@ fn validate_flow_command(
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 store
                     .get_flow(&id)
-                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .map_err(|e| (if e.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
             } else if let Some(value) = args.get("name") {
                 let name = value
@@ -144,7 +144,7 @@ fn validate_flow_command(
                     .ok_or_else(|| invalid("arg `name` must be a string"))?;
                 let mut matches = store
                     .list_flows()
-                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .map_err(|e| (if e.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, e.to_string()))?
                     .into_iter()
                     .filter(|flow| flow.name == name);
                 let found = matches
@@ -264,7 +264,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
         }
         "flow.list" => {
-            let flows = store.list_flows().map_err(err_str)?;
+            let flows = store.list_flows().map_err(CommandFailure::storage)?;
             let items: Vec<Value> = flows
                 .iter()
                 .map(|f| serde_json::json!({ "id": f.id, "name": f.name, "state": f.state }))
@@ -282,9 +282,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
-                store.activate_flow(&flow.id).map_err(err_str)?;
+                store.activate_flow(&flow.id).map_err(CommandFailure::storage)?;
             } else {
-                store.set_flow_state(&flow.id, state).map_err(err_str)?;
+                store.set_flow_state(&flow.id, state).map_err(CommandFailure::storage)?;
             }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
