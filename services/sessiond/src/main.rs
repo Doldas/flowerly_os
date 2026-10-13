@@ -241,7 +241,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 "presentation_state": session.presentation_state,
                 "flow_id": session.flow_id,
             });
-            let response = if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
                 let request_json = serde_json::to_string(args).map_err(err_str)?;
                 let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
                 let operation = MutationOperation {
