@@ -283,11 +283,20 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_flow_with_provenance(&flow, &[provenance])
+            let response = serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
+            let operation_id = parse_operation_id(args)?;
+            let request_json = serde_json::to_string(args).map_err(err_str)?;
+            let operation = operation_id.map(|operation_id| OperationKey {
+                actor: created_by,
+                command: "flow.create",
+                operation_id,
+                request_json: &request_json,
+            });
+            let result = store
+                .insert_flow_once(&flow, &[provenance], operation.as_ref(), &response)
                 .map_err(CommandFailure::storage)?;
-            tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
-            Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
+            tracing::info!(flow_name = name, "flow create request resolved");
+            Ok(result)
         }
         "flow.list" => {
             let flows = store.list_flows().map_err(CommandFailure::storage)?;
