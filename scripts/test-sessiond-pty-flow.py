@@ -107,6 +107,23 @@ def main(bin_dir):
             text = "echo " + marker + "\n"
             written = ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": text})
             assert written["written"] == len(text), written
+            missing_follow = call(session, "session.follow", {"id": sid, "cursor": 0})
+            assert missing_follow["type"] == "err", missing_follow
+            prior_cursor = ok(session, "session.status", {"id": sid, "control_token": control})["cursor"]
+            follow_marker = "FLOWERLY_FOLLOW_STABLE"
+            follow_input = f"echo {follow_marker}\n"
+            ok(session, "session.write", {
+                "id": sid, "attachment_token": first_token, "data": follow_input
+            })
+            for _ in range(80):
+                followed = ok(session, "session.follow", {
+                    "id": sid, "control_token": control, "cursor": prior_cursor, "wait_ms": 100
+                })
+                if follow_marker.encode() in base64.b64decode(followed["output_base64"]):
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("authorized incremental PTY follower did not receive output")
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
             ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
