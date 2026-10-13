@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
-use agentic_ipc::{Envelope, Payload};
-use agentic_storage::Store;
+use agentic_core::{
+    coded_error_envelope,error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
+use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::{StorageError, Store};
 use agentic_types::{ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp};
 use anyhow::Context;
 use clap::Parser;
@@ -67,11 +68,62 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     };
     match run_command(&store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(message) => error_envelope(request.id.clone(), message),
+        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
-fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
+}
+
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: storage_error_code(&error),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        &self.message == other
+    }
+}
+
+fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "provenance.add" => {
             let from = args
@@ -94,7 +146,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 created_at: Timestamp::now(),
                 note: args.get("note").and_then(Value::as_str).map(str::to_owned),
             };
-            store.insert_provenance(&edge).map_err(err_str)?;
+            store.insert_provenance(&edge).map_err(CommandFailure::storage)?;
             tracing::info!(from, relation = %relation, to, "provenance edge added");
             Ok(serde_json::json!({ "from": from, "relation": relation.to_string(), "to": to }))
         }
@@ -105,7 +157,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `ref`")?;
             let object_ref = ObjectRef::from_str(from).map_err(err_str)?;
-            let edges = store.provenance_from(&object_ref).map_err(err_str)?;
+            let edges = store.provenance_from(&object_ref).map_err(CommandFailure::storage)?;
             Ok(edges_response(&edges))
         }
         "provenance.to" => {
@@ -115,10 +167,10 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, String>
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `ref`")?;
             let object_ref = ObjectRef::from_str(to).map_err(err_str)?;
-            let edges = store.provenance_to(&object_ref).map_err(err_str)?;
+            let edges = store.provenance_to(&object_ref).map_err(CommandFailure::storage)?;
             Ok(edges_response(&edges))
         }
-        other => Err(format!("provenanced: unknown command `{other}`")),
+        other => Err(format!("provenanced: unknown command `{other}`").into()),
     }
 }
 
