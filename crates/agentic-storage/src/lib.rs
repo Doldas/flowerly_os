@@ -1728,4 +1728,101 @@ mod tests {
 
         assert!(store.get_execution(&execution.id).is_err());
     }
+
+    #[test]
+    fn operation_replay_survives_store_restart_and_rejects_mismatched_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("replay.db");
+        let original_id;
+        {
+            let mut store = Store::open(&db).expect("open");
+            store.migrate().expect("migrate");
+            let flow = Flow::new("Original", "uid:1000");
+            let response = serde_json::json!({"id":flow.id,"name":flow.name});
+            let operation = OperationKey {
+                actor: "uid:1000",
+                command: "flow.create",
+                operation_id: "create-12345",
+                request_json: "{\"name\":\"Original\"}",
+            };
+            let returned = store
+                .insert_flow_once(&flow, &[], Some(&operation), &response)
+                .expect("first insert");
+            assert_eq!(returned, response);
+            original_id = response["id"].as_str().expect("id").to_owned();
+        }
+        {
+            let mut store = Store::open(&db).expect("reopen");
+            store.migrate().expect("migrate");
+            let retry = Flow::new("Original", "uid:1000");
+            let second_response = serde_json::json!({"id":retry.id,"name":retry.name});
+            let operation = OperationKey {
+                actor: "uid:1000",
+                command: "flow.create",
+                operation_id: "create-12345",
+                request_json: "{\"name\":\"Original\"}",
+            };
+            let returned = store
+                .insert_flow_once(&retry, &[], Some(&operation), &second_response)
+                .expect("replay");
+            assert_eq!(returned["id"], original_id);
+            assert_eq!(store.list_flows().expect("list").len(), 1);
+            let changed = OperationKey {
+                request_json: "{\"name\":\"Changed\"}",
+                ..operation
+            };
+            let err = store
+                .insert_flow_once(&retry, &[], Some(&changed), &second_response)
+                .expect_err("same key, different arguments");
+            assert!(err.is_conflict());
+            assert_eq!(store.list_flows().expect("list").len(), 1);
+
+            let another_actor = OperationKey {
+                actor: "uid:2000",
+                ..operation
+            };
+            let different = store
+                .insert_flow_once(&retry, &[], Some(&another_actor), &second_response)
+                .expect("different actor gets an independent operation");
+            assert_eq!(different["id"], second_response["id"]);
+            assert_eq!(store.list_flows().expect("list").len(), 2);
+        }
+    }
+
+    #[test]
+    fn concurrent_duplicate_operation_ids_commit_only_one_flow() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("concurrent-replay.db");
+        let mut setup = Store::open(&db).expect("open");
+        setup.migrate().expect("migrate");
+        drop(setup);
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let db = db.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut store = Store::open(&db).expect("connection");
+                    let flow = Flow::new("Concurrent", "uid:1000");
+                    let response = serde_json::json!({"id":flow.id,"name":flow.name});
+                    let operation = OperationKey {
+                        actor: "uid:1000",
+                        command: "flow.create",
+                        operation_id: "concurrent-12345",
+                        request_json: "{\"name\":\"Concurrent\"}",
+                    };
+                    barrier.wait();
+                    store
+                        .insert_flow_once(&flow, &[], Some(&operation), &response)
+                        .expect("insert or replay")
+                })
+            })
+            .collect();
+        let a = threads.into_iter().map(|thread| thread.join().expect("thread")).collect::<Vec<_>>();
+        assert_eq!(a[0]["id"], a[1]["id"]);
+        let store = Store::open(&db).expect("reopen");
+        assert_eq!(store.list_flows().expect("list").len(), 1);
+    }
 }
