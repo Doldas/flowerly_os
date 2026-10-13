@@ -26,26 +26,17 @@ pub enum StorageError {
     #[error("record not found: {0}")]
     NotFound(String),
 
-    #[error("operation key conflict: {0}")]
-    Conflict(String),
+    #[error("operation conflict: {0}")]
+    OperationConflict(String),
 
-    #[error("operation history capacity reached: {0}")]
-    Capacity(String),
+    #[error("invalid operation request: {0}")]
+    InvalidOperation(String),
 }
 
 impl StorageError {
     /// SQLite writer contention is a transient availability condition, not
     /// corrupt user input or an internal application error.
     #[must_use]
-    pub fn is_conflict(&self) -> bool {
-        matches!(self, Self::Conflict(_))
-    }
-
-    #[must_use]
-    pub fn is_capacity(&self) -> bool {
-        matches!(self, Self::Capacity(_))
-    }
-
     pub fn is_busy(&self) -> bool {
         matches!(
             self,
@@ -59,15 +50,6 @@ impl StorageError {
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
-
-/// Retry identity must be scoped to kernel-derived actor identity.
-#[derive(Clone, Copy)]
-pub struct OperationKey<'a> {
-    pub actor: &'a str,
-    pub command: &'a str,
-    pub operation_id: &'a str,
-    pub request_json: &'a str,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
@@ -101,8 +83,8 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 5,
-        name: "command_dedup",
-        sql: include_str!("../migrations/0005_command_dedup.sql"),
+        name: "idempotent_operations",
+        sql: include_str!("../migrations/0005_idempotent_operations.sql"),
     },
 ];
 
@@ -113,6 +95,16 @@ pub struct AppliedMigration {
     pub name: String,
 
     pub applied_at: Timestamp,
+}
+
+/// Optional, actor-bound key for an atomic SQLite create operation.
+/// The caller must use a kernel-attested actor, not an arbitrary client label.
+pub struct MutationOperation<'a> {
+    pub actor: &'a str,
+    pub command: &'a str,
+    pub operation_id: &'a str,
+    pub request_payload: &'a str,
+    pub response_payload: &'a str,
 }
 
 pub struct Store {
@@ -281,111 +273,141 @@ impl Store {
         Ok(id)
     }
 
-    pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
-        insert_flow_row(&self.conn, flow)
-    }
-
-    /// Both domain object and optional operation replay are inserted atomically.
-    /// Replay records are not silently expired: doing so could duplicate writes.
-    fn insert_with_dedup<F>(
+    /// Replays the original response for the same actor/command/key/payload.
+    /// Each accepted operation and domain write commit in one IMMEDIATE transaction.
+    /// An expired key can be reused after the retention window; clients must not
+    /// assume infinite-time exactly-once semantics.
+    fn insert_once(
         &mut self,
-        edges: &[ProvenanceEdge],
-        operation: Option<&OperationKey<'_>>,
-        response: &serde_json::Value,
-        insert: F,
-    ) -> Result<serde_json::Value>
-    where
-        F: FnOnce(&Connection) -> Result<()>,
-    {
+        operation: &MutationOperation<'_>,
+        write: impl FnOnce(&Connection) -> Result<()>,
+    ) -> Result<String> {
+        let id = operation.operation_id;
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
+        {
+            return Err(StorageError::InvalidOperation(
+                "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
+            ));
+        }
+        if operation.request_payload.len() > 64 * 1024
+            || operation.response_payload.len() > 64 * 1024
+        {
+            return Err(StorageError::InvalidOperation(
+                "idempotent operation payload exceeds 64 KiB".into(),
+            ));
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(operation) = operation {
-            let previous = tx
-                .query_row(
-                    "SELECT request_json, response_json FROM command_dedup
-                     WHERE actor = ?1 AND command = ?2 AND operation_id = ?3",
-                    params![operation.actor, operation.command, operation.operation_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            if let Some((old_request, old_response)) = previous {
-                if old_request != operation.request_json {
-                    return Err(StorageError::Conflict(
-                        "operation_id reused with different command arguments".to_owned(),
-                    ));
-                }
-                return Ok(serde_json::from_str(&old_response)?);
-            }
-            let count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM command_dedup WHERE actor = ?1",
-                params![operation.actor],
-                |row| row.get(0),
-            )?;
-            if count >= 100_000 {
-                return Err(StorageError::Capacity(
-                    "per-actor operation replay capacity reached".to_owned(),
+        // Thirty days bounds retained request bodies and operation results.
+        // Expiry cannot guarantee protection from retries beyond this window.
+        let expires_before = Timestamp::now().as_millis() - 30_i64 * 24 * 60 * 60 * 1000;
+        tx.execute(
+            "DELETE FROM ipc_operations WHERE created_at < ?1",
+            params![expires_before],
+        )?;
+        let recorded: Option<(String, String)> = tx
+            .query_row(
+                "SELECT request_payload, response_payload FROM ipc_operations
+                 WHERE actor = ?1 AND command = ?2 AND operation_id = ?3",
+                params![operation.actor, operation.command, id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((prior_request, prior_response)) = recorded {
+            if prior_request != operation.request_payload {
+                return Err(StorageError::OperationConflict(
+                    "operation_id was already used with different request arguments".into(),
                 ));
             }
+            tx.commit()?;
+            return Ok(prior_response);
         }
-
-        insert(&tx)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        if let Some(operation) = operation {
-            tx.execute(
-                "INSERT INTO command_dedup
-                 (actor, command, operation_id, request_json, response_json, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    operation.actor,
-                    operation.command,
-                    operation.operation_id,
-                    operation.request_json,
-                    serde_json::to_string(response)?,
-                    Timestamp::now().as_millis(),
-                ],
-            )?;
-        }
+        write(&tx)?;
+        tx.execute(
+            "INSERT INTO ipc_operations
+             (actor, command, operation_id, request_payload, response_payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                operation.actor,
+                operation.command,
+                id,
+                operation.request_payload,
+                operation.response_payload,
+                Timestamp::now().as_millis(),
+            ],
+        )?;
         tx.commit()?;
-        Ok(response.clone())
+        Ok(operation.response_payload.to_owned())
     }
 
-    pub fn insert_flow_once(
+    /// Durable, actor-scoped opt-in retry identity for Flow creation.
+    pub fn insert_flow_with_provenance_once(
         &mut self,
         flow: &Flow,
         edges: &[ProvenanceEdge],
-        operation: Option<&OperationKey<'_>>,
-        response: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.insert_with_dedup(edges, operation, response, |conn| {
-            insert_flow_row(conn, flow)
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        if operation.actor != flow.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
+        self.insert_once(operation, |conn| {
+            insert_flow_row(conn, flow)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
         })
     }
 
-    pub fn insert_goal_once(
+    pub fn insert_goal_with_provenance_once(
         &mut self,
         goal: &Goal,
         edges: &[ProvenanceEdge],
-        operation: Option<&OperationKey<'_>>,
-        response: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.insert_with_dedup(edges, operation, response, |conn| {
-            insert_goal_row(conn, goal)
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        if operation.actor != goal.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
+        self.insert_once(operation, |conn| {
+            insert_goal_row(conn, goal)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
         })
     }
 
-    pub fn insert_session_once(
+    pub fn insert_session_with_provenance_once(
         &mut self,
         session: &Session,
         edges: &[ProvenanceEdge],
-        operation: Option<&OperationKey<'_>>,
-        response: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        self.insert_with_dedup(edges, operation, response, |conn| {
-            insert_session_row(conn, session)
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        if operation.actor != session.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
+        self.insert_once(operation, |conn| {
+            insert_session_row(conn, session)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
         })
+    }
+
+    pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
+        insert_flow_row(&self.conn, flow)
     }
 
     pub fn insert_flow_with_provenance(
@@ -1043,10 +1065,11 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 3);
+        assert_eq!(applied.len(), 4);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
+        assert_eq!(applied[3].version, 5);
 
         let session = store
             .get_session(&session_id)
@@ -1727,105 +1750,5 @@ mod tests {
             .expect("restore foreign keys");
 
         assert!(store.get_execution(&execution.id).is_err());
-    }
-
-    #[test]
-    fn operation_replay_survives_store_restart_and_rejects_mismatched_payload() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = dir.path().join("replay.db");
-        let original_id;
-        {
-            let mut store = Store::open(&db).expect("open");
-            store.migrate().expect("migrate");
-            let flow = Flow::new("Original", "uid:1000");
-            let response = serde_json::json!({"id":flow.id,"name":flow.name});
-            let operation = OperationKey {
-                actor: "uid:1000",
-                command: "flow.create",
-                operation_id: "create-12345",
-                request_json: "{\"name\":\"Original\"}",
-            };
-            let returned = store
-                .insert_flow_once(&flow, &[], Some(&operation), &response)
-                .expect("first insert");
-            assert_eq!(returned, response);
-            original_id = response["id"].as_str().expect("id").to_owned();
-        }
-        {
-            let mut store = Store::open(&db).expect("reopen");
-            store.migrate().expect("migrate");
-            let retry = Flow::new("Original", "uid:1000");
-            let second_response = serde_json::json!({"id":retry.id,"name":retry.name});
-            let operation = OperationKey {
-                actor: "uid:1000",
-                command: "flow.create",
-                operation_id: "create-12345",
-                request_json: "{\"name\":\"Original\"}",
-            };
-            let returned = store
-                .insert_flow_once(&retry, &[], Some(&operation), &second_response)
-                .expect("replay");
-            assert_eq!(returned["id"], original_id);
-            assert_eq!(store.list_flows().expect("list").len(), 1);
-            let changed = OperationKey {
-                request_json: "{\"name\":\"Changed\"}",
-                ..operation
-            };
-            let err = store
-                .insert_flow_once(&retry, &[], Some(&changed), &second_response)
-                .expect_err("same key, different arguments");
-            assert!(err.is_conflict());
-            assert_eq!(store.list_flows().expect("list").len(), 1);
-
-            let another_actor = OperationKey {
-                actor: "uid:2000",
-                ..operation
-            };
-            let different = store
-                .insert_flow_once(&retry, &[], Some(&another_actor), &second_response)
-                .expect("different actor gets an independent operation");
-            assert_eq!(different["id"], second_response["id"]);
-            assert_eq!(store.list_flows().expect("list").len(), 2);
-        }
-    }
-
-    #[test]
-    fn concurrent_duplicate_operation_ids_commit_only_one_flow() {
-        use std::sync::{Arc, Barrier};
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = dir.path().join("concurrent-replay.db");
-        let mut setup = Store::open(&db).expect("open");
-        setup.migrate().expect("migrate");
-        drop(setup);
-        let barrier = Arc::new(Barrier::new(2));
-        let threads: Vec<_> = (0..2)
-            .map(|_| {
-                let db = db.clone();
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    let mut store = Store::open(&db).expect("connection");
-                    let flow = Flow::new("Concurrent", "uid:1000");
-                    let response = serde_json::json!({"id":flow.id,"name":flow.name});
-                    let operation = OperationKey {
-                        actor: "uid:1000",
-                        command: "flow.create",
-                        operation_id: "concurrent-12345",
-                        request_json: "{\"name\":\"Concurrent\"}",
-                    };
-                    barrier.wait();
-                    store
-                        .insert_flow_once(&flow, &[], Some(&operation), &response)
-                        .expect("insert or replay")
-                })
-            })
-            .collect();
-        let a = threads
-            .into_iter()
-            .map(|thread| thread.join().expect("thread"))
-            .collect::<Vec<_>>();
-        assert_eq!(a[0]["id"], a[1]["id"]);
-        let store = Store::open(&db).expect("reopen");
-        assert_eq!(store.list_flows().expect("list").len(), 1);
     }
 }

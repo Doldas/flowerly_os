@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{OperationKey, StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
@@ -141,9 +141,11 @@ fn validate_session_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_conflict() {
+    if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
         ErrorCode::Conflict
-    } else if error.is_busy() || error.is_capacity() {
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -199,32 +201,18 @@ impl CommandFailure {
     }
 }
 
-fn parse_operation_id(args: &Value) -> Result<Option<&str>, CommandFailure> {
-    let Some(value) = args.get("operation_id").filter(|value| !value.is_null()) else {
-        return Ok(None);
-    };
-    let raw = value.as_str().ok_or_else(|| CommandFailure {
-        code: ErrorCode::InvalidArgument,
-        message: "operation_id must be a string or null".to_owned(),
-    })?;
-    if raw.len() < 8
-        || raw.len() > 128
-        || !raw
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Err(CommandFailure {
-            code: ErrorCode::InvalidArgument,
-            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores"
-                .to_owned(),
-        });
-    }
-    Ok(Some(raw))
-}
-
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "session.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let kind = args
                 .get("kind")
                 .and_then(Value::as_str)
@@ -257,26 +245,37 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            let response = serde_json::json!({
+            let intended_response = serde_json::json!({
                 "id": session.id,
                 "kind": session.kind,
                 "state": session.state,
                 "presentation_state": session.presentation_state,
                 "flow_id": session.flow_id,
             });
-            let operation_id = parse_operation_id(args)?;
-            let request_json = serde_json::to_string(args).map_err(err_str)?;
-            let operation = operation_id.map(|operation_id| OperationKey {
-                actor: created_by,
-                command: "session.create",
-                operation_id,
-                request_json: &request_json,
-            });
-            let result = store
-                .insert_session_once(&session, &[provenance], operation.as_ref(), &response)
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(kind, "session metadata create request resolved");
-            Ok(result)
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "session.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_session_with_provenance_once(&session, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_session_with_provenance(&session, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(session_id = %response["id"], kind, "session create completed");
+            Ok(response)
         }
         "session.list" => {
             let sessions = store.list_sessions().map_err(CommandFailure::storage)?;

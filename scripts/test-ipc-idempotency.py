@@ -181,7 +181,7 @@ def main(bin_dir):
 
             with sqlite3.connect(state / "state.db") as conn:
                 rows = conn.execute(
-                    "SELECT actor, command, operation_id FROM command_dedup"
+                    "SELECT actor, command, operation_id FROM ipc_operations"
                 ).fetchall()
             assert len(rows) == 4, rows
             assert all(actor == f"uid:{os.getuid()}" for actor, _, _ in rows), rows

@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{OperationKey, StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -181,9 +181,11 @@ fn validate_flow_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_conflict() {
+    if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
         ErrorCode::Conflict
-    } else if error.is_busy() || error.is_capacity() {
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -208,6 +210,13 @@ impl From<String> for CommandFailure {
 impl From<&str> for CommandFailure {
     fn from(message: &str) -> Self {
         Self::from(message.to_owned())
+    }
+}
+
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
     }
 }
 
@@ -238,32 +247,18 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn parse_operation_id(args: &Value) -> Result<Option<&str>, CommandFailure> {
-    let Some(value) = args.get("operation_id").filter(|value| !value.is_null()) else {
-        return Ok(None);
-    };
-    let raw = value.as_str().ok_or_else(|| CommandFailure {
-        code: ErrorCode::InvalidArgument,
-        message: "operation_id must be a string or null".to_owned(),
-    })?;
-    if raw.len() < 8
-        || raw.len() > 128
-        || !raw
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Err(CommandFailure {
-            code: ErrorCode::InvalidArgument,
-            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores"
-                .to_owned(),
-        });
-    }
-    Ok(Some(raw))
-}
-
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let name = args
                 .get("name")
                 .and_then(Value::as_str)
@@ -286,21 +281,32 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            let response =
+            let intended_response =
                 serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
-            let operation_id = parse_operation_id(args)?;
-            let request_json = serde_json::to_string(args).map_err(err_str)?;
-            let operation = operation_id.map(|operation_id| OperationKey {
-                actor: created_by,
-                command: "flow.create",
-                operation_id,
-                request_json: &request_json,
-            });
-            let result = store
-                .insert_flow_once(&flow, &[provenance], operation.as_ref(), &response)
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(flow_name = name, "flow create request resolved");
-            Ok(result)
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "flow.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_flow_with_provenance_once(&flow, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_flow_with_provenance(&flow, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(flow_id = %response["id"], flow_name = name, "flow create completed");
+            Ok(response)
         }
         "flow.list" => {
             let flows = store.list_flows().map_err(CommandFailure::storage)?;
@@ -335,27 +341,30 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
     }
 }
 
-fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, String> {
+fn find_flow(
+    store: &Store,
+    args: &Value,
+) -> std::result::Result<agentic_types::Flow, CommandFailure> {
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
+        if let Some(flow) = store.get_flow(&id).map_err(CommandFailure::storage)? {
             return Ok(flow);
         }
-        return Err(format!("flow not found: {id}"));
+        return Err(format!("flow not found: {id}").into());
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
-        let flows = store.list_flows().map_err(err_str)?;
+        let flows = store.list_flows().map_err(CommandFailure::storage)?;
         let mut matches = flows.into_iter().filter(|f| f.name == by_name);
         if let Some(flow) = matches.next() {
             if matches.next().is_some() {
-                return Err(format!("ambiguous flow name: {by_name}; use id"));
+                return Err(format!("ambiguous flow name: {by_name}; use id").into());
             }
             return Ok(flow);
         }
-        return Err(format!("flow not found: {by_name}"));
+        return Err(format!("flow not found: {by_name}").into());
     }
-    Err("provide either `id` or `name`".to_owned())
+    Err("provide either `id` or `name`".into())
 }
 
 fn err_str(error: impl std::fmt::Display) -> String {
