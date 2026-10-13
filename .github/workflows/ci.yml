@@ -119,6 +119,7 @@ jobs:
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
           bash -n ./tests/arch-kernel/guest-verify.sh
+          bash -n ./scripts/arch-pty-cgroup-acceptance.sh
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v24
