@@ -61,8 +61,9 @@ or committed file. The connector used for the implementation cannot perform
 this privileged installation.
 
 ```sh
-GH_TOKEN="<maintainer-token>" python3 scripts/release-gates.py apply --confirm-apply
-GH_TOKEN="<maintainer-token>" python3 scripts/release-gates.py verify
+# Use an existing authenticated GitHub CLI session; do not paste tokens into history.
+GH_TOKEN="$(gh auth token)" python3 scripts/release-gates.py apply --confirm-apply
+GH_TOKEN="$(gh auth token)" python3 scripts/release-gates.py verify
 ```
 
 The script only creates/updates its dedicated named ruleset; it does not
@@ -79,8 +80,15 @@ required security check in that PR's branch. Verify that GitHub's PR interface
 shows the required check as failing, and that the Merge control is blocked
 for a user who has no bypass permission. Record the PR URL, required check
 name, failing head SHA, mergeability/ruleset evidence and timestamp in #55
-and #31. Repeat with a docs-only PR to show that the security and CodeQL
-checks run rather than going missing.
+and #31. For a non-draft probe PR with a failing required check, run:
+
+```sh
+GH_TOKEN="$(gh auth token)" python3 scripts/release-gates.py verify --probe-pr NUMBER
+```
+
+This read-only check requires both a failed required check on the current PR
+head and GitHub `mergeable_state=blocked`. Repeat with a docs-only PR to
+show that the security and CodeQL checks run rather than going missing.
 
 Do not conflate a red test with blocked merge enforcement: both the failing
 check **and the blocked merge state** must be observed. Do not merge the probe.

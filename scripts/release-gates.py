@@ -190,9 +190,36 @@ def verify(policy):
     print(f"verified ruleset {ruleset_id} (no bypass actors)")
 
 
+
+def verify_probe(policy, pr_number):
+    """Verify a real failing required check blocks a non-draft PR, without merging."""
+    pr = api("GET", f"/pulls/{pr_number}")
+    if pr.get("state") != "open" or pr.get("draft"):
+        raise ValueError("negative probe must be an open non-draft PR")
+    if pr.get("base", {}).get("ref") not in ("release/2", "master"):
+        raise ValueError("probe must target protected release/2 or master")
+    if pr.get("mergeable_state") != "blocked":
+        raise ValueError(f"probe is not blocked: {pr.get('mergeable_state')}")
+    head = pr["head"]["sha"]
+    check_runs = api("GET", f"/commits/{head}/check-runs?per_page=100")
+    required = {item["context"] for item in
+                required_rule(policy)["required_status_checks"]}
+    failures = [
+        item for item in check_runs.get("check_runs", [])
+        if item.get("name") in required
+        and item.get("app", {}).get("id") == ACTIONS_APP_ID
+        and item.get("conclusion") in ("failure", "timed_out", "cancelled")
+    ]
+    if not failures:
+        raise ValueError("probe has no failing required check on its current head")
+    print(f"negative blocking proof: PR {pr_number}, head {head}, "
+          f"failed {[item['name'] for item in failures]}, mergeable_state=blocked")
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("validate", "verify", "apply"))
+    parser.add_argument("--probe-pr", type=int,
+                        help="After verify, prove a failing required check blocks an open PR")
     parser.add_argument("--confirm-apply", action="store_true",
                         help="Explicitly authorize creating/updating GitHub ruleset")
     args = parser.parse_args()
@@ -202,6 +229,8 @@ def main():
             print("release ruleset config and mandatory workflows validated")
         elif args.command == "verify":
             verify(policy)
+            if args.probe_pr is not None:
+                verify_probe(policy, args.probe_pr)
         else:
             if not args.confirm_apply:
                 raise ValueError("apply requires --confirm-apply and an admin-scoped token")
