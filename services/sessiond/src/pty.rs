@@ -35,6 +35,7 @@ struct Guardian {
     actor: String,
     control_token: String,
     writer: Option<WriterLease>,
+    command_lock: Arc<Mutex<()>>,
 }
 
 struct WriterLease {
@@ -243,6 +244,7 @@ impl Supervisor {
                     actor: actor.to_owned(),
                     control_token: control_token.clone(),
                     writer: None,
+                    command_lock: Arc::new(Mutex::new(())),
                 },
             );
         Ok(
@@ -281,6 +283,21 @@ impl Supervisor {
         // stays responsive while an unrelated SQLite writer is contended.
         // Only one authenticated writer lease is valid per live Session.
         // Observers can continue to use session.read/status without a token.
+        let command_lock = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?;
+            Arc::clone(
+                &sessions
+                    .get(raw)
+                    .ok_or_else(|| (ErrorCode::Unavailable, "PTY is no longer supervised".to_owned()))?
+                    .command_lock,
+            )
+        };
+        let _command_guard = command_lock
+            .lock()
+            .map_err(|_| internal("PTY command lock poisoned"))?;
         let mut issued_token = None;
         let (socket, supervisor_exited) = {
             let mut sessions = self
