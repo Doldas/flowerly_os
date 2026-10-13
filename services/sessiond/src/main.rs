@@ -48,6 +48,9 @@ async fn main() -> anyhow::Result<()> {
         .list_sessions()
         .context("listing sessions for PTY recovery")?
     {
+        if session.kind == "local-pty" && session.pid.is_some() {
+            terminate_stale_cgroup(&session.id)?;
+        }
         if session.kind == "local-pty"
             && session.pid.is_some()
             && session.state == SessionState::Running
@@ -103,6 +106,41 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     lifecycle_reconciler.abort();
     service_result
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_stale_cgroup(id: &SessionId) -> anyhow::Result<()> {
+    if std::env::var("FLOWERLY_PTY_ISOLATION").as_deref() == Ok("development") {
+        return Ok(());
+    }
+    let Some(identifier) = id.as_str().strip_prefix("session-") else {
+        anyhow::bail!("invalid persisted Session cgroup identifier");
+    };
+    if identifier.len() != 32 || !identifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid persisted Session cgroup identifier");
+    }
+    let root = std::env::var("FLOWERLY_PTY_CGROUP_ROOT")
+        .context("delegated cgroup root unavailable for PTY restart cleanup")?;
+    let location = PathBuf::from(root).join(format!("pty-{}", id.as_str()));
+    match std::fs::symlink_metadata(&location) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => anyhow::bail!("persisted Session cgroup path is not a directory"),
+    }
+    std::fs::write(location.join("cgroup.kill"), "1")
+        .context("killing unrecovered PTY cgroup descendants")?;
+    for _ in 0..100 {
+        match std::fs::remove_dir(&location) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("unrecovered PTY cgroup did not become empty")
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
