@@ -20,11 +20,16 @@ replaced. The original child process group receives TERM then bounded KILL.
 
 ## Writer ownership and restart contract (draft #75)
 
-`session.attach` returns a random, ephemeral `attachment_token`.
-Only one active writer is allowed per Session. Other callers may request
-read-only snapshots with `session.read` or `session.status` without that
-token, but `session.write`, `session.resize` and `session.detach`
-require it. A conflicting attach or revoked token fails with a typed
+`session.spawn` returns an ephemeral random `control_token`, which is
+not stored in `session.list` or durable SQLite data. `session.attach`,
+`session.read`, and supervised `session.terminate` require that secret
+in addition to a kernel-attested actor. A status inquiry without the
+secret can observe liveness but has its terminal replay removed.
+
+`session.attach` then returns a separate random `attachment_token`.
+Only one active writer is allowed per Session. A caller with the control
+secret may read without owning the writer lease, but `session.write`,
+`session.resize` and `session.detach` require the active writer token. A conflicting attach or revoked token fails with a typed
 conflict error. A detached token cannot be reused. Writer leases expire
 after 60 seconds without a writer action; clients must reattach. This
 is an **in-memory single-writer lease**, not full-duplex streaming.
@@ -36,6 +41,11 @@ lost supervision**, not proven Linux process suspension or safe adoption.
 A newly started daemon cannot attach to a historical PID. A live daemon
 checks the owned guardian's actual `Child` handle and only reconciles
 unexpected process death; a socket timeout alone is not exit proof.
+
+The control secret is an **in-memory possession check**, not an isolated
+Linux authority when both processes share the same UID. Same-UID
+processes may have other means of obtaining each other's secrets;
+this mechanism does not substitute for delegated user credentials.
 
 The supervised-spawn response exposes `supervisor_pid` for diagnostics
 and fault injection. It is not authorization or a process identity token.
