@@ -22,6 +22,20 @@ def exchange(path, payload):
     assert "error" not in reply, reply
     return reply
 
+
+def test_same_uid_other_pid_denied(path):
+    # A separate process shares our UID but must not command the guardian.
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import socket,sys; s=socket.socket(socket.AF_UNIX); "
+         "s.settimeout(3); s.connect(sys.argv[1]); "
+         "s.sendall(b'{\"op\":\"terminate\"}\\n'); "
+         "print(s.recv(4096).decode().strip())",
+         str(path)],
+        capture_output=True, text=True, timeout=5, check=True,
+    )
+    assert json.loads(probe.stdout) == {"error": "unauthorized"}, probe.stdout
+
 def main():
     assert sys.platform == "linux"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-guardian-") as root:
@@ -39,6 +53,7 @@ def main():
                 time.sleep(.02)
             else:
                 raise AssertionError("guardian startup timed out")
+            test_same_uid_other_pid_denied(path)
             first = exchange(path, {"op": "attach", "cursor": 0})
             pid = first["pid"]
             assert first["running"] is True and pid > 0
