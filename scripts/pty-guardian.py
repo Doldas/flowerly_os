@@ -38,6 +38,8 @@ class SessionCgroup:
         try:
             if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
                 raise RuntimeError("Linux cgroup v2 is required")
+            if os.fstat(self.parent_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
+                raise RuntimeError("delegated root must reside on the cgroup v2 mount")
             chosen_name = os.environ.get("FLOWERLY_PTY_CGROUP_NAME")
             if chosen_name is None:
                 self.name = "pty-" + uuid.uuid4().hex
