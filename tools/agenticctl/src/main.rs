@@ -68,6 +68,8 @@ enum FlowAction {
     Create {
         #[arg(help = "Flow name.")]
         name: String,
+        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        operation_id: Option<String>,
     },
     #[command(about = "List Flows.")]
     List,
@@ -97,6 +99,8 @@ enum GoalAction {
         objective: String,
         #[arg(long, help = "Priority.")]
         priority: Option<i32>,
+        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        operation_id: Option<String>,
     },
     #[command(about = "List Goals.")]
     List,
@@ -139,6 +143,8 @@ enum SessionAction {
         pid: Option<i32>,
         #[arg(long, help = "Working directory.")]
         cwd: Option<String>,
+        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        operation_id: Option<String>,
     },
     #[command(about = "List registered sessions.")]
     List,
@@ -296,9 +302,9 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
 async fn dispatch_flow(runtime_dir: &std::path::Path, action: FlowAction) -> Result<Value> {
     let socket = socket(runtime_dir, "flowd");
     let payload = match action {
-        FlowAction::Create { name } => Payload::Command {
+        FlowAction::Create { name, operation_id } => Payload::Command {
             name: "flow.create".into(),
-            args: serde_json::json!({ "name": name, "created_by": "agenticctl" }),
+            args: serde_json::json!({ "name": name, "created_by": "agenticctl", "operation_id": operation_id }),
         },
         FlowAction::List => Payload::Command {
             name: "flow.list".into(),
@@ -322,11 +328,13 @@ async fn dispatch_goal(runtime_dir: &std::path::Path, action: GoalAction) -> Res
         GoalAction::Create {
             objective,
             priority,
+            operation_id,
         } => Payload::Command {
             name: "goal.create".into(),
             args: serde_json::json!({
                 "objective": objective,
                 "priority": priority,
+                "operation_id": operation_id,
                 "created_by": "agenticctl",
             }),
         },
@@ -358,13 +366,15 @@ async fn dispatch_session(runtime_dir: &std::path::Path, action: SessionAction) 
             flow_id,
             pid,
             cwd,
+            operation_id,
         } => Payload::Command {
             name: "session.create".into(),
             args: serde_json::json!({
                 "kind": kind,
                 "flow_id": flow_id,
                 "pid": pid,
-                "cwd": cwd
+                "cwd": cwd,
+                "operation_id": operation_id
             }),
         },
         SessionAction::List => Payload::Command {
