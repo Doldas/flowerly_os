@@ -207,6 +207,16 @@ def main(bin_dir):
                 time.sleep(.03)
             else:
                 raise AssertionError("guardian SIGKILL not reconciled to unavailable/detached")
+            # A guardian SIGKILL cannot permanently consume one of the 16
+            # supervised slots. A later spawn reaps and reconciles dead
+            # guardians without trusting historical child PIDs.
+            replacement = ok(session, "session.spawn", {"flow_id": a})
+            assert replacement["id"] != crashed_id, replacement
+            terminated_replacement = ok(session, "session.terminate", {
+                "id": replacement["id"],
+                "control_token": replacement["control_token"],
+            })
+            assert terminated_replacement["terminated"] is True
             # The process supervisor is ephemeral: on restart the persisted
             # ID must NOT claim that its old shell is still attached/running.
             stale = ok(session, "session.spawn", {"flow_id": a})
