@@ -102,6 +102,42 @@ def test_forced_guardian_death(root):
             process.wait(timeout=3)
 
 
+
+def malformed_request(path, payload):
+    with socket.socket(socket.AF_UNIX) as conn:
+        conn.settimeout(3)
+        conn.connect(str(path))
+        conn.sendall(payload + b"\n")
+        return json.loads(conn.makefile("rb").readline())
+
+
+def test_malformed_commands_are_isolated(path):
+    # All of these inputs come from the authorized controller PID; none may
+    # crash the owned guardian or disrupt its original PTY Session identity.
+    for payload in (b"[]", b"null", b"42", b"true", b"\xff",
+                    b"{not json}", b'{"op":"read","cursor":true}',
+                    b'{"op":"write","data_hex":"not hex"}'):
+        result = malformed_request(path, payload)
+        assert isinstance(result.get("error"), str), (payload, result)
+        status = exchange(path, {"op": "status"})
+        assert status["running"] is True, (payload, status)
+
+
+def test_shell_limits(path):
+    # This executes within the actual PTY shell, not the Python test process.
+    command = b"python3 -c 'import resource; print(\"FLOWERLY_LIMITS:%s:%s:%s\" % (resource.getrlimit(resource.RLIMIT_NOFILE)[0], resource.getrlimit(resource.RLIMIT_CORE)[0], resource.getrlimit(resource.RLIMIT_FSIZE)[0]))'\n"
+    assert exchange(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+    for _ in range(100):
+        reply = exchange(path, {"op": "read", "cursor": 0})
+        output = base64.b64decode(reply["output_base64"])
+        match = re.search(rb"FLOWERLY_LIMITS:(\d+):(\d+):(\d+)", output)
+        if match:
+            fd, core, fsize = map(int, match.groups())
+            assert fd <= 256 and core == 0 and fsize <= 128 * 1024 * 1024
+            return
+        time.sleep(.02)
+    raise AssertionError("PTY child limits could not be observed")
+
 def main():
     assert sys.platform == "linux"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-guardian-") as root:
@@ -121,6 +157,8 @@ def main():
             else:
                 raise AssertionError("guardian startup timed out")
             test_same_uid_other_pid_denied(path)
+            test_malformed_commands_are_isolated(path)
+            test_shell_limits(path)
             first = exchange(path, {"op": "attach", "cursor": 0})
             pid = first["pid"]
             assert first["running"] is True and pid > 0
