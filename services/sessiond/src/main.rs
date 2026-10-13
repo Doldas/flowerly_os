@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         return self_test().await;
     }
 
-    let mut store = open_store(&config)?;
+    let store = open_store(&config)?;
     // Reconcile stale supervised Sessions after sessiond restart. PID columns
     // are historical metadata and are NEVER signal/reattach authority.
     #[cfg(target_os = "linux")]
