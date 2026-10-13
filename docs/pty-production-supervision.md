@@ -30,6 +30,16 @@ a delegated cgroup. It preserves older PTY smoke tests but provides
 only same-terminal-session background-job cleanup and must not be used
 as evidence of production descendant containment.
 
+## Idle writer lease renewal
+
+`session.heartbeat` accepts the active `attachment_token` and renews
+the exclusive writer's 60-second lease. An idle frontend sends this
+periodically instead of generating dummy terminal input. An expired,
+detached or incorrect token cannot renew a lease, and the heartbeat
+returns `lease_active` and `expires_in_ms` without exposing output.
+The in-memory lease still disappears on daemon restart; callers must
+recover a new Session explicitly rather than reusing stale authority.
+
 ## Session authority and lifecycle
 
 The core IPC boundary uses Linux peer credentials for the creator actor.
