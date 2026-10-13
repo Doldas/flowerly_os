@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{OperationKey, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
@@ -141,7 +141,9 @@ fn validate_session_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if error.is_conflict() {
+        ErrorCode::Conflict
+    } else if error.is_busy() || error.is_capacity() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -195,6 +197,26 @@ impl CommandFailure {
     fn contains(&self, pattern: &str) -> bool {
         self.message.contains(pattern)
     }
+}
+
+fn parse_operation_id(args: &Value) -> Result<Option<&str>, CommandFailure> {
+    let Some(value) = args.get("operation_id").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let raw = value.as_str().ok_or_else(|| CommandFailure {
+        code: ErrorCode::InvalidArgument,
+        message: "operation_id must be a string or null".to_owned(),
+    })?;
+    if raw.len() < 8
+        || raw.len() > 128
+        || !raw.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(CommandFailure {
+            code: ErrorCode::InvalidArgument,
+            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores".to_owned(),
+        });
+    }
+    Ok(Some(raw))
 }
 
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
