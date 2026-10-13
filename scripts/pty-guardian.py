@@ -10,6 +10,7 @@ import errno
 import fcntl
 import json
 import os
+import resource
 import select
 import signal
 import socket
@@ -106,6 +107,12 @@ def supervise(path, shell, parent_pid):
         if os.getppid() != guardian_pid or os.read(release_read, 1) != b"1":
             os._exit(127)
         os.close(release_read)
+        # Prevent runaway file descriptors, unlimited files and core dumps.
+        # Do not set RLIMIT_NPROC here: it is accounted per real UID and
+        # could interfere with unrelated interactive sessions.
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))
         os.execv(shell, [shell, "-i"])
     os.close(release_read)
     watcher = os.fork()
@@ -166,6 +173,8 @@ def supervise(path, shell, parent_pid):
 
     def dispatch(command):
         nonlocal exit_code
+        if not isinstance(command, dict):
+            return {"error": "PTY request must be a JSON object"}
         poll()
         operation = command.get("op")
         if operation in ("attach", "read", "status"):
@@ -235,19 +244,28 @@ def supervise(path, shell, parent_pid):
                         client.sendall(b'{"error":"unauthorized"}\n')
                         continue
                     raw = bytearray()
-                    while b"\n" not in raw and len(raw) <= REQUEST_LIMIT:
-                        part = client.recv(4096)
-                        if not part:
-                            break
-                        raw.extend(part)
+                    try:
+                        while b"\n" not in raw and len(raw) <= REQUEST_LIMIT:
+                            part = client.recv(4096)
+                            if not part:
+                                break
+                            raw.extend(part)
+                    except (socket.timeout, ConnectionResetError, BrokenPipeError):
+                        # Never let a partial or disconnected control request
+                        # tear down an otherwise healthy PTY Session.
+                        continue
                     try:
                         if len(raw) > REQUEST_LIMIT:
                             raise ValueError("oversized request")
                         command = json.loads(raw.split(b"\n", 1)[0])
                         reply = dispatch(command)
-                    except (ValueError, KeyError, TypeError) as exc:
+                    except (ValueError, KeyError, TypeError, UnicodeError) as exc:
                         reply = {"error": str(exc)}
-                    client.sendall(json.dumps(reply).encode() + b"\n")
+                    try:
+                        client.sendall(json.dumps(reply).encode() + b"\n")
+                    except (BrokenPipeError, ConnectionResetError):
+                        # A disconnected controller cannot crash the guardian.
+                        continue
                     if reply.get("terminated"):
                         break
     finally:
@@ -262,6 +280,13 @@ def supervise(path, shell, parent_pid):
             except ChildProcessError:
                 pass
         os.close(fd)
+        # The watcher has its own parent-death signal and may need time to
+        # kill background jobs. Reap it if it already finished, without
+        # blocking the guardian's shutdown on a hostile process tree.
+        try:
+            os.waitpid(watcher, os.WNOHANG)
+        except ChildProcessError:
+            pass
         try:
             current = os.stat(path)
             if (current.st_ino, current.st_dev) == (identity.st_ino, identity.st_dev):

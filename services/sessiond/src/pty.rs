@@ -104,6 +104,35 @@ impl Supervisor {
             .launch
             .lock()
             .map_err(|_| internal("launch lock poisoned"))?;
+        // Reap guardians killed between requests so their stale registry
+        // slots cannot permanently exhaust the supervised Session cap.
+        // Child::try_wait is nonblocking, and SQLite is touched only after
+        // releasing the registry mutex.
+        let stale = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?;
+            let mut ids = Vec::new();
+            for (id, guardian) in sessions.iter_mut() {
+                if guardian
+                    .process
+                    .try_wait()
+                    .map_err(|error| internal(error.to_string()))?
+                    .is_some()
+                {
+                    ids.push(id.clone());
+                }
+            }
+            for id in &ids {
+                sessions.remove(id);
+            }
+            ids
+        };
+        for raw in stale {
+            let id = SessionId::from_str(&raw).map_err(|error| internal(error.to_string()))?;
+            self.mark_unavailable(store, &id)?;
+        }
         if self
             .sessions
             .lock()
