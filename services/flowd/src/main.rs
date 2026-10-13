@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -181,7 +181,9 @@ fn validate_flow_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -268,11 +270,29 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_flow_with_provenance(&flow, &[provenance])
-                .map_err(CommandFailure::storage)?;
+            let intended_response = serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
+            let response = if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "flow.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_flow_with_provenance_once(&flow, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_flow_with_provenance(&flow, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
             tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
-            Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
+            Ok(response)
         }
         "flow.list" => {
             let flows = store.list_flows().map_err(CommandFailure::storage)?;
