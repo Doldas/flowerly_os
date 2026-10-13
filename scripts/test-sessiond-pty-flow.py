@@ -80,12 +80,18 @@ def main(bin_dir):
             ok(flow, "flow.activate", {"id": a})
             first = ok(session, "session.spawn", {"flow_id": a, "shell": "/bin/sh"})
             sid, pid = first["id"], first["pid"]
+            control = first["control_token"]
+            assert control
             assert pid > 0, first
-            attached = ok(session, "session.attach", {"id": sid, "cursor": 0})
+            denied_attach = call(session, "session.attach", {"id": sid})
+            assert denied_attach["type"] == "err", denied_attach
+            denied_read = call(session, "session.read", {"id": sid, "cursor": 0})
+            assert denied_read["type"] == "err", denied_read
+            attached = ok(session, "session.attach", {"id": sid, "cursor": 0, "control_token": control})
             assert attached["pid"] == pid and attached["running"] is True
             first_token = attached["attachment_token"]
             assert first_token
-            double_attach = call(session, "session.attach", {"id": sid})
+            double_attach = call(session, "session.attach", {"id": sid, "control_token": control})
             assert double_attach["type"] == "err" and double_attach["code"] == "conflict", double_attach
             without_token = call(session, "session.write", {"id": sid, "data": "ignored"})
             assert without_token["type"] == "err", without_token
@@ -98,7 +104,7 @@ def main(bin_dir):
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
             ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
-                observed = ok(session, "session.read", {"id": sid, "cursor": 0})
+                observed = ok(session, "session.read", {"id": sid, "cursor": 0, "control_token": control})
                 match = re.search(rb"FLOWERLY_JOB_PID:(\d+)",
                                   base64.b64decode(observed["output_base64"]))
                 if match:
@@ -114,7 +120,7 @@ def main(bin_dir):
             assert ok(flow, "flow.list", {})["count"] >= 3
             ok(flow, "flow.activate", {"id": a})
             for _ in range(100):
-                replay = ok(session, "session.attach", {"id": sid, "cursor": 0})
+                replay = ok(session, "session.attach", {"id": sid, "cursor": 0, "control_token": control})
                 if marker.encode() in base64.b64decode(replay["output_base64"]):
                     break
                 time.sleep(.03)
@@ -142,12 +148,13 @@ def main(bin_dir):
             # Job control can place background children in separate groups.
             # Explicitly stop the job before tearing down its shell.
             ok(session, "session.write", {"id": sid, "attachment_token": second_token, "data": f"kill {job_pid}\n"})
-            stopped = ok(session, "session.terminate", {"id": sid})
+            stopped = ok(session, "session.terminate", {"id": sid, "control_token": control})
             assert stopped["terminated"] is True, stopped
             # Observe natural exit and reconcile the recorded Session state.
             second_shell = ok(session, "session.spawn", {"flow_id": a})
             another_id = second_shell["id"]
-            natural_attachment = ok(session, "session.attach", {"id": another_id})
+            another_control = second_shell["control_token"]
+            natural_attachment = ok(session, "session.attach", {"id": another_id, "control_token": another_control})
             ok(session, "session.write", {"id": another_id, "attachment_token": natural_attachment["attachment_token"], "data": "exit\n"})
             for _ in range(100):
                 state_reply = ok(session, "session.status", {"id": another_id})
@@ -162,19 +169,20 @@ def main(bin_dir):
             # Competing client attach calls must not both obtain writer authority.
             raced = ok(session, "session.spawn", {"flow_id": a})
             race_id = raced["id"]
+            race_control = raced["control_token"]
             with ThreadPoolExecutor(max_workers=2) as pool:
                 responses = list(pool.map(
-                    lambda _: call(session, "session.attach", {"id": race_id}),
+                    lambda _: call(session, "session.attach", {"id": race_id, "control_token": race_control}),
                     range(2),
                 ))
             winners = [r for r in responses if r["type"] == "ok"]
             losers = [r for r in responses if r["type"] == "err"]
             assert len(winners) == 1 and len(losers) == 1, responses
             assert losers[0]["code"] == "conflict", losers
-            assert ok(session, "session.read", {"id": race_id, "cursor": 0})["running"]
+            assert ok(session, "session.read", {"id": race_id, "cursor": 0, "control_token": race_control})["running"]
             won_token = winners[0]["data"]["attachment_token"]
             ok(session, "session.detach", {"id": race_id, "attachment_token": won_token})
-            ok(session, "session.terminate", {"id": race_id})
+            ok(session, "session.terminate", {"id": race_id, "control_token": race_control})
             # A live daemon must detect the unexpectedly SIGKILLed guardian,
             # persist lost supervision, and never claim the old shell is live.
             crashed = ok(session, "session.spawn", {"flow_id": a})
@@ -196,6 +204,7 @@ def main(bin_dir):
             # ID must NOT claim that its old shell is still attached/running.
             stale = ok(session, "session.spawn", {"flow_id": a})
             stale_id = stale["id"]
+            stale_control = stale["control_token"]
             session_process = children[-1]
             session_process.terminate()
             session_process.wait(timeout=5)
@@ -206,7 +215,7 @@ def main(bin_dir):
             record = next(row for row in after_restart if row["id"] == stale_id)
             assert record["state"].lower() == "suspended", record
             assert record["presentation_state"].lower() == "detached", record
-            reattach = call(session, "session.attach", {"id": stale_id})
+            reattach = call(session, "session.attach", {"id": stale_id, "control_token": stale_control})
             assert reattach["type"] == "err", reattach
             assert reattach["code"] == "unavailable", reattach
             print("PTY daemon restart: stale Session remains identified but unavailable/detached")
