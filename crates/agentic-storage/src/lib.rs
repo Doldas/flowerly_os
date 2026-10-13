@@ -1055,10 +1055,11 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 3);
+        assert_eq!(applied.len(), 4);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
+        assert_eq!(applied[3].version, 5);
 
         let session = store
             .get_session(&session_id)
