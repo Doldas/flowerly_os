@@ -136,7 +136,7 @@ fn validate_flow_command(
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 store
                     .get_flow(&id)
-                    .map_err(|e| (if e.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, e.to_string()))?
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
             } else if let Some(value) = args.get("name") {
                 let name = value
@@ -144,7 +144,7 @@ fn validate_flow_command(
                     .ok_or_else(|| invalid("arg `name` must be a string"))?;
                 let mut matches = store
                     .list_flows()
-                    .map_err(|e| (if e.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, e.to_string()))?
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .into_iter()
                     .filter(|flow| flow.name == name);
                 let found = matches
@@ -180,6 +180,14 @@ fn validate_flow_command(
     Ok(())
 }
 
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
+}
+
 #[derive(Debug)]
 struct CommandFailure {
     code: ErrorCode,
@@ -204,11 +212,7 @@ impl From<&str> for CommandFailure {
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
-            code: if error.is_busy() {
-                ErrorCode::Unavailable
-            } else {
-                ErrorCode::Internal
-            },
+            code: storage_error_code(&error),
             message: error.to_string(),
         }
     }
