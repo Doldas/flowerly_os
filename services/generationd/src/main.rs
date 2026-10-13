@@ -2,9 +2,11 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use agentic_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
-use agentic_ipc::{Envelope, Payload};
-use agentic_storage::Store;
+use agentic_core::{
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+};
+use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::{StorageError, Store};
 use agentic_types::{
     ExperimentId, Generation, GenerationId, GenerationStatus, GoalId, ObjectRef, ProvenanceEdge,
     ProvenanceRelation, Timestamp,
@@ -70,24 +72,89 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     };
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(message) => error_envelope(request.id.clone(), message),
+        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
+}
+
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: storage_error_code(&error),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        &self.message == other
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "generation.create" => {
             let parent: Option<GenerationId> = parse_optional_typed(args, "parent")?;
             if let Some(parent) = &parent {
-                if store.get_generation(parent).map_err(err_str)?.is_none() {
-                    return Err(format!("generation not found: {parent}"));
+                if store
+                    .get_generation(parent)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
+                    return Err(format!("generation not found: {parent}").into());
                 }
             }
 
             let reason_goal: Option<GoalId> = parse_optional_typed(args, "reason_goal")?;
             if let Some(goal_id) = &reason_goal {
-                if store.get_goal(goal_id).map_err(err_str)?.is_none() {
-                    return Err(format!("goal not found: {goal_id}"));
+                if store
+                    .get_goal(goal_id)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
+                    return Err(format!("goal not found: {goal_id}").into());
                 }
             }
 
@@ -134,7 +201,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
 
             store
                 .insert_generation_with_provenance(&generation, &edges)
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             tracing::info!(
                 generation_id = %generation.id,
                 provenance_edges = edges.len(),
@@ -152,7 +219,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
         "generation.list" => {
             let items: Vec<Value> = store
                 .list_generations()
-                .map_err(err_str)?
+                .map_err(CommandFailure::storage)?
                 .iter()
                 .map(|g| {
                     serde_json::json!({
@@ -172,7 +239,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .ok_or("missing string arg `id`")?;
             let generation = store
                 .get_generation(&GenerationId::from_str(id).map_err(err_str)?)
-                .map_err(err_str)?
+                .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("generation not found: {id}"))?;
             Ok(serde_json::to_value(&generation).map_err(err_str)?)
         }
@@ -182,10 +249,12 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let generation_id = GenerationId::from_str(id).map_err(err_str)?;
-            store.activate_generation(&generation_id).map_err(err_str)?;
+            store
+                .activate_generation(&generation_id)
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
         }
-        other => Err(format!("generationd: unknown command `{other}`")),
+        other => Err(format!("generationd: unknown command `{other}`").into()),
     }
 }
 

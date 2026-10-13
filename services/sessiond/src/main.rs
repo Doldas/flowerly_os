@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::Store;
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
@@ -81,7 +81,7 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(message) => error_envelope(request.id.clone(), message),
+        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
@@ -102,7 +102,7 @@ fn validate_session_command(
                 let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 if store
                     .get_flow(&flow_id)
-                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
                     return Err((ErrorCode::NotFound, format!("flow not found: {flow_id}")));
@@ -124,7 +124,7 @@ fn validate_session_command(
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
             if store
                 .get_session(&id)
-                .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                .map_err(|e| (storage_error_code(&e), e.to_string()))?
                 .is_none()
             {
                 return Err((ErrorCode::NotFound, format!("session not found: {raw}")));
@@ -140,9 +140,79 @@ fn validate_session_command(
     Ok(())
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, String> {
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
+}
+
+#[derive(Debug)]
+struct CommandFailure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl CommandFailure {
+    fn storage(error: StorageError) -> Self {
+        Self {
+            code: storage_error_code(&error),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
+    }
+}
+
+impl From<&str> for CommandFailure {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl PartialEq<String> for CommandFailure {
+    fn eq(&self, other: &String) -> bool {
+        &self.message == other
+    }
+}
+
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "session.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let kind = args
                 .get("kind")
                 .and_then(Value::as_str)
@@ -175,20 +245,40 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_session_with_provenance(&session, &[provenance])
-                .map_err(err_str)?;
-            tracing::info!(session_id = %session.id, kind, "session created");
-            Ok(serde_json::json!({
+            let intended_response = serde_json::json!({
                 "id": session.id,
                 "kind": session.kind,
                 "state": session.state,
                 "presentation_state": session.presentation_state,
                 "flow_id": session.flow_id,
-            }))
+            });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "session.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_session_with_provenance_once(&session, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_session_with_provenance(&session, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(session_id = %response["id"], kind, "session create completed");
+            Ok(response)
         }
         "session.list" => {
-            let sessions = store.list_sessions().map_err(err_str)?;
+            let sessions = store.list_sessions().map_err(CommandFailure::storage)?;
             let items: Vec<Value> = sessions
                 .iter()
                 .map(|s| {
@@ -213,15 +303,15 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
             let session_id = SessionId::from_str(id).map_err(err_str)?;
             let session = store
                 .get_session(&session_id)
-                .map_err(err_str)?
+                .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("session not found: {id}"))?;
 
             store
                 .update_session_state(&session_id, SessionState::Exited)
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             store
                 .update_session_presentation_state(&session_id, SessionPresentationState::Detached)
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({
                 "id": session_id,
                 "state": SessionState::Exited,
@@ -230,11 +320,11 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Str
                 "presentation_was": session.presentation_state,
             }))
         }
-        other => Err(format!("sessiond: unknown command `{other}`")),
+        other => Err(format!("sessiond: unknown command `{other}`").into()),
     }
 }
 
-fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>, String> {
+fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>, CommandFailure> {
     let Some(value) = args.get("flow_id") else {
         return Ok(None);
     };
@@ -246,8 +336,12 @@ fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>,
         .as_str()
         .ok_or("arg `flow_id` must be a string or null")?;
     let flow_id = FlowId::from_str(raw).map_err(err_str)?;
-    if store.get_flow(&flow_id).map_err(err_str)?.is_none() {
-        return Err(format!("flow not found: {flow_id}"));
+    if store
+        .get_flow(&flow_id)
+        .map_err(CommandFailure::storage)?
+        .is_none()
+    {
+        return Err(format!("flow not found: {flow_id}").into());
     }
     Ok(Some(flow_id))
 }

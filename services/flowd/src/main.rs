@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -136,7 +136,7 @@ fn validate_flow_command(
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 store
                     .get_flow(&id)
-                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
             } else if let Some(value) = args.get("name") {
                 let name = value
@@ -144,7 +144,7 @@ fn validate_flow_command(
                     .ok_or_else(|| invalid("arg `name` must be a string"))?;
                 let mut matches = store
                     .list_flows()
-                    .map_err(|e| (ErrorCode::Internal, e.to_string()))?
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .into_iter()
                     .filter(|flow| flow.name == name);
                 let found = matches
@@ -180,6 +180,18 @@ fn validate_flow_command(
     Ok(())
 }
 
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
+}
+
 #[derive(Debug)]
 struct CommandFailure {
     code: ErrorCode,
@@ -201,14 +213,17 @@ impl From<&str> for CommandFailure {
     }
 }
 
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
-            code: if error.is_busy() {
-                ErrorCode::Unavailable
-            } else {
-                ErrorCode::Internal
-            },
+            code: storage_error_code(&error),
             message: error.to_string(),
         }
     }
@@ -235,6 +250,15 @@ impl PartialEq<String> for CommandFailure {
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let name = args
                 .get("name")
                 .and_then(Value::as_str)
@@ -257,14 +281,35 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_flow_with_provenance(&flow, &[provenance])
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(flow_id = %flow.id, flow_name = name, "flow created");
-            Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state }))
+            let intended_response =
+                serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "flow.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_flow_with_provenance_once(&flow, &[provenance], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_flow_with_provenance(&flow, &[provenance])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(flow_id = %response["id"], flow_name = name, "flow create completed");
+            Ok(response)
         }
         "flow.list" => {
-            let flows = store.list_flows().map_err(err_str)?;
+            let flows = store.list_flows().map_err(CommandFailure::storage)?;
             let items: Vec<Value> = flows
                 .iter()
                 .map(|f| serde_json::json!({ "id": f.id, "name": f.name, "state": f.state }))
@@ -282,9 +327,13 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
-                store.activate_flow(&flow.id).map_err(err_str)?;
+                store
+                    .activate_flow(&flow.id)
+                    .map_err(CommandFailure::storage)?;
             } else {
-                store.set_flow_state(&flow.id, state).map_err(err_str)?;
+                store
+                    .set_flow_state(&flow.id, state)
+                    .map_err(CommandFailure::storage)?;
             }
             Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
         }
@@ -292,27 +341,30 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
     }
 }
 
-fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, String> {
+fn find_flow(
+    store: &Store,
+    args: &Value,
+) -> std::result::Result<agentic_types::Flow, CommandFailure> {
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) = store.get_flow(&id).map_err(err_str)? {
+        if let Some(flow) = store.get_flow(&id).map_err(CommandFailure::storage)? {
             return Ok(flow);
         }
-        return Err(format!("flow not found: {id}"));
+        return Err(format!("flow not found: {id}").into());
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
-        let flows = store.list_flows().map_err(err_str)?;
+        let flows = store.list_flows().map_err(CommandFailure::storage)?;
         let mut matches = flows.into_iter().filter(|f| f.name == by_name);
         if let Some(flow) = matches.next() {
             if matches.next().is_some() {
-                return Err(format!("ambiguous flow name: {by_name}; use id"));
+                return Err(format!("ambiguous flow name: {by_name}; use id").into());
             }
             return Ok(flow);
         }
-        return Err(format!("flow not found: {by_name}"));
+        return Err(format!("flow not found: {by_name}").into());
     }
-    Err("provide either `id` or `name`".to_owned())
+    Err("provide either `id` or `name`".into())
 }
 
 fn err_str(error: impl std::fmt::Display) -> String {

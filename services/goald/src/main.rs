@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -126,13 +126,25 @@ fn validate_goal_command(
         let id = GoalId::from_str(raw).map_err(|error| invalid(&error.to_string()))?;
         if store
             .get_goal(&id)
-            .map_err(|error| (ErrorCode::Internal, error.to_string()))?
+            .map_err(|error| (storage_error_code(&error), error.to_string()))?
             .is_none()
         {
             return Err((ErrorCode::NotFound, format!("goal not found: {raw}")));
         }
     }
     Ok(())
+}
+
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
 }
 
 #[derive(Debug)]
@@ -159,11 +171,7 @@ impl From<&str> for CommandFailure {
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
-            code: if error.is_busy() {
-                ErrorCode::Unavailable
-            } else {
-                ErrorCode::Internal
-            },
+            code: storage_error_code(&error),
             message: error.to_string(),
         }
     }
@@ -197,6 +205,15 @@ impl PartialEq<String> for CommandFailure {
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "goal.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let objective = args
                 .get("objective")
                 .and_then(Value::as_str)
@@ -222,24 +239,57 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_goal_with_provenance(&goal, &[created_edge])
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(goal_id = %goal.id, objective, "goal created");
-            Ok(serde_json::json!({
+            let intended_response = serde_json::json!({
                 "id": goal.id,
                 "objective": goal.objective,
                 "status": goal.status,
                 "parent_goal": goal.parent_goal,
-            }))
+            });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "goal.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_goal_with_provenance_once(&goal, &[created_edge], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_goal_with_provenance(&goal, &[created_edge])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(goal_id = %response["id"], objective, "goal create completed");
+            Ok(response)
         }
         "goal.child" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let parent_id = args
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
-            if store.get_goal(&parent).map_err(err_str)?.is_none() {
+            if store
+                .get_goal(&parent)
+                .map_err(CommandFailure::storage)?
+                .is_none()
+            {
                 return Err(format!("goal not found: {parent}").into());
             }
             let objective = args
@@ -266,12 +316,34 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: Some("child goal".to_owned()),
             };
-            store
-                .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
-                .map_err(err_str)?;
-            Ok(
-                serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent }),
-            )
+            let intended_response = serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent });
+            let response = if let Some(operation_id) =
+                args.get("operation_id").and_then(Value::as_str)
+            {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "goal.child",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_goal_with_provenance_once(
+                        &child,
+                        &[created_edge, parent_edge],
+                        &operation,
+                    )
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            Ok(response)
         }
         "goal.show" => {
             let id = args
@@ -280,7 +352,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .ok_or("missing string arg `id`")?;
             let goal = store
                 .get_goal(&GoalId::from_str(id).map_err(err_str)?)
-                .map_err(err_str)?
+                .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("goal not found: {id}"))?;
             Ok(serde_json::json!({
                 "id": goal.id,
@@ -292,7 +364,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             }))
         }
         "goal.list" => {
-            let goals = store.list_goals().map_err(err_str)?;
+            let goals = store.list_goals().map_err(CommandFailure::storage)?;
             let items: Vec<Value> = goals
                 .iter()
                 .map(|g| {
@@ -317,7 +389,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             } else {
                 GoalStatus::Abandoned
             };
-            store.set_goal_status(&goal_id, status).map_err(err_str)?;
+            store
+                .set_goal_status(&goal_id, status)
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
         other => Err(format!("goald: unknown command `{other}`").into()),
