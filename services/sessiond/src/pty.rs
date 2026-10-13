@@ -90,9 +90,21 @@ impl Supervisor {
     }
 
     fn spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
-        let _serial = self.launch.lock().map_err(|_| internal("launch lock poisoned"))?;
-        if self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?.len() >= 16 {
-            return Err((ErrorCode::Unavailable, "PTY session limit (16) reached".to_owned()));
+        let _serial = self
+            .launch
+            .lock()
+            .map_err(|_| internal("launch lock poisoned"))?;
+        if self
+            .sessions
+            .lock()
+            .map_err(|_| internal("registry lock poisoned"))?
+            .len()
+            >= 16
+        {
+            return Err((
+                ErrorCode::Unavailable,
+                "PTY session limit (16) reached".to_owned(),
+            ));
         }
         if args.get("operation_id").is_some_and(|v| !v.is_null()) {
             return Err(invalid(
@@ -214,11 +226,21 @@ impl Supervisor {
         // command. Authorize from the in-memory owner registry so PTY I/O
         // stays responsive while an unrelated SQLite writer is contended.
         let socket = {
-            let sessions = self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?;
-            let guardian = sessions.get(raw)
-                .ok_or_else(|| (ErrorCode::Unavailable, "PTY guardian unavailable (restart or exit)".to_owned()))?;
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?;
+            let guardian = sessions.get(raw).ok_or_else(|| {
+                (
+                    ErrorCode::Unavailable,
+                    "PTY guardian unavailable (restart or exit)".to_owned(),
+                )
+            })?;
             if guardian.actor != actor {
-                return Err((ErrorCode::Unavailable, "session actor not authorized".to_owned()));
+                return Err((
+                    ErrorCode::Unavailable,
+                    "session actor not authorized".to_owned(),
+                ));
             }
             guardian.socket.clone()
         };
@@ -270,8 +292,12 @@ impl Supervisor {
                 .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
         }
         if op == "terminate" {
-            if let Some(mut guardian) = self.sessions.lock()
-                .map_err(|_| internal("registry lock poisoned"))?.remove(raw) {
+            if let Some(mut guardian) = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?
+                .remove(raw)
+            {
                 let _ = guardian.process.wait();
             }
         }
