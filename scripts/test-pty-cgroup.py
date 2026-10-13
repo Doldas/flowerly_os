@@ -48,6 +48,21 @@ def require_explicit_delegation(root):
         )
         assert result.returncode != 0, "guardian silently bypassed required cgroup"
         assert not path.exists(), "guardian exposed control socket without a cgroup"
+    with tempfile.TemporaryDirectory(prefix="flowerly-pty-invalid-root-") as folder:
+        path = Path(folder) / "invalid.sock"
+        env = dict(os.environ, FLOWERLY_PTY_ISOLATION="required",
+                   FLOWERLY_PTY_CGROUP_ROOT=folder)
+        result = subprocess.run(
+            [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
+            env=env, capture_output=True, timeout=5,
+        )
+        assert result.returncode != 0 and not path.exists(), "ordinary directory bypassed cgroup validation"
+        env["FLOWERLY_PTY_CGROUP_NAME"] = "../../unsafe"
+        result = subprocess.run(
+            [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
+            env=env, capture_output=True, timeout=5,
+        )
+        assert result.returncode != 0 and not path.exists(), "untrusted cgroup name accepted"
     if root is None:
         print("Production fail-closed verified; delegated cgroup e2e NOT VERIFIED")
 
