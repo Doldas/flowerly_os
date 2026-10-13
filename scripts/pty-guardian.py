@@ -143,6 +143,8 @@ def _watch_guardian(shell_sid, parent_pid, ready_fd, isolation):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
         os._exit(127)
+    if os.getppid() != parent_pid:
+        stopped = True
     try:
         os.write(ready_fd, b"1")
     except OSError:
@@ -250,6 +252,8 @@ def supervise(path, shell, parent_pid):
             return {"error": "PTY request must be a JSON object"}
         poll()
         operation = command.get("op")
+        if operation == "lifecycle":
+            return {"pid": pid, "running": exit_code is None, "exit_code": exit_code}
         if operation in ("attach", "read", "status", "follow"):
             harvest()
             position = command.get("cursor", first)
@@ -265,6 +269,7 @@ def supervise(path, shell, parent_pid):
                         harvest()
                     poll()
             return {"pid": pid, "running": exit_code is None,
+                    "isolation": isolation.mode,
                     "exit_code": exit_code, "cursor": cursor,
                     "truncated": position < first,
                     "output_base64": base64.b64encode(replay[max(first, position) - first:]).decode()}
