@@ -86,6 +86,9 @@ jobs:
       - name: Linux PTY guardian black-box ownership regression
         run: python3 ./scripts/test-pty-guardian.py
 
+      - name: Production PTY cgroup isolation and delegated containment
+        run: python3 ./scripts/test-pty-cgroup.py
+
       - name: Flow A to B to A real sessiond PTY acceptance
         run: python3 ./scripts/test-sessiond-pty-flow.py target/release
 
