@@ -117,8 +117,8 @@ async fn main() -> anyhow::Result<()> {
 fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
     use std::os::unix::fs::MetadataExt;
 
-    let isolation = std::env::var("FLOWERLY_PTY_ISOLATION")
-        .unwrap_or_else(|_| "required".to_owned());
+    let isolation =
+        std::env::var("FLOWERLY_PTY_ISOLATION").unwrap_or_else(|_| "required".to_owned());
     if isolation == "development" {
         return Ok(None);
     }
@@ -140,18 +140,19 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
     if !root.is_absolute() {
         anyhow::bail!("delegated cgroup root must be an absolute path");
     }
-    let host = std::fs::metadata("/sys/fs/cgroup")
-        .context("reading unified cgroup v2 mount metadata")?;
-    let delegated = std::fs::metadata(&root)
-        .context("reading delegated cgroup root metadata")?;
+    let host =
+        std::fs::metadata("/sys/fs/cgroup").context("reading unified cgroup v2 mount metadata")?;
+    let delegated = std::fs::metadata(&root).context("reading delegated cgroup root metadata")?;
     if host.dev() != delegated.dev() || !root.join("cgroup.controllers").is_file() {
         anyhow::bail!("PTY supervision requires a real delegated Linux cgroup v2 root");
     }
     let management = root.join(format!("management-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&management)
-        .context("creating PTY supervisor management cgroup")?;
-    std::fs::write(management.join("cgroup.procs"), std::process::id().to_string())
-        .context("moving sessiond into its management cgroup")?;
+    std::fs::create_dir(&management).context("creating PTY supervisor management cgroup")?;
+    std::fs::write(
+        management.join("cgroup.procs"),
+        std::process::id().to_string(),
+    )
+    .context("moving sessiond into its management cgroup")?;
     std::fs::write(root.join("cgroup.subtree_control"), "+cpu +memory +pids")
         .context("enabling delegated PTY resource controllers")?;
     Ok(Some(root))
