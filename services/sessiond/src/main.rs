@@ -75,6 +75,20 @@ async fn main() -> anyhow::Result<()> {
     });
     #[cfg(target_os = "linux")]
     let supervisor = Arc::new(pty::Supervisor::new(config.runtime_dir.clone()));
+    #[cfg(target_os = "linux")]
+    let lifecycle_reconciler = {
+        let supervisor = Arc::clone(&supervisor);
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let supervisor = Arc::clone(&supervisor);
+                let store = Arc::clone(&store);
+                let _ = tokio::task::spawn_blocking(move || supervisor.reconcile(&store)).await;
+            }
+        })
+    };
     let handler = move |request: &Envelope| -> Envelope {
         #[cfg(target_os = "linux")]
         if let Payload::Command { name, args } = &request.payload {
@@ -85,9 +99,12 @@ async fn main() -> anyhow::Result<()> {
         handle_command(&store, request)
     };
 
-    run_service_with_status(config, status, Arc::new(handler))
+    let service_result = run_service_with_status(config, status, Arc::new(handler))
         .await
-        .context("sessiond terminated abnormally")
+        .context("sessiond terminated abnormally");
+    #[cfg(target_os = "linux")]
+    lifecycle_reconciler.abort();
+    service_result
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
