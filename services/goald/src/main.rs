@@ -126,7 +126,7 @@ fn validate_goal_command(
         let id = GoalId::from_str(raw).map_err(|error| invalid(&error.to_string()))?;
         if store
             .get_goal(&id)
-            .map_err(|error| (ErrorCode::Internal, error.to_string()))?
+            .map_err(|error| (if error.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, error.to_string()))?
             .is_none()
         {
             return Err((ErrorCode::NotFound, format!("goal not found: {raw}")));
@@ -239,7 +239,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
-            if store.get_goal(&parent).map_err(err_str)?.is_none() {
+            if store.get_goal(&parent).map_err(CommandFailure::storage)?.is_none() {
                 return Err(format!("goal not found: {parent}").into());
             }
             let objective = args
@@ -268,7 +268,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             };
             store
                 .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
-                .map_err(err_str)?;
+                .map_err(CommandFailure::storage)?;
             Ok(
                 serde_json::json!({ "id": child.id, "objective": child.objective, "parent": parent }),
             )
@@ -280,7 +280,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .ok_or("missing string arg `id`")?;
             let goal = store
                 .get_goal(&GoalId::from_str(id).map_err(err_str)?)
-                .map_err(err_str)?
+                .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("goal not found: {id}"))?;
             Ok(serde_json::json!({
                 "id": goal.id,
@@ -292,7 +292,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             }))
         }
         "goal.list" => {
-            let goals = store.list_goals().map_err(err_str)?;
+            let goals = store.list_goals().map_err(CommandFailure::storage)?;
             let items: Vec<Value> = goals
                 .iter()
                 .map(|g| {
@@ -317,7 +317,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             } else {
                 GoalStatus::Abandoned
             };
-            store.set_goal_status(&goal_id, status).map_err(err_str)?;
+            store.set_goal_status(&goal_id, status).map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
         other => Err(format!("goald: unknown command `{other}`").into()),
