@@ -150,18 +150,6 @@ def main(bin_dir):
                 request, runtime / "goald.sock", "command",
                 name="goal.create", args={"objective": "Still locked Goal"},
             )
-            locked_flow_mutation = executor.submit(
-                request, runtime / "flowd.sock", "command",
-                name="flow.activate", args={"id": created_ids["flowd"]},
-            )
-            locked_goal_mutation = executor.submit(
-                request, runtime / "goald.sock", "command",
-                name="goal.complete", args={"id": created_ids["goald"]},
-            )
-            locked_session_mutation = executor.submit(
-                request, runtime / "sessiond.sock", "command",
-                name="session.terminate", args={"id": session_id},
-            )
             locked_session_create = executor.submit(
                 request, runtime / "sessiond.sock", "command",
                 name="session.create", args={},
@@ -175,12 +163,49 @@ def main(bin_dir):
                 assert result["data"]["details"]["ready"] is False, result
                 assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
             for service, pending in (
-                ("flowd.create", locked_flow), ("goald.create", locked_goal),
-                ("flowd.activate", locked_flow_mutation),
-                ("goald.complete", locked_goal_mutation),
+                ("flowd.create", locked_flow),
+                ("goald.create", locked_goal),
                 ("sessiond.create", locked_session_create),
-                ("sessiond.terminate", locked_session_mutation),
             ):
+                result = pending.result(timeout=TIMEOUT)
+                assert result["type"] == "err", (service, result)
+                assert result.get("code") == "unavailable", (service, result)
+            holder.stdin.write("\n")
+            holder.stdin.flush()
+            holder.communicate(timeout=5)
+            assert holder.returncode == 0
+
+            # New lock window for non-create mutations. One blocked write
+            # per service avoids serial 5s busy waits exceeding IPC deadlines.
+            holder = subprocess.Popen(
+                [sys.executable, __file__, "--hold-lock", str(db)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert holder.stdout.readline().strip() == "LOCKED"
+            mutations = (
+                ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
+                ("goald", "goal.complete", {"id": created_ids["goald"]}),
+                ("sessiond", "session.terminate", {"id": session_id}),
+            )
+            pending_mutations = [
+                (service, executor.submit(
+                    request, runtime / f"{service}.sock", "command",
+                    name=command, args=args,
+                ))
+                for service, command, args in mutations
+            ]
+            time.sleep(0.25)
+            for service in ("flowd", "goald", "sessiond"):
+                before = time.monotonic()
+                status = request(runtime / f"{service}.sock", "status")
+                assert time.monotonic() - before < 2, service
+                assert status["type"] == "ok", status
+                assert status["data"]["details"]["ready"] is False, status
+                assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
+            for service, pending in pending_mutations:
                 result = pending.result(timeout=TIMEOUT)
                 assert result["type"] == "err", (service, result)
                 assert result.get("code") == "unavailable", (service, result)
