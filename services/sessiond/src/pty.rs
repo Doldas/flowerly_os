@@ -273,10 +273,16 @@ impl Supervisor {
             // Knowing a Session ID or sharing its Linux UID is not enough
             // to take over the PTY. The ephemeral control token is returned
             // only to the spawning client and is never placed in session.list.
-            if matches!(name, "session.attach" | "session.read" | "session.terminate") {
+            if matches!(
+                name,
+                "session.attach" | "session.read" | "session.terminate"
+            ) {
                 let supplied = args.get("control_token").and_then(Value::as_str);
                 if supplied != Some(guardian.control_token.as_str()) {
-                    return Err((ErrorCode::Conflict, "session control token required or invalid".to_owned()));
+                    return Err((
+                        ErrorCode::Conflict,
+                        "session control token required or invalid".to_owned(),
+                    ));
                 }
             }
             let exited = guardian
@@ -402,8 +408,12 @@ impl Supervisor {
         let mut response = response;
         if op == "status"
             && args.get("control_token").and_then(Value::as_str)
-                != self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?
-                    .get(raw).map(|entry| entry.control_token.as_str())
+                != self
+                    .sessions
+                    .lock()
+                    .map_err(|_| internal("registry lock poisoned"))?
+                    .get(raw)
+                    .map(|entry| entry.control_token.as_str())
         {
             if let Some(data) = response.as_object_mut() {
                 data.remove("output_base64");
