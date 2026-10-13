@@ -213,7 +213,8 @@ fn validate_session_command(
             if session.kind == "local-pty" {
                 return Err((
                     ErrorCode::Unavailable,
-                    "PTY Session has no currently owned guardian; termination is unavailable".to_owned(),
+                    "PTY Session has no currently owned guardian; termination is unavailable"
+                        .to_owned(),
                 ));
             }
         }
