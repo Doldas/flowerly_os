@@ -64,6 +64,7 @@ def require_explicit_delegation(root):
             env=env, capture_output=True, timeout=5,
         )
         assert result.returncode != 0 and not path.exists(), "untrusted cgroup name accepted"
+        assert b"invalid supervised cgroup identity" in result.stderr, result.stderr
     if root is None:
         print("Production fail-closed verified; delegated cgroup e2e NOT VERIFIED")
 
