@@ -254,6 +254,17 @@ def main(bin_dir):
                 invalid = request(runtime / f"{service}.sock", "command", name=command, args=wrong_type)
                 assert invalid["type"] == "err" and invalid.get("code") == "invalid_argument", (service, invalid)
 
+            # Child goal creation is also non-idempotent unless keyed.
+            parent = request(runtime / "goald.sock", "command",
+                             name="goal.create", args={"objective": "Parent for retry test"})
+            assert parent["type"] == "ok", parent
+            child_args = {"id": parent["data"]["id"], "objective": "One child",
+                          "operation_id": "child-goal-retry"}
+            child_first = request(runtime / "goald.sock", "command", name="goal.child", args=child_args)
+            child_retry = request(runtime / "goald.sock", "command", name="goal.child", args=child_args)
+            assert child_first["type"] == "ok", child_first
+            assert child_first["data"] == child_retry["data"], (child_first, child_retry)
+
             print("IPC SQLite contention and idempotency OK: real daemons, typed busy, replay/conflict, recovery")
         finally:
             if holder is not None and holder.poll() is None:
