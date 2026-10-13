@@ -66,6 +66,7 @@ impl Supervisor {
             "session.spawn"
                 | "session.attach"
                 | "session.detach"
+                | "session.heartbeat"
                 | "session.read"
                 | "session.follow"
                 | "session.write"
@@ -435,7 +436,7 @@ impl Supervisor {
                         });
                         issued_token = Some(token);
                     }
-                    "session.write" | "session.resize" | "session.detach" => {
+                    "session.write" | "session.resize" | "session.detach" | "session.heartbeat" => {
                         let requested = args
                             .get("attachment_token")
                             .and_then(Value::as_str)
@@ -467,6 +468,9 @@ impl Supervisor {
                 ErrorCode::Unavailable,
                 "PTY guardian exited; no reattachment possible".to_owned(),
             ));
+        }
+        if name == "session.heartbeat" {
+            return Ok(json!({"lease_active": true, "expires_in_ms": 60000}));
         }
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
