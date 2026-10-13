@@ -81,14 +81,20 @@ def main(bin_dir):
             assert pid > 0, first
             attached = ok(session, "session.attach", {"id": sid, "cursor": 0})
             assert attached["pid"] == pid and attached["running"] is True
-            ok(session, "session.resize", {"id": sid, "rows": 42, "cols": 92})
+            first_token = attached["attachment_token"]
+            assert first_token
+            double_attach = call(session, "session.attach", {"id": sid})
+            assert double_attach["type"] == "err" and double_attach["code"] == "conflict", double_attach
+            without_token = call(session, "session.write", {"id": sid, "data": "ignored"})
+            assert without_token["type"] == "err", without_token
+            ok(session, "session.resize", {"id": sid, "attachment_token": first_token, "rows": 42, "cols": 92})
             marker = "FLOWERLY_A_B_A_STILL_ALIVE"
             text = "echo " + marker + "\n"
-            written = ok(session, "session.write", {"id": sid, "data": text})
+            written = ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": text})
             assert written["written"] == len(text), written
             # A separate, long-running Linux process must survive the switch.
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
-            ok(session, "session.write", {"id": sid, "data": job_command})
+            ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
                 observed = ok(session, "session.read", {"id": sid, "cursor": 0})
                 match = re.search(rb"FLOWERLY_JOB_PID:(\d+)",
@@ -99,7 +105,9 @@ def main(bin_dir):
             else:
                 raise AssertionError("background process PID not observed")
             job_pid = int(match.group(1))
-            ok(session, "session.detach", {"id": sid})
+            ok(session, "session.detach", {"id": sid, "attachment_token": first_token})
+            stale_writer = call(session, "session.write", {"id": sid, "attachment_token": first_token, "data": "ignored"})
+            assert stale_writer["type"] == "err", stale_writer
             ok(flow, "flow.activate", {"id": b})
             assert ok(flow, "flow.list", {})["count"] >= 3
             ok(flow, "flow.activate", {"id": a})
@@ -111,6 +119,8 @@ def main(bin_dir):
             else:
                 raise AssertionError("PTY output lost across Flow switch")
             assert replay["pid"] == pid and replay["running"] is True
+            second_token = replay["attachment_token"]
+            assert second_token and second_token != first_token
             os.kill(job_pid, 0)
             with open("/proc/" + str(job_pid) + "/stat", encoding="utf-8") as stat:
                 assert stat.read().split(") ", 1)[1][0] != "Z", "job is zombie"
@@ -129,13 +139,14 @@ def main(bin_dir):
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
             # Job control can place background children in separate groups.
             # Explicitly stop the job before tearing down its shell.
-            ok(session, "session.write", {"id": sid, "data": f"kill {job_pid}\n"})
+            ok(session, "session.write", {"id": sid, "attachment_token": second_token, "data": f"kill {job_pid}\n"})
             stopped = ok(session, "session.terminate", {"id": sid})
             assert stopped["terminated"] is True, stopped
             # Observe natural exit and reconcile the recorded Session state.
             second_shell = ok(session, "session.spawn", {"flow_id": a})
             another_id = second_shell["id"]
-            ok(session, "session.write", {"id": another_id, "data": "exit\n"})
+            natural_attachment = ok(session, "session.attach", {"id": another_id})
+            ok(session, "session.write", {"id": another_id, "attachment_token": natural_attachment["attachment_token"], "data": "exit\n"})
             for _ in range(100):
                 state_reply = ok(session, "session.status", {"id": another_id})
                 if state_reply["running"] is False:
