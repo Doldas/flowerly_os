@@ -42,7 +42,21 @@ async fn main() -> anyhow::Result<()> {
         return self_test().await;
     }
 
-    let store = open_store(&config)?;
+    let mut store = open_store(&config)?;
+    // Reconcile stale supervised Sessions after sessiond restart. PID columns
+    // are historical metadata and are NEVER signal/reattach authority.
+    #[cfg(target_os = "linux")]
+    for session in store.list_sessions().context("listing sessions for PTY recovery")? {
+        if session.kind == "local-pty" && session.pid.is_some()
+            && session.state == SessionState::Running
+        {
+            store.update_session_state(&session.id, SessionState::Suspended)
+                .context("marking former PTY unavailable after restart")?;
+            store.update_session_presentation_state(
+                &session.id, SessionPresentationState::Detached
+            ).context("detaching lost PTY attachment")?;
+        }
+    }
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.try_lock() {
