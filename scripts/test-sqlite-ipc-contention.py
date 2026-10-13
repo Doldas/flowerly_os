@@ -233,7 +233,28 @@ def main(bin_dir):
             ):
                 result = request(runtime / f"{service}.sock", "command", name=name, args=args)
                 assert result["type"] == "ok", (service, result)
-            print("IPC SQLite contention OK: short and long locks, create/mutation typed unavailable, status, recovery")
+            # Opt-in idempotent creates: real daemons must replay the same
+            # durable result, reject changed payloads and never ignore bad types.
+            for service, command, initial in (
+                ("flowd", "flow.create", {"name": "Retry-safe Flow"}),
+                ("goald", "goal.create", {"objective": "Retry-safe Goal"}),
+                ("sessiond", "session.create", {"kind": "test-metadata"}),
+            ):
+                args = dict(initial, operation_id=f"replay-{service}")
+                first = request(runtime / f"{service}.sock", "command", name=command, args=args)
+                second = request(runtime / f"{service}.sock", "command", name=command, args=args)
+                assert first["type"] == "ok", (service, first)
+                assert second["type"] == "ok", (service, second)
+                assert first["data"] == second["data"], (service, first, second)
+                assert first["data"]["id"] == second["data"]["id"], service
+                modified = dict(args, ignored_extra_field="changed")
+                conflict = request(runtime / f"{service}.sock", "command", name=command, args=modified)
+                assert conflict["type"] == "err" and conflict.get("code") == "conflict", (service, conflict)
+                wrong_type = dict(initial, operation_id=99)
+                invalid = request(runtime / f"{service}.sock", "command", name=command, args=wrong_type)
+                assert invalid["type"] == "err" and invalid.get("code") == "invalid_argument", (service, invalid)
+
+            print("IPC SQLite contention and idempotency OK: real daemons, typed busy, replay/conflict, recovery")
         finally:
             if holder is not None and holder.poll() is None:
                 holder.terminate()
