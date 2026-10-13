@@ -300,7 +300,10 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
     }
 }
 
-fn find_flow(store: &Store, args: &Value) -> std::result::Result<agentic_types::Flow, CommandFailure> {
+fn find_flow(
+    store: &Store,
+    args: &Value,
+) -> std::result::Result<agentic_types::Flow, CommandFailure> {
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
