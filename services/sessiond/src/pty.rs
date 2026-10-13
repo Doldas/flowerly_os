@@ -253,13 +253,19 @@ impl Supervisor {
                     "session actor not authorized".to_owned(),
                 ));
             }
-            let exited = guardian.process.try_wait()
-                .map_err(|error| internal(error.to_string()))?.is_some();
+            let exited = guardian
+                .process
+                .try_wait()
+                .map_err(|error| internal(error.to_string()))?
+                .is_some();
             (guardian.socket.clone(), exited)
         };
         if supervisor_exited {
             self.mark_unavailable(store, &id)?;
-            return Err((ErrorCode::Unavailable, "PTY guardian exited; no reattachment possible".to_owned()));
+            return Err((
+                ErrorCode::Unavailable,
+                "PTY guardian exited; no reattachment possible".to_owned(),
+            ));
         }
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
@@ -293,10 +299,12 @@ impl Supervisor {
             Err(error) => {
                 // Reconcile only when the actual owned guardian has exited.
                 // A transient socket timeout is not proof the child died.
-                let exited = self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?
-                    .get_mut(raw).is_some_and(|entry| {
-                        entry.process.try_wait().ok().flatten().is_some()
-                    });
+                let exited = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| internal("registry lock poisoned"))?
+                    .get_mut(raw)
+                    .is_some_and(|entry| entry.process.try_wait().ok().flatten().is_some());
                 if exited {
                     self.mark_unavailable(store, &id)?;
                 }
