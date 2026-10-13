@@ -273,13 +273,20 @@ impl Supervisor {
                 .map_err(|error| internal(error.to_string()))?
                 .is_some();
             if !exited {
-                if guardian.writer.as_ref().is_some_and(|lease| lease.expires_at <= Instant::now()) {
+                if guardian
+                    .writer
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires_at <= Instant::now())
+                {
                     guardian.writer = None;
                 }
                 match name.as_str() {
                     "session.attach" => {
                         if guardian.writer.is_some() {
-                            return Err((ErrorCode::Conflict, "Session already has an active writer".to_owned()));
+                            return Err((
+                                ErrorCode::Conflict,
+                                "Session already has an active writer".to_owned(),
+                            ));
                         }
                         let token = Uuid::new_v4().to_string();
                         guardian.writer = Some(WriterLease {
@@ -289,12 +296,23 @@ impl Supervisor {
                         issued_token = Some(token);
                     }
                     "session.write" | "session.resize" | "session.detach" => {
-                        let requested = args.get("attachment_token").and_then(Value::as_str)
-                            .ok_or_else(|| invalid("attachment_token required for terminal writer operations"))?;
-                        let lease = guardian.writer.as_mut()
-                            .ok_or_else(|| (ErrorCode::Conflict, "no active writer attachment".to_owned()))?;
+                        let requested = args
+                            .get("attachment_token")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                invalid("attachment_token required for terminal writer operations")
+                            })?;
+                        let lease = guardian.writer.as_mut().ok_or_else(|| {
+                            (
+                                ErrorCode::Conflict,
+                                "no active writer attachment".to_owned(),
+                            )
+                        })?;
                         if requested != lease.token {
-                            return Err((ErrorCode::Conflict, "writer attachment token revoked or incorrect".to_owned()));
+                            return Err((
+                                ErrorCode::Conflict,
+                                "writer attachment token revoked or incorrect".to_owned(),
+                            ));
                         }
                         lease.expires_at = Instant::now() + WRITER_LEASE;
                     }
@@ -351,7 +369,11 @@ impl Supervisor {
                 if let Some(ref token) = issued_token {
                     if let Ok(mut entries) = self.sessions.lock() {
                         if let Some(entry) = entries.get_mut(raw) {
-                            if entry.writer.as_ref().is_some_and(|lease| &lease.token == token) {
+                            if entry
+                                .writer
+                                .as_ref()
+                                .is_some_and(|lease| &lease.token == token)
+                            {
                                 entry.writer = None;
                             }
                         }
