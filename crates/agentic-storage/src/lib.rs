@@ -61,6 +61,7 @@ impl StorageError {
 pub type Result<T> = std::result::Result<T, StorageError>;
 
 /// Retry identity must be scoped to kernel-derived actor identity.
+#[derive(Clone, Copy)]
 pub struct OperationKey<'a> {
     pub actor: &'a str,
     pub command: &'a str,
