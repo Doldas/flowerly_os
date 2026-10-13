@@ -83,7 +83,7 @@ def main(bin_dir):
         env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
         services = []
         holder = None
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         try:
             for name in ("flowd", "goald"):
                 log_path = root / f"{name}.log"
@@ -124,9 +124,11 @@ def main(bin_dir):
             holder.communicate(timeout=5)
             assert holder.returncode == 0, f"lock holder failed: {holder.returncode}"
 
+            created_ids = {}
             for name, pending in (("flowd", flow), ("goald", goal)):
                 response = pending.result(timeout=TIMEOUT)
                 assert response["type"] == "ok", (name, response)
+                created_ids[name] = response["data"]["id"]
             # Hold a SECOND writer lock longer than SQLite's five-second
             # busy timeout: domain commands must report typed Unavailable.
             holder = subprocess.Popen(
@@ -145,6 +147,14 @@ def main(bin_dir):
                 request, runtime / "goald.sock", "command",
                 name="goal.create", args={"objective": "Still locked Goal"},
             )
+            locked_flow_mutation = executor.submit(
+                request, runtime / "flowd.sock", "command",
+                name="flow.activate", args={"id": created_ids["flowd"]},
+            )
+            locked_goal_mutation = executor.submit(
+                request, runtime / "goald.sock", "command",
+                name="goal.complete", args={"id": created_ids["goald"]},
+            )
             time.sleep(0.25)
             for service in ("flowd", "goald"):
                 before = time.monotonic()
@@ -153,7 +163,11 @@ def main(bin_dir):
                 assert result["type"] == "ok", result
                 assert result["data"]["details"]["ready"] is False, result
                 assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
-            for service, pending in (("flowd", locked_flow), ("goald", locked_goal)):
+            for service, pending in (
+                ("flowd.create", locked_flow), ("goald.create", locked_goal),
+                ("flowd.activate", locked_flow_mutation),
+                ("goald.complete", locked_goal_mutation),
+            ):
                 result = pending.result(timeout=TIMEOUT)
                 assert result["type"] == "err", (service, result)
                 assert result.get("code") == "unavailable", (service, result)
@@ -163,12 +177,18 @@ def main(bin_dir):
             assert holder.returncode == 0
             # Recovered writer must accept new requests after previous busy failures.
             for service, name, args in (
+                ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
+                ("goald", "goal.complete", {"id": created_ids["goald"]}),
+            ):
+                result = request(runtime / f"{service}.sock", "command", name=name, args=args)
+                assert result["type"] == "ok", (service, result)
+            for service, name, args in (
                 ("flowd", "flow.create", {"name": "After busy recovery"}),
                 ("goald", "goal.create", {"objective": "After busy recovery"}),
             ):
                 result = request(runtime / f"{service}.sock", "command", name=name, args=args)
                 assert result["type"] == "ok", (service, result)
-            print("IPC SQLite contention OK: short and long locks, typed unavailable, status, recovery")
+            print("IPC SQLite contention OK: short and long locks, create/mutation typed unavailable, status, recovery")
         finally:
             if holder is not None and holder.poll() is None:
                 holder.terminate()
