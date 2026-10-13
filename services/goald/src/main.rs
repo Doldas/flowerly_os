@@ -126,13 +126,21 @@ fn validate_goal_command(
         let id = GoalId::from_str(raw).map_err(|error| invalid(&error.to_string()))?;
         if store
             .get_goal(&id)
-            .map_err(|error| (if error.is_busy() { ErrorCode::Unavailable } else { ErrorCode::Internal }, error.to_string()))?
+            .map_err(|error| (storage_error_code(&error), error.to_string()))?
             .is_none()
         {
             return Err((ErrorCode::NotFound, format!("goal not found: {raw}")));
         }
     }
     Ok(())
+}
+
+fn storage_error_code(error: &StorageError) -> ErrorCode {
+    if error.is_busy() {
+        ErrorCode::Unavailable
+    } else {
+        ErrorCode::Internal
+    }
 }
 
 #[derive(Debug)]
@@ -159,11 +167,7 @@ impl From<&str> for CommandFailure {
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
-            code: if error.is_busy() {
-                ErrorCode::Unavailable
-            } else {
-                ErrorCode::Internal
-            },
+            code: storage_error_code(&error),
             message: error.to_string(),
         }
     }
