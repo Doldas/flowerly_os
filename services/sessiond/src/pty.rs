@@ -33,6 +33,7 @@ struct Guardian {
     process: Child,
     socket: PathBuf,
     actor: String,
+    control_token: String,
     writer: Option<WriterLease>,
 }
 
@@ -201,6 +202,7 @@ impl Supervisor {
             return Err((super::storage_error_code(&error), error.to_string()));
         }
         let supervisor_pid = guardian.id();
+        let control_token = Uuid::new_v4().to_string();
         self.sessions
             .lock()
             .map_err(|_| internal("registry lock poisoned"))?
@@ -210,11 +212,12 @@ impl Supervisor {
                     process: guardian,
                     socket,
                     actor: actor.to_owned(),
+                    control_token: control_token.clone(),
                     writer: None,
                 },
             );
         Ok(
-            json!({"id": session_id, "pid": pid, "supervisor_pid": supervisor_pid, "state": "running", "presentation_state": "detached"}),
+            json!({"id": session_id, "pid": pid, "supervisor_pid": supervisor_pid, "control_token": control_token, "state": "running", "presentation_state": "detached"}),
         )
     }
 
@@ -266,6 +269,15 @@ impl Supervisor {
                     ErrorCode::Unavailable,
                     "session actor not authorized".to_owned(),
                 ));
+            }
+            // Knowing a Session ID or sharing its Linux UID is not enough
+            // to take over the PTY. The ephemeral control token is returned
+            // only to the spawning client and is never placed in session.list.
+            if matches!(name, "session.attach" | "session.read" | "session.terminate") {
+                let supplied = args.get("control_token").and_then(Value::as_str);
+                if supplied != Some(guardian.control_token.as_str()) {
+                    return Err((ErrorCode::Conflict, "session control token required or invalid".to_owned()));
+                }
             }
             let exited = guardian
                 .process
@@ -385,6 +397,18 @@ impl Supervisor {
                 return Err(error);
             }
         };
+        // A status inquiry without the control secret can report liveness,
+        // but must not leak the terminal replay to another same-UID caller.
+        let mut response = response;
+        if op == "status"
+            && args.get("control_token").and_then(Value::as_str)
+                != self.sessions.lock().map_err(|_| internal("registry lock poisoned"))?
+                    .get(raw).map(|entry| entry.control_token.as_str())
+        {
+            if let Some(data) = response.as_object_mut() {
+                data.remove("output_base64");
+            }
+        }
         if op == "terminate" || response.get("running") == Some(&Value::Bool(false)) {
             store
                 .lock()
