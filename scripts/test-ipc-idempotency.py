@@ -49,6 +49,20 @@ def request(socket_path, name, args):
     return reply
 
 
+def shutdown(socket_path):
+    correlation = str(uuid.uuid4())
+    message = json.dumps({
+        "version": 1, "id": correlation, "type": "shutdown"
+    }).encode("utf-8")
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(12)
+        client.connect(str(socket_path))
+        client.sendall(struct.pack("<I", len(message)) + message)
+        size = struct.unpack("<I", recv_exact(client, 4))[0]
+        reply = json.loads(recv_exact(client, size))
+    assert reply["id"] == correlation and reply["type"] == "ok", reply
+
+
 def wait_ready(socket_path, process, log_path):
     for _ in range(150):
         if process.poll() is not None:
@@ -108,10 +122,8 @@ def main(bin_dir):
                 assert result["type"] == "ok", (service, result)
                 assert result["data"]["id"], result
                 repeated = request(sock, command, args)
-                assert repeated == {**result, "id": repeated["id"]} or (
-                    repeated["type"] == result["type"]
-                    and repeated["data"] == result["data"]
-                ), (service, result, repeated)
+                assert repeated["type"] == "ok", repeated
+                assert repeated["data"] == result["data"], (service, result, repeated)
                 first[service] = result["data"]["id"]
 
             # The same key with changed command payload must not be treated as
@@ -143,8 +155,8 @@ def main(bin_dir):
 
             # Simulate a crash/reconnection window after a committed response:
             # stop the daemon, keep state.db, restart, and replay same key.
-            processes["flowd"].terminate()
-            assert processes["flowd"].wait(timeout=5) in (0, -15)
+            shutdown(runtime / "flowd.sock")
+            assert processes["flowd"].wait(timeout=5) == 0
             start("flowd")
             replay = request(
                 runtime / "flowd.sock", "flow.create", scenarios[0][2]
