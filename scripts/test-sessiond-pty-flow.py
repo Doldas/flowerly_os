@@ -87,6 +87,13 @@ def main(bin_dir):
             assert denied_attach["type"] == "err", denied_attach
             denied_read = call(session, "session.read", {"id": sid, "cursor": 0})
             assert denied_read["type"] == "err", denied_read
+            denied_terminate = call(session, "session.terminate", {"id": sid})
+            assert denied_terminate["type"] == "err", denied_terminate
+            read_only_status = ok(session, "session.status", {"id": sid})
+            assert read_only_status["running"] is True
+            assert "output_base64" not in read_only_status, read_only_status
+            bad_control = call(session, "session.attach", {"id": sid, "control_token": "wrong"})
+            assert bad_control["type"] == "err", bad_control
             attached = ok(session, "session.attach", {"id": sid, "cursor": 0, "control_token": control})
             assert attached["pid"] == pid and attached["running"] is True
             first_token = attached["attachment_token"]
