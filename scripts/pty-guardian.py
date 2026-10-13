@@ -5,6 +5,7 @@ This independent helper is the process-ownership substrate for #50. It is not
 yet wired into sessiond; a Session database row never proves child ownership.
 """
 import base64
+import ctypes
 import errno
 import fcntl
 import json
@@ -23,8 +24,17 @@ REQUEST_LIMIT = 32768
 def supervise(path, shell, parent_pid):
     if shell not in ("/bin/sh", "/bin/bash") or os.path.lexists(path):
         raise ValueError("shell not allowlisted or socket already exists")
+    guardian_pid = os.getpid()
     pid, fd = os.forkpty()
     if pid == 0:
+        # SIGKILL on guardian skips finally. Linux kills directly-owned shell.
+        # Parent check closes the fork/prctl race.
+        libc = ctypes.CDLL(None, use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+            os._exit(127)
+        if os.getppid() != guardian_pid:
+            os._exit(127)
         os.execv(shell, [shell, "-i"])
     os.set_blocking(fd, False)
     listener = socket.socket(socket.AF_UNIX)

@@ -36,9 +36,46 @@ def test_same_uid_other_pid_denied(path):
     )
     assert json.loads(probe.stdout) == {"error": "unauthorized"}, probe.stdout
 
+def test_forced_guardian_death(root):
+    crash_socket = Path(root) / "crash.sock"
+    process = subprocess.Popen(
+        [sys.executable, str(HELPER), str(crash_socket), "/bin/sh", str(os.getpid())],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            if crash_socket.exists():
+                break
+            assert process.poll() is None, "guardian died at startup"
+            time.sleep(.02)
+        else:
+            raise AssertionError("guardian startup timed out")
+        child = exchange(crash_socket, {"op": "status"})["pid"]
+        assert child > 0
+        process.kill()
+        process.wait(timeout=3)
+        for _ in range(100):
+            try:
+                with open(f"/proc/{child}/stat", encoding="utf-8") as child_stat:
+                    status = child_stat.read().split(") ", 1)[1][0]
+            except FileNotFoundError:
+                break
+            if status in ("Z", "X"):
+                break
+            time.sleep(.02)
+        else:
+            raise AssertionError("PTY child survived guardian SIGKILL")
+        print("PTY crash: direct shell killed by Linux parent death signal")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+
 def main():
     assert sys.platform == "linux"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-guardian-") as root:
+        test_forced_guardian_death(root)
         path = Path(root) / "supervisor.sock"
         supervisor = subprocess.Popen(
             [sys.executable, str(HELPER), str(path), "/bin/sh", str(os.getpid())],
