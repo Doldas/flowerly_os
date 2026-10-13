@@ -209,6 +209,13 @@ impl From<&str> for CommandFailure {
     }
 }
 
+#[cfg(test)]
+impl CommandFailure {
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
 impl CommandFailure {
     fn storage(error: StorageError) -> Self {
         Self {
