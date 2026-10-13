@@ -98,6 +98,16 @@ def main(bin_dir):
             assert attached["pid"] == pid and attached["running"] is True
             first_token = attached["attachment_token"]
             assert first_token
+            no_heartbeat_token = call(session, "session.heartbeat", {"id": sid})
+            assert no_heartbeat_token["type"] == "err", no_heartbeat_token
+            bad_heartbeat = call(session, "session.heartbeat", {
+                "id": sid, "attachment_token": "wrong",
+            })
+            assert bad_heartbeat["type"] == "err", bad_heartbeat
+            renewal = ok(session, "session.heartbeat", {
+                "id": sid, "attachment_token": first_token,
+            })
+            assert renewal == {"lease_active": True, "expires_in_ms": 60000}, renewal
             double_attach = call(session, "session.attach", {"id": sid, "control_token": control})
             assert double_attach["type"] == "err" and double_attach["code"] == "conflict", double_attach
             without_token = call(session, "session.write", {"id": sid, "data": "ignored"})
@@ -137,6 +147,10 @@ def main(bin_dir):
                 raise AssertionError("background process PID not observed")
             job_pid = int(match.group(1))
             ok(session, "session.detach", {"id": sid, "attachment_token": first_token})
+            stale_heartbeat = call(session, "session.heartbeat", {
+                "id": sid, "attachment_token": first_token,
+            })
+            assert stale_heartbeat["type"] == "err", stale_heartbeat
             stale_writer = call(session, "session.write", {"id": sid, "attachment_token": first_token, "data": "ignored"})
             assert stale_writer["type"] == "err", stale_writer
             ok(flow, "flow.activate", {"id": b})
