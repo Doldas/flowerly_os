@@ -99,11 +99,18 @@ class SessionCgroup:
             self.group_fd = None
         if self.parent_fd is not None:
             if self.name:
-                try:
-                    os.rmdir(self.name, dir_fd=self.parent_fd)
-                except OSError as error:
-                    if error.errno not in (errno.ENOENT, errno.EBUSY, errno.ENOTEMPTY):
-                        raise
+                for attempt in range(100):
+                    try:
+                        os.rmdir(self.name, dir_fd=self.parent_fd)
+                        break
+                    except OSError as error:
+                        if error.errno == errno.ENOENT:
+                            break
+                        if error.errno not in (errno.EBUSY, errno.ENOTEMPTY):
+                            raise
+                        if attempt == 99:
+                            raise RuntimeError("delegated PTY cgroup remained populated")
+                        time.sleep(0.02)
             os.close(self.parent_fd)
             self.parent_fd = None
 
