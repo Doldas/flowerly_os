@@ -248,11 +248,14 @@ fn parse_operation_id(args: &Value) -> Result<Option<&str>, CommandFailure> {
     })?;
     if raw.len() < 8
         || raw.len() > 128
-        || !raw.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        || !raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
         return Err(CommandFailure {
             code: ErrorCode::InvalidArgument,
-            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores".to_owned(),
+            message: "operation_id must contain 8–128 ASCII letters, digits, dashes or underscores"
+                .to_owned(),
         });
     }
     Ok(Some(raw))
@@ -283,7 +286,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            let response = serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
+            let response =
+                serde_json::json!({ "id": flow.id, "name": flow.name, "state": flow.state });
             let operation_id = parse_operation_id(args)?;
             let request_json = serde_json::to_string(args).map_err(err_str)?;
             let operation = operation_id.map(|operation_id| OperationKey {
