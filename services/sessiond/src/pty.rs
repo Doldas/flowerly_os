@@ -200,6 +200,7 @@ impl Supervisor {
             let _ = exchange(&socket, &json!({"op": "terminate"}));
             return Err((super::storage_error_code(&error), error.to_string()));
         }
+        let supervisor_pid = guardian.id();
         self.sessions
             .lock()
             .map_err(|_| internal("registry lock poisoned"))?
@@ -213,7 +214,7 @@ impl Supervisor {
                 },
             );
         Ok(
-            json!({"id": session_id, "pid": pid, "state": "running", "presentation_state": "detached"}),
+            json!({"id": session_id, "pid": pid, "supervisor_pid": supervisor_pid, "state": "running", "presentation_state": "detached"}),
         )
     }
 
