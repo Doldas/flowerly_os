@@ -202,6 +202,15 @@ impl CommandFailure {
 fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
     match name {
         "session.create" => {
+            if args
+                .get("operation_id")
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(CommandFailure {
+                    code: ErrorCode::InvalidArgument,
+                    message: "operation_id must be a string or null".to_owned(),
+                });
+            }
             let kind = args
                 .get("kind")
                 .and_then(Value::as_str)
@@ -263,7 +272,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?;
                 intended_response
             };
-            tracing::info!(session_id = %session.id, kind, "session created");
+            tracing::info!(session_id = %response["id"], kind, "session create completed");
             Ok(response)
         }
         "session.list" => {
