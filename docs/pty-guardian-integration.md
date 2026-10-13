@@ -62,6 +62,24 @@ and fault injection. It is not authorization or a process identity token.
   unsupported shells, and checks natural shell exit persisted as Exited.
   These additional assertions need a fresh green CI run.
 
+## Lifecycle and input fault-isolation tranche
+
+The PTY shell now starts with conservative kernel resource limits:
+`RLIMIT_NOFILE=256`, `RLIMIT_FSIZE=128 MiB`, and disabled core dumps.
+These apply to the shell and children inheriting them, not to the entire
+Linux UID or to all escaped descendants; CPU/memory/process-count limits
+still require delegated cgroup-v2 enforcement.
+
+Authenticated guardian IPC is untrusted input for protocol safety.
+Non-object JSON, malformed UTF-8/JSON, invalid cursors, malformed write
+hex, connection reset, a partial request and a disconnected reader must not
+terminate the owned PTY guardian. The 64 KiB output replay and 4096-byte
+input bounds still apply. The tests exercise the real guardian and execute
+a process inside the PTY to verify the kernel-enforced resource limits.
+
+This is an intermediate hardening tranche, not a claim of comprehensive
+descendant isolation or production streaming.
+
 ## Limitations preventing release acceptance
 
 - Attach/read are cursor-based request/reply snapshots, not a full-duplex
