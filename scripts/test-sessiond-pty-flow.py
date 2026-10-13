@@ -236,6 +236,25 @@ def main(bin_dir):
             reattach = call(session, "session.attach", {"id": stale_id, "control_token": stale_control})
             assert reattach["type"] == "err", reattach
             assert reattach["code"] == "unavailable", reattach
+            unattended = ok(session, "session.spawn", {"flow_id": a})
+            unattended_control = unattended["control_token"]
+            unattended_writer = ok(session, "session.attach", {
+                "id": unattended["id"], "control_token": unattended_control,
+            })
+            ok(session, "session.write", {
+                "id": unattended["id"],
+                "attachment_token": unattended_writer["attachment_token"],
+                "data": "exit\n",
+            })
+            for _ in range(160):
+                persisted = ok(session, "session.list", {})["sessions"]
+                recorded = next(item for item in persisted if item["id"] == unattended["id"])
+                if recorded["state"].lower() == "exited":
+                    assert recorded["presentation_state"].lower() == "detached"
+                    break
+                time.sleep(.03)
+            else:
+                raise AssertionError("unobserved natural shell exit was not reconciled")
             print("PTY daemon restart: stale Session remains identified but unavailable/detached")
             print("Linux Flow A -> B -> A PTY: same Session/PID, replay, SQLite liveness, natural exit, termination")
         finally:
