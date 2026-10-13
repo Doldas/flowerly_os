@@ -7,7 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
-use agentic_storage::{StorageError, Store};
+use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -136,7 +136,9 @@ fn validate_goal_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -226,16 +228,34 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 created_at: Timestamp::now(),
                 note: None,
             };
-            store
-                .insert_goal_with_provenance(&goal, &[created_edge])
-                .map_err(CommandFailure::storage)?;
-            tracing::info!(goal_id = %goal.id, objective, "goal created");
-            Ok(serde_json::json!({
+            let intended_response = serde_json::json!({
                 "id": goal.id,
                 "objective": goal.objective,
                 "status": goal.status,
                 "parent_goal": goal.parent_goal,
-            }))
+            });
+            let response = if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+                let request_json = serde_json::to_string(args).map_err(err_str)?;
+                let response_json = serde_json::to_string(&intended_response).map_err(err_str)?;
+                let operation = MutationOperation {
+                    actor: created_by,
+                    command: "goal.create",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .insert_goal_with_provenance_once(&goal, &[created_edge], &operation)
+                    .map_err(CommandFailure::storage)?;
+                serde_json::from_str(&stored).map_err(err_str)?
+            } else {
+                store
+                    .insert_goal_with_provenance(&goal, &[created_edge])
+                    .map_err(CommandFailure::storage)?;
+                intended_response
+            };
+            tracing::info!(goal_id = %goal.id, objective, "goal created");
+            Ok(response)
         }
         "goal.child" => {
             let parent_id = args
