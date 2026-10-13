@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -96,11 +97,36 @@ def main(bin_dir):
             else:
                 raise AssertionError("PTY output lost across Flow switch")
             assert replay["pid"] == pid and replay["running"] is True
+            # Hold an independent SQLite writer lock. Live PTY control
+            # cannot await a Store mutex just to authorize the same actor.
+            with sqlite3.connect(state / "state.db", timeout=2, isolation_level=None) as db:
+                db.execute("BEGIN IMMEDIATE")
+                began = time.monotonic()
+                alive = ok(session, "session.status", {"id": sid})
+                assert time.monotonic() - began < 2, "PTY status blocked on SQLite"
+                assert alive["running"] is True, alive
+                db.execute("ROLLBACK")
+            invalid_shell = call(session, "session.spawn", {"shell": "/bin/false"})
+            assert invalid_shell["type"] == "err" and invalid_shell["code"] == "invalid_argument"
             listing = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
             stopped = ok(session, "session.terminate", {"id": sid})
             assert stopped["terminated"] is True, stopped
-            print("Linux Flow A -> B -> A PTY: same Session ID, same live PID, replay, termination")
+            # Observe natural exit and reconcile the recorded Session state.
+            second_shell = ok(session, "session.spawn", {"flow_id": a})
+            another_id = second_shell["id"]
+            ok(session, "session.write", {"id": another_id, "data": "exit\n"})
+            for _ in range(100):
+                state_reply = ok(session, "session.status", {"id": another_id})
+                if state_reply["running"] is False:
+                    break
+                time.sleep(.03)
+            else:
+                raise AssertionError("natural PTY exit not observed")
+            listed = ok(session, "session.list", {})["sessions"]
+            assert any(row["id"] == another_id and
+                       row["state"].lower() == "exited" for row in listed), listed
+            print("Linux Flow A -> B -> A PTY: same Session/PID, replay, SQLite liveness, natural exit, termination")
         finally:
             for proc in children:
                 if proc.poll() is None:
