@@ -6,9 +6,13 @@ if [[ $(id -u) -eq 0 ]]; then
   exit 1
 fi
 
-if [[ -z "${FLOWERLY_PTY_CGROUP_ROOT:-}" ]]; then
+if [[ -z "${FLOWERLY_PTY_CGROUP_ROOT:-}" && "${1:-}" != "--delegated" ]]; then
   exec systemd-run --user --scope --collect --property=Delegate=yes \
-    "$0" "$@"
+    "$0" --delegated
+fi
+
+if [[ "${1:-}" == "--delegated" ]]; then
+  export FLOWERLY_PTY_CGROUP_ROOT="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
 fi
 
 if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
