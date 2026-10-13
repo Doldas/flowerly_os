@@ -303,7 +303,11 @@ fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>,
         .as_str()
         .ok_or("arg `flow_id` must be a string or null")?;
     let flow_id = FlowId::from_str(raw).map_err(err_str)?;
-    if store.get_flow(&flow_id).map_err(CommandFailure::storage)?.is_none() {
+    if store
+        .get_flow(&flow_id)
+        .map_err(CommandFailure::storage)?
+        .is_none()
+    {
         return Err(format!("flow not found: {flow_id}").into());
     }
     Ok(Some(flow_id))
