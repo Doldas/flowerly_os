@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Full Linux process black box: Flow A -> B -> A and real PTY reattach."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
