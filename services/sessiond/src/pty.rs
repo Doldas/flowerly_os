@@ -67,6 +67,7 @@ impl Supervisor {
                 | "session.attach"
                 | "session.detach"
                 | "session.read"
+                | "session.follow"
                 | "session.write"
                 | "session.resize"
                 | "session.status"
@@ -321,7 +322,7 @@ impl Supervisor {
             // only to the spawning client and is never placed in session.list.
             if matches!(
                 name,
-                "session.attach" | "session.read" | "session.terminate"
+                "session.attach" | "session.read" | "session.follow" | "session.terminate"
             ) {
                 let supplied = args.get("control_token").and_then(Value::as_str);
                 if supplied != Some(guardian.control_token.as_str()) {
@@ -397,6 +398,14 @@ impl Supervisor {
             "attach" | "read" | "status" => json!({
                 "op": op, "cursor": args.get("cursor").cloned().unwrap_or(json!(0))
             }),
+            "follow" => {
+                let wait_ms = args.get("wait_ms").cloned().unwrap_or(json!(100));
+                let value = wait_ms
+                    .as_u64()
+                    .filter(|value| *value <= 250)
+                    .ok_or_else(|| invalid("session.follow wait_ms must be an integer from 0 to 250"))?;
+                json!({"op": "follow", "cursor": args.get("cursor").cloned().unwrap_or(json!(0)), "wait_ms": value})
+            }
             "write" => {
                 let text = args
                     .get("data")
