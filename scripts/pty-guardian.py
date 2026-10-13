@@ -34,19 +34,19 @@ class SessionCgroup:
         root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
         if not root or not os.path.isabs(root):
             raise RuntimeError("delegated cgroup v2 root is required")
+        chosen_name = os.environ.get("FLOWERLY_PTY_CGROUP_NAME")
+        if chosen_name is None:
+            self.name = "pty-" + uuid.uuid4().hex
+        elif re.fullmatch(r"pty-session-[0-9a-f]{32}", chosen_name):
+            self.name = chosen_name
+        else:
+            raise ValueError("invalid supervised cgroup identity")
         self.parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
                 raise RuntimeError("Linux cgroup v2 is required")
             if os.fstat(self.parent_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
                 raise RuntimeError("delegated root must reside on the cgroup v2 mount")
-            chosen_name = os.environ.get("FLOWERLY_PTY_CGROUP_NAME")
-            if chosen_name is None:
-                self.name = "pty-" + uuid.uuid4().hex
-            elif re.fullmatch(r"pty-session-[0-9a-f]{32}", chosen_name):
-                self.name = chosen_name
-            else:
-                raise ValueError("invalid supervised cgroup identity")
             os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
             self.group_fd = os.open(
                 self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
