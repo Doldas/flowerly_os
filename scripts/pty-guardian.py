@@ -131,9 +131,12 @@ def supervise(path, shell, parent_pid):
 
     def harvest():
         nonlocal first, cursor
-        while True:
+        # A continuously noisy child must not starve terminal control requests.
+        # Give each event-loop tick a bounded 64 KiB PTY-drain budget.
+        budget = REPLAY_LIMIT
+        while budget:
             try:
-                chunk = os.read(fd, 4096)
+                chunk = os.read(fd, min(4096, budget))
             except BlockingIOError:
                 return
             except OSError as exc:
@@ -142,6 +145,7 @@ def supervise(path, shell, parent_pid):
                 raise
             if not chunk:
                 return
+            budget -= len(chunk)
             replay.extend(chunk)
             cursor += len(chunk)
             if len(replay) > REPLAY_LIMIT:
