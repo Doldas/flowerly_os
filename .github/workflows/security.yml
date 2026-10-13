@@ -3,18 +3,8 @@ name: security
 on:
   push:
     branches: [master, 'release/**']
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "mkdocs.yml"
-      - "requirements-docs.txt"
   pull_request:
     branches: [master, 'release/**']
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "mkdocs.yml"
-      - "requirements-docs.txt"
   schedule:
     - cron: "0 2 * * 1"
 
@@ -86,5 +76,3 @@ jobs:
 
       - name: cargo-deny check ${{ matrix.checks }}
         run: cargo deny --all-features check ${{ matrix.checks }}
-
-        continue-on-error: ${{ matrix.checks == 'advisories' }}
