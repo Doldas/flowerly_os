@@ -364,7 +364,12 @@ impl Supervisor {
             Arc::clone(
                 &sessions
                     .get(raw)
-                    .ok_or_else(|| (ErrorCode::Unavailable, "PTY is no longer supervised".to_owned()))?
+                    .ok_or_else(|| {
+                        (
+                            ErrorCode::Unavailable,
+                            "PTY is no longer supervised".to_owned(),
+                        )
+                    })?
                     .command_lock,
             )
         };
@@ -472,7 +477,9 @@ impl Supervisor {
                 let value = wait_ms
                     .as_u64()
                     .filter(|value| *value <= 250)
-                    .ok_or_else(|| invalid("session.follow wait_ms must be an integer from 0 to 250"))?;
+                    .ok_or_else(|| {
+                        invalid("session.follow wait_ms must be an integer from 0 to 250")
+                    })?;
                 json!({"op": "follow", "cursor": args.get("cursor").cloned().unwrap_or(json!(0)), "wait_ms": value})
             }
             "write" => {
