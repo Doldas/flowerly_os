@@ -3,7 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use agentic_core::{
-    coded_error_envelope,error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+};
 use agentic_ipc::{Envelope, ErrorCode, Payload};
 use agentic_storage::{StorageError, Store};
 use agentic_types::{
@@ -131,14 +132,22 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
         "generation.create" => {
             let parent: Option<GenerationId> = parse_optional_typed(args, "parent")?;
             if let Some(parent) = &parent {
-                if store.get_generation(parent).map_err(CommandFailure::storage)?.is_none() {
+                if store
+                    .get_generation(parent)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
                     return Err(format!("generation not found: {parent}").into());
                 }
             }
 
             let reason_goal: Option<GoalId> = parse_optional_typed(args, "reason_goal")?;
             if let Some(goal_id) = &reason_goal {
-                if store.get_goal(goal_id).map_err(CommandFailure::storage)?.is_none() {
+                if store
+                    .get_goal(goal_id)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
                     return Err(format!("goal not found: {goal_id}").into());
                 }
             }
@@ -234,7 +243,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let generation_id = GenerationId::from_str(id).map_err(err_str)?;
-            store.activate_generation(&generation_id).map_err(CommandFailure::storage)?;
+            store
+                .activate_generation(&generation_id)
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
         }
         other => Err(format!("generationd: unknown command `{other}`").into()),
