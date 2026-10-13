@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Real-process black-box PTY ownership/reattach/resize/termination test."""
 import base64
 import json
 import os
