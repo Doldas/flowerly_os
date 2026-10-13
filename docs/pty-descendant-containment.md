@@ -38,6 +38,9 @@ output replay, terminal resize, and reconnect.
 - A watcher that itself dies unexpectedly cannot guarantee cleanup. The
   current mechanism cannot substitute for Linux cgroup-v2 lifetime
   containment and real process quotas.
+- The guardian now refuses to start as Linux EUID 0: without a tested
+  per-user credential-delegation layer, session.spawn must never launch
+  a normal interactive root shell. Deploy sessiond under a non-root UID.
 - A local process sharing the same UID remains within the same Linux
   authority domain; peer PID admission is not a delegated capability.
 - The `/proc` scan and cleanup deadline are bounded, so a hostile workload
