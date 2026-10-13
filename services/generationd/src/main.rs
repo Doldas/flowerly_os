@@ -114,6 +114,12 @@ impl From<&str> for CommandFailure {
     }
 }
 
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 #[cfg(test)]
 impl CommandFailure {
     fn contains(&self, pattern: &str) -> bool {
