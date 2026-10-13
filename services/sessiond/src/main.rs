@@ -134,7 +134,7 @@ fn terminate_stale_cgroup(id: &SessionId) -> anyhow::Result<()> {
         match std::fs::remove_dir(&location) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+            Err(error) if matches!(error.raw_os_error(), Some(16 | 39)) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(error) => return Err(error.into()),
