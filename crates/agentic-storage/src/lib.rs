@@ -25,6 +25,9 @@ pub enum StorageError {
 
     #[error("record not found: {0}")]
     NotFound(String),
+
+    #[error("operation conflict: {0}")]
+    OperationConflict(String),
 }
 
 impl StorageError {
@@ -75,6 +78,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "protect_general",
         sql: include_str!("../migrations/0004_protect_general.sql"),
     },
+    Migration {
+        version: 5,
+        name: "idempotent_operations",
+        sql: include_str!("../migrations/0005_idempotent_operations.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +92,16 @@ pub struct AppliedMigration {
     pub name: String,
 
     pub applied_at: Timestamp,
+}
+
+/// Optional, actor-bound key for an atomic SQLite create operation.
+/// The caller must use a kernel-attested actor, not an arbitrary client label.
+pub struct MutationOperation<'a> {
+    pub actor: &'a str,
+    pub command: &'a str,
+    pub operation_id: &'a str,
+    pub request_payload: &'a str,
+    pub response_payload: &'a str,
 }
 
 pub struct Store {
@@ -250,6 +268,115 @@ impl Store {
         }
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Replays the original response for the same actor/command/key/payload.
+    /// Each accepted operation and domain write commit in one IMMEDIATE transaction.
+    /// An expired key can be reused after the retention window; clients must not
+    /// assume infinite-time exactly-once semantics.
+    fn insert_once(
+        &mut self,
+        operation: &MutationOperation<'_>,
+        write: impl FnOnce(&Connection) -> Result<()>,
+    ) -> Result<String> {
+        let id = operation.operation_id;
+        if id.is_empty()
+            || id.len() > 128
+            || !id.bytes().all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
+        {
+            return Err(StorageError::OperationConflict(
+                "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
+            ));
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Thirty days bounds retained request bodies and operation results.
+        // Expiry cannot guarantee protection from retries beyond this window.
+        let expires_before = Timestamp::now().as_millis() - 30_i64 * 24 * 60 * 60 * 1000;
+        tx.execute(
+            "DELETE FROM ipc_operations WHERE created_at < ?1",
+            params![expires_before],
+        )?;
+        let recorded: Option<(String, String)> = tx
+            .query_row(
+                "SELECT request_payload, response_payload FROM ipc_operations
+                 WHERE actor = ?1 AND command = ?2 AND operation_id = ?3",
+                params![operation.actor, operation.command, id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((prior_request, prior_response)) = recorded {
+            if prior_request != operation.request_payload {
+                return Err(StorageError::OperationConflict(
+                    "operation_id was already used with different request arguments".into(),
+                ));
+            }
+            tx.commit()?;
+            return Ok(prior_response);
+        }
+        write(&tx)?;
+        tx.execute(
+            "INSERT INTO ipc_operations
+             (actor, command, operation_id, request_payload, response_payload, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                operation.actor,
+                operation.command,
+                id,
+                operation.request_payload,
+                operation.response_payload,
+                Timestamp::now().as_millis(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(operation.response_payload.to_owned())
+    }
+
+    /// Durable, actor-scoped opt-in retry identity for Flow creation.
+    pub fn insert_flow_with_provenance_once(
+        &mut self,
+        flow: &Flow,
+        edges: &[ProvenanceEdge],
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_once(operation, |conn| {
+            insert_flow_row(conn, flow)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn insert_goal_with_provenance_once(
+        &mut self,
+        goal: &Goal,
+        edges: &[ProvenanceEdge],
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_once(operation, |conn| {
+            insert_goal_row(conn, goal)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn insert_session_with_provenance_once(
+        &mut self,
+        session: &Session,
+        edges: &[ProvenanceEdge],
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_once(operation, |conn| {
+            insert_session_row(conn, session)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
