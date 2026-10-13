@@ -69,7 +69,6 @@ pub struct OperationKey<'a> {
     pub request_json: &'a str,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub struct Migration {
     pub version: i64,
@@ -1821,7 +1820,10 @@ mod tests {
                 })
             })
             .collect();
-        let a = threads.into_iter().map(|thread| thread.join().expect("thread")).collect::<Vec<_>>();
+        let a = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("thread"))
+            .collect::<Vec<_>>();
         assert_eq!(a[0]["id"], a[1]["id"]);
         let store = Store::open(&db).expect("reopen");
         assert_eq!(store.list_flows().expect("list").len(), 1);
