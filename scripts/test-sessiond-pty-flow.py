@@ -236,6 +236,14 @@ def main(bin_dir):
             reattach = call(session, "session.attach", {"id": stale_id, "control_token": stale_control})
             assert reattach["type"] == "err", reattach
             assert reattach["code"] == "unavailable", reattach
+            denied_old_termination = call(session, "session.terminate", {
+                "id": stale_id, "control_token": stale_control,
+            })
+            assert denied_old_termination["type"] == "err", denied_old_termination
+            assert denied_old_termination["code"] == "unavailable", denied_old_termination
+            persisted_stale = next(row for row in ok(session, "session.list", {})["sessions"]
+                                   if row["id"] == stale_id)
+            assert persisted_stale["state"].lower() == "suspended", persisted_stale
             unattended = ok(session, "session.spawn", {"flow_id": a})
             unattended_control = unattended["control_token"]
             unattended_writer = ok(session, "session.attach", {
