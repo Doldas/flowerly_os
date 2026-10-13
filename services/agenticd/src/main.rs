@@ -3,7 +3,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use agentic_core::{
-    coded_error_envelope,error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+};
 use agentic_ipc::{Envelope, ErrorCode, Payload};
 use agentic_storage::{StorageError, Store};
 use agentic_types::{
@@ -127,7 +128,11 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             let agent_id: Option<AgentId> = parse_optional_typed(args, "agent_id")?;
             let goal_id: Option<GoalId> = parse_optional_typed(args, "goal_id")?;
             if let Some(goal_id) = &goal_id {
-                if store.get_goal(goal_id).map_err(CommandFailure::storage)?.is_none() {
+                if store
+                    .get_goal(goal_id)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
                     return Err(format!("goal not found: {goal_id}").into());
                 }
             }
@@ -181,7 +186,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing `id`")?;
             let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
-            let record = store.get_execution(&exec_id).map_err(CommandFailure::storage)?;
+            let record = store
+                .get_execution(&exec_id)
+                .map_err(CommandFailure::storage)?;
             let data = match record {
                 Some(record) => serde_json::to_value(&record).map_err(err_str)?,
                 None => serde_json::json!(null),
@@ -189,7 +196,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(serde_json::json!({ "execution": data }))
         }
         "execution.list" => {
-            let records = store.list_executions().map_err(CommandFailure::storage)?;
+            let records = store
+                .list_executions()
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`").into()),
