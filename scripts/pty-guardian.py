@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import resource
+import re
 import select
 import signal
 import socket
@@ -37,7 +38,13 @@ class SessionCgroup:
         try:
             if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
                 raise RuntimeError("Linux cgroup v2 is required")
-            self.name = "pty-" + uuid.uuid4().hex
+            chosen_name = os.environ.get("FLOWERLY_PTY_CGROUP_NAME")
+            if chosen_name is None:
+                self.name = "pty-" + uuid.uuid4().hex
+            elif re.fullmatch(r"pty-session-[0-9a-f]{32}", chosen_name):
+                self.name = chosen_name
+            else:
+                raise ValueError("invalid supervised cgroup identity")
             os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
             self.group_fd = os.open(
                 self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
