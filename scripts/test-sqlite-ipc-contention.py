@@ -83,9 +83,9 @@ def main(bin_dir):
         env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
         services = []
         holder = None
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
         try:
-            for name in ("flowd", "goald"):
+            for name in ("flowd", "goald", "sessiond"):
                 log_path = root / f"{name}.log"
                 log = log_path.open("wb")
                 proc = subprocess.Popen([str(bin_dir / name)], env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -129,6 +129,9 @@ def main(bin_dir):
                 response = pending.result(timeout=TIMEOUT)
                 assert response["type"] == "ok", (name, response)
                 created_ids[name] = response["data"]["id"]
+            initial_session = request(runtime / "sessiond.sock", "command", name="session.create", args={})
+            assert initial_session["type"] == "ok", initial_session
+            session_id = initial_session["data"]["id"]
             # Hold a SECOND writer lock longer than SQLite's five-second
             # busy timeout: domain commands must report typed Unavailable.
             holder = subprocess.Popen(
@@ -155,8 +158,16 @@ def main(bin_dir):
                 request, runtime / "goald.sock", "command",
                 name="goal.complete", args={"id": created_ids["goald"]},
             )
+            locked_session_mutation = executor.submit(
+                request, runtime / "sessiond.sock", "command",
+                name="session.terminate", args={"id": session_id},
+            )
+            locked_session_create = executor.submit(
+                request, runtime / "sessiond.sock", "command",
+                name="session.create", args={},
+            )
             time.sleep(0.25)
-            for service in ("flowd", "goald"):
+            for service in ("flowd", "goald", "sessiond"):
                 before = time.monotonic()
                 result = request(runtime / f"{service}.sock", "status")
                 assert time.monotonic() - before < 2, service
@@ -167,6 +178,8 @@ def main(bin_dir):
                 ("flowd.create", locked_flow), ("goald.create", locked_goal),
                 ("flowd.activate", locked_flow_mutation),
                 ("goald.complete", locked_goal_mutation),
+                ("sessiond.create", locked_session_create),
+                ("sessiond.terminate", locked_session_mutation),
             ):
                 result = pending.result(timeout=TIMEOUT)
                 assert result["type"] == "err", (service, result)
@@ -179,6 +192,7 @@ def main(bin_dir):
             for service, name, args in (
                 ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
                 ("goald", "goal.complete", {"id": created_ids["goald"]}),
+                ("sessiond", "session.terminate", {"id": session_id}),
             ):
                 result = request(runtime / f"{service}.sock", "command", name=name, args=args)
                 assert result["type"] == "ok", (service, result)
