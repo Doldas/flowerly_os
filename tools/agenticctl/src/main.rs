@@ -68,7 +68,10 @@ enum FlowAction {
     Create {
         #[arg(help = "Flow name.")]
         name: String,
-        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
         operation_id: Option<String>,
     },
     #[command(about = "List Flows.")]
@@ -99,7 +102,10 @@ enum GoalAction {
         objective: String,
         #[arg(long, help = "Priority.")]
         priority: Option<i32>,
-        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
         operation_id: Option<String>,
     },
     #[command(about = "List Goals.")]
@@ -143,7 +149,10 @@ enum SessionAction {
         pid: Option<i32>,
         #[arg(long, help = "Working directory.")]
         cwd: Option<String>,
-        #[arg(long, help = "Reuse a durable operation ID for safe retries within the retention window.")]
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
         operation_id: Option<String>,
     },
     #[command(about = "List registered sessions.")]
