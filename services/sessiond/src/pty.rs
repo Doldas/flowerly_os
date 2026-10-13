@@ -280,7 +280,7 @@ impl Supervisor {
                 {
                     guardian.writer = None;
                 }
-                match name.as_str() {
+                match name {
                     "session.attach" => {
                         if guardian.writer.is_some() {
                             return Err((
