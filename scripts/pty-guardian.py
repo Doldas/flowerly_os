@@ -244,11 +244,16 @@ def supervise(path, shell, parent_pid):
                         client.sendall(b'{"error":"unauthorized"}\n')
                         continue
                     raw = bytearray()
-                    while b"\n" not in raw and len(raw) <= REQUEST_LIMIT:
-                        part = client.recv(4096)
-                        if not part:
-                            break
-                        raw.extend(part)
+                    try:
+                        while b"\n" not in raw and len(raw) <= REQUEST_LIMIT:
+                            part = client.recv(4096)
+                            if not part:
+                                break
+                            raw.extend(part)
+                    except (socket.timeout, ConnectionResetError, BrokenPipeError):
+                        # Never let a partial or disconnected control request
+                        # tear down an otherwise healthy PTY Session.
+                        continue
                     try:
                         if len(raw) > REQUEST_LIMIT:
                             raise ValueError("oversized request")
@@ -275,6 +280,13 @@ def supervise(path, shell, parent_pid):
             except ChildProcessError:
                 pass
         os.close(fd)
+        # The watcher has its own parent-death signal and may need time to
+        # kill background jobs. Reap it if it already finished, without
+        # blocking the guardian's shutdown on a hostile process tree.
+        try:
+            os.waitpid(watcher, os.WNOHANG)
+        except ChildProcessError:
+            pass
         try:
             current = os.stat(path)
             if (current.st_ino, current.st_dev) == (identity.st_ino, identity.st_dev):
