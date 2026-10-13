@@ -127,8 +127,10 @@ def supervise(path, shell, parent_pid):
                 client, _ = listener.accept()
                 with client:
                     client.settimeout(2)
-                    _peer, uid, _gid = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                    if uid != os.getuid():
+                    peer_pid, uid, _gid = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    # An unrelated same-UID process must not control the guardian.
+                    # Bind each accepted connection to the original sessiond PID.
+                    if uid != os.getuid() or peer_pid != parent_pid:
                         client.sendall(b'{"error":"unauthorized"}\n')
                         continue
                     raw = bytearray()
