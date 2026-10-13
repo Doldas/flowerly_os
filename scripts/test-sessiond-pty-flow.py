@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import sqlite3
@@ -85,6 +86,19 @@ def main(bin_dir):
             text = "echo " + marker + "\n"
             written = ok(session, "session.write", {"id": sid, "data": text})
             assert written["written"] == len(text), written
+            # A separate, long-running Linux process must survive the switch.
+            job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
+            ok(session, "session.write", {"id": sid, "data": job_command})
+            for _ in range(100):
+                observed = ok(session, "session.read", {"id": sid, "cursor": 0})
+                match = re.search(rb"FLOWERLY_JOB_PID:(\d+)",
+                                  base64.b64decode(observed["output_base64"]))
+                if match:
+                    break
+                time.sleep(.03)
+            else:
+                raise AssertionError("background process PID not observed")
+            job_pid = int(match.group(1))
             ok(session, "session.detach", {"id": sid})
             ok(flow, "flow.activate", {"id": b})
             assert ok(flow, "flow.list", {})["count"] >= 3
@@ -97,6 +111,9 @@ def main(bin_dir):
             else:
                 raise AssertionError("PTY output lost across Flow switch")
             assert replay["pid"] == pid and replay["running"] is True
+            os.kill(job_pid, 0)
+            with open("/proc/" + str(job_pid) + "/stat", encoding="utf-8") as stat:
+                assert stat.read().split(") ", 1)[1][0] != "Z", "job is zombie"
             # Hold an independent SQLite writer lock. Live PTY control
             # cannot await a Store mutex just to authorize the same actor.
             with sqlite3.connect(state / "state.db", timeout=2, isolation_level=None) as db:
@@ -110,6 +127,9 @@ def main(bin_dir):
             assert invalid_shell["type"] == "err" and invalid_shell["code"] == "invalid_argument"
             listing = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
+            # Job control can place background children in separate groups.
+            # Explicitly stop the job before tearing down its shell.
+            ok(session, "session.write", {"id": sid, "data": f"kill {job_pid}\n"})
             stopped = ok(session, "session.terminate", {"id": sid})
             assert stopped["terminated"] is True, stopped
             # Observe natural exit and reconcile the recorded Session state.
