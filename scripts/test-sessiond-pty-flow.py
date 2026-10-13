@@ -70,7 +70,7 @@ def main(bin_dir):
         runtime, state = root / "runtime", root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
+        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state), FLOWERLY_PTY_ISOLATION="development")
         children = []
         try:
             flow = start(bin_dir, "flowd", env, children, root)
@@ -107,7 +107,6 @@ def main(bin_dir):
             text = "echo " + marker + "\n"
             written = ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": text})
             assert written["written"] == len(text), written
-            # A separate, long-running Linux process must survive the switch.
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
             ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
@@ -139,8 +138,6 @@ def main(bin_dir):
             os.kill(job_pid, 0)
             with open("/proc/" + str(job_pid) + "/stat", encoding="utf-8") as stat:
                 assert stat.read().split(") ", 1)[1][0] != "Z", "job is zombie"
-            # Hold an independent SQLite writer lock. Live PTY control
-            # cannot await a Store mutex just to authorize the same actor.
             with sqlite3.connect(state / "state.db", timeout=2, isolation_level=None) as db:
                 db.execute("BEGIN IMMEDIATE")
                 began = time.monotonic()
@@ -152,12 +149,9 @@ def main(bin_dir):
             assert invalid_shell["type"] == "err" and invalid_shell["code"] == "invalid_argument"
             listing = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
-            # Job control can place background children in separate groups.
-            # Explicitly stop the job before tearing down its shell.
             ok(session, "session.write", {"id": sid, "attachment_token": second_token, "data": f"kill {job_pid}\n"})
             stopped = ok(session, "session.terminate", {"id": sid, "control_token": control})
             assert stopped["terminated"] is True, stopped
-            # Observe natural exit and reconcile the recorded Session state.
             second_shell = ok(session, "session.spawn", {"flow_id": a})
             another_id = second_shell["id"]
             another_control = second_shell["control_token"]
@@ -173,7 +167,6 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
-            # Competing client attach calls must not both obtain writer authority.
             raced = ok(session, "session.spawn", {"flow_id": a})
             race_id = raced["id"]
             race_control = raced["control_token"]
@@ -190,8 +183,6 @@ def main(bin_dir):
             won_token = winners[0]["data"]["attachment_token"]
             ok(session, "session.detach", {"id": race_id, "attachment_token": won_token})
             ok(session, "session.terminate", {"id": race_id, "control_token": race_control})
-            # A live daemon must detect the unexpectedly SIGKILLed guardian,
-            # persist lost supervision, and never claim the old shell is live.
             crashed = ok(session, "session.spawn", {"flow_id": a})
             crashed_id = crashed["id"]
             assert crashed["supervisor_pid"] > 0, crashed
@@ -207,9 +198,6 @@ def main(bin_dir):
                 time.sleep(.03)
             else:
                 raise AssertionError("guardian SIGKILL not reconciled to unavailable/detached")
-            # A guardian SIGKILL cannot permanently consume one of the 16
-            # supervised slots. A later spawn reaps and reconciles dead
-            # guardians without trusting historical child PIDs.
             replacement = ok(session, "session.spawn", {"flow_id": a})
             assert replacement["id"] != crashed_id, replacement
             terminated_replacement = ok(session, "session.terminate", {
@@ -217,16 +205,12 @@ def main(bin_dir):
                 "control_token": replacement["control_token"],
             })
             assert terminated_replacement["terminated"] is True
-            # The process supervisor is ephemeral: on restart the persisted
-            # ID must NOT claim that its old shell is still attached/running.
             stale = ok(session, "session.spawn", {"flow_id": a})
             stale_id = stale["id"]
             stale_control = stale["control_token"]
             session_process = children[-1]
             session_process.terminate()
             session_process.wait(timeout=5)
-            # The guardian parent-death path closes its own child; no stale
-            # PID may be used to attach or send signals on daemon restart.
             session = start(bin_dir, "sessiond", env, children, root)
             after_restart = ok(session, "session.list", {})["sessions"]
             record = next(row for row in after_restart if row["id"] == stale_id)
