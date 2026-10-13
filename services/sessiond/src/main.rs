@@ -165,7 +165,10 @@ impl CommandFailure {
 
 impl From<String> for CommandFailure {
     fn from(message: String) -> Self {
-        Self { code: ErrorCode::Internal, message }
+        Self {
+            code: ErrorCode::Internal,
+            message,
+        }
     }
 }
 
