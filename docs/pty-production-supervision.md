@@ -170,10 +170,13 @@ not evidence of valid delegation. Do not change the gate to skip, fall back
 to development isolation, or declare release CI green on that basis.
 
 The delegated kernel test now additionally executes an interactive
-same-credential subprocess that attempts to write its own PID to the
-delegated **parent** `cgroup.procs`. It requires an explicit permission
-denial (EPERM/EACCES). A successful migration or unrelated error fails
-the acceptance test. Even a passing direct-migration probe alone does
+same-credential subprocess that attempts to write its own PID first to
+the sibling **management** `cgroup.procs`, then to the delegated
+**parent** `cgroup.procs`. The sibling move must be denied by Linux
+credentials/permissions (EPERM/EACCES); a parent move may also be rejected
+by the cgroup-v2 no-internal-process constraint (EOPNOTSUPP), which is
+**not** proof of a credential boundary. Successful migration or any
+unexpected result fails the acceptance test. Even a passing direct-migration probe alone does
 not prove namespace escape, cross-UID boundaries or the broader malicious
 same-UID threat model; those require additional independent isolation
 review and adversarial execution inside the intended Arch guest.

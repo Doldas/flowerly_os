@@ -70,45 +70,54 @@ def require_explicit_delegation(root):
 
 
 def assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name):
-    source = (
-        "import os\n"
-        "from pathlib import Path\n"
-        f"root = {str(root)!r}\n"
-        f"group_name = {group_name!r}\n"
-        "original = Path('/proc/self/cgroup').read_text().strip()\n"
-        "if not original.endswith('/' + group_name):\n"
-        "    print('PTY_MIGRATION_INVALID:0', flush=True)\n"
-        "else:\n"
-        "    try:\n"
-        "        with open(root + '/cgroup.procs', 'w', encoding='ascii') as destination:\n"
-        "            destination.write(str(os.getpid()))\n"
-        "    except OSError as error:\n"
-        "        print('PTY_MIGRATION_DENIED:' + str(error.errno), flush=True)\n"
-        "    else:\n"
-        "        print('PTY_MIGRATION_ESCAPED:0', flush=True)\n"
+    destinations = (
+        ("MANAGEMENT", Path(root) / "management" / "cgroup.procs"),
+        ("PARENT", Path(root) / "cgroup.procs"),
     )
-    encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
-    command = (
-        "python3 -c 'import base64; exec(base64.b64decode(\"" + encoded + "\"))'\n"
-    ).encode()
-    assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
-    for _ in range(150):
-        reply = request(path, {"op": "read", "cursor": 0})
-        match = re.search(
-            rb"PTY_MIGRATION_(DENIED|ESCAPED|INVALID):(\d+)",
-            base64.b64decode(reply["output_base64"]),
+    for label, destination in destinations:
+        assert destination.is_file(), f"missing migration target: {destination}"
+        source = (
+            "import os\n"
+            "from pathlib import Path\n"
+            f"group_name = {group_name!r}\n"
+            f"destination = {str(destination)!r}\n"
+            f"label = {label!r}\n"
+            "membership = Path('/proc/self/cgroup').read_text().strip()\n"
+            "if not membership.endswith('/' + group_name):\n"
+            "    print('PTY_MIGRATION_' + label + '_INVALID:0', flush=True)\n"
+            "else:\n"
+            "    try:\n"
+            "        with open(destination, 'w', encoding='ascii') as target:\n"
+            "            target.write(str(os.getpid()))\n"
+            "    except OSError as error:\n"
+            "        print('PTY_MIGRATION_' + label + '_DENIED:' + str(error.errno), flush=True)\n"
+            "    else:\n"
+            "        print('PTY_MIGRATION_' + label + '_ESCAPED:0', flush=True)\n"
         )
-        if match:
-            outcome = match.group(1)
-            error = int(match.group(2))
-            assert outcome == b"DENIED" and error in (1, 13), (
-                "interactive child migrated outside its session cgroup or "
-                f"migration failed for an unrelated reason: {outcome!r}, errno={error}"
-            )
-            print("Delegated cgroup: same-UID child migration to parent denied")
-            return
-        time.sleep(0.02)
-    raise AssertionError("cgroup migration probe did not return a result")
+        encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+        command = (
+            "python3 -c 'import base64; exec(base64.b64decode(\\\"" + encoded + "\\\"))'\n"
+        ).encode()
+        assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+        pattern = re.compile(
+            rb"PTY_MIGRATION_" + label.encode("ascii") + rb"_(DENIED|ESCAPED|INVALID):(\\d+)"
+        )
+        for _ in range(150):
+            reply = request(path, {"op": "read", "cursor": 0})
+            match = pattern.search(base64.b64decode(reply["output_base64"]))
+            if match:
+                outcome = match.group(1)
+                error = int(match.group(2))
+                permitted_errors = (1, 13) if label == "MANAGEMENT" else (1, 13, 95)
+                assert outcome == b"DENIED" and error in permitted_errors, (
+                    f"{label} migration bypassed session containment or returned an unexpected result: "
+                    f"{outcome!r}, errno={error}"
+                )
+                print(f"Delegated cgroup: same-UID migration to {label.lower()} denied (errno={error})")
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(f"{label} cgroup migration probe did not return a result")
 
 
 def exercise_real_cgroup(root):
