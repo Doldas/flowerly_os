@@ -272,9 +272,15 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             ("session.heartbeat", {"id": identifier, "attachment_token": new_token}),
             ("session.terminate", {"id": identifier, "control_token": control}),
         ]
+        started = time.monotonic()
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda entry: request(session, *entry), operations))
-        assert any(result["type"] == "ok" for result in results[:3]), results
+        assert time.monotonic() - started < 8, "terminal races exceeded bounded response time"
+        assert all(
+            result["type"] == "ok"
+            or (result["type"] == "err" and result.get("code") == "unavailable")
+            for result in results[:3]
+        ), results
         assert results[-1]["type"] == "ok" and results[-1]["data"]["terminated"], results
         assert successful(session, "session.list", {})["count"] >= 1
         print("PTY multi-client: bounded replay, independent followers, disconnect, writer revocation, concurrent terminate")

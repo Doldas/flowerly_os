@@ -239,6 +239,11 @@ The hosted PR job `scripts/test-pty-adversarial.py` independently
 checks slow historical readers against the 64 KiB cap, concurrent
 incremental followers, abandoned client sockets, writer-token revocation,
 concurrent terminal mutation/termination, and abrupt `sessiond` SIGKILL.
+When terminate wins a race, follow/resize/heartbeat are expected to return
+typed `unavailable` rather than succeed. The concurrent-client test
+requires either successful completion before termination or precisely
+`unavailable` afterward, with a bounded response time; unrelated errors
+are rejected.
 The shared IPC listener intentionally does not unlink any preexisting
 Unix socket when binding. An abrupt daemon SIGKILL leaves a stale pathname;
 a second daemon must fail closed with address-in-use rather than remove
