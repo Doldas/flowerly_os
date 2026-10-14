@@ -128,6 +128,18 @@ configuration, and the IPC request/response path. An integration test starts the
 `flowd` binary, waits for its socket, queries status, creates a Flow, and
 verifies clean shutdown.
 
+## Proposed Layer 1.5 facade boundary
+
+[ADR-0018](adr/0018-strict-boundary-isolation-layer.md) proposes
+isolating external storage drivers and Linux kernel operations behind
+typed, auditable adapters, with Layers 2–5 of the control plane using
+well-defined Rust interfaces. This is **not implemented**; existing
+`agentic-storage` still directly uses `rusqlite`, and services retain
+current trusted OS/PTY operations. Any migration must preserve the
+single-database ACID model in accepted ADR-0011 until approved
+replacement, and maintain real kernel-credential/cgroup enforcement.
+Tracked through #91–#95 and the storage work #82–#89.
+
 ## Target architecture (planned)
 
 The current services are the durable skeleton for a larger design. The target

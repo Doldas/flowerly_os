@@ -17,6 +17,98 @@ User-friendly AI capability profiles (**Essential / Enhanced / Advanced / Custom
 
 **No new 0.0.4 exit criteria:** this is exploratory future work. Do not confuse model inference placement with runtime/process ownership, browser clients with VMs, or an authenticated remote connection with local Unix-socket peer credentials. See the linked RFC for proposed milestones, threat model and open questions.
 
+## Storage direction — unified interfaces, dual core and deployment modes (proposed)
+
+[**Proposed ADR-0017**](adr/0017-unified-mode-driven-storage.md) captures the
+long-term architecture for locally recoverable OS state, offline semantic
+agent memory and optional authenticated cluster memory. It is an **additive
+plan**, not a claim that dual databases or libSQL replication exist today.
+[Accepted ADR-0011](adr/0011-shared-local-state-database.md) continues to
+define the current shared `state.db` topology until migration is proved
+and deliberately approved. Standalone/native SQLite is the default;
+boot-critical state is never replicated.
+
+| Order | Issue | Deliverable | Prerequisite |
+| --- | --- | --- | --- |
+| 1 | [#82](https://github.com/Doldas/flowerly_os/issues/82) | Core/memory data ownership, existing ACID/provenance inventory, migration decision | ADR review |
+| 2 | [#83](https://github.com/Doldas/flowerly_os/issues/83) | Typed Rust storage traits and backend mocks | #82, #91 |
+| 3 | [#84](https://github.com/Doldas/flowerly_os/issues/84) | Two-file migration with transaction safety, recovery and rollback | #82, #83 |
+| 4 | [#85](https://github.com/Doldas/flowerly_os/issues/85) | Standalone (default), Cluster, CoreOnly configuration and transitions | #83, #84 |
+| 5 | [#86](https://github.com/Doldas/flowerly_os/issues/86) | Offline local SQLite agent memory and typed embedding search | #83, #84 |
+| 6 | [#88](https://github.com/Doldas/flowerly_os/issues/88) | CoreOnly boot without AI services, provider or memory backend | #84, #85 |
+| 7 | [#87](https://github.com/Doldas/flowerly_os/issues/87) | Optional libSQL/Turso mesh, auth/partition/conflict and threat-data quarantine | #85, #86 |
+| 8 | [#89](https://github.com/Doldas/flowerly_os/issues/89) | Cross-mode performance, security, backup/recovery and exact-SHA Arch/KVM proofs | #84–#88 |
+
+**Milestone placement:** architecture and interface planning can proceed
+without changing runtime behavior. The migration/core persistence groundwork
+belongs with the 0.0.5 Generation/rollback architecture; CoreOnly boot
+acceptance belongs with the 0.0.9 image; local AI-memory capabilities align
+with 0.0.8 Agent Runtime; mesh deployment is post-0.1 optional direction
+unless a separate milestone is approved. No new 0.0.4 exit criteria and no
+shortcuts around the existing PTY containment/security gates.
+
+The system-core SQLite database must remain local and boot-safe, and the
+memory database must be optional for boot. Vector search and future libSQL
+features require real backend contract tests; mDNS is discovery, not
+authentication. Do not claim arbitrary cross-database atomicity or automatic
+hostile-peer \"immunization\". Rollback, privacy/isolation, resource usage
+and single-maintainer operational cost must be measured.
+
+## Structural boundary — Layer 1.5 Distro Facades (proposed)
+
+[**Proposed ADR-0018**](adr/0018-strict-boundary-isolation-layer.md)
+documents the owner-supplied *Strict Boundary Isolation Layer (Layer 1.5)*:
+kernel/system calls and third-party engines belong in Layer 1; typed,
+auditable translation adapters belong in Layer 1.5; services in Layers
+2–5 consume those interfaces instead of importing implementation drivers.
+
+The proposal is **not implemented**. It introduces an additional
+architectural prerequisite before [#83](https://github.com/Doldas/flowerly_os/issues/83):
+the boundary and security implications must be reviewed without
+breaking today's PTY supervision, Linux authority or shared SQLite ACID
+invariants.
+
+| Order | Issue | Deliverable | Depends on |
+| --- | --- | --- | --- |
+| 0 | [#91](https://github.com/Doldas/flowerly_os/issues/91) | Layer 1/1.5/2–5 ownership and current dependency inventory | ADR-0018 review |
+| 1 | [#83](https://github.com/Doldas/flowerly_os/issues/83) | Storage facade contracts, backend isolation and typed domain operations | #82, #91 |
+| 2 | [#92](https://github.com/Doldas/flowerly_os/issues/92) | Linux host facade and real cgroup/telemetry/mount adapters | #91 |
+| 3 | [#93](https://github.com/Doldas/flowerly_os/issues/93) | Automated dependency/import boundary rules and reviewed exception list | #83, #92 |
+| 4 | [#94](https://github.com/Doldas/flowerly_os/issues/94) | Mock-driver and actual SQLite/kernel contract parity | #83, #92, #93 |
+| 5 | [#95](https://github.com/Doldas/flowerly_os/issues/95) | Privilege/PID/cgroup/mount authority audit and real malicious kernel verification | #91, #92, #50, #72 |
+
+The implementation should expose `DistroDataFacade` and
+`LinuxSubsystemFacade` concepts through strong Rust types, while
+**reconciling** the submitted generic `TransactionDelta`/`RecordSet`
+and two-value `DatabaseMode` with ADR-0017's domain repositories and
+three installation modes. Examples containing `todo!()`, fabricated
+telemetry, or unconditional success are specification sketches, not
+production implementations. No mocked driver proves a real cgroup
+security boundary; keep delegated-kernel Arch evidence as a hard gate.
+
+**Milestone placement:** interface audit/planning follows the ADR and
+storage design; concrete cgroup/host facade work must respect unresolved
+0.0.4 PTY security gates; KVM volume operations align with 0.0.6 and
+0.0.9; backend/memory behavior aligns with ADR-0017 milestones.
+No automatic dependency additions, no release gate changes and no
+new accepted ADR without owner approval.
+
+## Current task status snapshot (verified 2026-10-14)
+
+- **Accepted implementation base:** 0.0.1–0.0.3 done; ADR-0011's
+  shared `state.db` is still current, while ADR-0017/0018 are proposed.
+- **0.0.4:** in progress; #8, #31, #50, #72–#74 and #79 remain open.
+  PR #81 was merged independently; its hosted green CI cannot stand
+  in for exact-SHA delegated Arch guest security evidence.
+- **Storage tasks [#82–#89](https://github.com/Doldas/flowerly_os/issues/82):**
+  all open/planned, no dual-file or libSQL mode implementation claimed.
+- **Boundary tasks [#91–#95](https://github.com/Doldas/flowerly_os/issues/91):**
+  created/open/planned, require ADR decision and measured acceptance.
+- **Documentation proposal:** [draft PR #90](https://github.com/Doldas/flowerly_os/pull/90)
+  is unmerged; its CI checks are separate from accepted architecture.
+- **#55:** open and deferred until the repository owner specifically
+  requests that work.
+
 ## Distribution substrate direction
 
 Arch Linux is the selected initial userspace/package substrate (ADR-0015). Its
