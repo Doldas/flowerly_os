@@ -238,7 +238,7 @@ ssh "${ssh_opts[@]}" "$guest" 'cloud-init status --wait'
 
 echo "upgrading Arch and installing Flowerly build dependencies"
 ssh "${ssh_opts[@]}" "$guest" \
-    'sudo pacman -Syu --noconfirm --needed base-devel git just ripgrep rustup'
+    'sudo pacman -Syu --noconfirm --needed base-devel git just ripgrep rustup python'
 
 echo "rebooting so tests execute on the kernel installed by the full upgrade"
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl reboot' || true

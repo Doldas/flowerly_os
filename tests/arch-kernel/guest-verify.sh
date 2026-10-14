@@ -39,6 +39,7 @@ echo "systemd=$(systemctl --version | head -n1)"
 echo "rustc=$(rustc --version)"
 echo "cargo=$(cargo --version)"
 echo "just=$(just --version)"
+echo "python=$(python3 --version)"
 
 echo
 echo "== Formatting =="
