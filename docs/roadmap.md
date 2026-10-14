@@ -17,6 +17,43 @@ User-friendly AI capability profiles (**Essential / Enhanced / Advanced / Custom
 
 **No new 0.0.4 exit criteria:** this is exploratory future work. Do not confuse model inference placement with runtime/process ownership, browser clients with VMs, or an authenticated remote connection with local Unix-socket peer credentials. See the linked RFC for proposed milestones, threat model and open questions.
 
+## Storage direction — unified interfaces, dual core and deployment modes (proposed)
+
+[**Proposed ADR-0017**](adr/0017-unified-mode-driven-storage.md) captures the
+long-term architecture for locally recoverable OS state, offline semantic
+agent memory and optional authenticated cluster memory. It is an **additive
+plan**, not a claim that dual databases or libSQL replication exist today.
+[Accepted ADR-0011](adr/0011-shared-local-state-database.md) continues to
+define the current shared `state.db` topology until migration is proved
+and deliberately approved. Standalone/native SQLite is the default;
+boot-critical state is never replicated.
+
+| Order | Issue | Deliverable | Prerequisite |
+| --- | --- | --- | --- |
+| 1 | [#82](https://github.com/Doldas/flowerly_os/issues/82) | Core/memory data ownership, existing ACID/provenance inventory, migration decision | ADR review |
+| 2 | [#83](https://github.com/Doldas/flowerly_os/issues/83) | Typed Rust storage traits and backend mocks | #82 |
+| 3 | [#84](https://github.com/Doldas/flowerly_os/issues/84) | Two-file migration with transaction safety, recovery and rollback | #82, #83 |
+| 4 | [#85](https://github.com/Doldas/flowerly_os/issues/85) | Standalone (default), Cluster, CoreOnly configuration and transitions | #83, #84 |
+| 5 | [#86](https://github.com/Doldas/flowerly_os/issues/86) | Offline local SQLite agent memory and typed embedding search | #83, #84 |
+| 6 | [#88](https://github.com/Doldas/flowerly_os/issues/88) | CoreOnly boot without AI services, provider or memory backend | #84, #85 |
+| 7 | [#87](https://github.com/Doldas/flowerly_os/issues/87) | Optional libSQL/Turso mesh, auth/partition/conflict and threat-data quarantine | #85, #86 |
+| 8 | [#89](https://github.com/Doldas/flowerly_os/issues/89) | Cross-mode performance, security, backup/recovery and exact-SHA Arch/KVM proofs | #84–#88 |
+
+**Milestone placement:** architecture and interface planning can proceed
+without changing runtime behavior. The migration/core persistence groundwork
+belongs with the 0.0.5 Generation/rollback architecture; CoreOnly boot
+acceptance belongs with the 0.0.9 image; local AI-memory capabilities align
+with 0.0.8 Agent Runtime; mesh deployment is post-0.1 optional direction
+unless a separate milestone is approved. No new 0.0.4 exit criteria and no
+shortcuts around the existing PTY containment/security gates.
+
+The system-core SQLite database must remain local and boot-safe, and the
+memory database must be optional for boot. Vector search and future libSQL
+features require real backend contract tests; mDNS is discovery, not
+authentication. Do not claim arbitrary cross-database atomicity or automatic
+hostile-peer \"immunization\". Rollback, privacy/isolation, resource usage
+and single-maintainer operational cost must be measured.
+
 ## Distribution substrate direction
 
 Arch Linux is the selected initial userspace/package substrate (ADR-0015). Its
