@@ -71,6 +71,10 @@ jobs:
       - name: Black-box external SQLite writer contention across daemons
         run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
 
+      - name: Session daemon remains available without PTY cgroup delegation
+        run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
+
+
       - name: Black-box durable IPC operation-key replay and restart
         run: python3 ./scripts/test-ipc-idempotency.py target/release
 
