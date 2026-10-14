@@ -46,7 +46,10 @@ async fn main() -> anyhow::Result<()> {
     let cgroup_root = prepare_cgroup_root().map_err(|error| error.to_string());
     #[cfg(target_os = "linux")]
     if let Err(reason) = &cgroup_root {
-        tracing::warn!(reason, "PTY cgroup provisioning unavailable; supervised spawning disabled");
+        tracing::warn!(
+            reason,
+            "PTY cgroup provisioning unavailable; supervised spawning disabled"
+        );
     }
     let store = open_store(&config)?;
     #[cfg(target_os = "linux")]
