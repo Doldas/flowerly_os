@@ -9,6 +9,7 @@ import re
 import signal
 import stat
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -286,6 +287,55 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             pass
 
 
+def test_failed_durable_spawn_reaps_guardian(daemon):
+    session = daemon.socket_path
+    database = daemon.state / "state.db"
+    known_sessions = {
+        entry["id"] for entry in successful(session, "session.list", {})["sessions"]
+    }
+    known_sockets = set(daemon.runtime.glob("pty-*.sock"))
+    with sqlite3.connect(database, isolation_level=None) as connection:
+        connection.execute(
+            "CREATE TRIGGER reject_pty_session_insert BEFORE INSERT ON sessions "
+            "BEGIN SELECT RAISE(ABORT, 'deliberate durable insertion failure'); END"
+        )
+    try:
+        rejected = request(session, "session.spawn", {"shell": "/bin/sh"})
+        assert rejected["type"] == "err", rejected
+    finally:
+        with sqlite3.connect(database, isolation_level=None) as connection:
+            connection.execute("DROP TRIGGER reject_pty_session_insert")
+
+    for _ in range(100):
+        new_sockets = set(daemon.runtime.glob("pty-*.sock")) - known_sockets
+        reachable = []
+        for path in new_sockets:
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.settimeout(0.25)
+                try:
+                    probe.connect(str(path))
+                except OSError:
+                    continue
+                reachable.append(path)
+        if not reachable:
+            break
+        time.sleep(0.03)
+    else:
+        raise AssertionError(
+            f"unregistered PTY guardians remained reachable after SQLite failure: {reachable}"
+        )
+    after = {
+        entry["id"] for entry in successful(session, "session.list", {})["sessions"]
+    }
+    assert after == known_sessions, (known_sessions, after)
+    replacement = daemon.spawn()
+    successful(session, "session.terminate", {
+        "id": replacement["id"],
+        "control_token": replacement["control_token"],
+    })
+    print("PTY failed SQLite spawn: uncommitted guardian stopped, no durable ghost, subsequent spawn succeeds")
+
+
 def test_abrupt_daemon_loss_and_restart(daemon):
     session = daemon.socket_path
     spawned = daemon.spawn()
@@ -354,6 +404,7 @@ def main(binary_directory):
     try:
         daemon.start()
         test_independent_readers_backpressure_and_disconnection(daemon)
+        test_failed_durable_spawn_reaps_guardian(daemon)
         test_abrupt_daemon_loss_and_restart(daemon)
     finally:
         daemon.close()

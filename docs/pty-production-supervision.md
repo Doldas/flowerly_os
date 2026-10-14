@@ -211,6 +211,18 @@ development-mode shell replay, or a hosted PR check cannot replace the
 delegated production result. A failed migration-denial check makes the
 Arch guest acceptance red by design.
 
+Supervised spawn now retains ownership of each uncommitted guardian
+through a scoped pending-process guard. Any startup, SQLite-insertion or
+registry-adoption failure attempts bounded graceful termination, then kills
+and reaps the guardian if needed. Only after durable Session insertion and
+registry ownership succeed is the process released from this guard.
+The Linux black-box test injects a real SQLite `BEFORE INSERT` failure,
+then verifies no new reachable orphan guardian, no fictitious durable
+Session and successful subsequent spawning. External process creation
+remains non-transactional and operation IDs for `session.spawn` are still
+rejected; these protections address failure cleanup, not exactly-once
+process effects after an ambiguous client timeout.
+
 The hosted PR job `scripts/test-pty-adversarial.py` independently
 checks slow historical readers against the 64 KiB cap, concurrent
 incremental followers, abandoned client sockets, writer-token revocation,
