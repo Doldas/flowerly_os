@@ -157,6 +157,36 @@ cgroup to disappear before marking historical records unavailable.
 The new guard rejects legacy metadata-only `session.terminate` for
 a supervised PTY whose guardian is no longer owned.
 
+## Current trusted-runner deployment blocker
+
+The trusted release CI run on commit `b77eaa0cea45f0ae589f0202389f77b00465ec95`
+confirmed EUID 0 for the runner and a working dedicated unprivileged PTY
+service identity (EUID 997). Root refusal, real guardian ownership, the
+development-mode Flow A to B to A acceptance, and required-cgroup fail-close
+passed. The release-only delegated positive gate failed because the
+runner cannot contact a systemd system manager: `System has not been booted
+with systemd as init system (PID 1)`. That is an infrastructure blocker,
+not evidence of valid delegation. Do not change the gate to skip, fall back
+to development isolation, or declare release CI green on that basis.
+
+The delegated kernel test now additionally executes an interactive
+same-credential subprocess that attempts to write its own PID to the
+delegated **parent** `cgroup.procs`. It requires an explicit permission
+denial (EPERM/EACCES). A successful migration or unrelated error fails
+the acceptance test. Even a passing direct-migration probe alone does
+not prove namespace escape, cross-UID boundaries or the broader malicious
+same-UID threat model; those require additional independent isolation
+review and adversarial execution inside the intended Arch guest.
+
+The hosted PR job `scripts/test-pty-adversarial.py` independently
+checks slow historical readers against the 64 KiB cap, concurrent
+incremental followers, abandoned client sockets, writer-token revocation,
+concurrent terminal mutation/termination, and abrupt `sessiond` SIGKILL.
+It verifies original kernel process identities cease, stale durable
+Session capabilities do not resurrect ownership, and a fresh Session
+can launch after restart. These tests run outside delegated cgroups and
+therefore are not substitutes for the production cgroup crash matrix.
+
 ## Open acceptance evidence
 
 Before marking issue #50 complete, require the positive delegated
