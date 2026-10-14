@@ -87,17 +87,27 @@ jobs:
       - name: Experimental independent PTY supervisor reconnect
         run: python3 ./scripts/pty-supervisor-spike.py
 
+      - name: Verify runner UID and prepare dedicated unprivileged PTY account
+        run: |
+          id
+          id -u
+          bash ./scripts/ci-pty-user.sh prepare
+
+      - name: Root-owned PTY shell startup is refused
+        run: bash ./scripts/ci-pty-user.sh root-refusal
+
       - name: Linux PTY guardian black-box ownership regression
-        run: python3 ./scripts/test-pty-guardian.py
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-guardian.py
 
       - name: Production PTY cgroup isolation and delegated containment
-        run: python3 ./scripts/test-pty-cgroup.py
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-cgroup.py
 
       - name: Flow A to B to A real sessiond PTY acceptance
-        run: python3 ./scripts/test-sessiond-pty-flow.py target/release
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
+
       - name: Release PTY kernel cgroup and escaped descendant acceptance
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
-        run: bash ./scripts/arch-pty-cgroup-acceptance.sh
+        run: bash ./scripts/ci-pty-user.sh delegated
 
   docs:
     name: docs

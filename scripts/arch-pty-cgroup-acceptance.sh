@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "--system" ]]; then
+  if [[ $(id -u) -ne 0 || -z "${2:-}" || $(id -u "$2") -eq 0 ]]; then
+    printf '%s\n' "System-delegated PTY acceptance requires root invocation and a non-root service account" >&2
+    exit 1
+  fi
+  exec systemd-run --system --wait --collect --pipe \
+    --property=Delegate=yes --property="User=$2" \
+    --property="WorkingDirectory=$PWD" \
+    /bin/bash "$PWD/scripts/arch-pty-cgroup-acceptance.sh" --delegated
+fi
+
 if [[ $(id -u) -eq 0 ]]; then
   printf '%s\n' "Run delegated PTY acceptance as the intended unprivileged Session user" >&2
   exit 1
