@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Linux PTY guardian: peer-credential gated IPC with bounded output replay.
 
-This independent helper is the process-ownership substrate for #50. It is not
-yet wired into sessiond; a Session database row never proves child ownership.
-"""
 import base64
 import ctypes
 import errno
@@ -11,6 +7,7 @@ import fcntl
 import json
 import os
 import resource
+import re
 import select
 import signal
 import socket
@@ -18,16 +15,108 @@ import struct
 import sys
 import termios
 import time
+import uuid
 
 REPLAY_LIMIT = 65536
 REQUEST_LIMIT = 32768
 
-def _kill_owned_terminal_session(shell_sid):
-    """Best-effort group-independent cleanup; pidfds prevent signaling reused PIDs.
 
-    This covers normal job-control background process groups sharing the TTY
-    session. A child deliberately calling setsid() needs cgroup containment.
-    """
+class SessionCgroup:
+    def __init__(self):
+        self.mode = os.environ.get("FLOWERLY_PTY_ISOLATION", "required")
+        self.parent_fd = None
+        self.group_fd = None
+        self.name = None
+        if self.mode == "development":
+            return
+        if self.mode != "required":
+            raise ValueError("invalid PTY isolation mode")
+        root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
+        if not root or not os.path.isabs(root):
+            raise RuntimeError("delegated cgroup v2 root is required")
+        chosen_name = os.environ.get("FLOWERLY_PTY_CGROUP_NAME")
+        if chosen_name is None:
+            self.name = "pty-" + uuid.uuid4().hex
+        elif re.fullmatch(r"pty-session-[0-9a-f]{32}", chosen_name):
+            self.name = chosen_name
+        else:
+            raise ValueError("invalid supervised cgroup identity")
+        self.parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
+                raise RuntimeError("Linux cgroup v2 is required")
+            if os.fstat(self.parent_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
+                raise RuntimeError("delegated root must reside on the cgroup v2 mount")
+            os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
+            self.group_fd = os.open(
+                self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=self.parent_fd,
+            )
+            self.write("pids.max", "64")
+            self.write("memory.max", str(512 * 1024 * 1024))
+            self.write("cpu.max", "100000 100000")
+            if not self.read("cgroup.events"):
+                raise RuntimeError("cgroup.events unavailable")
+            if not self.exists("cgroup.kill"):
+                raise RuntimeError("cgroup.kill unavailable")
+        except BaseException:
+            self.cleanup()
+            raise
+
+    def exists(self, name):
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)
+            os.close(fd)
+            return True
+        except OSError:
+            return False
+
+    def write(self, name, data):
+        fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)
+        try:
+            value = data.encode("ascii")
+            if os.write(fd, value) != len(value):
+                raise OSError("incomplete cgroup write")
+        finally:
+            os.close(fd)
+
+    def read(self, name):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)
+        try:
+            return os.read(fd, 8192).decode("ascii")
+        finally:
+            os.close(fd)
+
+    def move(self, pid):
+        if self.mode == "required":
+            self.write("cgroup.procs", str(pid))
+
+    def kill(self):
+        if self.mode == "required":
+            self.write("cgroup.kill", "1")
+
+    def cleanup(self):
+        if self.group_fd is not None:
+            os.close(self.group_fd)
+            self.group_fd = None
+        if self.parent_fd is not None:
+            if self.name:
+                for attempt in range(100):
+                    try:
+                        os.rmdir(self.name, dir_fd=self.parent_fd)
+                        break
+                    except OSError as error:
+                        if error.errno == errno.ENOENT:
+                            break
+                        if error.errno not in (errno.EBUSY, errno.ENOTEMPTY):
+                            raise
+                        if attempt == 99:
+                            raise RuntimeError("delegated PTY cgroup remained populated")
+                        time.sleep(0.02)
+            os.close(self.parent_fd)
+            self.parent_fd = None
+
+def _kill_owned_terminal_session(shell_sid):
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
         return
     uid = os.getuid()
@@ -47,8 +136,6 @@ def _kill_owned_terminal_session(shell_sid):
             except (ProcessLookupError, PermissionError, FileNotFoundError):
                 continue
             try:
-                # Do not signal a PID that changed identity or session between
-                # discovering it and opening its pidfd.
                 if os.getsid(candidate) == shell_sid:
                     signal.pidfd_send_signal(fd, signal.SIGKILL)
                     found = True
@@ -61,8 +148,7 @@ def _kill_owned_terminal_session(shell_sid):
         time.sleep(.02)
 
 
-def _watch_guardian(shell_sid, parent_pid, ready_fd):
-    """A separate process cleans up terminal job groups after guardian SIGKILL."""
+def _watch_guardian(shell_sid, parent_pid, ready_fd, isolation):
     stopped = False
 
     def stop(_sig, _frame):
@@ -73,6 +159,8 @@ def _watch_guardian(shell_sid, parent_pid, ready_fd):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
         os._exit(127)
+    if os.getppid() != parent_pid:
+        stopped = True
     try:
         os.write(ready_fd, b"1")
     except OSError:
@@ -81,7 +169,11 @@ def _watch_guardian(shell_sid, parent_pid, ready_fd):
         os.close(ready_fd)
     while not stopped and os.getppid() == parent_pid:
         time.sleep(.05)
-    _kill_owned_terminal_session(shell_sid)
+    if isolation.mode == "required":
+        isolation.kill()
+        isolation.cleanup()
+    else:
+        _kill_owned_terminal_session(shell_sid)
     os._exit(0)
 
 
@@ -89,9 +181,8 @@ def supervise(path, shell, parent_pid):
     if shell not in ("/bin/sh", "/bin/bash") or os.path.lexists(path):
         raise ValueError("shell not allowlisted or socket already exists")
     if os.geteuid() == 0:
-        # Until per-user UID delegation exists, a root sessiond must never
-        # produce an interactive root shell through a normal Session request.
         raise PermissionError("refusing root-owned PTY shell; run as an unprivileged user")
+    isolation = SessionCgroup()
     guardian_pid = os.getpid()
     release_read, release_write = os.pipe()
     ready_read, ready_write = os.pipe()
@@ -101,27 +192,29 @@ def supervise(path, shell, parent_pid):
         os.close(ready_read)
         os.close(ready_write)
         libc = ctypes.CDLL(None, use_errno=True)
-        # Kill our direct shell even when guardian SIGKILL skips finally.
         if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
             os._exit(127)
         if os.getppid() != guardian_pid or os.read(release_read, 1) != b"1":
             os._exit(127)
         os.close(release_read)
-        # Prevent runaway file descriptors, unlimited files and core dumps.
-        # Do not set RLIMIT_NPROC here: it is accounted per real UID and
-        # could interfere with unrelated interactive sessions.
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))
         os.execv(shell, [shell, "-i"])
     os.close(release_read)
+    try:
+        isolation.move(pid)
+    except BaseException:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        isolation.cleanup()
+        raise
     watcher = os.fork()
     if watcher == 0:
-        # Do not keep the PTY master open in the watcher.
         os.close(fd)
         os.close(release_write)
         os.close(ready_read)
-        _watch_guardian(pid, guardian_pid, ready_write)
+        _watch_guardian(pid, guardian_pid, ready_write, isolation)
     os.close(ready_write)
     try:
         if os.read(ready_read, 1) != b"1":
@@ -142,8 +235,6 @@ def supervise(path, shell, parent_pid):
 
     def harvest():
         nonlocal first, cursor
-        # A continuously noisy child must not starve terminal control requests.
-        # Give each event-loop tick a bounded 64 KiB PTY-drain budget.
         budget = REPLAY_LIMIT
         while budget:
             try:
@@ -177,12 +268,24 @@ def supervise(path, shell, parent_pid):
             return {"error": "PTY request must be a JSON object"}
         poll()
         operation = command.get("op")
-        if operation in ("attach", "read", "status"):
+        if operation == "lifecycle":
+            return {"pid": pid, "running": exit_code is None, "exit_code": exit_code}
+        if operation in ("attach", "read", "status", "follow"):
             harvest()
             position = command.get("cursor", first)
             if type(position) is not int or not 0 <= position <= cursor:
                 return {"error": "invalid cursor"}
+            if operation == "follow":
+                wait_ms = command.get("wait_ms", 100)
+                if type(wait_ms) is not int or not 0 <= wait_ms <= 250:
+                    return {"error": "invalid wait_ms"}
+                if position == cursor and exit_code is None and wait_ms:
+                    ready, _, _ = select.select([fd], [], [], wait_ms / 1000)
+                    if fd in ready:
+                        harvest()
+                    poll()
             return {"pid": pid, "running": exit_code is None,
+                    "isolation": isolation.mode,
                     "exit_code": exit_code, "cursor": cursor,
                     "truncated": position < first,
                     "output_base64": base64.b64encode(replay[max(first, position) - first:]).decode()}
@@ -209,7 +312,9 @@ def supervise(path, shell, parent_pid):
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
             return {"rows": rows, "cols": cols}
         if operation == "terminate":
-            if exit_code is None:
+            if isolation.mode == "required":
+                isolation.kill()
+            if exit_code is None and isolation.mode == "development":
                 os.killpg(pid, signal.SIGTERM)
                 deadline = time.monotonic() + 1
                 while time.monotonic() < deadline:
@@ -218,10 +323,11 @@ def supervise(path, shell, parent_pid):
                         break
                     time.sleep(.02)
                 if exit_code is None:
-                    try:
-                        os.killpg(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    if isolation.mode == "development":
+                        try:
+                            os.killpg(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                     _child, status = os.waitpid(pid, 0)
                     exit_code = os.waitstatus_to_exitcode(status)
             return {"terminated": True}
@@ -238,8 +344,6 @@ def supervise(path, shell, parent_pid):
                 with client:
                     client.settimeout(2)
                     peer_pid, uid, _gid = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                    # An unrelated same-UID process must not control the guardian.
-                    # Bind each accepted connection to the original sessiond PID.
                     if uid != os.getuid() or peer_pid != parent_pid:
                         client.sendall(b'{"error":"unauthorized"}\n')
                         continue
@@ -251,8 +355,6 @@ def supervise(path, shell, parent_pid):
                                 break
                             raw.extend(part)
                     except (socket.timeout, ConnectionResetError, BrokenPipeError):
-                        # Never let a partial or disconnected control request
-                        # tear down an otherwise healthy PTY Session.
                         continue
                     try:
                         if len(raw) > REQUEST_LIMIT:
@@ -264,25 +366,25 @@ def supervise(path, shell, parent_pid):
                     try:
                         client.sendall(json.dumps(reply).encode() + b"\n")
                     except (BrokenPipeError, ConnectionResetError):
-                        # A disconnected controller cannot crash the guardian.
                         continue
                     if reply.get("terminated"):
                         break
     finally:
         listener.close()
+        if isolation.mode == "required":
+            isolation.kill()
         if exit_code is None:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            if isolation.mode == "development":
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             try:
                 os.waitpid(pid, 0)
             except ChildProcessError:
                 pass
         os.close(fd)
-        # The watcher has its own parent-death signal and may need time to
-        # kill background jobs. Reap it if it already finished, without
-        # blocking the guardian's shutdown on a hostile process tree.
+        isolation.cleanup()
         try:
             os.waitpid(watcher, os.WNOHANG)
         except ChildProcessError:

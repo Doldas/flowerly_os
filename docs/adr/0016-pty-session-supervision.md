@@ -48,9 +48,18 @@ fault response and PTY FD lifetime, consistent with ADR-0013.
   SUSPENDED/DETACHED. SUSPENDED here denotes *lost supervision*, not
   proof of OS process suspension or safe adoption.
 - Linux parent-death signaling protects the direct shell on guardian
-  SIGKILL. A separate same-terminal-session watcher attempts to clean
-  normal job-control background processes using pidfds, but this is
-  **not** comprehensive descendant containment.
+  SIGKILL. A separate watcher is outside the child cgroup. The proposed
+  production mode requires a delegated cgroup-v2 hierarchy, moves the
+  shell into its own cgroup before exec, applies pids/memory/CPU quotas,
+  and uses kernel `cgroup.kill` on guardian loss and termination.
+  Session cgroup names derive from generated Session IDs, allowing
+  restart cleanup without PID-based signaling.
+- `session.follow` extends cursor-based reads with a bounded
+  incremental wait of at most 250 milliseconds. Independent readers
+  retain their own cursors, and writer actions are serialized with
+  lifecycle operations without holding the SQLite mutex.
+- A periodic supervisor reconciliation task persists natural shell exit
+  even without a client polling status and later reaps expired guardians.
 
 ## Alternatives and trade-offs
 
@@ -58,10 +67,10 @@ A transient frontend-owned PTY would kill background shells on client
 disconnect. A single blocking SQLite-backed server loop would stall
 output during database lock contention. A standalone unprivileged
 guardian trades extra child processes for independent FD lifetime and
-fault isolation. Full cgroup-v2/systemd delegated scopes remain necessary
-to contain children deliberately escaping the terminal session; kernel
-pidfds prevent signaling recycled numeric PIDs but do not substitute for
-cgroup ancestry or resource accounting.
+fault isolation. Delegated systemd cgroup-v2 scopes supply kernel
+descendant accounting and cleanup in the proposed production mode.
+Session-mode pidfd scanning remains explicit development compatibility
+and must never be presented as escape-proof confinement.
 
 Full-duplex streaming sockets, automatic client-disconnect observation,
 multi-subscriber backpressure, remote delegation tokens, and PTY FD
@@ -76,10 +85,14 @@ on restart rather than falsely promising transparent adoption.
       (merged PR #69).
 - [x] Guardian peer UID+parent PID verification (merged PR #70).
 - [x] Direct shell parent-death test on guardian SIGKILL (merged PR #71).
-- [ ] Merge and verify PR #75 owner-lease and restart/crash reconciliation
-      against the exact release commit.
-- [ ] Merge and verify PR #76 bounded watchdog/background-process test
-      against the exact release commit.
+- [x] PR #75 owner-lease and restart/crash reconciliation merged, with
+      required PR checks green.
+- [x] PR #76 bounded watchdog/background-process test merged, with
+      required PR checks green.
+- [x] PR #77 malformed IPC and child-limit hardening merged with its
+      Linux regression coverage.
+- [ ] Review draft PR #78's production delegated cgroup supervision,
+      authenticated follow and unattended-exit reconciliation.
 - [ ] Prove **cgroup-equivalent** containment of detached descendants and
       enforce process, memory, CPU and FD quotas under hostile workloads.
 - [ ] Prove deliberate multi-client races, slow readers and failure

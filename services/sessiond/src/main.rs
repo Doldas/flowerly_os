@@ -42,14 +42,31 @@ async fn main() -> anyhow::Result<()> {
         return self_test().await;
     }
 
+    #[cfg(target_os = "linux")]
+    let cgroup_root = prepare_cgroup_root().map_err(|error| error.to_string());
+    #[cfg(target_os = "linux")]
+    if let Err(reason) = &cgroup_root {
+        tracing::warn!(
+            reason,
+            "PTY cgroup provisioning unavailable; supervised spawning disabled"
+        );
+    }
     let store = open_store(&config)?;
-    // Reconcile stale supervised Sessions after sessiond restart. PID columns
-    // are historical metadata and are NEVER signal/reattach authority.
     #[cfg(target_os = "linux")]
     for session in store
         .list_sessions()
         .context("listing sessions for PTY recovery")?
     {
+        if session.kind == "local-pty" && session.pid.is_some() {
+            if let Ok(root) = &cgroup_root {
+                terminate_stale_cgroup(&session.id, root.as_deref())?;
+            } else {
+                tracing::warn!(
+                    session_id = %session.id,
+                    "PTY cgroup recovery unavailable without delegation"
+                );
+            }
+        }
         if session.kind == "local-pty"
             && session.pid.is_some()
             && session.state == SessionState::Running
@@ -74,7 +91,24 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     #[cfg(target_os = "linux")]
-    let supervisor = Arc::new(pty::Supervisor::new(config.runtime_dir.clone()));
+    let supervisor = Arc::new(pty::Supervisor::new(
+        config.runtime_dir.clone(),
+        cgroup_root,
+    ));
+    #[cfg(target_os = "linux")]
+    let lifecycle_reconciler = {
+        let supervisor = Arc::clone(&supervisor);
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let supervisor = Arc::clone(&supervisor);
+                let store = Arc::clone(&store);
+                let _ = tokio::task::spawn_blocking(move || supervisor.reconcile(&store)).await;
+            }
+        })
+    };
     let handler = move |request: &Envelope| -> Envelope {
         #[cfg(target_os = "linux")]
         if let Payload::Command { name, args } = &request.payload {
@@ -85,9 +119,90 @@ async fn main() -> anyhow::Result<()> {
         handle_command(&store, request)
     };
 
-    run_service_with_status(config, status, Arc::new(handler))
+    let service_result = run_service_with_status(config, status, Arc::new(handler))
         .await
-        .context("sessiond terminated abnormally")
+        .context("sessiond terminated abnormally");
+    #[cfg(target_os = "linux")]
+    lifecycle_reconciler.abort();
+    service_result
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let isolation =
+        std::env::var("FLOWERLY_PTY_ISOLATION").unwrap_or_else(|_| "required".to_owned());
+    if isolation == "development" {
+        return Ok(None);
+    }
+    if isolation != "required" {
+        anyhow::bail!("invalid FLOWERLY_PTY_ISOLATION");
+    }
+    let root = match std::env::var("FLOWERLY_PTY_CGROUP_ROOT") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => {
+            let membership = std::fs::read_to_string("/proc/self/cgroup")
+                .context("reading Linux process cgroup membership")?;
+            let location = membership
+                .lines()
+                .find_map(|line| line.strip_prefix("0::"))
+                .context("unified cgroup v2 process membership not found")?;
+            PathBuf::from("/sys/fs/cgroup").join(location.trim_start_matches('/'))
+        }
+    };
+    if !root.is_absolute() {
+        anyhow::bail!("delegated cgroup root must be an absolute path");
+    }
+    let host =
+        std::fs::metadata("/sys/fs/cgroup").context("reading unified cgroup v2 mount metadata")?;
+    let delegated = std::fs::metadata(&root).context("reading delegated cgroup root metadata")?;
+    if host.dev() != delegated.dev() || !root.join("cgroup.controllers").is_file() {
+        anyhow::bail!("PTY supervision requires a real delegated Linux cgroup v2 root");
+    }
+    let management = root.join(format!("management-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&management).context("creating PTY supervisor management cgroup")?;
+    std::fs::write(
+        management.join("cgroup.procs"),
+        std::process::id().to_string(),
+    )
+    .context("moving sessiond into its management cgroup")?;
+    std::fs::write(root.join("cgroup.subtree_control"), "+cpu +memory +pids")
+        .context("enabling delegated PTY resource controllers")?;
+    Ok(Some(root))
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_stale_cgroup(id: &SessionId, root: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let Some(root) = root else {
+        return Ok(());
+    };
+    let Some(identifier) = id.as_str().strip_prefix("session-") else {
+        anyhow::bail!("invalid persisted Session cgroup identifier");
+    };
+    if identifier.len() != 32 || !identifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid persisted Session cgroup identifier");
+    }
+    let location = root.join(format!("pty-{}", id.as_str()));
+    match std::fs::symlink_metadata(&location) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => anyhow::bail!("persisted Session cgroup path is not a directory"),
+    }
+    std::fs::write(location.join("cgroup.kill"), "1")
+        .context("killing unrecovered PTY cgroup descendants")?;
+    for _ in 0..100 {
+        match std::fs::remove_dir(&location) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(16 | 39)) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("unrecovered PTY cgroup did not become empty")
 }
 
 fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
@@ -117,8 +232,6 @@ fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     }
 }
 
-/// Validate API errors under the same storage mutex used for the mutation.
-/// Storage failures remain internal; no string-based classification.
 fn validate_session_command(
     store: &Store,
     name: &str,
@@ -154,12 +267,17 @@ fn validate_session_command(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("missing string arg `id`"))?;
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            if store
+            let existing = store
                 .get_session(&id)
-                .map_err(|e| (storage_error_code(&e), e.to_string()))?
-                .is_none()
-            {
-                return Err((ErrorCode::NotFound, format!("session not found: {raw}")));
+                .map_err(|error| (storage_error_code(&error), error.to_string()))?;
+            let session = existing
+                .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
+            if session.kind == "local-pty" && session.pid.is_some() {
+                return Err((
+                    ErrorCode::Unavailable,
+                    "PTY Session has no currently owned guardian; termination is unavailable"
+                        .to_owned(),
+                ));
             }
         }
         other => {

@@ -71,6 +71,10 @@ jobs:
       - name: Black-box external SQLite writer contention across daemons
         run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
 
+      - name: Session daemon remains available without PTY cgroup delegation
+        run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
+
+
       - name: Black-box durable IPC operation-key replay and restart
         run: python3 ./scripts/test-ipc-idempotency.py target/release
 
@@ -86,8 +90,14 @@ jobs:
       - name: Linux PTY guardian black-box ownership regression
         run: python3 ./scripts/test-pty-guardian.py
 
+      - name: Production PTY cgroup isolation and delegated containment
+        run: python3 ./scripts/test-pty-cgroup.py
+
       - name: Flow A to B to A real sessiond PTY acceptance
         run: python3 ./scripts/test-sessiond-pty-flow.py target/release
+      - name: Release PTY kernel cgroup and escaped descendant acceptance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        run: bash ./scripts/arch-pty-cgroup-acceptance.sh
 
   docs:
     name: docs
@@ -116,6 +126,7 @@ jobs:
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
           bash -n ./tests/arch-kernel/guest-verify.sh
+          bash -n ./scripts/arch-pty-cgroup-acceptance.sh
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v24

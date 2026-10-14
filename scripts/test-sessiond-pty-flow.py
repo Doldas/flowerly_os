@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Full Linux process black box: Flow A -> B -> A and real PTY reattach."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -70,7 +69,7 @@ def main(bin_dir):
         runtime, state = root / "runtime", root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
+        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state), FLOWERLY_PTY_ISOLATION="development")
         children = []
         try:
             flow = start(bin_dir, "flowd", env, children, root)
@@ -98,6 +97,16 @@ def main(bin_dir):
             assert attached["pid"] == pid and attached["running"] is True
             first_token = attached["attachment_token"]
             assert first_token
+            no_heartbeat_token = call(session, "session.heartbeat", {"id": sid})
+            assert no_heartbeat_token["type"] == "err", no_heartbeat_token
+            bad_heartbeat = call(session, "session.heartbeat", {
+                "id": sid, "attachment_token": "wrong",
+            })
+            assert bad_heartbeat["type"] == "err", bad_heartbeat
+            renewal = ok(session, "session.heartbeat", {
+                "id": sid, "attachment_token": first_token,
+            })
+            assert renewal == {"lease_active": True, "expires_in_ms": 60000}, renewal
             double_attach = call(session, "session.attach", {"id": sid, "control_token": control})
             assert double_attach["type"] == "err" and double_attach["code"] == "conflict", double_attach
             without_token = call(session, "session.write", {"id": sid, "data": "ignored"})
@@ -107,7 +116,23 @@ def main(bin_dir):
             text = "echo " + marker + "\n"
             written = ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": text})
             assert written["written"] == len(text), written
-            # A separate, long-running Linux process must survive the switch.
+            missing_follow = call(session, "session.follow", {"id": sid, "cursor": 0})
+            assert missing_follow["type"] == "err", missing_follow
+            prior_cursor = ok(session, "session.status", {"id": sid, "control_token": control})["cursor"]
+            follow_marker = "FLOWERLY_FOLLOW_STABLE"
+            follow_input = f"echo {follow_marker}\n"
+            ok(session, "session.write", {
+                "id": sid, "attachment_token": first_token, "data": follow_input
+            })
+            for _ in range(80):
+                followed = ok(session, "session.follow", {
+                    "id": sid, "control_token": control, "cursor": prior_cursor, "wait_ms": 100
+                })
+                if follow_marker.encode() in base64.b64decode(followed["output_base64"]):
+                    break
+                time.sleep(.02)
+            else:
+                raise AssertionError("authorized incremental PTY follower did not receive output")
             job_command = "sleep 60 & echo FLOWERLY_JOB_PID:$!\n"
             ok(session, "session.write", {"id": sid, "attachment_token": first_token, "data": job_command})
             for _ in range(100):
@@ -121,6 +146,10 @@ def main(bin_dir):
                 raise AssertionError("background process PID not observed")
             job_pid = int(match.group(1))
             ok(session, "session.detach", {"id": sid, "attachment_token": first_token})
+            stale_heartbeat = call(session, "session.heartbeat", {
+                "id": sid, "attachment_token": first_token,
+            })
+            assert stale_heartbeat["type"] == "err", stale_heartbeat
             stale_writer = call(session, "session.write", {"id": sid, "attachment_token": first_token, "data": "ignored"})
             assert stale_writer["type"] == "err", stale_writer
             ok(flow, "flow.activate", {"id": b})
@@ -139,8 +168,6 @@ def main(bin_dir):
             os.kill(job_pid, 0)
             with open("/proc/" + str(job_pid) + "/stat", encoding="utf-8") as stat:
                 assert stat.read().split(") ", 1)[1][0] != "Z", "job is zombie"
-            # Hold an independent SQLite writer lock. Live PTY control
-            # cannot await a Store mutex just to authorize the same actor.
             with sqlite3.connect(state / "state.db", timeout=2, isolation_level=None) as db:
                 db.execute("BEGIN IMMEDIATE")
                 began = time.monotonic()
@@ -152,12 +179,9 @@ def main(bin_dir):
             assert invalid_shell["type"] == "err" and invalid_shell["code"] == "invalid_argument"
             listing = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == sid and row["pid"] == pid and row["flow_id"] == a for row in listing)
-            # Job control can place background children in separate groups.
-            # Explicitly stop the job before tearing down its shell.
             ok(session, "session.write", {"id": sid, "attachment_token": second_token, "data": f"kill {job_pid}\n"})
             stopped = ok(session, "session.terminate", {"id": sid, "control_token": control})
             assert stopped["terminated"] is True, stopped
-            # Observe natural exit and reconcile the recorded Session state.
             second_shell = ok(session, "session.spawn", {"flow_id": a})
             another_id = second_shell["id"]
             another_control = second_shell["control_token"]
@@ -173,7 +197,6 @@ def main(bin_dir):
             listed = ok(session, "session.list", {})["sessions"]
             assert any(row["id"] == another_id and
                        row["state"].lower() == "exited" for row in listed), listed
-            # Competing client attach calls must not both obtain writer authority.
             raced = ok(session, "session.spawn", {"flow_id": a})
             race_id = raced["id"]
             race_control = raced["control_token"]
@@ -190,8 +213,6 @@ def main(bin_dir):
             won_token = winners[0]["data"]["attachment_token"]
             ok(session, "session.detach", {"id": race_id, "attachment_token": won_token})
             ok(session, "session.terminate", {"id": race_id, "control_token": race_control})
-            # A live daemon must detect the unexpectedly SIGKILLed guardian,
-            # persist lost supervision, and never claim the old shell is live.
             crashed = ok(session, "session.spawn", {"flow_id": a})
             crashed_id = crashed["id"]
             assert crashed["supervisor_pid"] > 0, crashed
@@ -207,9 +228,6 @@ def main(bin_dir):
                 time.sleep(.03)
             else:
                 raise AssertionError("guardian SIGKILL not reconciled to unavailable/detached")
-            # A guardian SIGKILL cannot permanently consume one of the 16
-            # supervised slots. A later spawn reaps and reconciles dead
-            # guardians without trusting historical child PIDs.
             replacement = ok(session, "session.spawn", {"flow_id": a})
             assert replacement["id"] != crashed_id, replacement
             terminated_replacement = ok(session, "session.terminate", {
@@ -217,16 +235,12 @@ def main(bin_dir):
                 "control_token": replacement["control_token"],
             })
             assert terminated_replacement["terminated"] is True
-            # The process supervisor is ephemeral: on restart the persisted
-            # ID must NOT claim that its old shell is still attached/running.
             stale = ok(session, "session.spawn", {"flow_id": a})
             stale_id = stale["id"]
             stale_control = stale["control_token"]
             session_process = children[-1]
             session_process.terminate()
             session_process.wait(timeout=5)
-            # The guardian parent-death path closes its own child; no stale
-            # PID may be used to attach or send signals on daemon restart.
             session = start(bin_dir, "sessiond", env, children, root)
             after_restart = ok(session, "session.list", {})["sessions"]
             record = next(row for row in after_restart if row["id"] == stale_id)
@@ -235,6 +249,33 @@ def main(bin_dir):
             reattach = call(session, "session.attach", {"id": stale_id, "control_token": stale_control})
             assert reattach["type"] == "err", reattach
             assert reattach["code"] == "unavailable", reattach
+            denied_old_termination = call(session, "session.terminate", {
+                "id": stale_id, "control_token": stale_control,
+            })
+            assert denied_old_termination["type"] == "err", denied_old_termination
+            assert denied_old_termination["code"] == "unavailable", denied_old_termination
+            persisted_stale = next(row for row in ok(session, "session.list", {})["sessions"]
+                                   if row["id"] == stale_id)
+            assert persisted_stale["state"].lower() == "suspended", persisted_stale
+            unattended = ok(session, "session.spawn", {"flow_id": a})
+            unattended_control = unattended["control_token"]
+            unattended_writer = ok(session, "session.attach", {
+                "id": unattended["id"], "control_token": unattended_control,
+            })
+            ok(session, "session.write", {
+                "id": unattended["id"],
+                "attachment_token": unattended_writer["attachment_token"],
+                "data": "exit\n",
+            })
+            for _ in range(160):
+                persisted = ok(session, "session.list", {})["sessions"]
+                recorded = next(item for item in persisted if item["id"] == unattended["id"])
+                if recorded["state"].lower() == "exited":
+                    assert recorded["presentation_state"].lower() == "detached"
+                    break
+                time.sleep(.03)
+            else:
+                raise AssertionError("unobserved natural shell exit was not reconciled")
             print("PTY daemon restart: stale Session remains identified but unavailable/detached")
             print("Linux Flow A -> B -> A PTY: same Session/PID, replay, SQLite liveness, natural exit, termination")
         finally:

@@ -1,4 +1,3 @@
-//! Per-Session Linux guardian ownership. PTY I/O never awaits the Store lock.
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -35,6 +34,8 @@ struct Guardian {
     actor: String,
     control_token: String,
     writer: Option<WriterLease>,
+    command_lock: Arc<Mutex<()>>,
+    finished_at: Option<Instant>,
 }
 
 struct WriterLease {
@@ -46,14 +47,16 @@ const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
     runtime: PathBuf,
+    cgroup_root: Result<Option<PathBuf>, String>,
     launch: Mutex<()>,
     sessions: Mutex<HashMap<String, Guardian>>,
 }
 
 impl Supervisor {
-    pub fn new(runtime: PathBuf) -> Self {
+    pub fn new(runtime: PathBuf, cgroup_root: Result<Option<PathBuf>, String>) -> Self {
         Self {
             runtime,
+            cgroup_root,
             launch: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
         }
@@ -65,7 +68,9 @@ impl Supervisor {
             "session.spawn"
                 | "session.attach"
                 | "session.detach"
+                | "session.heartbeat"
                 | "session.read"
+                | "session.follow"
                 | "session.write"
                 | "session.resize"
                 | "session.status"
@@ -99,15 +104,99 @@ impl Supervisor {
         }
     }
 
+    pub fn reconcile(&self, store: &Arc<Mutex<Store>>) -> Result<(), Failure> {
+        let candidates = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?;
+            sessions
+                .iter()
+                .map(|(id, entry)| (id.clone(), Arc::clone(&entry.command_lock)))
+                .collect::<Vec<_>>()
+        };
+        for (raw, command_lock) in candidates {
+            let Ok(_serial) = command_lock.try_lock() else {
+                continue;
+            };
+            let observed = {
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| internal("registry lock poisoned"))?;
+                let Some(entry) = sessions.get_mut(&raw) else {
+                    continue;
+                };
+                let exited = entry
+                    .process
+                    .try_wait()
+                    .map_err(|error| internal(error.to_string()))?
+                    .is_some();
+                (entry.socket.clone(), exited, entry.finished_at)
+            };
+            let id = SessionId::from_str(&raw).map_err(|error| internal(error.to_string()))?;
+            if observed.1 {
+                self.mark_unavailable(store, &id)?;
+                self.sessions
+                    .lock()
+                    .map_err(|_| internal("registry lock poisoned"))?
+                    .remove(&raw);
+                continue;
+            }
+            if observed
+                .2
+                .is_some_and(|completed| completed.elapsed() >= Duration::from_secs(20))
+            {
+                let _ = exchange(&observed.0, &json!({"op": "terminate"}));
+                if let Some(mut entry) = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| internal("registry lock poisoned"))?
+                    .remove(&raw)
+                {
+                    let _ = entry.process.wait();
+                }
+                continue;
+            }
+            if observed.2.is_some() {
+                continue;
+            }
+            let Ok(status) = exchange(&observed.0, &json!({"op": "lifecycle"})) else {
+                continue;
+            };
+            if status.get("running") != Some(&Value::Bool(false)) {
+                continue;
+            }
+            {
+                let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
+                db.update_session_state(&id, SessionState::Exited)
+                    .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+                db.update_session_presentation_state(&id, SessionPresentationState::Detached)
+                    .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+            }
+            if let Some(entry) = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?
+                .get_mut(&raw)
+            {
+                entry.finished_at = Some(Instant::now());
+            }
+        }
+        Ok(())
+    }
+
     fn spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
         let _serial = self
             .launch
             .lock()
             .map_err(|_| internal("launch lock poisoned"))?;
-        // Reap guardians killed between requests so their stale registry
-        // slots cannot permanently exhaust the supervised Session cap.
-        // Child::try_wait is nonblocking, and SQLite is touched only after
-        // releasing the registry mutex.
+        if let Err(reason) = &self.cgroup_root {
+            return Err((
+                ErrorCode::Unavailable,
+                format!("PTY cgroup isolation unavailable: {reason}"),
+            ));
+        }
         let stale = {
             let mut sessions = self
                 .sessions
@@ -175,14 +264,38 @@ impl Supervisor {
         if socket.as_os_str().as_bytes().len() > 100 {
             return Err(invalid("runtime socket path exceeds Linux limit"));
         }
-        let mut guardian = Command::new("python3")
+        let mut command = Command::new("python3");
+        command
             .args(["-u", "-c", include_str!("../../../scripts/pty-guardian.py")])
             .arg(&socket)
             .arg(shell)
             .arg(std::process::id().to_string())
+            .env(
+                "FLOWERLY_PTY_CGROUP_NAME",
+                format!("pty-{}", session_id.as_str()),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        match &self.cgroup_root {
+            Ok(Some(root)) => {
+                command
+                    .env("FLOWERLY_PTY_ISOLATION", "required")
+                    .env("FLOWERLY_PTY_CGROUP_ROOT", root);
+            }
+            Ok(None) => {
+                command
+                    .env("FLOWERLY_PTY_ISOLATION", "development")
+                    .env_remove("FLOWERLY_PTY_CGROUP_ROOT");
+            }
+            Err(reason) => {
+                return Err((
+                    ErrorCode::Unavailable,
+                    format!("PTY cgroup isolation unavailable: {reason}"),
+                ));
+            }
+        }
+        let mut guardian = command
             .spawn()
             .map_err(|error| internal(format!("cannot launch PTY guardian: {error}")))?;
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -243,6 +356,8 @@ impl Supervisor {
                     actor: actor.to_owned(),
                     control_token: control_token.clone(),
                     writer: None,
+                    command_lock: Arc::new(Mutex::new(())),
+                    finished_at: None,
                 },
             );
         Ok(
@@ -251,8 +366,6 @@ impl Supervisor {
     }
 
     fn mark_unavailable(&self, store: &Arc<Mutex<Store>>, id: &SessionId) -> Result<(), Failure> {
-        // SUSPENDED here represents lost supervision, NOT proof of a paused
-        // or safely reattachable process; never signal a persisted child PID.
         let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
         db.update_session_state(id, SessionState::Suspended)
             .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
@@ -276,11 +389,26 @@ impl Supervisor {
             .get("created_by")
             .and_then(Value::as_str)
             .unwrap_or("user");
-        // The core IPC boundary injects kernel-attested created_by on every
-        // command. Authorize from the in-memory owner registry so PTY I/O
-        // stays responsive while an unrelated SQLite writer is contended.
-        // Only one authenticated writer lease is valid per live Session.
-        // Observers can continue to use session.read/status without a token.
+        let command_lock = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("registry lock poisoned"))?;
+            Arc::clone(
+                &sessions
+                    .get(raw)
+                    .ok_or_else(|| {
+                        (
+                            ErrorCode::Unavailable,
+                            "PTY is no longer supervised".to_owned(),
+                        )
+                    })?
+                    .command_lock,
+            )
+        };
+        let _command_guard = command_lock
+            .lock()
+            .map_err(|_| internal("PTY command lock poisoned"))?;
         let mut issued_token = None;
         let (socket, supervisor_exited) = {
             let mut sessions = self
@@ -299,12 +427,9 @@ impl Supervisor {
                     "session actor not authorized".to_owned(),
                 ));
             }
-            // Knowing a Session ID or sharing its Linux UID is not enough
-            // to take over the PTY. The ephemeral control token is returned
-            // only to the spawning client and is never placed in session.list.
             if matches!(
                 name,
-                "session.attach" | "session.read" | "session.terminate"
+                "session.attach" | "session.read" | "session.follow" | "session.terminate"
             ) {
                 let supplied = args.get("control_token").and_then(Value::as_str);
                 if supplied != Some(guardian.control_token.as_str()) {
@@ -342,7 +467,7 @@ impl Supervisor {
                         });
                         issued_token = Some(token);
                     }
-                    "session.write" | "session.resize" | "session.detach" => {
+                    "session.write" | "session.resize" | "session.detach" | "session.heartbeat" => {
                         let requested = args
                             .get("attachment_token")
                             .and_then(Value::as_str)
@@ -375,11 +500,24 @@ impl Supervisor {
                 "PTY guardian exited; no reattachment possible".to_owned(),
             ));
         }
+        if name == "session.heartbeat" {
+            return Ok(json!({"lease_active": true, "expires_in_ms": 60000}));
+        }
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
             "attach" | "read" | "status" => json!({
                 "op": op, "cursor": args.get("cursor").cloned().unwrap_or(json!(0))
             }),
+            "follow" => {
+                let wait_ms = args.get("wait_ms").cloned().unwrap_or(json!(100));
+                let value = wait_ms
+                    .as_u64()
+                    .filter(|value| *value <= 250)
+                    .ok_or_else(|| {
+                        invalid("session.follow wait_ms must be an integer from 0 to 250")
+                    })?;
+                json!({"op": "follow", "cursor": args.get("cursor").cloned().unwrap_or(json!(0)), "wait_ms": value})
+            }
             "write" => {
                 let text = args
                     .get("data")
@@ -405,8 +543,6 @@ impl Supervisor {
         let response = match exchange(&socket, &query) {
             Ok(response) => response,
             Err(error) => {
-                // Reconcile only when the actual owned guardian has exited.
-                // A transient socket timeout is not proof the child died.
                 let exited = self
                     .sessions
                     .lock()
@@ -432,8 +568,6 @@ impl Supervisor {
                 return Err(error);
             }
         };
-        // A status inquiry without the control secret can report liveness,
-        // but must not leak the terminal replay to another same-UID caller.
         let mut response = response;
         if op == "status"
             && args.get("control_token").and_then(Value::as_str)
