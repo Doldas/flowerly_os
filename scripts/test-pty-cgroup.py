@@ -96,11 +96,11 @@ def assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name):
         )
         encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
         command = (
-            "python3 -c 'import base64; exec(base64.b64decode(\\\"" + encoded + "\\\"))'\n"
+            "python3 -c 'import base64; exec(base64.b64decode(\"" + encoded + "\"))'\n"
         ).encode()
         assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
         pattern = re.compile(
-            rb"PTY_MIGRATION_" + label.encode("ascii") + rb"_(DENIED|ESCAPED|INVALID):(\\d+)"
+            rb"PTY_MIGRATION_" + label.encode("ascii") + rb"_(DENIED|ESCAPED|INVALID):(\d+)"
         )
         for _ in range(150):
             reply = request(path, {"op": "read", "cursor": 0})
