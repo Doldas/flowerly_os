@@ -10,6 +10,12 @@ TEST_REF="${FLOWERLY_TEST_REF:-unknown}"
 TEST_SHA="${FLOWERLY_TEST_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
 TEST_SLUG="${FLOWERLY_TEST_SLUG:-manual}"
 
+CHECKOUT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+if [[ "$TEST_SHA" != "$CHECKOUT_SHA" ]]; then
+    echo "requested Arch verification commit $TEST_SHA does not match checked-out commit $CHECKOUT_SHA" >&2
+    exit 1
+fi
+
 ARCH_IMAGE_URL="${ARCH_IMAGE_URL:-https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2}"
 ARCH_IMAGE_SHA_URL="${ARCH_IMAGE_SHA_URL:-$ARCH_IMAGE_URL.SHA256}"
 CACHE_DIR="${ARCH_VM_CACHE_DIR:-$HOME/.cache/flowerly/arch-images}"
@@ -26,7 +32,7 @@ rm -f "$WORK_DIR/qemu.pid" "$WORK_DIR/overlay.qcow2" "$WORK_DIR/seed.img"
 rm -rf "$WORK_DIR/repo-export"
 mkdir -p "$WORK_DIR/repo-export"
 
-for tool in curl qemu-img qemu-system-x86_64 cloud-localds ssh scp ssh-keygen tar; do
+for tool in curl git gzip qemu-img qemu-system-x86_64 cloud-localds ssh scp ssh-keygen tar; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "required host tool is missing: $tool" >&2
         exit 1
@@ -244,13 +250,9 @@ wait_for_ssh "post-upgrade reboot"
 ssh "${ssh_opts[@]}" "$guest" \
     'rustup toolchain install stable --profile minimal --component rustfmt --component clippy && rustup default stable'
 
-echo "exporting exact checked-out repository into the guest"
-tar \
-    --exclude=.git \
-    --exclude=target \
-    --exclude=.flowerly \
-    -czf "$WORK_DIR/flowerly_os.tar.gz" \
-    -C "$ROOT" .
+echo "exporting exact Git commit $TEST_SHA into the guest"
+git -C "$ROOT" archive --format=tar "$TEST_SHA" | \
+    gzip -c > "$WORK_DIR/flowerly_os.tar.gz"
 
 scp "${scp_opts[@]}" "$WORK_DIR/flowerly_os.tar.gz" "$guest:flowerly_os.tar.gz"
 ssh "${ssh_opts[@]}" "$guest" \

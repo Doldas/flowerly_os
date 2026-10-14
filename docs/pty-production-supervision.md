@@ -178,6 +178,12 @@ not prove namespace escape, cross-UID boundaries or the broader malicious
 same-UID threat model; those require additional independent isolation
 review and adversarial execution inside the intended Arch guest.
 
+The Arch VM export now verifies that the requested commit equals the
+checked-out Git HEAD and constructs its transfer archive with
+`git archive <exact SHA>`. This excludes untracked and modified working
+directory contents from the certified guest source and ensures the test
+report's commit identity matches the bytes sent to the VM.
+
 Release-branch CI now invokes the exact-commit QEMU/Arch guest acceptance
 rather than assuming the containerized trusted runner has systemd PID 1.
 The host prerequisite script is shared with the nightly Arch workflow.
