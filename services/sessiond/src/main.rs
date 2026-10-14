@@ -272,7 +272,7 @@ fn validate_session_command(
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
             let session = existing
                 .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
-            if session.kind == "local-pty" {
+            if session.kind == "local-pty" && session.pid.is_some() {
                 return Err((
                     ErrorCode::Unavailable,
                     "PTY Session has no currently owned guardian; termination is unavailable"
