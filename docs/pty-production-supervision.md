@@ -219,6 +219,15 @@ through a scoped pending-process guard. Any startup, SQLite-insertion or
 registry-adoption failure attempts bounded graceful termination, then kills
 and reaps the guardian if needed. Only after durable Session insertion and
 registry ownership succeed is the process released from this guard.
+The abrupt-death matrix now also models an ambiguous
+`session.spawn` response: a client submits a complete command, receives
+only the length prefix, and discards the response body containing its
+control token. The test requires one durable live Session before daemon
+failure and confirms that its original PID exits and its durable
+identity becomes suspended/detached after restart. This documents why
+clients must **not** blindly retry external process creation and why
+operation-ID exactly-once claims remain explicitly unsupported.
+
 The Linux black-box test injects a real SQLite `BEFORE INSERT` failure,
 then verifies no new reachable orphan guardian, no fictitious durable
 Session and successful subsequent spawning. External process creation

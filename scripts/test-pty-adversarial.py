@@ -336,6 +336,38 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
     print("PTY failed SQLite spawn: uncommitted guardian stopped, no durable ghost, subsequent spawn succeeds")
 
 
+def create_spawn_with_lost_response(daemon):
+    session = daemon.socket_path
+    existing = {
+        entry["id"] for entry in successful(session, "session.list", {})["sessions"]
+    }
+    command = json.dumps({
+        "version": 1,
+        "id": str(uuid.uuid4()),
+        "type": "command",
+        "name": "session.spawn",
+        "args": {"shell": "/bin/sh"},
+    }).encode()
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(12)
+        connection.connect(str(session))
+        connection.sendall(struct.pack("<I", len(command)) + command)
+        reply_bytes = struct.unpack("<I", receive_exact(connection, 4))[0]
+        assert 0 < reply_bytes <= 1024 * 1024
+
+    new_sessions = [
+        entry for entry in successful(session, "session.list", {})["sessions"]
+        if entry["id"] not in existing
+    ]
+    assert len(new_sessions) == 1, new_sessions
+    record = new_sessions[0]
+    assert record["pid"] > 0 and record["state"].lower() == "running", record
+    identity = process_identity(record["pid"])
+    assert identity is not None and identity[0] not in ("Z", "X")
+    print("PTY ambiguous response: one durable live Session despite discarded reply body")
+    return record["id"], record["pid"], identity
+
+
 def test_abrupt_daemon_loss_and_restart(daemon):
     session = daemon.socket_path
     spawned = daemon.spawn()
@@ -364,10 +396,12 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     assert job_pid, "background process did not start"
     job_identity = process_identity(job_pid)
     assert job_identity and job_identity[0] not in ("Z", "X")
+    uncertain_id, uncertain_pid, uncertain_identity = create_spawn_with_lost_response(daemon)
     daemon.stop(abrupt=True)
     assert_original_process_exited(shell_pid, shell_identity)
     assert_original_process_exited(job_pid, job_identity)
     assert_original_process_exited(supervisor_pid, supervisor_identity)
+    assert_original_process_exited(uncertain_pid, uncertain_identity)
 
     try:
         daemon.start()
@@ -382,6 +416,12 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     )["sessions"] if row["id"] == identifier)
     assert historical["state"].lower() == "suspended", historical
     assert historical["presentation_state"].lower() == "detached", historical
+    uncertain_history = next(
+        row for row in successful(session, "session.list", {})["sessions"]
+        if row["id"] == uncertain_id
+    )
+    assert uncertain_history["state"].lower() == "suspended", uncertain_history
+    assert uncertain_history["presentation_state"].lower() == "detached", uncertain_history
     for name, args in (
         ("session.attach", {"id": identifier, "control_token": control}),
         ("session.read", {"id": identifier, "control_token": control, "cursor": 0}),
