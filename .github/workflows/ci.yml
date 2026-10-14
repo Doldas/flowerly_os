@@ -105,6 +105,9 @@ jobs:
       - name: Flow A to B to A real sessiond PTY acceptance
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
 
+      - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
+
       - name: Release PTY kernel cgroup and escaped descendant acceptance
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
         run: bash ./scripts/ci-pty-user.sh delegated
