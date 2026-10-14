@@ -6,6 +6,10 @@ if [[ "${1:-}" == "--system" ]]; then
     printf '%s\n' "System-delegated PTY acceptance requires root invocation and a non-root service account" >&2
     exit 1
   fi
+  if [[ "$(id -Gn "$2")" != "$(id -gn "$2")" ]]; then
+    printf '%s\n' "System-delegated PTY acceptance must not use an account with supplementary groups" >&2
+    exit 1
+  fi
   exec systemd-run --system --wait --collect --pipe \
     --property=Delegate=yes --property="User=$2" \
     --property="WorkingDirectory=$PWD" \

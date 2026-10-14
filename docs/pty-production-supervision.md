@@ -186,6 +186,16 @@ delegation failure, descendant escape, or failed malicious migration denial.
 The workflow uploads the QEMU console, guest SSH transcript, and final
 guest report when available, including when verification fails.
 
+The guest's administrative `flowerly` account has passwordless sudo
+for package installation and therefore is **not** an acceptable workload
+credential for the production containment test. Guest verification creates
+a distinct unprivileged `flowerly-pty-ci` account without supplementary
+groups or sudo privileges, installs only the test runner and guardian under
+a root-owned read-only acceptance directory, and runs the delegated
+systemd service under that account. The root entrypoint rejects
+supplementary-group accounts instead of accidentally granting the shell
+the guest administrator's authority.
+
 The official `tests/arch-kernel/guest-verify.sh` now executes these PTY
 regressions **inside the booted and upgraded Arch guest**, including root
 refusal as a negative test and the delegated positive cgroup test as a
