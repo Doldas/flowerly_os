@@ -108,9 +108,27 @@ jobs:
       - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
 
-      - name: Release PTY kernel cgroup and escaped descendant acceptance
+      - name: Prepare trusted Arch VM host for real delegated PTY acceptance
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
-        run: bash ./scripts/ci-pty-user.sh delegated
+        run: bash ./scripts/prepare-arch-vm-host.sh
+
+      - name: Release PTY kernel cgroup, escaped descendant and Arch guest acceptance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        timeout-minutes: 90
+        env:
+          FLOWERLY_TEST_REF: ${{ github.ref_name }}
+          FLOWERLY_TEST_SHA: ${{ github.sha }}
+          FLOWERLY_TEST_SLUG: release-push
+        run: bash ./scripts/arch-kernel-vm-test.sh
+
+      - name: Preserve exact-SHA Arch guest and failed kernel acceptance evidence
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-release-pty-${{ github.sha }}
+          path: target/arch-kernel/release-push/report/
+          if-no-files-found: warn
+          retention-days: 14
 
   docs:
     name: docs
