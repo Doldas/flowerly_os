@@ -93,7 +93,7 @@ storage design; concrete cgroup/host facade work must respect unresolved
 No automatic dependency additions, no release gate changes and no
 new accepted ADR without owner approval.
 
-## Current task status snapshot (verified 2026-10-14)
+## Current task status snapshot (issue states checked 2026-10-15)
 
 - **Accepted implementation base:** 0.0.1–0.0.3 done; ADR-0011's
   shared `state.db` is still current, while ADR-0017/0018 are proposed.
@@ -104,8 +104,8 @@ new accepted ADR without owner approval.
   all open/planned, no dual-file or libSQL mode implementation claimed.
 - **Boundary tasks [#91–#95](https://github.com/Doldas/flowerly_os/issues/91):**
   created/open/planned, require ADR decision and measured acceptance.
-- **Documentation proposal:** [draft PR #90](https://github.com/Doldas/flowerly_os/pull/90)
-  is unmerged; its CI checks are separate from accepted architecture.
+- **Documentation proposal:** [PR #90](https://github.com/Doldas/flowerly_os/pull/90)
+  was merged as commit `5e55dfa75096004e1af46546415a4b779434114c` on 2026-10-14 UTC. ADR-0017/0018 remain **Proposed**, not Accepted. See [#91/#82 review inventory](reviews/0091-0082-boundary-storage-inventory.md); no runtime implementation is implied.
 - **#55:** open and deferred until the repository owner specifically
   requests that work.
 
