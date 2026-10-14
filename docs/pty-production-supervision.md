@@ -11,12 +11,19 @@ supervision service, never a path supplied by `session.spawn`.
 When unset, `sessiond` discovers its own cgroup from
 `/proc/self/cgroup` and uses that delegated unit scope.
 
-Before serving production requests, `sessiond` verifies the real
-cgroup-v2 filesystem, creates a separate management leaf, moves
-itself into that leaf, and enables delegated CPU, memory and process
-controllers. If any of those steps fail, production startup fails
-closed. The service never attempts to acquire the system cgroup
-hierarchy or elevate privileges.
+On startup, `sessiond` attempts to provision the delegated scope:
+it verifies the real cgroup-v2 filesystem, creates a separate management
+leaf, moves itself into that leaf, and enables CPU, memory and process
+controllers. Failed provisioning does not bring down unrelated Session
+metadata or SQLite endpoints. Instead, `session.spawn` returns a typed
+`unavailable` error and does not launch an uncontained shell. The daemon
+never silently switches to development isolation after provisioning
+fails, and never attempts to elevate privileges.
+
+The CI regression `scripts/test-sessiond-pty-unavailable.py` starts
+an actual `sessiond` with an invalid delegation root. It verifies that
+ordinary Session metadata can be created and listed while supervised
+PTY spawning is denied.
 
 Every supervised PTY creates a new `pty-<random>` cgroup in that subtree.
 The guardian blocks the shell before exec, installs pids, memory and CPU
