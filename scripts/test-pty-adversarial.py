@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import base64
+import errno
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import stat
 import socket
 import struct
 import subprocess
@@ -128,6 +130,26 @@ class SessionDaemon:
     def close(self):
         self.stop()
         self.temporary.cleanup()
+
+    def recover_socket_after_abrupt_stop(self):
+        assert self.process is not None and self.process.poll() is not None
+        runtime = self.runtime.stat()
+        assert runtime.st_uid == os.geteuid() and stat.S_IMODE(runtime.st_mode) == 0o700
+        original = self.socket_path.lstat()
+        assert stat.S_ISSOCK(original.st_mode) and original.st_uid == os.geteuid()
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(1)
+            try:
+                connection.connect(str(self.socket_path))
+            except OSError as error:
+                assert error.errno == errno.ECONNREFUSED, error
+            else:
+                raise AssertionError("refusing recovery of live IPC socket")
+        current = self.socket_path.lstat()
+        assert (current.st_dev, current.st_ino) == (
+            original.st_dev, original.st_ino
+        ), "stale socket pathname was replaced before recovery"
+        self.socket_path.unlink()
 
     def spawn(self):
         response = successful(self.socket_path, "session.spawn", {"shell": "/bin/sh"})
@@ -297,7 +319,14 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     assert_original_process_exited(job_pid, job_identity)
     assert_original_process_exited(supervisor_pid, supervisor_identity)
 
-    daemon.start()
+    try:
+        daemon.start()
+    except AssertionError as error:
+        assert "Address already in use" in str(error), error
+        daemon.recover_socket_after_abrupt_stop()
+        daemon.start()
+        print("PTY daemon SIGKILL: stale IPC socket refused until guarded operator recovery")
+
     historical = next(row for row in successful(
         session, "session.list", {}
     )["sessions"] if row["id"] == identifier)

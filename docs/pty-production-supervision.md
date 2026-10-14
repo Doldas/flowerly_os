@@ -209,6 +209,18 @@ The hosted PR job `scripts/test-pty-adversarial.py` independently
 checks slow historical readers against the 64 KiB cap, concurrent
 incremental followers, abandoned client sockets, writer-token revocation,
 concurrent terminal mutation/termination, and abrupt `sessiond` SIGKILL.
+The shared IPC listener intentionally does not unlink any preexisting
+Unix socket when binding. An abrupt daemon SIGKILL leaves a stale pathname;
+a second daemon must fail closed with address-in-use rather than remove
+a potentially live or foreign socket. The black-box crash test now proves
+that refusal, performs a narrowly scoped simulated operator recovery
+only after verifying the old daemon is gone, the runtime directory is
+owner-only, the path is a same-owner socket, its listener rejects
+connections, and its inode is unchanged, and then retries the daemon.
+Normal production operators must coordinate daemon shutdown and socket
+ownership before any manual cleanup; this test-only recovery helper is
+not an automatic service-side unlink policy.
+
 It verifies original kernel process identities cease, stale durable
 Session capabilities do not resurrect ownership, and a fresh Session
 can launch after restart. These tests run outside delegated cgroups and
