@@ -1,9 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+write_management_pid() {
+  local root="$1"
+  mkdir -p "$root/management"
+  printf '%s' "$BASHPID" > "$root/management/cgroup.procs"
+}
+
+if [[ "${1:-}" == "--verify-management-pid" ]]; then
+  temporary="$(mktemp -d)"
+  trap 'rm -rf "$temporary"' EXIT
+  write_management_pid "$temporary"
+  [[ "$(cat "$temporary/management/cgroup.procs")" == "$BASHPID" ]] || {
+    printf '%s\n' "PTY management cgroup writer did not use the live Bash PID" >&2
+    exit 1
+  }
+  printf '%s\n' "PTY management cgroup PID writer verified"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--system" ]]; then
   if [[ $(id -u) -ne 0 || -z "${2:-}" || $(id -u "$2") -eq 0 ]]; then
     printf '%s\n' "System-delegated PTY acceptance requires root invocation and a non-root service account" >&2
+    exit 1
+  fi
+  if [[ "$(id -Gn "$2")" != "$(id -gn "$2")" ]]; then
+    printf '%s\n' "System-delegated PTY acceptance must not use an account with supplementary groups" >&2
     exit 1
   fi
   exec systemd-run --system --wait --collect --pipe \
@@ -32,8 +54,7 @@ if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
 fi
 
 if [[ "${1:-}" == "--delegated" ]]; then
-  mkdir -p "$FLOWERLY_PTY_CGROUP_ROOT/management"
-  printf '%s' "$" > "$FLOWERLY_PTY_CGROUP_ROOT/management/cgroup.procs"
+  write_management_pid "$FLOWERLY_PTY_CGROUP_ROOT"
   printf '%s' '+cpu +memory +pids' > "$FLOWERLY_PTY_CGROUP_ROOT/cgroup.subtree_control"
 fi
 

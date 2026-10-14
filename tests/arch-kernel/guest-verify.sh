@@ -39,6 +39,7 @@ echo "systemd=$(systemctl --version | head -n1)"
 echo "rustc=$(rustc --version)"
 echo "cargo=$(cargo --version)"
 echo "just=$(just --version)"
+echo "python=$(python3 --version)"
 
 echo
 echo "== Formatting =="
@@ -59,6 +60,35 @@ just test
 echo
 echo "== Release build =="
 just build
+
+echo
+echo "== PTY root-refusal negative, unprivileged ownership and adversarial stream/crash tests =="
+sudo python3 scripts/test-pty-guardian.py --expect-root-denied
+python3 scripts/test-pty-guardian.py
+python3 scripts/test-pty-adversarial.py target/release
+python3 scripts/test-sessiond-pty-flow.py target/release
+
+echo
+echo "== Production delegated cgroup v2, same-UID escape, setsid descendant and guardian crash =="
+acceptance_user=flowerly-pty-ci
+acceptance_root=/opt/flowerly-pty-acceptance
+if ! id "$acceptance_user" >/dev/null 2>&1; then
+    sudo useradd --system --user-group --create-home \
+        --home-dir /var/lib/flowerly-pty-ci \
+        --shell "$(command -v nologin)" "$acceptance_user"
+fi
+if [[ "$(id -Gn "$acceptance_user")" != "$acceptance_user" ]]; then
+    echo "PTY acceptance user must have no supplementary groups" >&2
+    exit 1
+fi
+sudo install -d -m 0755 "$acceptance_root/scripts"
+sudo install -m 0644 scripts/arch-pty-cgroup-acceptance.sh \
+    scripts/test-pty-cgroup.py scripts/pty-guardian.py \
+    "$acceptance_root/scripts"
+(
+    cd "$acceptance_root"
+    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user"
+)
 
 echo
 echo "== Documentation inputs =="

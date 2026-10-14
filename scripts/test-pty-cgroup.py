@@ -69,6 +69,57 @@ def require_explicit_delegation(root):
         print("Production fail-closed verified; delegated cgroup e2e NOT VERIFIED")
 
 
+def assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name):
+    destinations = (
+        ("MANAGEMENT", Path(root) / "management" / "cgroup.procs"),
+        ("PARENT", Path(root) / "cgroup.procs"),
+    )
+    for label, destination in destinations:
+        assert destination.is_file(), f"missing migration target: {destination}"
+        source = (
+            "import os\n"
+            "from pathlib import Path\n"
+            f"group_name = {group_name!r}\n"
+            f"destination = {str(destination)!r}\n"
+            f"label = {label!r}\n"
+            "membership = Path('/proc/self/cgroup').read_text().strip()\n"
+            "if not membership.endswith('/' + group_name):\n"
+            "    print('PTY_MIGRATION_' + label + '_INVALID:0', flush=True)\n"
+            "else:\n"
+            "    try:\n"
+            "        with open(destination, 'w', encoding='ascii') as target:\n"
+            "            target.write(str(os.getpid()))\n"
+            "    except OSError as error:\n"
+            "        print('PTY_MIGRATION_' + label + '_DENIED:' + str(error.errno), flush=True)\n"
+            "    else:\n"
+            "        print('PTY_MIGRATION_' + label + '_ESCAPED:0', flush=True)\n"
+        )
+        encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+        command = (
+            "python3 -c 'import base64; exec(base64.b64decode(\"" + encoded + "\"))'\n"
+        ).encode()
+        assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+        pattern = re.compile(
+            rb"PTY_MIGRATION_" + label.encode("ascii") + rb"_(DENIED|ESCAPED|INVALID):(\d+)"
+        )
+        for _ in range(150):
+            reply = request(path, {"op": "read", "cursor": 0})
+            match = pattern.search(base64.b64decode(reply["output_base64"]))
+            if match:
+                outcome = match.group(1)
+                error = int(match.group(2))
+                permitted_errors = (1, 13) if label == "MANAGEMENT" else (1, 13, 95)
+                assert outcome == b"DENIED" and error in permitted_errors, (
+                    f"{label} migration bypassed session containment or returned an unexpected result: "
+                    f"{outcome!r}, errno={error}"
+                )
+                print(f"Delegated cgroup: same-UID migration to {label.lower()} denied (errno={error})")
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(f"{label} cgroup migration probe did not return a result")
+
+
 def exercise_real_cgroup(root):
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-cgroup-") as folder:
         path = Path(folder) / "cgroup.sock"
@@ -99,6 +150,7 @@ def exercise_real_cgroup(root):
             assert (group / "memory.max").read_text().strip() == str(512 * 1024 * 1024)
             assert (group / "cpu.max").read_text().strip() == "100000 100000"
             assert str(shell_pid) in (group / "cgroup.procs").read_text().split()
+            assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name)
             command = (
                 b"python3 -c 'import subprocess; p=subprocess.Popen("
                 b"[\"sleep\",\"60\"],start_new_session=True);"

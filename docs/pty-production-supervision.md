@@ -157,6 +157,110 @@ cgroup to disappear before marking historical records unavailable.
 The new guard rejects legacy metadata-only `session.terminate` for
 a supervised PTY whose guardian is no longer owned.
 
+## Current trusted-runner deployment blocker
+
+The trusted release CI run on commit `b77eaa0cea45f0ae589f0202389f77b00465ec95`
+confirmed EUID 0 for the runner and a working dedicated unprivileged PTY
+service identity (EUID 997). Root refusal, real guardian ownership, the
+development-mode Flow A to B to A acceptance, and required-cgroup fail-close
+passed. The release-only delegated positive gate failed because the
+runner cannot contact a systemd system manager: `System has not been booted
+with systemd as init system (PID 1)`. That is an infrastructure blocker,
+not evidence of valid delegation. Do not change the gate to skip, fall back
+to development isolation, or declare release CI green on that basis.
+
+The delegated kernel test now additionally executes an interactive
+same-credential subprocess that attempts to write its own PID first to
+the sibling **management** `cgroup.procs`, then to the delegated
+**parent** `cgroup.procs`. The sibling move must be denied by Linux
+credentials/permissions (EPERM/EACCES); a parent move may also be rejected
+by the cgroup-v2 no-internal-process constraint (EOPNOTSUPP), which is
+**not** proof of a credential boundary. Successful migration or any
+unexpected result fails the acceptance test. Even a passing direct-migration probe alone does
+not prove namespace escape, cross-UID boundaries or the broader malicious
+same-UID threat model; those require additional independent isolation
+review and adversarial execution inside the intended Arch guest.
+
+The Arch VM export now verifies that the requested commit equals the
+checked-out Git HEAD and constructs its transfer archive with
+`git archive <exact SHA>`. This excludes untracked and modified working
+directory contents from the certified guest source and ensures the test
+report's commit identity matches the bytes sent to the VM.
+
+Release-branch CI now invokes the exact-commit QEMU/Arch guest acceptance
+rather than assuming the containerized trusted runner has systemd PID 1.
+The host prerequisite script is shared with the nightly Arch workflow.
+The release branch remains red on missing QEMU/OVMF, guest boot failure,
+delegation failure, descendant escape, or failed malicious migration denial.
+The workflow uploads the QEMU console, guest SSH transcript, and final
+guest report when available, including when verification fails.
+
+The guest's administrative `flowerly` account has passwordless sudo
+for package installation and therefore is **not** an acceptable workload
+credential for the production containment test. Guest verification creates
+a distinct unprivileged `flowerly-pty-ci` account without supplementary
+groups or sudo privileges, installs only the test runner and guardian under
+a root-owned read-only acceptance directory, and runs the delegated
+systemd service under that account. The root entrypoint rejects
+supplementary-group accounts instead of accidentally granting the shell
+the guest administrator's authority.
+
+The official `tests/arch-kernel/guest-verify.sh` now executes these PTY
+regressions **inside the booted and upgraded Arch guest**, including root
+refusal as a negative test and the delegated positive cgroup test as a
+systemd-managed unprivileged service. The guest report captures the
+result at the exact exported commit SHA. A successful Rust build,
+development-mode shell replay, or a hosted PR check cannot replace the
+delegated production result. A failed migration-denial check makes the
+Arch guest acceptance red by design.
+
+Supervised spawn now retains ownership of each uncommitted guardian
+through a scoped pending-process guard. Any startup, SQLite-insertion or
+registry-adoption failure attempts bounded graceful termination, then kills
+and reaps the guardian if needed. Only after durable Session insertion and
+registry ownership succeed is the process released from this guard.
+The abrupt-death matrix now also models an ambiguous
+`session.spawn` response: a client submits a complete command, receives
+only the length prefix, and discards the response body containing its
+control token. The test requires one durable live Session before daemon
+failure and confirms that its original PID exits and its durable
+identity becomes suspended/detached after restart. This documents why
+clients must **not** blindly retry external process creation and why
+operation-ID exactly-once claims remain explicitly unsupported.
+
+The Linux black-box test injects a real SQLite `BEFORE INSERT` failure,
+then verifies no new reachable orphan guardian, no fictitious durable
+Session and successful subsequent spawning. External process creation
+remains non-transactional and operation IDs for `session.spawn` are still
+rejected; these protections address failure cleanup, not exactly-once
+process effects after an ambiguous client timeout.
+
+The hosted PR job `scripts/test-pty-adversarial.py` independently
+checks slow historical readers against the 64 KiB cap, concurrent
+incremental followers, abandoned client sockets, writer-token revocation,
+concurrent terminal mutation/termination, and abrupt `sessiond` SIGKILL.
+When terminate wins a race, follow/resize/heartbeat are expected to return
+typed `unavailable` rather than succeed. The concurrent-client test
+requires either successful completion before termination or precisely
+`unavailable` afterward, with a bounded response time; unrelated errors
+are rejected.
+The shared IPC listener intentionally does not unlink any preexisting
+Unix socket when binding. An abrupt daemon SIGKILL leaves a stale pathname;
+a second daemon must fail closed with address-in-use rather than remove
+a potentially live or foreign socket. The black-box crash test now proves
+that refusal, performs a narrowly scoped simulated operator recovery
+only after verifying the old daemon is gone, the runtime directory is
+owner-only, the path is a same-owner socket, its listener rejects
+connections, and its inode is unchanged, and then retries the daemon.
+Normal production operators must coordinate daemon shutdown and socket
+ownership before any manual cleanup; this test-only recovery helper is
+not an automatic service-side unlink policy.
+
+It verifies original kernel process identities cease, stale durable
+Session capabilities do not resurrect ownership, and a fresh Session
+can launch after restart. These tests run outside delegated cgroups and
+therefore are not substitutes for the production cgroup crash matrix.
+
 ## Open acceptance evidence
 
 Before marking issue #50 complete, require the positive delegated

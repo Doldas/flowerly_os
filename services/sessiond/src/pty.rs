@@ -43,6 +43,45 @@ struct WriterLease {
     expires_at: Instant,
 }
 
+struct PendingGuardian {
+    process: Option<Child>,
+    socket: PathBuf,
+}
+
+impl PendingGuardian {
+    fn new(process: Child, socket: PathBuf) -> Self {
+        Self {
+            process: Some(process),
+            socket,
+        }
+    }
+
+    fn process(&mut self) -> &mut Child {
+        self.process.as_mut().expect("pending guardian process")
+    }
+
+    fn into_owned(mut self) -> Child {
+        self.process.take().expect("pending guardian ownership")
+    }
+}
+
+impl Drop for PendingGuardian {
+    fn drop(&mut self) {
+        let Some(mut process) = self.process.take() else {
+            return;
+        };
+        let _ = exchange(&self.socket, &json!({"op": "terminate"}));
+        for _ in 0..10 {
+            if process.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = process.kill();
+        let _ = process.wait();
+    }
+}
+
 const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
@@ -295,9 +334,12 @@ impl Supervisor {
                 ));
             }
         }
-        let mut guardian = command
-            .spawn()
-            .map_err(|error| internal(format!("cannot launch PTY guardian: {error}")))?;
+        let mut pending = PendingGuardian::new(
+            command
+                .spawn()
+                .map_err(|error| internal(format!("cannot launch PTY guardian: {error}")))?,
+            socket.clone(),
+        );
         let deadline = Instant::now() + Duration::from_secs(2);
         let pid = loop {
             if let Ok(result) = exchange(&socket, &json!({"op": "status"})) {
@@ -305,14 +347,13 @@ impl Supervisor {
                     break i32::try_from(pid).map_err(|_| internal("child PID overflow"))?;
                 }
             }
-            if guardian
+            if pending
+                .process()
                 .try_wait()
                 .map_err(|error| internal(error.to_string()))?
                 .is_some()
                 || Instant::now() > deadline
             {
-                let _ = guardian.kill();
-                let _ = guardian.wait();
                 return Err((ErrorCode::Unavailable, "PTY startup failed".to_owned()));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -340,26 +381,26 @@ impl Supervisor {
             .map_err(|_| internal("store lock poisoned"))?
             .insert_session_with_provenance(&session, &[provenance]);
         if let Err(error) = insertion {
-            let _ = exchange(&socket, &json!({"op": "terminate"}));
             return Err((super::storage_error_code(&error), error.to_string()));
         }
-        let supervisor_pid = guardian.id();
+        let supervisor_pid = pending.process().id();
         let control_token = Uuid::new_v4().to_string();
-        self.sessions
+        let mut sessions = self
+            .sessions
             .lock()
-            .map_err(|_| internal("registry lock poisoned"))?
-            .insert(
-                session_id.to_string(),
-                Guardian {
-                    process: guardian,
-                    socket,
-                    actor: actor.to_owned(),
-                    control_token: control_token.clone(),
-                    writer: None,
-                    command_lock: Arc::new(Mutex::new(())),
-                    finished_at: None,
-                },
-            );
+            .map_err(|_| internal("registry lock poisoned"))?;
+        sessions.insert(
+            session_id.to_string(),
+            Guardian {
+                process: pending.into_owned(),
+                socket,
+                actor: actor.to_owned(),
+                control_token: control_token.clone(),
+                writer: None,
+                command_lock: Arc::new(Mutex::new(())),
+                finished_at: None,
+            },
+        );
         Ok(
             json!({"id": session_id, "pid": pid, "supervisor_pid": supervisor_pid, "control_token": control_token, "state": "running", "presentation_state": "detached"}),
         )
