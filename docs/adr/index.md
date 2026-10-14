@@ -30,6 +30,10 @@ and the reasoning behind them.
   — proposed dual-core storage and Standalone/Cluster/CoreOnly modes;
   ADR-0011 remains the accepted live topology pending migration review.
 
+- [0018: Strict Boundary Isolation Layer (Layer 1.5)](0018-strict-boundary-isolation-layer.md)
+  — proposed kernel/driver facade boundaries, subject to security
+  review and ADR-0017 compatibility.
+
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
 [../rfcs/](../rfcs/).
