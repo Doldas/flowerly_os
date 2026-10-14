@@ -74,8 +74,12 @@ def main(binary_directory):
                 time.sleep(0.04)
             else:
                 raise AssertionError("metadata daemon not ready")
-            metadata = command(socket_path, "session.create", {"kind": "note"})
+            metadata = command(socket_path, "session.create", {})
             assert metadata["type"] == "ok", metadata
+            terminated = command(
+                socket_path, "session.terminate", {"id": metadata["data"]["id"]}
+            )
+            assert terminated["type"] == "ok", terminated
             denied = command(socket_path, "session.spawn", {"shell": "/bin/sh"})
             assert denied["type"] == "err", denied
             assert denied["code"] == "unavailable", denied
