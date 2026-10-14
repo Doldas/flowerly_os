@@ -20,17 +20,20 @@ metadata or SQLite endpoints. Instead, `session.spawn` returns a typed
 never silently switches to development isolation after provisioning
 fails, and never attempts to elevate privileges.
 
-The release CI records the runner's actual UID and provisions a dedicated
-`flowerly-pty-ci` Linux service account. Interactive guardian, cgroup
-fail-closed and Flow A to B to A tests execute as that unprivileged UID,
-with a clean environment and readable release binaries. A separate
-root-executed negative test verifies that the guardian rejects root-owned
-shell startup before binding a control socket. Missing account provisioning,
-workspace access or root refusal fails the CI job; the guardian security
-policy is not relaxed. The trusted release-push gate uses a delegated
-transient **system** service with `User=flowerly-pty-ci` and `Delegate=yes`
-rather than assuming a root-runner account has a systemd user manager.
-A PR CI pass is not proof of this release-only delegated kernel check.
+The CI logs the runner's actual UID. Hosted PR runners use their already
+unprivileged runner identity for interactive PTY regressions. Trusted
+root-owned release runners provision a dedicated `flowerly-pty-ci` Linux
+service account without supplementary groups and run the guardian,
+cgroup fail-closed and Flow A to B to A tests as that unprivileged UID.
+Both paths use a clean test environment and require accessible release
+binaries. A separate root-executed negative test verifies that the guardian
+rejects root-owned shell startup before binding a control socket. Missing
+account provisioning, workspace access or root refusal fails the CI job;
+the guardian security policy is not relaxed. The trusted release-push
+gate uses a delegated transient **system** service with
+`User=flowerly-pty-ci` and `Delegate=yes`, rather than assuming a
+root-runner account has a systemd user manager. A PR CI pass is not
+proof of this release-only delegated kernel check.
 
 The CI regression `scripts/test-sessiond-pty-unavailable.py` starts
 an actual `sessiond` with an invalid delegation root. It verifies that
