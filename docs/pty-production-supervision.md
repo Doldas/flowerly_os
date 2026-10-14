@@ -178,6 +178,15 @@ not prove namespace escape, cross-UID boundaries or the broader malicious
 same-UID threat model; those require additional independent isolation
 review and adversarial execution inside the intended Arch guest.
 
+The official `tests/arch-kernel/guest-verify.sh` now executes these PTY
+regressions **inside the booted and upgraded Arch guest**, including root
+refusal as a negative test and the delegated positive cgroup test as a
+systemd-managed unprivileged service. The guest report captures the
+result at the exact exported commit SHA. A successful Rust build,
+development-mode shell replay, or a hosted PR check cannot replace the
+delegated production result. A failed migration-denial check makes the
+Arch guest acceptance red by design.
+
 The hosted PR job `scripts/test-pty-adversarial.py` independently
 checks slow historical readers against the 64 KiB cap, concurrent
 incremental followers, abandoned client sockets, writer-token revocation,

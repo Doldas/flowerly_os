@@ -61,6 +61,17 @@ echo "== Release build =="
 just build
 
 echo
+echo "== PTY root-refusal negative, unprivileged ownership and adversarial stream/crash tests =="
+sudo python3 scripts/test-pty-guardian.py --expect-root-denied
+python3 scripts/test-pty-guardian.py
+python3 scripts/test-pty-adversarial.py target/release
+python3 scripts/test-sessiond-pty-flow.py target/release
+
+echo
+echo "== Production delegated cgroup v2, same-UID escape, setsid descendant and guardian crash =="
+sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$(id -un)"
+
+echo
 echo "== Documentation inputs =="
 bash ./scripts/check-docs.sh
 
