@@ -129,8 +129,25 @@ def test_shell_limits(path):
         time.sleep(.02)
     raise AssertionError("PTY child limits could not be observed")
 
+def test_root_shell_refusal():
+    assert os.geteuid() == 0, "root refusal must be tested as root"
+    with tempfile.TemporaryDirectory(prefix="flowerly-pty-root-refusal-") as root:
+        path = Path(root) / "root.sock"
+        result = subprocess.run(
+            [sys.executable, str(HELPER), str(path), "/bin/sh", str(os.getpid())],
+            env=dict(os.environ, FLOWERLY_PTY_ISOLATION="development"),
+            capture_output=True, timeout=5,
+        )
+        assert result.returncode != 0, "root-owned guardian unexpectedly started"
+        assert b"refusing root-owned PTY shell; run as an unprivileged user" in result.stderr, result.stderr
+        assert not path.exists(), "root-owned guardian created a control socket"
+    print("PTY guardian: root-owned shell startup rejected before control socket creation")
+
+
 def main():
     assert sys.platform == "linux"
+    assert os.geteuid() != 0, "interactive PTY regressions require an unprivileged Linux UID"
+    print(f"PTY guardian positive tests: EUID={os.geteuid()}", flush=True)
     os.environ["FLOWERLY_PTY_ISOLATION"] = "development"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-guardian-") as root:
         test_forced_guardian_death(root)
@@ -202,4 +219,9 @@ def main():
                     supervisor.wait(timeout=3)
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--expect-root-denied"]:
+        test_root_shell_refusal()
+    elif len(sys.argv) == 1:
+        main()
+    else:
+        raise SystemExit("usage: test-pty-guardian.py [--expect-root-denied]")

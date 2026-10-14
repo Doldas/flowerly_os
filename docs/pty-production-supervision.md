@@ -20,6 +20,21 @@ metadata or SQLite endpoints. Instead, `session.spawn` returns a typed
 never silently switches to development isolation after provisioning
 fails, and never attempts to elevate privileges.
 
+The CI logs the runner's actual UID. Hosted PR runners use their already
+unprivileged runner identity for interactive PTY regressions. Trusted
+root-owned release runners provision a dedicated `flowerly-pty-ci` Linux
+service account without supplementary groups and run the guardian,
+cgroup fail-closed and Flow A to B to A tests as that unprivileged UID.
+Both paths use a clean test environment and require accessible release
+binaries. A separate root-executed negative test verifies that the guardian
+rejects root-owned shell startup before binding a control socket. Missing
+account provisioning, workspace access or root refusal fails the CI job;
+the guardian security policy is not relaxed. The trusted release-push
+gate uses a delegated transient **system** service with
+`User=flowerly-pty-ci` and `Delegate=yes`, rather than assuming a
+root-runner account has a systemd user manager. A PR CI pass is not
+proof of this release-only delegated kernel check.
+
 The CI regression `scripts/test-sessiond-pty-unavailable.py` starts
 an actual `sessiond` with an invalid delegation root. It verifies that
 ordinary Session metadata can be created and listed while supervised
@@ -126,7 +141,11 @@ bash scripts/arch-pty-cgroup-acceptance.sh
 The script creates a delegated transient systemd user scope, discovers
 its cgroup-v2 root, moves its own runner into a separate management
 leaf, enables CPU, memory and process controllers, and then runs the
-real `setsid()` guardian-crash test. It stops on missing kernel
+real `setsid()` guardian-crash test. On trusted root-owned GitHub runners,
+`bash scripts/ci-pty-user.sh delegated` instead launches a transient
+systemd system service under the dedicated unprivileged PTY account;
+this path requires systemd system-manager delegation and fails closed
+if the delegated cgroup is unavailable. It stops on missing kernel
 delegation or any unexpected surviving descendant. Run against the
 **exact commit** proposed for release, and archive the guest image,
 kernel, systemd unit configuration, workflow SHA, console and test
