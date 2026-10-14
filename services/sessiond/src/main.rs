@@ -43,7 +43,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(target_os = "linux")]
-    let cgroup_root = prepare_cgroup_root()?;
+    let cgroup_root = prepare_cgroup_root().map_err(|error| error.to_string());
+    #[cfg(target_os = "linux")]
+    if let Err(reason) = &cgroup_root {
+        tracing::warn!(reason, "PTY cgroup provisioning unavailable; supervised spawning disabled");
+    }
     let store = open_store(&config)?;
     #[cfg(target_os = "linux")]
     for session in store
@@ -51,7 +55,14 @@ async fn main() -> anyhow::Result<()> {
         .context("listing sessions for PTY recovery")?
     {
         if session.kind == "local-pty" && session.pid.is_some() {
-            terminate_stale_cgroup(&session.id, cgroup_root.as_deref())?;
+            if let Ok(root) = &cgroup_root {
+                terminate_stale_cgroup(&session.id, root.as_deref())?;
+            } else {
+                tracing::warn!(
+                    session_id = %session.id,
+                    "PTY cgroup recovery unavailable without delegation"
+                );
+            }
         }
         if session.kind == "local-pty"
             && session.pid.is_some()
