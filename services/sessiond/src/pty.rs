@@ -47,13 +47,13 @@ const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
     runtime: PathBuf,
-    cgroup_root: Option<PathBuf>,
+    cgroup_root: Result<Option<PathBuf>, String>,
     launch: Mutex<()>,
     sessions: Mutex<HashMap<String, Guardian>>,
 }
 
 impl Supervisor {
-    pub fn new(runtime: PathBuf, cgroup_root: Option<PathBuf>) -> Self {
+    pub fn new(runtime: PathBuf, cgroup_root: Result<Option<PathBuf>, String>) -> Self {
         Self {
             runtime,
             cgroup_root,
@@ -191,6 +191,12 @@ impl Supervisor {
             .launch
             .lock()
             .map_err(|_| internal("launch lock poisoned"))?;
+        if let Err(reason) = &self.cgroup_root {
+            return Err((
+                ErrorCode::Unavailable,
+                format!("PTY cgroup isolation unavailable: {reason}"),
+            ));
+        }
         let stale = {
             let mut sessions = self
                 .sessions
@@ -271,14 +277,23 @@ impl Supervisor {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if let Some(root) = &self.cgroup_root {
-            command
-                .env("FLOWERLY_PTY_ISOLATION", "required")
-                .env("FLOWERLY_PTY_CGROUP_ROOT", root);
-        } else {
-            command
-                .env("FLOWERLY_PTY_ISOLATION", "development")
-                .env_remove("FLOWERLY_PTY_CGROUP_ROOT");
+        match &self.cgroup_root {
+            Ok(Some(root)) => {
+                command
+                    .env("FLOWERLY_PTY_ISOLATION", "required")
+                    .env("FLOWERLY_PTY_CGROUP_ROOT", root);
+            }
+            Ok(None) => {
+                command
+                    .env("FLOWERLY_PTY_ISOLATION", "development")
+                    .env_remove("FLOWERLY_PTY_CGROUP_ROOT");
+            }
+            Err(reason) => {
+                return Err((
+                    ErrorCode::Unavailable,
+                    format!("PTY cgroup isolation unavailable: {reason}"),
+                ));
+            }
         }
         let mut guardian = command
             .spawn()
