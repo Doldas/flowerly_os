@@ -10,10 +10,10 @@ ovmf_paths=(
 )
 
 host_ready() {
-  for tool in ${required_tools[@]}; do
+  for tool in "${required_tools[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || return 1
   done
-  for candidate in ${ovmf_paths[@]}; do
+  for candidate in "${ovmf_paths[@]}"; do
     [[ -f "$candidate" ]] && return 0
   done
   return 1

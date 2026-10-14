@@ -178,6 +178,14 @@ not prove namespace escape, cross-UID boundaries or the broader malicious
 same-UID threat model; those require additional independent isolation
 review and adversarial execution inside the intended Arch guest.
 
+Release-branch CI now invokes the exact-commit QEMU/Arch guest acceptance
+rather than assuming the containerized trusted runner has systemd PID 1.
+The host prerequisite script is shared with the nightly Arch workflow.
+The release branch remains red on missing QEMU/OVMF, guest boot failure,
+delegation failure, descendant escape, or failed malicious migration denial.
+The workflow uploads the QEMU console, guest SSH transcript, and final
+guest report when available, including when verification fails.
+
 The official `tests/arch-kernel/guest-verify.sh` now executes these PTY
 regressions **inside the booted and upgraded Arch guest**, including root
 refusal as a negative test and the delegated positive cgroup test as a

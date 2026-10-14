@@ -19,7 +19,9 @@ SSH_PORT="${ARCH_VM_SSH_PORT:-22222}"
 VM_CPUS="${ARCH_VM_CPUS:-4}"
 VM_MEMORY_MB="${ARCH_VM_MEMORY_MB:-6144}"
 
-mkdir -p "$CACHE_DIR" "$REPORT_DIR"
+mkdir -p "$CACHE_DIR"
+rm -rf "$REPORT_DIR"
+mkdir -p "$REPORT_DIR"
 rm -f "$WORK_DIR/qemu.pid" "$WORK_DIR/overlay.qcow2" "$WORK_DIR/seed.img"
 rm -rf "$WORK_DIR/repo-export"
 mkdir -p "$WORK_DIR/repo-export"
@@ -260,12 +262,23 @@ printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
     'cat > "$HOME/flowerly_os/.flowerly-tested-commit"'
 
 echo "running complete Flowerly verification inside Arch VM"
+set +e
 ssh "${ssh_opts[@]}" "$guest" \
-    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash tests/arch-kernel/guest-verify.sh "$HOME/flowerly_os"'
+    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash tests/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
+    2>&1 | tee "$REPORT_DIR/guest-execution.log"
+guest_status=("${PIPESTATUS[@]}")
+set -e
 
-scp "${scp_opts[@]}" \
+if ! scp "${scp_opts[@]}" \
     "$guest:flowerly_os/target/arch-kernel-report.txt" \
-    "$REPORT_DIR/guest-report.txt"
+    "$REPORT_DIR/guest-report.txt"; then
+    echo "Arch guest report could not be retrieved; preserved SSH and QEMU logs" >&2
+    exit 1
+fi
+if [[ "${guest_status[0]}" -ne 0 || "${guest_status[1]}" -ne 0 ]]; then
+    echo "Arch guest verification failed: ssh_exit=${guest_status[0]} tee_exit=${guest_status[1]}" >&2
+    exit 1
+fi
 
 {
     echo "ref=$TEST_REF"
