@@ -71,6 +71,9 @@ jobs:
       - name: Black-box external SQLite writer contention across daemons
         run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
 
+      - name: Verify delegated management cgroup writes the real supervisor PID
+        run: bash ./scripts/arch-pty-cgroup-acceptance.sh --verify-management-pid
+
       - name: Session daemon remains available without PTY cgroup delegation
         run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
 
