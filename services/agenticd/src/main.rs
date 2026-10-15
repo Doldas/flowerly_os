@@ -6,6 +6,7 @@ use agentic_core::{
     coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateExecution};
 use agentic_storage::{StorageError, Store};
 use agentic_types::{
     AgentId, Execution, ExecutionId, GoalId, ObjectRef, ProvenanceEdge, ProvenanceRelation,
@@ -180,9 +181,14 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 });
             }
 
-            store
-                .insert_execution_with_provenance(&exec, &edges)
-                .map_err(CommandFailure::storage)?;
+            CoreCommandRepository::create_execution(
+                store,
+                CreateExecution {
+                    execution: &exec,
+                    provenance: &edges,
+                },
+            )
+            .map_err(CommandFailure::storage)?;
             tracing::info!(
                 execution_id = %exec.id,
                 agent_id = ?exec.agent_id,
@@ -198,9 +204,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing `id`")?;
             let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
-            let record = store
-                .get_execution(&exec_id)
-                .map_err(CommandFailure::storage)?;
+            let record =
+                CoreQueryRepository::execution(store, &exec_id).map_err(CommandFailure::storage)?;
             let data = match record {
                 Some(record) => serde_json::to_value(&record).map_err(err_str)?,
                 None => serde_json::json!(null),
@@ -208,7 +213,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(serde_json::json!({ "execution": data }))
         }
         "execution.list" => {
-            let records = store.list_executions().map_err(CommandFailure::storage)?;
+            let records =
+                CoreQueryRepository::executions(store).map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`").into()),
@@ -307,6 +313,29 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
         store
+    }
+
+    #[test]
+    fn typed_execution_query_returns_created_record_and_edges() {
+        let mut store = migrated_store();
+        let response = run_command(
+            &mut store,
+            "execution.create",
+            &serde_json::json!({ "command": "true", "reason": "typed facade" }),
+        )
+        .expect("create");
+        let id = ExecutionId::from_str(response["id"].as_str().expect("id")).expect("execution id");
+        let record = CoreQueryRepository::execution(&store, &id)
+            .expect("query")
+            .expect("exists");
+        assert_eq!(record.command.as_deref(), Some("true"));
+        let shown = run_command(
+            &mut store,
+            "execution.show",
+            &serde_json::json!({ "id": id }),
+        )
+        .expect("show");
+        assert_eq!(shown["execution"]["id"], response["id"]);
     }
 
     #[test]

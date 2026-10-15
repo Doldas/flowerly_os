@@ -10,6 +10,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateSession};
 use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
@@ -82,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.try_lock() {
-        Ok(store) => match store.list_sessions().map(|items| items.len()) {
+        Ok(store) => match CoreQueryRepository::sessions(&*store).map(|items| items.len()) {
             Ok(count) => serde_json::json!({"session_count": count, "ready": true}),
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
@@ -267,8 +268,7 @@ fn validate_session_command(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("missing string arg `id`"))?;
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            let existing = store
-                .get_session(&id)
+            let existing = CoreQueryRepository::session(store, &id)
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
             let session = existing
                 .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
@@ -414,21 +414,32 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     request_payload: &request_json,
                     response_payload: &response_json,
                 };
-                let stored = store
-                    .insert_session_with_provenance_once(&session, &[provenance], &operation)
-                    .map_err(CommandFailure::storage)?;
+                let stored = CoreCommandRepository::create_session_once(
+                    store,
+                    CreateSession {
+                        session: &session,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                    &operation,
+                )
+                .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
-                store
-                    .insert_session_with_provenance(&session, &[provenance])
-                    .map_err(CommandFailure::storage)?;
+                CoreCommandRepository::create_session(
+                    store,
+                    CreateSession {
+                        session: &session,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                )
+                .map_err(CommandFailure::storage)?;
                 intended_response
             };
             tracing::info!(session_id = %response["id"], kind, "session create completed");
             Ok(response)
         }
         "session.list" => {
-            let sessions = store.list_sessions().map_err(CommandFailure::storage)?;
+            let sessions = CoreQueryRepository::sessions(store).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = sessions
                 .iter()
                 .map(|s| {
@@ -451,8 +462,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let session_id = SessionId::from_str(id).map_err(err_str)?;
-            let session = store
-                .get_session(&session_id)
+            let session = CoreQueryRepository::session(store, &session_id)
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("session not found: {id}"))?;
 
@@ -546,6 +556,45 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
         store
+    }
+
+    #[test]
+    fn typed_session_create_replays_without_duplicate_or_lost_provenance() {
+        let mut store = migrated_store();
+        let args = serde_json::json!({
+            "kind": "metadata-only",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-1"
+        });
+        let first = run_command(&mut store, "session.create", &args).expect("first");
+        let replay = run_command(&mut store, "session.create", &args).expect("replay");
+        assert_eq!(first, replay);
+        assert_eq!(store.list_sessions().expect("sessions").len(), 1);
+        let id = SessionId::from_str(first["id"].as_str().expect("id")).expect("typed id");
+        assert_eq!(
+            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+                .expect("edges")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn typed_session_create_rejects_changed_retry_body() {
+        let mut store = migrated_store();
+        let first = serde_json::json!({
+            "kind": "metadata-only",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-conflict"
+        });
+        run_command(&mut store, "session.create", &first).expect("create");
+        let changed = serde_json::json!({
+            "kind": "different-kind",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-conflict"
+        });
+        assert!(run_command(&mut store, "session.create", &changed).is_err());
+        assert_eq!(store.list_sessions().expect("sessions").len(), 1);
     }
 
     #[test]
