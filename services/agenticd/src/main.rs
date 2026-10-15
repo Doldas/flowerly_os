@@ -204,8 +204,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing `id`")?;
             let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
-            let record = CoreQueryRepository::execution(store, &exec_id)
-                .map_err(CommandFailure::storage)?;
+            let record =
+                CoreQueryRepository::execution(store, &exec_id).map_err(CommandFailure::storage)?;
             let data = match record {
                 Some(record) => serde_json::to_value(&record).map_err(err_str)?,
                 None => serde_json::json!(null),
@@ -213,7 +213,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(serde_json::json!({ "execution": data }))
         }
         "execution.list" => {
-            let records = CoreQueryRepository::executions(store).map_err(CommandFailure::storage)?;
+            let records =
+                CoreQueryRepository::executions(store).map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`").into()),
@@ -323,8 +324,7 @@ mod tests {
             &serde_json::json!({ "command": "true", "reason": "typed facade" }),
         )
         .expect("create");
-        let id = ExecutionId::from_str(response["id"].as_str().expect("id"))
-            .expect("execution id");
+        let id = ExecutionId::from_str(response["id"].as_str().expect("id")).expect("execution id");
         let record = CoreQueryRepository::execution(&store, &id)
             .expect("query")
             .expect("exists");
