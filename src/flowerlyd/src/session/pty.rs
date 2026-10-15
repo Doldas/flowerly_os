@@ -8,13 +8,13 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flowerly_core::{coded_error_envelope, ok_envelope};
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::Store;
 use flowerly_core::types::{
     ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId, SessionPresentationState,
     SessionState, Timestamp,
 };
+use flowerly_core::{coded_error_envelope, ok_envelope};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -305,7 +305,11 @@ impl Supervisor {
         }
         let mut command = Command::new("python3");
         command
-            .args(["-u", "-c", include_str!("../../../../scripts/pty-guardian.py")])
+            .args([
+                "-u",
+                "-c",
+                include_str!("../../../../scripts/pty-guardian.py"),
+            ])
             .arg(&socket)
             .arg(shell)
             .arg(std::process::id().to_string())

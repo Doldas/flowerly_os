@@ -2,10 +2,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flowerly_core::{init_tracing, ok_envelope, run_service, ServiceConfig};
-use flowerly_core::ipc::{Envelope, Payload};
 use anyhow::Context;
 use clap::Parser;
+use flowerly_core::ipc::{Envelope, Payload};
+use flowerly_core::{init_tracing, ok_envelope, run_service, ServiceConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -76,8 +76,10 @@ async fn main() -> anyhow::Result<()> {
 
 pub(crate) fn handle_command(request: &Envelope) -> Envelope {
     match &request.payload {
-        Payload::Command { name, .. } if name == "capability.list" =>
-            ok_envelope(request.id.clone(), serde_json::json!({"capabilities": CAPABILITIES})),
+        Payload::Command { name, .. } if name == "capability.list" => ok_envelope(
+            request.id.clone(),
+            serde_json::json!({"capabilities": CAPABILITIES}),
+        ),
         _ => flowerly_core::error_envelope(request.id.clone(), "unknown capability command"),
     }
 }

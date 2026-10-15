@@ -3,18 +3,20 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
-};
+use anyhow::Context;
+use clap::Parser;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
-use flowerly_core::storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateExecution};
+use flowerly_core::storage::repository::{
+    CoreCommandRepository, CoreQueryRepository, CreateExecution,
+};
 use flowerly_core::storage::{StorageError, Store};
 use flowerly_core::types::{
     AgentId, Execution, ExecutionId, GoalId, ObjectRef, ProvenanceEdge, ProvenanceRelation,
     Timestamp,
 };
-use anyhow::Context;
-use clap::Parser;
+use flowerly_core::{
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+};
 use serde_json::Value;
 
 #[derive(Debug, Parser)]

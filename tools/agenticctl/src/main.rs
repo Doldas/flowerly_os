@@ -1,10 +1,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use flowerly_core::default_runtime_dir;
-use flowerly_core::ipc::{self, Envelope, Payload};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use flowerly_core::default_runtime_dir;
+use flowerly_core::ipc::{self, Envelope, Payload};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
@@ -508,17 +508,23 @@ fn flow_reference(target: &str) -> Value {
 }
 
 fn socket(runtime_dir: &std::path::Path, service: &str) -> PathBuf {
-    let daemon = if service == "evolutiond" { "evolutiond" } else { "flowerlyd" };
+    let daemon = if service == "evolutiond" {
+        "evolutiond"
+    } else {
+        "flowerlyd"
+    };
     flowerly_core::ipc::socket_path(runtime_dir, daemon)
 }
 
 async fn call(socket: &std::path::Path, payload: Payload) -> Result<Envelope> {
-    flowerly_core::ipc::call(socket, payload).await.with_context(|| {
-        format!(
-            "cannot contact service at {} — is the daemon running?",
-            socket.display()
-        )
-    })
+    flowerly_core::ipc::call(socket, payload)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot contact service at {} — is the daemon running?",
+                socket.display()
+            )
+        })
 }
 
 fn reply_value(envelope: Envelope) -> Result<Value> {

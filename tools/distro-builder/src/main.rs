@@ -3,7 +3,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "distro-builder", about = "Flowerly OS distribution image tools")]
+#[command(
+    name = "distro-builder",
+    about = "Flowerly OS distribution image tools"
+)]
 struct Args {
     #[command(subcommand)]
     action: Action,
@@ -20,9 +23,9 @@ enum Action {
 fn main() -> Result<()> {
     match Args::parse().action {
         Action::Validate => validate(),
-        Action::Build => bail!(
-            "bootable Arch rootfs/ISO output is not implemented; run distro-builder validate"
-        ),
+        Action::Build => {
+            bail!("bootable Arch rootfs/ISO output is not implemented; run distro-builder validate")
+        }
     }
 }
 

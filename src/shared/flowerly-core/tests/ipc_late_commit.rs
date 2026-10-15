@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flowerly_core::{ok_envelope, run_service, ServiceConfig};
 use flowerly_core::ipc::{call, ErrorCode, Payload};
 use flowerly_core::storage::Store;
 use flowerly_core::types::Flow;
+use flowerly_core::{ok_envelope, run_service, ServiceConfig};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_timed_out_mutation_can_commit_later_and_naive_retry_duplicates_it() {

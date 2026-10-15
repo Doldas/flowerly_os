@@ -46,10 +46,7 @@ struct Job {
 }
 type Queue = mpsc::Sender<Job>;
 
-fn spawn_worker(
-    store: &SharedStore,
-    handler: fn(&SharedStore, &Envelope) -> Envelope,
-) -> Queue {
+fn spawn_worker(store: &SharedStore, handler: fn(&SharedStore, &Envelope) -> Envelope) -> Queue {
     let (tx, mut rx) = mpsc::channel::<Job>(64);
     let store = Arc::clone(store);
     tokio::spawn(async move {
@@ -58,7 +55,9 @@ fn spawn_worker(
             let Job { request, reply } = job;
             let result = tokio::task::spawn_blocking(move || handler(&store, &request)).await;
             match result {
-                Ok(response) => { let _ = reply.send(response); }
+                Ok(response) => {
+                    let _ = reply.send(response);
+                }
                 Err(error) => tracing::error!(%error, "module task panicked"),
             }
         }
@@ -68,15 +67,25 @@ fn spawn_worker(
 
 fn via_queue(tx: &Queue, request: &Envelope) -> Envelope {
     let (reply, received) = std::sync::mpsc::sync_channel(1);
-    if tx.try_send(Job { request: request.clone(), reply }).is_err() {
+    if tx
+        .try_send(Job {
+            request: request.clone(),
+            reply,
+        })
+        .is_err()
+    {
         return coded_error_envelope(
-            request.id.clone(), ErrorCode::Unavailable, "module queue unavailable or full"
+            request.id.clone(),
+            ErrorCode::Unavailable,
+            "module queue unavailable or full",
         );
     }
     match received.recv_timeout(Duration::from_secs(7)) {
         Ok(response) => response,
         Err(_) => coded_error_envelope(
-            request.id.clone(), ErrorCode::Unavailable, "module handler deadline exceeded"
+            request.id.clone(),
+            ErrorCode::Unavailable,
+            "module handler deadline exceeded",
         ),
     }
 }
@@ -93,7 +102,9 @@ impl Router {
     fn handle(&self, request: &Envelope) -> Envelope {
         let Payload::Command { name, .. } = &request.payload else {
             return coded_error_envelope(
-                request.id.clone(), ErrorCode::InvalidArgument, "command required"
+                request.id.clone(),
+                ErrorCode::InvalidArgument,
+                "command required",
             );
         };
         match name.split('.').next() {
@@ -105,7 +116,9 @@ impl Router {
             Some("execution") | Some("agent") => agentic::handle_command(&self.store, request),
             Some("capability") => capability::handle_command(request),
             _ => coded_error_envelope(
-                request.id.clone(), ErrorCode::InvalidArgument, format!("unknown command: {name}")
+                request.id.clone(),
+                ErrorCode::InvalidArgument,
+                format!("unknown command: {name}"),
             ),
         }
     }
@@ -129,8 +142,12 @@ async fn main() -> Result<()> {
         None => ServiceConfig::for_service("flowerlyd"),
     };
     config.name = "flowerlyd".into();
-    if let Some(state_dir) = cli.state_dir { config.state_dir = state_dir; }
-    if let Some(runtime_dir) = cli.runtime_dir { config.runtime_dir = runtime_dir; }
+    if let Some(state_dir) = cli.state_dir {
+        config.state_dir = state_dir;
+    }
+    if let Some(runtime_dir) = cli.runtime_dir {
+        config.runtime_dir = runtime_dir;
+    }
     init_tracing(&config.name, config.log_format);
     let mut db = Store::open(&config.database_path()).context("opening unified state")?;
     db.migrate().context("migrating unified SQLite state")?;
@@ -158,5 +175,6 @@ async fn main() -> Result<()> {
     });
     let handler = Arc::new(move |request: &Envelope| router.handle(request));
     run_service_with_status(config, status, handler)
-        .await.context("flowerlyd terminated")
+        .await
+        .context("flowerlyd terminated")
 }

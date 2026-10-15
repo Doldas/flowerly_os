@@ -3,10 +3,10 @@ mod kvm;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use flowerly_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
-use flowerly_core::ipc::{Envelope, Payload};
 use anyhow::Context;
 use clap::Parser;
+use flowerly_core::ipc::{Envelope, Payload};
+use flowerly_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
 
 #[derive(Debug, Parser)]
 #[command(name = "evolutiond", version, about = "Flowerly OS evolution service")]

@@ -4,10 +4,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flowerly_core::{coded_error_envelope, ok_envelope, run_service, ServiceConfig};
 use flowerly_core::ipc::{call, ErrorCode, Payload};
 use flowerly_core::storage::Store;
 use flowerly_core::types::Flow;
+use flowerly_core::{coded_error_envelope, ok_envelope, run_service, ServiceConfig};
 use rusqlite::Connection;
 
 fn config(name: &str, dir: &std::path::Path) -> ServiceConfig {

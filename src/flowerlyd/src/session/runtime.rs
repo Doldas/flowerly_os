@@ -1,8 +1,8 @@
 use super::*;
-use std::sync::{Arc, Mutex};
 use flowerly_core::ipc::{Envelope, Payload};
 use flowerly_core::storage::Store;
 use flowerly_core::ServiceConfig;
+use std::sync::{Arc, Mutex};
 
 pub(crate) struct SessionRuntime {
     #[cfg(target_os = "linux")]
@@ -20,8 +20,13 @@ impl SessionRuntime {
                 tracing::warn!(reason, "PTY delegation unavailable; spawning disabled");
             }
             {
-                let db = store.lock().map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
-                for session in db.list_sessions().context("listing sessions for PTY recovery")? {
+                let db = store
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
+                for session in db
+                    .list_sessions()
+                    .context("listing sessions for PTY recovery")?
+                {
                     if session.kind == "local-pty" && session.pid.is_some() {
                         if let Ok(root) = &cgroup_root {
                             terminate_stale_cgroup(&session.id, root.as_deref())?;
@@ -34,11 +39,17 @@ impl SessionRuntime {
                         && session.state == SessionState::Running
                     {
                         db.update_session_state(&session.id, SessionState::Suspended)?;
-                        db.update_session_presentation_state(&session.id, SessionPresentationState::Detached)?;
+                        db.update_session_presentation_state(
+                            &session.id,
+                            SessionPresentationState::Detached,
+                        )?;
                     }
                 }
             }
-            let supervisor = Arc::new(pty::Supervisor::new(config.runtime_dir.clone(), cgroup_root));
+            let supervisor = Arc::new(pty::Supervisor::new(
+                config.runtime_dir.clone(),
+                cgroup_root,
+            ));
             let worker_supervisor = Arc::clone(&supervisor);
             let worker_store = Arc::clone(store);
             let reconciler = tokio::spawn(async move {
@@ -47,12 +58,18 @@ impl SessionRuntime {
                     interval.tick().await;
                     let supervisor = Arc::clone(&worker_supervisor);
                     let store = Arc::clone(&worker_store);
-                    if tokio::task::spawn_blocking(move || supervisor.reconcile(&store)).await.is_err() {
+                    if tokio::task::spawn_blocking(move || supervisor.reconcile(&store))
+                        .await
+                        .is_err()
+                    {
                         tracing::error!("PTY reconciler worker failed");
                     }
                 }
             });
-            Ok(Self { supervisor, reconciler })
+            Ok(Self {
+                supervisor,
+                reconciler,
+            })
         }
         #[cfg(not(target_os = "linux"))]
         {

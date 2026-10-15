@@ -1,11 +1,14 @@
+use flowerly_core::ipc::{self, Payload};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use flowerly_core::ipc::{self, Payload};
 
 fn wait_for_socket(path: &std::path::Path) {
     let started = Instant::now();
     while !path.exists() {
-        assert!(started.elapsed() < Duration::from_secs(15), "supervisor socket missing");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "supervisor socket missing"
+        );
         std::thread::sleep(Duration::from_millis(80));
     }
 }
@@ -23,24 +26,39 @@ fn unified_supervisor_preserves_flows_across_restart() {
         let mut child = Command::new(env!("CARGO_BIN_EXE_flowerlyd"))
             .env("AGENTIC_RUNTIME_DIR", &runtime)
             .env("AGENTIC_STATE_DIR", &state)
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         let socket = runtime.join("flowerlyd.sock");
         wait_for_socket(&socket);
         if attempt == 0 {
-            let reply = rt.block_on(ipc::call(&socket, Payload::Command {
-                name: "flow.create".into(),
-                args: serde_json::json!({"name":"Durable Flow"}),
-            })).unwrap();
+            let reply = rt
+                .block_on(ipc::call(
+                    &socket,
+                    Payload::Command {
+                        name: "flow.create".into(),
+                        args: serde_json::json!({"name":"Durable Flow"}),
+                    },
+                ))
+                .unwrap();
             assert!(matches!(reply.payload, Payload::Ok { .. }));
         }
-        let reply = rt.block_on(ipc::call(&socket, Payload::Command {
-            name: "flow.list".into(),
-            args: serde_json::json!({}),
-        })).unwrap();
+        let reply = rt
+            .block_on(ipc::call(
+                &socket,
+                Payload::Command {
+                    name: "flow.list".into(),
+                    args: serde_json::json!({}),
+                },
+            ))
+            .unwrap();
         let Payload::Ok { data } = reply.payload else {
             panic!("flow.list returned an error");
         };
-        assert!(data["flows"].as_array().unwrap().iter().any(|f| f["name"] == "Durable Flow"));
+        assert!(data["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "Durable Flow"));
         let _ = rt.block_on(ipc::call(&socket, Payload::Shutdown)).unwrap();
         assert!(child.wait().unwrap().success());
     }
