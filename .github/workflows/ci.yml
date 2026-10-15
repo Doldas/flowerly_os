@@ -165,6 +165,9 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Test protected release forwarding (offline)
+        run: python3 scripts/test-branch-forward.py
+
       - name: Build documentation and verify GitHub Pages output
         run: bash ./scripts/build-docs-site.sh
 

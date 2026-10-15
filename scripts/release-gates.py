@@ -90,6 +90,11 @@ def validate(root=ROOT):
         raise ValueError("CI must report rust and docs check names")
     if "name: Validate branch policy and issue link" not in pr:
         raise ValueError("PR validation check was renamed")
+    if "verify-master" not in pr or "BigInt(from[1]) + 1n" not in pr:
+        raise ValueError("forward-only PR and exact-SHA master evidence gate missing")
+    forward = workflow("branch-forward.yml")
+    if "FLOWERLY_FORWARD_BOT_TOKEN" not in forward or "branch-forward.py reconcile" not in forward:
+        raise ValueError("bot branch propagation workflow missing or unprotected")
     if "name: cargo-audit" not in security or "name: cargo-deny" not in security:
         raise ValueError("security job names changed")
     for matrix in ("- advisories", "- bans licenses sources"):
