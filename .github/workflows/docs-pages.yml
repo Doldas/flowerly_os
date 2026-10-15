@@ -9,6 +9,7 @@ on:
       - "web-docs/docs/**"
       - "web-docs/mkdocs.yml"
       - "web-docs/requirements-docs.txt"
+      - "scripts/build-docs-site.sh"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -35,9 +36,7 @@ jobs:
           cache: pip
           cache-dependency-path: web-docs/requirements-docs.txt
 
-      - name: Install documentation dependencies
-        run: pip install -r web-docs/requirements-docs.txt
-
+      # Shared builder installs pinned requirements in a disposable venv.
       - name: Build and verify Pages site
         run: bash ./scripts/build-docs-site.sh
 
