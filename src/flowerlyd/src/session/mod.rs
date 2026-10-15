@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use clap::Parser;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::repository::{
     CoreCommandRepository, CoreQueryRepository, CreateSession,
@@ -16,119 +15,8 @@ use flowerly_core::types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
 };
-use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service_with_status,
-    ServiceConfig,
-};
+use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
-
-#[derive(Debug, Parser)]
-#[command(name = "sessiond", version, about = "Flowerly OS session service")]
-struct Cli {
-    #[arg(long, env = "AGENTIC_CONFIG")]
-    config: Option<PathBuf>,
-
-    #[arg(long)]
-    self_test: bool,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let config = match cli.config {
-        Some(path) => ServiceConfig::load(&path).context("loading config")?,
-        None => ServiceConfig::for_service("sessiond"),
-    };
-    init_tracing(&config.name, config.log_format);
-
-    if cli.self_test {
-        return self_test().await;
-    }
-
-    #[cfg(target_os = "linux")]
-    let cgroup_root = prepare_cgroup_root().map_err(|error| error.to_string());
-    #[cfg(target_os = "linux")]
-    if let Err(reason) = &cgroup_root {
-        tracing::warn!(
-            reason,
-            "PTY cgroup provisioning unavailable; supervised spawning disabled"
-        );
-    }
-    let store = open_store(&config)?;
-    #[cfg(target_os = "linux")]
-    for session in store
-        .list_sessions()
-        .context("listing sessions for PTY recovery")?
-    {
-        if session.kind == "local-pty" && session.pid.is_some() {
-            if let Ok(root) = &cgroup_root {
-                terminate_stale_cgroup(&session.id, root.as_deref())?;
-            } else {
-                tracing::warn!(
-                    session_id = %session.id,
-                    "PTY cgroup recovery unavailable without delegation"
-                );
-            }
-        }
-        if session.kind == "local-pty"
-            && session.pid.is_some()
-            && session.state == SessionState::Running
-        {
-            store
-                .update_session_state(&session.id, SessionState::Suspended)
-                .context("marking former PTY unavailable after restart")?;
-            store
-                .update_session_presentation_state(&session.id, SessionPresentationState::Detached)
-                .context("detaching lost PTY attachment")?;
-        }
-    }
-    let store = Arc::new(Mutex::new(store));
-    let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.try_lock() {
-        Ok(store) => match CoreQueryRepository::sessions(&*store).map(|items| items.len()) {
-            Ok(count) => serde_json::json!({"session_count": count, "ready": true}),
-            Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
-        },
-        Err(_) => {
-            serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
-        }
-    });
-    #[cfg(target_os = "linux")]
-    let supervisor = Arc::new(pty::Supervisor::new(
-        config.runtime_dir.clone(),
-        cgroup_root,
-    ));
-    #[cfg(target_os = "linux")]
-    let lifecycle_reconciler = {
-        let supervisor = Arc::clone(&supervisor);
-        let store = Arc::clone(&store);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-            loop {
-                interval.tick().await;
-                let supervisor = Arc::clone(&supervisor);
-                let store = Arc::clone(&store);
-                let _ = tokio::task::spawn_blocking(move || supervisor.reconcile(&store)).await;
-            }
-        })
-    };
-    let handler = move |request: &Envelope| -> Envelope {
-        #[cfg(target_os = "linux")]
-        if let Payload::Command { name, args } = &request.payload {
-            if supervisor.routes(name, args) {
-                return supervisor.handle(&store, request);
-            }
-        }
-        handle_command(&store, request)
-    };
-
-    let service_result = run_service_with_status(config, status, Arc::new(handler))
-        .await
-        .context("sessiond terminated abnormally");
-    #[cfg(target_os = "linux")]
-    lifecycle_reconciler.abort();
-    service_result
-}
 
 #[cfg(target_os = "linux")]
 fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
@@ -206,16 +94,6 @@ fn terminate_stale_cgroup(id: &SessionId, root: Option<&std::path::Path>) -> any
         }
     }
     anyhow::bail!("unrecovered PTY cgroup did not become empty")
-}
-
-fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config.database_path();
-    let mut store = Store::open(&db_path).context("opening sessiond database")?;
-    store.migrate().context("running sessiond migrations")?;
-    store
-        .health_check()
-        .context("sessiond database health check")?;
-    Ok(store)
 }
 
 pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {

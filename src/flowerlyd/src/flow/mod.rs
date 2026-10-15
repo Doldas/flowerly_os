@@ -1,85 +1,20 @@
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use clap::Parser;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateFlow};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
 use flowerly_core::types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
-use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service_with_status,
-    ServiceConfig,
-};
+use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
-
-#[derive(Debug, Parser)]
-#[command(name = "flowd", version, about = "Flowerly OS Flow service")]
-struct Cli {
-    #[arg(long, env = "AGENTIC_CONFIG")]
-    config: Option<PathBuf>,
-
-    #[arg(long)]
-    self_test: bool,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let config = match cli.config {
-        Some(path) => ServiceConfig::load(&path).context("loading config")?,
-        None => ServiceConfig::for_service("flowd"),
-    };
-    init_tracing(&config.name, config.log_format);
-
-    if cli.self_test {
-        return self_test().await;
-    }
-
-    let mut store = open_store(&config)?;
-    ensure_general_flow(&mut store)?;
-
-    let store = Arc::new(Mutex::new(store));
-    let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.try_lock() {
-        Ok(store) => match count_flows(&store) {
-            Ok(count) => {
-                serde_json::json!({"flow_count": count, "ready": true, "default_flow": "General"})
-            }
-            Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
-        },
-        Err(_) => {
-            serde_json::json!({"ready": false, "error": "storage temporarily unavailable or lock poisoned"})
-        }
-    });
-    let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
-
-    run_service_with_status(config, status, Arc::new(handler))
-        .await
-        .context("flowd terminated abnormally")
-}
-
-fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config.database_path();
-    let mut store = Store::open(&db_path).context("opening flowd database")?;
-    store.migrate().context("running flowd migrations")?;
-    store
-        .health_check()
-        .context("flowd database health check")?;
-    Ok(store)
-}
 
 fn ensure_general_flow(store: &mut Store) -> anyhow::Result<()> {
     let id = store.ensure_general_flow()?;
     tracing::debug!(flow_id = %id, "General system Flow verified");
     Ok(())
-}
-
-fn count_flows(store: &Store) -> anyhow::Result<usize> {
-    Ok(store.list_flows()?.len())
 }
 
 pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {

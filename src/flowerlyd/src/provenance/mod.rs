@@ -1,63 +1,12 @@
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use clap::Parser;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::{StorageError, Store};
 use flowerly_core::types::{ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp};
-use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
-};
+use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "provenanced",
-    version,
-    about = "Flowerly OS provenance service"
-)]
-struct Cli {
-    #[arg(long, env = "AGENTIC_CONFIG")]
-    config: Option<PathBuf>,
-
-    #[arg(long)]
-    self_test: bool,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let config = match cli.config {
-        Some(path) => ServiceConfig::load(&path).context("loading config")?,
-        None => ServiceConfig::for_service("provenanced"),
-    };
-    init_tracing(&config.name, config.log_format);
-
-    if cli.self_test {
-        return self_test().await;
-    }
-
-    let store = open_store(&config)?;
-    let extra = serde_json::json!({ "edge_count": 0 });
-    let store = Arc::new(Mutex::new(store));
-    let handler = move |request: &Envelope| -> Envelope { handle_command(&store, request) };
-
-    run_service(config, extra, Arc::new(handler))
-        .await
-        .context("provenanced terminated abnormally")
-}
-
-fn open_store(config: &ServiceConfig) -> anyhow::Result<Store> {
-    let db_path = config.database_path();
-    let mut store = Store::open(&db_path).context("opening provenanced database")?;
-    store.migrate().context("running provenanced migrations")?;
-    store
-        .health_check()
-        .context("provenanced database health check")?;
-    Ok(store)
-}
 
 pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
