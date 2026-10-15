@@ -315,6 +315,30 @@ mod tests {
     }
 
     #[test]
+    fn typed_execution_query_returns_created_record_and_edges() {
+        let mut store = migrated_store();
+        let response = run_command(
+            &mut store,
+            "execution.create",
+            &serde_json::json!({ "command": "true", "reason": "typed facade" }),
+        )
+        .expect("create");
+        let id = ExecutionId::from_str(response["id"].as_str().expect("id"))
+            .expect("execution id");
+        let record = CoreQueryRepository::execution(&store, &id)
+            .expect("query")
+            .expect("exists");
+        assert_eq!(record.command.as_deref(), Some("true"));
+        let shown = run_command(
+            &mut store,
+            "execution.show",
+            &serde_json::json!({ "id": id }),
+        )
+        .expect("show");
+        assert_eq!(shown["execution"]["id"], response["id"]);
+    }
+
+    #[test]
     fn malformed_execution_references_are_rejected() {
         let mut store = migrated_store();
 
