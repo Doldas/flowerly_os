@@ -352,7 +352,9 @@ fn find_flow(
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) = CoreQueryRepository::flow(store, &id).map_err(CommandFailure::storage)? {
+        if let Some(flow) =
+            CoreQueryRepository::flow(store, &id).map_err(CommandFailure::storage)?
+        {
             return Ok(flow);
         }
         return Err(format!("flow not found: {id}").into());
