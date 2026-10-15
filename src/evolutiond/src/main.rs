@@ -32,19 +32,18 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let extra = serde_json::json!({ "world": "not-yet-provisioned", "provisioned": kvm::PROVISIONED });
+    let extra =
+        serde_json::json!({ "world": "not-yet-provisioned", "provisioned": kvm::PROVISIONED });
     let handler = |request: &Envelope| -> Envelope {
         match &request.payload {
-            Payload::Command { name, .. } if name == "evolution.experiment-status" => {
-                ok_envelope(
-                    request.id.clone(),
-                    serde_json::json!({
-                        "status": "unavailable",
-                        "provisioned": kvm::PROVISIONED,
-                        "reason": "Evolution World KVM backend is not provisioned"
-                    }),
-                )
-            }
+            Payload::Command { name, .. } if name == "evolution.experiment-status" => ok_envelope(
+                request.id.clone(),
+                serde_json::json!({
+                    "status": "unavailable",
+                    "provisioned": kvm::PROVISIONED,
+                    "reason": "Evolution World KVM backend is not provisioned"
+                }),
+            ),
             Payload::Command { name, .. } if name == "evolution.run_experiment" => {
                 coded_error_envelope(
                     request.id.clone(),
