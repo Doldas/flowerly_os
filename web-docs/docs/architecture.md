@@ -46,10 +46,14 @@ microservice or an extra database daemon.
 
 `evolutiond` must run as a different system account, with explicit access to
 `/dev/kvm` and a **separate** private runtime and state directory. The current
-hypervisor only advertises not-provisioned/idle status. It cannot execute
+hypervisor explicitly reports unavailable/not-provisioned status and refuses
+experiment execution with a typed `unavailable` error. It cannot execute
 arbitrary host code or treat a requested provider/model profile as permission.
 The specialized authorized task queue and VM lifecycle are **not implemented
-yet**. No unverified privileged execution path has been added.
+yet**. Same-UID Unix IPC is retained for development only; a production
+cross-account request broker must be designed and independently authorized
+before `flowerlyd` can submit jobs to `evolutiond`. No unverified privileged
+execution path has been added.
 
 ## Distribution artifacts and limitations
 

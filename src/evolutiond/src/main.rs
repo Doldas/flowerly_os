@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use flowerly_core::ipc::{Envelope, Payload};
-use flowerly_core::{error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
+use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::{coded_error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
 
 #[derive(Debug, Parser)]
 #[command(name = "evolutiond", version, about = "Flowerly OS evolution service")]
@@ -32,18 +32,34 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let extra = serde_json::json!({ "world": "not-yet-provisioned" });
+    let extra = serde_json::json!({ "world": "not-yet-provisioned", "provisioned": kvm::PROVISIONED });
     let handler = |request: &Envelope| -> Envelope {
         match &request.payload {
             Payload::Command { name, .. } if name == "evolution.experiment-status" => {
-                ok_envelope(request.id.clone(), serde_json::json!({ "status": "idle" }))
+                ok_envelope(
+                    request.id.clone(),
+                    serde_json::json!({
+                        "status": "unavailable",
+                        "provisioned": kvm::PROVISIONED,
+                        "reason": "Evolution World KVM backend is not provisioned"
+                    }),
+                )
             }
-            Payload::Command { name, .. } => error_envelope(
+            Payload::Command { name, .. } if name == "evolution.run_experiment" => {
+                coded_error_envelope(
+                    request.id.clone(),
+                    ErrorCode::Unavailable,
+                    "Evolution World KVM backend is not provisioned",
+                )
+            }
+            Payload::Command { name, .. } => coded_error_envelope(
                 request.id.clone(),
-                format!("evolutiond: unknown command `{name}`"),
+                ErrorCode::InvalidArgument,
+                format!("evolutiond: unsupported command `{name}`"),
             ),
-            other => error_envelope(
+            other => coded_error_envelope(
                 request.id.clone(),
+                ErrorCode::InvalidArgument,
                 format!("evolutiond: unexpected request {other:?}"),
             ),
         }

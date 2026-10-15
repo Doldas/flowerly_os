@@ -92,7 +92,12 @@ def main(bin_dir):
             status = rpc(sock, "status")
             assert status["type"] == "ok", status
             assert status["data"]["service"] == "flowerlyd", status
-            assert rpc(evosock, "status")["type"] == "ok"
+            boundary = rpc(evosock, "status")
+            assert boundary["type"] == "ok" and boundary["data"]["details"]["provisioned"] is False, boundary
+            experiment = good(evosock, "evolution.experiment-status", {})
+            assert experiment["status"] == "unavailable" and experiment["provisioned"] is False
+            denied = rpc(evosock, "command", name="evolution.run_experiment", args={})
+            assert denied["type"] == "err" and denied["code"] == "unavailable", denied
             assert {p.name for p in (root / "runtime").glob("*.sock")} == {"flowerlyd.sock"}
             assert {p.name for p in (root / "evolution-runtime").glob("*.sock")} == {"evolutiond.sock"}
             created = good(sock, "flow.create", {"name": "Unified test", "operation_id": "unified-flow-1"})
