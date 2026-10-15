@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod repository;
+
 use std::path::Path;
 use std::str::FromStr;
 
