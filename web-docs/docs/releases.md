@@ -72,6 +72,31 @@ feature/* / bugfix/* / docs/* -> release/2 -> release/3 -> release/4
   verification. Review and merge manually through the protected PR path.
   Recheck the required master PR checks and release evidence before merging.
 
+### Initial master ancestry reconciliation
+
+The first `release/2 → master` promotion may report merge conflicts even
+though `release/2` already includes the same modern dependency versions and
+GitHub Actions versions. Historically `master` received two Dependabot commits,
+`092c96c` (#29, Cargo dependencies) and `1fca85b` (#30, Actions upgrades),
+after the common ancestor. Their changes later reached `release/2`
+independently, so Git does not know those histories were reconciled.
+
+The one-time reconciliation PR contains a **two-parent merge commit** with the
+current `release/2` commit as first parent and the existing `master` commit
+as second parent. The resolved tree keeps the validated `release/2` contents,
+including modern Cargo dependencies and Actions, rather than reverting them to
+old `master` definitions. This documentation note is the only intended file
+change.
+
+**Merge the reconciliation PR into `release/2` using a MERGE COMMIT** after
+required CI passes. Do **not** squash or rebase it: that would lose the
+`master` ancestor and can leave the promotion PR conflicted. Do not
+force-push either protected branch or bypass release checks. Once merged,
+check that `master` is a Git ancestor of `release/2`, then wait for
+the **new exact release/2 SHA** to pass the real Arch VM and security gates
+before manually promoting PR #116. The reconciliation PR does not itself
+approve or merge a release into `master`.
+
 ### One-time automation setup
 
 A repository maintainer must configure the GitHub Actions secret
