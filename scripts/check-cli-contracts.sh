@@ -3,10 +3,10 @@
 set -euo pipefail
 
 BIN_DIR="${1:-target/release}"
-GOALD="$BIN_DIR/goald"
+SUPERVISOR="$BIN_DIR/flowerlyd"
 CTL="$BIN_DIR/agenticctl"
 
-for binary in "$GOALD" "$CTL"; do
+for binary in "$SUPERVISOR" "$CTL"; do
     if [[ ! -x "$binary" ]]; then
         echo "missing executable: $binary" >&2
         exit 1
@@ -33,26 +33,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-AGENTIC_RUNTIME_DIR="$RUNTIME_DIR" AGENTIC_STATE_DIR="$STATE_DIR" "$GOALD" >"$ROOT/goald.log" 2>&1 &
+AGENTIC_RUNTIME_DIR="$RUNTIME_DIR" AGENTIC_STATE_DIR="$STATE_DIR" "$SUPERVISOR" >"$ROOT/flowerlyd.log" 2>&1 &
 pid=$!
 
 ready=0
 for _ in $(seq 1 100); do
-    if "$CTL" --runtime-dir "$RUNTIME_DIR" ping goald >/dev/null 2>&1; then
+    if "$CTL" --runtime-dir "$RUNTIME_DIR" ping flowerlyd >/dev/null 2>&1; then
         ready=1
         break
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "goald exited before readiness" >&2
-        cat "$ROOT/goald.log" >&2 || true
+        echo "flowerlyd exited before readiness" >&2
+        cat "$ROOT/flowerlyd.log" >&2 || true
         exit 1
     fi
     sleep 0.1
 done
 
 if [[ "$ready" -ne 1 ]]; then
-    echo "goald did not become ready" >&2
-    cat "$ROOT/goald.log" >&2 || true
+    echo "flowerlyd did not become ready" >&2
+    cat "$ROOT/flowerlyd.log" >&2 || true
     exit 1
 fi
 
@@ -73,4 +73,4 @@ for label, value in (("default", default), ("explicit", explicit)):
         raise SystemExit(f"{label} goal objective mismatch: {value}")
 PY
 
-echo "CLI-to-goald create contract passed with omitted and explicit priority."
+echo "CLI-to-flowerlyd create contract passed with omitted and explicit priority."

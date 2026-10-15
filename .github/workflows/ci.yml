@@ -68,8 +68,8 @@ jobs:
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
 
-      - name: Black-box external SQLite writer contention across daemons
-        run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
+      - name: Black-box unified runtime, durable replay and separate hypervisor boundary
+        run: python3 ./testbed/integration/test-unified-runtime.py target/release
 
       - name: Verify delegated management cgroup writes the real supervisor PID
         run: bash ./scripts/arch-pty-cgroup-acceptance.sh --verify-management-pid
@@ -77,9 +77,6 @@ jobs:
       - name: Session daemon remains available without PTY cgroup delegation
         run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
 
-
-      - name: Black-box durable IPC operation-key replay and restart
-        run: python3 ./scripts/test-ipc-idempotency.py target/release
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
@@ -104,9 +101,6 @@ jobs:
 
       - name: Production PTY cgroup isolation and delegated containment
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-cgroup.py
-
-      - name: Flow A to B to A real sessiond PTY acceptance
-        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
 
       - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
@@ -159,7 +153,7 @@ jobs:
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
-          bash -n ./tests/arch-kernel/guest-verify.sh
+          bash -n ./testbed/evolution-world/arch-kernel/guest-verify.sh
           bash -n ./scripts/arch-pty-cgroup-acceptance.sh
 
       - name: Markdown lint
@@ -167,10 +161,10 @@ jobs:
         with:
           globs: |
             "*.md"
-            "docs/**/*.md"
-            "docs/adr/**/*.md"
-            "docs/rfcs/**/*.md"
-            "image/**/*.md"
+            "web-docs/docs/**/*.md"
+            "web-docs/docs/adr/**/*.md"
+            "web-docs/docs/rfcs/**/*.md"
+            "distro/**/*.md"
 
       - name: Check documentation build references
         run: |

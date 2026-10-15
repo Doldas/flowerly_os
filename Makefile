@@ -42,14 +42,14 @@ status:
 	./scripts/dev-runtime.sh status
 
 release: build
-	@echo "release build complete; see docs/RELEASES.md for tagging"
+	@echo "release build complete; see web-docs/docs/releases.md for tagging"
 
 image-inputs:
 	bash ./scripts/check-image-inputs.sh
 
 image: image-inputs
 	@echo "Arch image inputs are ready, but bootable image production is not implemented yet."
-	@echo "See image/arch/README.md and docs/image-model.md."
+	@echo "See distro/base-image/README.md and web-docs/docs/image-model.md."
 	@exit 1
 
 vm:

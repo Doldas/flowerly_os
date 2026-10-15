@@ -266,7 +266,7 @@ printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
 echo "running complete Flowerly verification inside Arch VM"
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
-    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash tests/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
+    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
     2>&1 | tee "$REPORT_DIR/guest-execution.log"
 guest_status=("${PIPESTATUS[@]}")
 set -e

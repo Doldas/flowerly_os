@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${BIN_DIR:-$REPO_ROOT/target/release}"
 RUNTIME_DIR="${RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$REPO_ROOT/target}/flowerly-dev}"
 STATE_DIR="${STATE_DIR:-$REPO_ROOT/target/flowerly-state}"
-SERVICES=(agenticd flowd sessiond goald provenanced capabilityd generationd evolutiond)
+SERVICES=(flowerlyd evolutiond)
 
 mkdir -p -m 700 "$RUNTIME_DIR" "$STATE_DIR"
 chmod 700 "$RUNTIME_DIR" "$STATE_DIR"

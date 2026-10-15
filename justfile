@@ -67,11 +67,12 @@ release: build
 
 image-inputs:
     bash ./scripts/check-image-inputs.sh
+    cargo run -p distro-builder -- validate
 
 
 image: image-inputs
     @echo "Arch image inputs are ready, but bootable image production is not implemented yet."
-    @echo "See image/arch/README.md and docs/image-model.md."
+    @echo "See distro/base-image/README.md and web-docs/docs/image-model.md."
     exit 1
 
 

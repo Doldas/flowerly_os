@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_DIR="$ROOT/image/arch"
+IMAGE_DIR="$ROOT/distro/base-image/arch"
 PACKAGES="$IMAGE_DIR/packages.base"
 BINARIES="$IMAGE_DIR/flowerly-binaries.txt"
 MKOSI="$IMAGE_DIR/mkosi.conf"

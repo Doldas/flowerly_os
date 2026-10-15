@@ -54,16 +54,16 @@ def main(binary_directory):
             FLOWERLY_PTY_CGROUP_ROOT=str(invalid_delegation),
         )
         process = subprocess.Popen(
-            [str(binary_directory / "sessiond")],
+            [str(binary_directory / "flowerlyd")],
             env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        socket_path = runtime / "sessiond.sock"
+        socket_path = runtime / "flowerlyd.sock"
         try:
             for _ in range(150):
                 if process.poll() is not None:
-                    raise AssertionError("sessiond exited without PTY delegation")
+                    raise AssertionError("flowerlyd exited without PTY delegation")
                 if socket_path.exists():
                     try:
                         reply = command(socket_path, "session.list", {})

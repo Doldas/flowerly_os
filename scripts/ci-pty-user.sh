@@ -15,8 +15,8 @@ if [[ $(id -u) -ne 0 ]]; then
     prepare)
       printf 'Unprivileged hosted PTY test identity: %s\n' "$(id)"
       test -r "$PWD/scripts/pty-guardian.py"
-      test -x "$PWD/target/release/sessiond"
-      test -x "$PWD/target/release/flowd"
+      test -x "$PWD/target/release/flowerlyd"
+      test -x "$PWD/target/release/flowerlyd"
       ;;
     run)
       shift
@@ -51,7 +51,7 @@ test_home="$(getent passwd "$test_user" | cut -d: -f6)"
 case "${1:-}" in
   prepare)
     printf 'Dedicated PTY test identity: %s\n' "$(id "$test_user")"
-    for path in "$PWD/scripts/pty-guardian.py" "$PWD/target/release/sessiond" "$PWD/target/release/flowd"; do
+    for path in "$PWD/scripts/pty-guardian.py" "$PWD/target/release/flowerlyd" "$PWD/target/release/flowerlyd"; do
       access=-x
       if [[ "$path" == */pty-guardian.py ]]; then
         access=-r

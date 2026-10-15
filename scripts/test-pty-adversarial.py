@@ -23,7 +23,7 @@ def receive_exact(connection, size):
     while len(data) < size:
         fragment = connection.recv(size - len(data))
         if not fragment:
-            raise AssertionError("sessiond IPC response truncated")
+            raise AssertionError("flowerlyd IPC response truncated")
         data.extend(fragment)
     return bytes(data)
 
@@ -74,14 +74,14 @@ def assert_original_process_exited(pid, identity):
 
 class SessionDaemon:
     def __init__(self, binary_directory):
-        self.binary = binary_directory / "sessiond"
+        self.binary = binary_directory / "flowerlyd"
         self.temporary = tempfile.TemporaryDirectory(prefix="flowerly-pty-adversarial-")
         self.root = Path(self.temporary.name)
         self.runtime = self.root / "runtime"
         self.state = self.root / "state"
         self.runtime.mkdir(mode=0o700)
         self.state.mkdir(mode=0o700)
-        self.socket_path = self.runtime / "sessiond.sock"
+        self.socket_path = self.runtime / "flowerlyd.sock"
         self.environment = dict(
             os.environ,
             AGENTIC_RUNTIME_DIR=str(self.runtime),
@@ -91,7 +91,7 @@ class SessionDaemon:
         self.process = None
 
     def start(self):
-        with (self.root / "sessiond.log").open("ab") as log:
+        with (self.root / "flowerlyd.log").open("ab") as log:
             self.process = subprocess.Popen(
                 [str(self.binary)],
                 env=self.environment,
@@ -101,8 +101,8 @@ class SessionDaemon:
         for _ in range(200):
             if self.process.poll() is not None:
                 raise AssertionError(
-                    "sessiond died on startup: "
-                    + (self.root / "sessiond.log").read_text()
+                    "flowerlyd died on startup: "
+                    + (self.root / "flowerlyd.log").read_text()
                 )
             if self.socket_path.exists():
                 try:
@@ -112,7 +112,7 @@ class SessionDaemon:
                     pass
             time.sleep(0.03)
         raise AssertionError(
-            "sessiond readiness timeout: " + (self.root / "sessiond.log").read_text()
+            "flowerlyd readiness timeout: " + (self.root / "flowerlyd.log").read_text()
         )
 
     def stop(self, abrupt=False):
