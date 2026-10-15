@@ -55,7 +55,7 @@ def start(bin_dir, name, env, processes, root):
             raise AssertionError("daemon died: " + log.read_text())
         if path.exists():
             try:
-                if call(path, "session.list" if name == "sessiond" else "flow.list", {})["type"] == "ok":
+                if call(path, "session.list" if name == "flowerlyd" else "flow.list", {})["type"] == "ok":
                     return path
             except (OSError, AssertionError):
                 pass
@@ -72,8 +72,8 @@ def main(bin_dir):
         env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state), FLOWERLY_PTY_ISOLATION="development")
         children = []
         try:
-            flow = start(bin_dir, "flowd", env, children, root)
-            session = start(bin_dir, "sessiond", env, children, root)
+            session = start(bin_dir, "flowerlyd", env, children, root)
+            flow = session
             a = ok(flow, "flow.create", {"name": "PTY Flow A"})["id"]
             b = ok(flow, "flow.create", {"name": "PTY Flow B"})["id"]
             ok(flow, "flow.activate", {"id": a})
@@ -241,7 +241,7 @@ def main(bin_dir):
             session_process = children[-1]
             session_process.terminate()
             session_process.wait(timeout=5)
-            session = start(bin_dir, "sessiond", env, children, root)
+            session = start(bin_dir, "flowerlyd", env, children, root)
             after_restart = ok(session, "session.list", {})["sessions"]
             record = next(row for row in after_restart if row["id"] == stale_id)
             assert record["state"].lower() == "suspended", record

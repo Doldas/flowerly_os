@@ -1,19 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/agentic-types",
-    "crates/agentic-storage",
-    "crates/agentic-ipc",
-    "crates/agentic-core",
-    "services/agenticd",
-    "services/goald",
-    "services/flowd",
-    "services/sessiond",
-    "services/provenanced",
-    "services/capabilityd",
-    "services/generationd",
-    "services/evolutiond",
+    "src/flowerlyd",
+    "src/evolutiond",
+    "src/shared/flowerly-core",
     "tools/agenticctl",
+    "tools/distro-builder",
+    "testbed/integration",
 ]
 
 [workspace.package]
@@ -27,11 +20,7 @@ authors = ["Flowerly OS Contributors"]
 description = "Flowerly OS — a self-evolving Linux distribution built around autonomous agents as first-class system actors."
 
 [workspace.dependencies]
-agentic-types = { path = "crates/agentic-types" }
-agentic-storage = { path = "crates/agentic-storage" }
-agentic-ipc = { path = "crates/agentic-ipc" }
-agentic-core = { path = "crates/agentic-core" }
-
+flowerly-core = { path = "src/shared/flowerly-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

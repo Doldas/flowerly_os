@@ -1,0 +1,24 @@
+[Unit]
+Description=Flowerly OS Unified Supervisor
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+User=flowerly
+Group=flowerly
+Environment=AGENTIC_RUNTIME_DIR=/run/flowerly
+Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
+ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
+RuntimeDirectory=flowerly
+RuntimeDirectoryMode=0700
+StateDirectory=flowerly
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

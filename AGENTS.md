@@ -9,6 +9,15 @@ This file provides **navigation and accuracy rules**, not authority to override 
 - Record material architecture decisions, failure findings, unclosed questions and reproducible acceptance tests in repository docs/issues. Next agent sessions must not depend on the previous chat's context.
 - For long-lived runtime and process behaviors, trust measured Linux process behavior over simulated state. Protect safety-critical invariants with failure-injection tests.
 
+## Consolidated architecture migration
+
+- Issue [#105](https://github.com/Doldas/flowerly_os/issues/105) tracks the distribution-first structural transition.
+- Runtime packages: `src/flowerlyd`, `src/evolutiond`, `src/shared/flowerly-core`.
+- Build and distribution inputs: `tools/`, `distro/`, `testbed/`; documentation: `web-docs/docs/`.
+- Do not reintroduce legacy state daemon binaries or inter-module Unix sockets.
+- Preserve authenticated IPC, PTY/cgroup containment, transactional SQLite semantics and unknown-outcome retry safety. Treat incomplete integration tests as merge blockers.
+- Hypervisor provisioning and bootable image builds remain explicitly unavailable, even when scaffolds exist.
+
 ## Present release versus proposals
 
 - Milestone 0.0.4: [roadmap issue #8](https://github.com/Doldas/flowerly_os/issues/8), [hardening gates #31](https://github.com/Doldas/flowerly_os/issues/31), [PTY supervisor #50](https://github.com/Doldas/flowerly_os/issues/50), [required release CI #55](https://github.com/Doldas/flowerly_os/issues/55), [SQLite contention #56](https://github.com/Doldas/flowerly_os/issues/56), [typed SQLite errors #62](https://github.com/Doldas/flowerly_os/issues/62) and [unknown-outcome retries #63](https://github.com/Doldas/flowerly_os/issues/63).

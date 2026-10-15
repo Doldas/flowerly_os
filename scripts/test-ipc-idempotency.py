@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Real-daemon IPC idempotency contract for optional operation_id.
+"""Unified Flowerly supervisor black-box operation_id replay contract.
 
-Launches actual flowd, goald and sessiond processes on a shared file-backed
-SQLite database. Confirms exact replay, conflict on mismatched args, durable
-replay after daemon restart, and actor scoping via the trusted peer UID.
+Exercises Flow, Goal and Session modules through the *same* local authenticated
+socket and durable SQLite database; restart the real supervisor before replay.
 """
 import json
 import os
@@ -69,8 +68,7 @@ def wait_ready(socket_path, process, log_path):
             raise AssertionError(f"daemon exited: {log_path.read_text()}")
         if socket_path.exists():
             try:
-                reply = request(socket_path, "flow.list" if socket_path.name == "flowd.sock" else
-                                "goal.list" if socket_path.name == "goald.sock" else "session.list", {})
+                reply = request(socket_path, "flow.list", {})
                 if reply["type"] == "ok":
                     return
             except (OSError, AssertionError, TimeoutError):
@@ -96,11 +94,10 @@ def main(bin_dir):
                     [str(bin_dir / name)], env=env, stdout=log, stderr=subprocess.STDOUT
                 )
             processes[name] = proc
-            wait_ready(runtime / f"{name}.sock", proc, log_path)
+            wait_ready(runtime / "flowerlyd.sock", proc, log_path)
 
         try:
-            for name in ("flowd", "goald", "sessiond"):
-                start(name)
+            start("flowerlyd")
             scenarios = [
                 ("flowd", "flow.create",
                  {"name": "Persistent Flow", "operation_id": "flow-create-00001"}),
@@ -111,13 +108,13 @@ def main(bin_dir):
             ]
             first = {}
             baseline = {
-                service: request(runtime / f"{service}.sock",
+                service: request(runtime / "flowerlyd.sock",
                                  {"flowd": "flow.list", "goald": "goal.list",
                                   "sessiond": "session.list"}[service], {})["data"]["count"]
                 for service in ("flowd", "goald", "sessiond")
             }
             for service, command, args in scenarios:
-                sock = runtime / f"{service}.sock"
+                sock = runtime / "flowerlyd.sock"
                 result = request(sock, command, args)
                 assert result["type"] == "ok", (service, result)
                 assert result["data"]["id"], result
@@ -129,14 +126,14 @@ def main(bin_dir):
             # The same key with changed command payload must not be treated as
             # a harmless retry, even if it contains a different fresh request ID.
             conflict = request(
-                runtime / "flowd.sock", "flow.create",
+                runtime / "flowerlyd.sock", "flow.create",
                 {"name": "Different Flow", "operation_id": "flow-create-00001"},
             )
             assert conflict["type"] == "err", conflict
             assert conflict["code"] == "conflict", conflict
 
             bad = request(
-                runtime / "goald.sock", "goal.create",
+                runtime / "flowerlyd.sock", "goal.create",
                 {"objective": "Invalid", "operation_id": "??"},
             )
             assert bad["type"] == "err" and bad["code"] == "invalid_argument", bad
@@ -147,19 +144,19 @@ def main(bin_dir):
                 "id": first["goald"], "objective": "Child Goal",
                 "operation_id": "goal-child-00001",
             }
-            child = request(runtime / "goald.sock", "goal.child", child_args)
+            child = request(runtime / "flowerlyd.sock", "goal.child", child_args)
             assert child["type"] == "ok", child
-            repeated_child = request(runtime / "goald.sock", "goal.child", child_args)
+            repeated_child = request(runtime / "flowerlyd.sock", "goal.child", child_args)
             assert repeated_child["type"] == "ok", repeated_child
             assert repeated_child["data"] == child["data"], (child, repeated_child)
 
             # Simulate a crash/reconnection window after a committed response:
-            # stop the daemon, keep state.db, restart, and replay same key.
-            shutdown(runtime / "flowd.sock")
-            assert processes["flowd"].wait(timeout=5) == 0
-            start("flowd")
+            # stop the *unified supervisor*, keep state.db, restart, and replay the same key.
+            shutdown(runtime / "flowerlyd.sock")
+            assert processes["flowerlyd"].wait(timeout=5) == 0
+            start("flowerlyd")
             replay = request(
-                runtime / "flowd.sock", "flow.create", scenarios[0][2]
+                runtime / "flowerlyd.sock", "flow.create", scenarios[0][2]
             )
             assert replay["type"] == "ok", replay
             assert replay["data"]["id"] == first["flowd"], replay
@@ -173,7 +170,7 @@ def main(bin_dir):
                 ("flowd", "flow.list"), ("goald", "goal.list"),
                 ("sessiond", "session.list"),
             ):
-                listing = request(runtime / f"{service}.sock", command, {})
+                listing = request(runtime / "flowerlyd.sock", command, {})
                 assert listing["type"] == "ok", listing
                 assert listing["data"]["count"] == expected[service], (
                     service, expected[service], listing

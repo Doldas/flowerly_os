@@ -3,16 +3,7 @@
 set -euo pipefail
 
 BIN_DIR="${1:-target/release}"
-services=(
-    agenticd
-    flowd
-    sessiond
-    goald
-    provenanced
-    capabilityd
-    generationd
-    evolutiond
-)
+services=(flowerlyd evolutiond)
 
 for service in "${services[@]}"; do
     binary="$BIN_DIR/$service"

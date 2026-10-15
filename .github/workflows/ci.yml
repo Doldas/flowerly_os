@@ -68,7 +68,13 @@ jobs:
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
 
-      - name: Black-box external SQLite writer contention across daemons
+      - name: Black-box unified runtime, durable replay and separate hypervisor boundary
+        run: python3 ./testbed/integration/test-unified-runtime.py target/release
+
+      - name: Multi-domain durable IPC operation-key replay and restart
+        run: python3 ./scripts/test-ipc-idempotency.py target/release
+
+      - name: External SQLite writer contention across unified modules
         run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
 
       - name: Verify delegated management cgroup writes the real supervisor PID
@@ -77,9 +83,6 @@ jobs:
       - name: Session daemon remains available without PTY cgroup delegation
         run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
 
-
-      - name: Black-box durable IPC operation-key replay and restart
-        run: python3 ./scripts/test-ipc-idempotency.py target/release
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
@@ -105,7 +108,7 @@ jobs:
       - name: Production PTY cgroup isolation and delegated containment
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-cgroup.py
 
-      - name: Flow A to B to A real sessiond PTY acceptance
+      - name: Flow A to B to A real unified PTY acceptance
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
 
       - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
@@ -159,18 +162,24 @@ jobs:
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
-          bash -n ./tests/arch-kernel/guest-verify.sh
+          bash -n ./scripts/lib/arch-vm-disk.sh
+          bash -n ./scripts/arch-vm-guest-disk-preflight.sh
+          bash -n ./scripts/test-arch-vm-disk.sh
+          bash -n ./testbed/evolution-world/arch-kernel/guest-verify.sh
           bash -n ./scripts/arch-pty-cgroup-acceptance.sh
+
+      - name: Arch VM sparse disk growth and guest preflight regression
+        run: bash ./scripts/test-arch-vm-disk.sh
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           globs: |
             "*.md"
-            "docs/**/*.md"
-            "docs/adr/**/*.md"
-            "docs/rfcs/**/*.md"
-            "image/**/*.md"
+            "web-docs/docs/**/*.md"
+            "web-docs/docs/adr/**/*.md"
+            "web-docs/docs/rfcs/**/*.md"
+            "distro/**/*.md"
 
       - name: Check documentation build references
         run: |

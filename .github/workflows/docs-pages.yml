@@ -6,9 +6,9 @@ on:
       - master
       - "release/**"
     paths:
-      - "docs/**"
-      - "mkdocs.yml"
-      - "requirements-docs.txt"
+      - "web-docs/docs/**"
+      - "web-docs/mkdocs.yml"
+      - "web-docs/requirements-docs.txt"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -33,13 +33,13 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-docs.txt
+          cache-dependency-path: web-docs/requirements-docs.txt
 
       - name: Install documentation dependencies
-        run: pip install -r requirements-docs.txt
+        run: pip install -r web-docs/requirements-docs.txt
 
       - name: Build documentation
-        run: mkdocs build --site-dir site
+        run: mkdocs build --config-file web-docs/mkdocs.yml --site-dir site
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

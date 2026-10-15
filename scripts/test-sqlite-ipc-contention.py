@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Black-box IPC liveness against two real daemons and an external SQLite writer.
+"""Black-box IPC liveness of a unified supervisor under external SQLite writer contention.
 
-Runs built flowd/goald with isolated paths. The writer lock belongs to a
+Runs built flowerlyd with isolated paths. The writer lock belongs to a
 separate OS process. Assertions cover correlated replies, responsive Ping,
 queued writes recovering after unlock, and bounded elapsed wall-clock time.
 No network, external dependencies or privileged access required.
@@ -74,220 +74,134 @@ def run_lock_holder(db):
 
 
 def main(bin_dir):
-    with tempfile.TemporaryDirectory(prefix="flowerly-ipc-contention-") as root:
-        root = pathlib.Path(root)
-        runtime = root / "runtime"
-        state = root / "state"
+    with tempfile.TemporaryDirectory(prefix="flowerly-unified-contention-") as td:
+        root = pathlib.Path(td)
+        runtime, state = root / "runtime", root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
+        sock = runtime / "flowerlyd.sock"
         env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
-        services = []
-        holder = None
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
-        try:
-            for name in ("flowd", "goald", "sessiond", "agenticd", "generationd", "provenanced"):
-                log_path = root / f"{name}.log"
-                log = log_path.open("wb")
-                proc = subprocess.Popen([str(bin_dir / name)], env=env, stdout=log, stderr=subprocess.STDOUT)
-                log.close()
-                services.append((name, proc, log_path))
-                wait_ready(runtime / f"{name}.sock", proc, log_path)
+        daemon, holder = None, None
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        log_path = root / "flowerlyd.log"
 
-            db = state / "state.db"
+        def start():
+            nonlocal daemon
+            with log_path.open("ab") as log:
+                daemon = subprocess.Popen([str(bin_dir / "flowerlyd")], env=env,
+                                          stdout=log, stderr=subprocess.STDOUT)
+            wait_ready(sock, daemon, log_path)
+
+        def cmd(name, args):
+            return request(sock, "command", name=name, args=args)
+
+        def lock_writer():
+            nonlocal holder
+            assert holder is None
             holder = subprocess.Popen(
-                [sys.executable, __file__, "--hold-lock", str(db)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert holder.stdout.readline().strip() == "LOCKED", "SQLite writer lock did not acquire"
-            # Separate daemon processes now contend for the SAME SQLite writer.
-            flow = executor.submit(
-                request, runtime / "flowd.sock", "command",
-                name="flow.create", args={"name": "External lock Flow"},
-            )
-            goal = executor.submit(
-                request, runtime / "goald.sock", "command",
-                name="goal.create", args={"objective": "External lock Goal"},
-            )
-            time.sleep(0.25)
-            for service in ("flowd", "goald"):
-                before = time.monotonic()
-                answer = request(runtime / f"{service}.sock", "ping")
-                duration = time.monotonic() - before
-                assert answer["type"] == "ok", (service, answer)
-                assert duration < 2, f"{service} Ping blocked for {duration:.3f}s"
+                [sys.executable, __file__, "--hold-lock", str(state / "state.db")],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True)
+            assert holder.stdout.readline().strip() == "LOCKED", "SQLite lock failed"
 
-            holder.stdin.write("\n")
-            holder.stdin.flush()
-            holder.communicate(timeout=5)
-            assert holder.returncode == 0, f"lock holder failed: {holder.returncode}"
-
-            created_ids = {}
-            for name, pending in (("flowd", flow), ("goald", goal)):
-                response = pending.result(timeout=TIMEOUT)
-                assert response["type"] == "ok", (name, response)
-                created_ids[name] = response["data"]["id"]
-            initial_session = request(runtime / "sessiond.sock", "command", name="session.create", args={})
-            assert initial_session["type"] == "ok", initial_session
-            session_id = initial_session["data"]["id"]
-            # Hold a SECOND writer lock longer than SQLite's five-second
-            # busy timeout: domain commands must report typed Unavailable.
-            holder = subprocess.Popen(
-                [sys.executable, __file__, "--hold-lock", str(db)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert holder.stdout.readline().strip() == "LOCKED"
-            locked_flow = executor.submit(
-                request, runtime / "flowd.sock", "command",
-                name="flow.create", args={"name": "Still locked Flow"},
-            )
-            locked_goal = executor.submit(
-                request, runtime / "goald.sock", "command",
-                name="goal.create", args={"objective": "Still locked Goal"},
-            )
-            locked_session_create = executor.submit(
-                request, runtime / "sessiond.sock", "command",
-                name="session.create", args={},
-            )
-            time.sleep(0.25)
-            for service in ("flowd", "goald", "sessiond"):
-                before = time.monotonic()
-                result = request(runtime / f"{service}.sock", "status")
-                assert time.monotonic() - before < 2, service
-                assert result["type"] == "ok", result
-                assert result["data"]["details"]["ready"] is False, result
-                assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
-            for service, pending in (
-                ("flowd.create", locked_flow),
-                ("goald.create", locked_goal),
-                ("sessiond.create", locked_session_create),
-            ):
-                result = pending.result(timeout=TIMEOUT)
-                assert result["type"] == "err", (service, result)
-                assert result.get("code") == "unavailable", (service, result)
+        def release_writer():
+            nonlocal holder
             holder.stdin.write("\n")
             holder.stdin.flush()
             holder.communicate(timeout=5)
             assert holder.returncode == 0
+            holder = None
 
-            # New lock window for non-create mutations. One blocked write
-            # per service avoids serial 5s busy waits exceeding IPC deadlines.
-            holder = subprocess.Popen(
-                [sys.executable, __file__, "--hold-lock", str(db)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert holder.stdout.readline().strip() == "LOCKED"
-            mutations = (
-                ("flowd", "flow.activate", {"id": created_ids["flowd"]}),
-                ("goald", "goal.complete", {"id": created_ids["goald"]}),
-                ("sessiond", "session.terminate", {"id": session_id}),
-                ("agenticd", "execution.create", {}),
-                ("generationd", "generation.create", {}),
-                ("provenanced", "provenance.add", {
-                    "from": created_ids["goald"], "relation": "belongs_to",
-                    "to": created_ids["flowd"],
-                }),
-            )
-            pending_mutations = [
-                (service, executor.submit(
-                    request, runtime / f"{service}.sock", "command",
-                    name=command, args=args,
-                ))
-                for service, command, args in mutations
-            ]
-            time.sleep(0.25)
-            for service in ("flowd", "goald", "sessiond"):
-                before = time.monotonic()
-                status = request(runtime / f"{service}.sock", "status")
-                assert time.monotonic() - before < 2, service
-                assert status["type"] == "ok", status
+        def healthy(busy=False):
+            t = time.monotonic()
+            ping = request(sock, "ping")
+            status = request(sock, "status")
+            assert ping["type"] == "ok" and status["type"] == "ok", (ping, status)
+            assert time.monotonic() - t < 3, "control plane blocked by SQLite writer"
+            assert status["data"]["service"] == "flowerlyd", status
+            if busy:
                 assert status["data"]["details"]["ready"] is False, status
-                assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
-            for service in ("agenticd", "generationd", "provenanced"):
-                before = time.monotonic()
-                assert request(runtime / f"{service}.sock", "ping")["type"] == "ok"
-                assert time.monotonic() - before < 2, service
-            for service, pending in pending_mutations:
-                result = pending.result(timeout=TIMEOUT)
-                assert result["type"] == "err", (service, result)
-                assert result.get("code") == "unavailable", (service, result)
-            holder.stdin.write("\n")
-            holder.stdin.flush()
-            holder.communicate(timeout=5)
-            assert holder.returncode == 0
-            # Recovered writer must accept new requests after previous busy failures.
-            for service, name, args in mutations:
-                result = request(runtime / f"{service}.sock", "command", name=name, args=args)
-                assert result["type"] == "ok", (service, result)
-            for service, name, args in (
-                ("flowd", "flow.create", {"name": "After busy recovery"}),
-                ("goald", "goal.create", {"objective": "After busy recovery"}),
-            ):
-                result = request(runtime / f"{service}.sock", "command", name=name, args=args)
-                assert result["type"] == "ok", (service, result)
-            # Opt-in idempotent creates: real daemons must replay the same
-            # durable result, reject changed payloads and never ignore bad types.
-            idempotent_replays = {}
-            for service, command, initial in (
-                ("flowd", "flow.create", {"name": "Retry-safe Flow"}),
-                ("goald", "goal.create", {"objective": "Retry-safe Goal"}),
-                ("sessiond", "session.create", {"kind": "test-metadata"}),
-            ):
-                args = dict(initial, operation_id=f"replay-{service}")
-                first = request(runtime / f"{service}.sock", "command", name=command, args=args)
-                second = request(runtime / f"{service}.sock", "command", name=command, args=args)
-                assert first["type"] == "ok", (service, first)
-                assert second["type"] == "ok", (service, second)
-                assert first["data"] == second["data"], (service, first, second)
-                assert first["data"]["id"] == second["data"]["id"], service
-                idempotent_replays[service] = (command, args, first["data"])
-                modified = dict(args, ignored_extra_field="changed")
-                conflict = request(runtime / f"{service}.sock", "command", name=command, args=modified)
-                assert conflict["type"] == "err" and conflict.get("code") == "conflict", (service, conflict)
-                wrong_type = dict(initial, operation_id=99)
-                invalid = request(runtime / f"{service}.sock", "command", name=command, args=wrong_type)
-                assert invalid["type"] == "err" and invalid.get("code") == "invalid_argument", (service, invalid)
 
-            # Child goal creation is also non-idempotent unless keyed.
-            parent = request(runtime / "goald.sock", "command",
-                             name="goal.create", args={"objective": "Parent for retry test"})
+        def blocked(name, args):
+            lock_writer()
+            future = pool.submit(cmd, name, args)
+            try:
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    reply = request(sock, "status")
+                    if reply["data"]["details"]["ready"] is False:
+                        break
+                    time.sleep(0.04)
+                else:
+                    raise AssertionError("the Store never observed the external writer")
+                healthy(busy=True)
+                answer = future.result(timeout=TIMEOUT + 2)
+                assert answer["type"] == "err" and answer.get("code") == "unavailable", (name, answer)
+            finally:
+                release_writer()
+
+        try:
+            start()
+            healthy()
+            lock_writer()
+            future = pool.submit(cmd, "flow.create", {"name": "Short external lock"})
+            time.sleep(0.25)
+            healthy(busy=True)
+            release_writer()
+            flow_reply = future.result(timeout=TIMEOUT)
+            assert flow_reply["type"] == "ok", flow_reply
+            flow_id = flow_reply["data"]["id"]
+            goal_reply = cmd("goal.create", {"objective": "External writer goal"})
+            assert goal_reply["type"] == "ok", goal_reply
+            goal_id = goal_reply["data"]["id"]
+            session_reply = cmd("session.create", {})
+            assert session_reply["type"] == "ok", session_reply
+            session_id = session_reply["data"]["id"]
+
+            # Shared in-process Store serializes writes, so probe one domain
+            # per external lock rather than assuming independent daemon mutexes.
+            for name, args in [
+                ("flow.create", {"name": "Long locked Flow"}),
+                ("goal.create", {"objective": "Long locked Goal"}),
+                ("session.create", {"kind": "test-metadata"}),
+                ("flow.activate", {"id": flow_id}),
+                ("goal.complete", {"id": goal_id}),
+                ("session.terminate", {"id": session_id}),
+                ("execution.create", {}),
+                ("generation.create", {}),
+                ("provenance.add", {"from": goal_id, "relation": "belongs_to", "to": flow_id}),
+            ]:
+                blocked(name, args)
+                recovered = cmd(name, args)
+                assert recovered["type"] == "ok", (name, recovered)
+
+            originals = {}
+            for name, args in [
+                ("flow.create", {"name": "Replay Flow"}),
+                ("goal.create", {"objective": "Replay Goal"}),
+                ("session.create", {"kind": "test-metadata"}),
+            ]:
+                keyed = dict(args, operation_id="busy-" + name.replace(".", "-"))
+                first, second = cmd(name, keyed), cmd(name, keyed)
+                assert first["type"] == "ok" and second["data"] == first["data"], (name, first, second)
+                originals[name] = (keyed, first["data"])
+                conflict = cmd(name, dict(keyed, unexpected="change"))
+                assert conflict["type"] == "err" and conflict.get("code") == "conflict", conflict
+
+            parent = cmd("goal.create", {"objective": "Parent goal for replay"})
             assert parent["type"] == "ok", parent
-            child_args = {"id": parent["data"]["id"], "objective": "One child",
-                          "operation_id": "child-goal-retry"}
-            child_first = request(runtime / "goald.sock", "command", name="goal.child", args=child_args)
-            child_retry = request(runtime / "goald.sock", "command", name="goal.child", args=child_args)
-            assert child_first["type"] == "ok", child_first
-            assert child_first["data"] == child_retry["data"], (child_first, child_retry)
+            child = {"id": parent["data"]["id"], "objective": "Only child",
+                     "operation_id": "busy-child-replay"}
+            first, repeated = cmd("goal.child", child), cmd("goal.child", child)
+            assert first["type"] == "ok" and repeated["data"] == first["data"], (first, repeated)
 
-            # Restart the *real* Flow daemon: durable operation result must
-            # survive the service process, not only a Store object reopening.
-            flow_name, flow_process, _ = services[0]
-            assert flow_name == "flowd"
-            stopping = request(runtime / "flowd.sock", "shutdown")
-            assert stopping["type"] == "ok", stopping
-            flow_process.wait(timeout=5)
-            restart_log = root / "flowd-restart.log"
-            log_handle = restart_log.open("wb")
-            resumed = subprocess.Popen([str(bin_dir / "flowd")], env=env,
-                                       stdout=log_handle, stderr=subprocess.STDOUT)
-            log_handle.close()
-            services[0] = (flow_name, resumed, restart_log)
-            wait_ready(runtime / "flowd.sock", resumed, restart_log)
-            command, original_args, first_result = idempotent_replays["flowd"]
-            restarted_replay = request(runtime / "flowd.sock", "command",
-                                       name=command, args=original_args)
-            assert restarted_replay["type"] == "ok", restarted_replay
-            assert restarted_replay["data"] == first_result, (restarted_replay, first_result)
-
-            print("IPC SQLite contention and idempotency OK: real daemons, typed busy, replay/conflict, recovery")
+            assert request(sock, "shutdown")["type"] == "ok"
+            assert daemon.wait(timeout=6) == 0
+            start()
+            for name, (args, expected) in originals.items():
+                reply = cmd(name, args)
+                assert reply["type"] == "ok" and reply["data"] == expected, (name, reply)
+            print("unified SQLite contention: external busy, prompt status, recovery and durable replay OK")
         finally:
             if holder is not None and holder.poll() is None:
                 holder.terminate()
@@ -296,18 +210,14 @@ def main(bin_dir):
                 except subprocess.TimeoutExpired:
                     holder.kill()
                     holder.communicate(timeout=3)
-            for _, proc, _ in services:
-                if proc.poll() is None:
-                    proc.terminate()
-            for name, proc, log in services:
+            if daemon is not None and daemon.poll() is None:
+                daemon.terminate()
                 try:
-                    proc.wait(timeout=4)
+                    daemon.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=4)
-                if proc.returncode not in (0, -15):
-                    print(f"{name} exit {proc.returncode}: {log.read_text()}", file=sys.stderr)
-            executor.shutdown(wait=True, cancel_futures=True)
+                    daemon.kill()
+                    daemon.wait(timeout=5)
+            pool.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

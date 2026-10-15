@@ -24,6 +24,11 @@ REPORT_DIR="$WORK_DIR/report"
 SSH_PORT="${ARCH_VM_SSH_PORT:-22222}"
 VM_CPUS="${ARCH_VM_CPUS:-4}"
 VM_MEMORY_MB="${ARCH_VM_MEMORY_MB:-6144}"
+# QCOW2 is sparse: this is virtual guest capacity, not host preallocation.
+VM_DISK_GB="${ARCH_VM_DISK_GB:-32}"
+source "$ROOT/scripts/lib/arch-vm-disk.sh"
+flowerly_arch_vm_validate_disk_gb "$VM_DISK_GB"
+
 
 mkdir -p "$CACHE_DIR"
 rm -rf "$REPORT_DIR"
@@ -68,6 +73,8 @@ fi
 
 overlay="$WORK_DIR/overlay.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base_image" "$overlay"
+flowerly_arch_vm_resize_overlay "$overlay" "$VM_DISK_GB"
+echo "Arch guest sparse overlay configured with ${VM_DISK_GB} GiB virtual disk"
 
 ssh_key="$WORK_DIR/id_ed25519"
 rm -f "$ssh_key" "$ssh_key.pub"
@@ -76,6 +83,12 @@ public_key="$(cat "$ssh_key.pub")"
 
 cat >"$WORK_DIR/user-data" <<EOF
 #cloud-config
+# Expand the existing root partition and its filesystem on the first boot.
+# Both are required: increasing the QCOW2 virtual size alone is insufficient.
+growpart:
+  mode: auto
+  devices: ['/']
+resize_rootfs: true
 users:
   - name: flowerly
     gecos: Flowerly CI
@@ -236,6 +249,16 @@ wait_for_ssh() {
 wait_for_ssh "initial boot"
 ssh "${ssh_opts[@]}" "$guest" 'cloud-init status --wait'
 
+# Fail before a large pacman transaction if cloud-init did not expand the
+# partition/filesystem. Save this diagnostic even if the guest fails preflight.
+echo "verifying expanded Arch guest root filesystem before pacman"
+if ! ssh "${ssh_opts[@]}" "$guest" 'bash -s -- 16 8' \
+    < "$ROOT/scripts/arch-vm-guest-disk-preflight.sh" \
+    2>&1 | tee "$REPORT_DIR/guest-disk-before-upgrade.txt"; then
+    echo "Arch guest root filesystem did not grow; see $REPORT_DIR/guest-disk-before-upgrade.txt" >&2
+    exit 1
+fi
+
 echo "upgrading Arch and installing Flowerly build dependencies"
 ssh "${ssh_opts[@]}" "$guest" \
     'sudo pacman -Syu --noconfirm --needed base-devel git just ripgrep rustup python'
@@ -266,7 +289,7 @@ printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
 echo "running complete Flowerly verification inside Arch VM"
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
-    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash tests/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
+    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
     2>&1 | tee "$REPORT_DIR/guest-execution.log"
 guest_status=("${PIPESTATUS[@]}")
 set -e
@@ -290,6 +313,9 @@ fi
     echo "qemu_accelerator=$accel"
     echo "vm_cpus=$VM_CPUS"
     echo "vm_memory_mb=$VM_MEMORY_MB"
+    echo "vm_disk_gb=$VM_DISK_GB"
+    echo "vm_root_minimum_gb=16"
+    echo "vm_free_minimum_gb=8"
 } >"$REPORT_DIR/host-metadata.txt"
 
 echo "requesting clean guest shutdown"
