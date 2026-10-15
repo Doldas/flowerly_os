@@ -7,7 +7,7 @@
 
 use agentic_types::{Flow, FlowId, Goal, GoalId, ObjectRef, ProvenanceEdge};
 
-use crate::{Result, Store};
+use crate::{MutationOperation, Result, Store};
 
 /// A domain command, not a generic transaction or SQL request.
 /// Provenance edges are part of the same durable SQLite transaction.
@@ -26,7 +26,19 @@ pub struct CreateGoal<'a> {
 /// transaction and authorization invariant has been reviewed.
 pub trait CoreCommandRepository {
     fn create_flow(&mut self, command: CreateFlow<'_>) -> Result<()>;
+    /// A replay response and its durable mutation are one SQLite transaction.
+    /// The authenticated actor must match the Flow's durable creator.
+    fn create_flow_once(
+        &mut self,
+        command: CreateFlow<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String>;
     fn create_goal(&mut self, command: CreateGoal<'_>) -> Result<()>;
+    fn create_goal_once(
+        &mut self,
+        command: CreateGoal<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String>;
     fn activate_flow(&mut self, id: &FlowId) -> Result<()>;
 }
 
@@ -42,8 +54,24 @@ impl CoreCommandRepository for Store {
         self.insert_flow_with_provenance(command.flow, command.provenance)
     }
 
+    fn create_flow_once(
+        &mut self,
+        command: CreateFlow<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_flow_with_provenance_once(command.flow, command.provenance, operation)
+    }
+
     fn create_goal(&mut self, command: CreateGoal<'_>) -> Result<()> {
         self.insert_goal_with_provenance(command.goal, command.provenance)
+    }
+
+    fn create_goal_once(
+        &mut self,
+        command: CreateGoal<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_goal_with_provenance_once(command.goal, command.provenance, operation)
     }
 
     fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
@@ -133,6 +161,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn typed_replay_preserves_original_result_and_provenance() {
+        let mut store = Store::open_in_memory().expect("open");
+        store.migrate().expect("migrate");
+        let first = Flow::new("Once", "uid:1000");
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&first.id),
+            relation: ProvenanceRelation::CreatedBy,
+            to: ObjectRef::actor("uid:1000").expect("actor"),
+            created_at: Timestamp::now(),
+            note: None,
+        };
+        let operation = MutationOperation {
+            actor: "uid:1000",
+            command: "flow.create",
+            operation_id: "typed-test-1",
+            request_payload: r#"{"name":"Once"}"#,
+            response_payload: r#"{"result":"first"}"#,
+        };
+        let response = CoreCommandRepository::create_flow_once(
+            &mut store,
+            CreateFlow {
+                flow: &first,
+                provenance: std::slice::from_ref(&edge),
+            },
+            &operation,
+        )
+        .expect("first insert");
+        assert_eq!(response, operation.response_payload);
+        let second = Flow::new("Once", "uid:1000");
+        let replay = CoreCommandRepository::create_flow_once(
+            &mut store,
+            CreateFlow {
+                flow: &second,
+                provenance: &[],
+            },
+            &operation,
+        )
+        .expect("replay");
+        assert_eq!(replay, response);
+        assert!(CoreQueryRepository::flow(&store, &first.id)
+            .unwrap()
+            .is_some());
+        assert!(CoreQueryRepository::flow(&store, &second.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&first.id))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn typed_replay_rejects_untrusted_actor_without_effect() {
+        let mut store = Store::open_in_memory().expect("open");
+        store.migrate().expect("migrate");
+        let flow = Flow::new("Protected", "uid:1000");
+        let operation = MutationOperation {
+            actor: "uid:9999",
+            command: "flow.create",
+            operation_id: "typed-test-denied",
+            request_payload: "{}",
+            response_payload: "{}",
+        };
+        assert!(CoreCommandRepository::create_flow_once(
+            &mut store,
+            CreateFlow {
+                flow: &flow,
+                provenance: &[],
+            },
+            &operation,
+        )
+        .is_err());
+        assert!(CoreQueryRepository::flow(&store, &flow.id)
+            .unwrap()
+            .is_none());
+    }
+
     struct RecordingRepository {
         creations: usize,
     }
@@ -142,6 +250,22 @@ mod tests {
             assert_eq!(command.provenance.len(), 1);
             self.creations += 1;
             Ok(())
+        }
+
+        fn create_flow_once(
+            &mut self,
+            _command: CreateFlow<'_>,
+            operation: &MutationOperation<'_>,
+        ) -> Result<String> {
+            Ok(operation.response_payload.to_owned())
+        }
+
+        fn create_goal_once(
+            &mut self,
+            _command: CreateGoal<'_>,
+            operation: &MutationOperation<'_>,
+        ) -> Result<String> {
+            Ok(operation.response_payload.to_owned())
         }
 
         fn create_goal(&mut self, _command: CreateGoal<'_>) -> Result<()> {

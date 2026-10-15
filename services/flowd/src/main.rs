@@ -295,9 +295,15 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     request_payload: &request_json,
                     response_payload: &response_json,
                 };
-                let stored = store
-                    .insert_flow_with_provenance_once(&flow, &[provenance], &operation)
-                    .map_err(CommandFailure::storage)?;
+                let stored = CoreCommandRepository::create_flow_once(
+                    store,
+                    CreateFlow {
+                        flow: &flow,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                    &operation,
+                )
+                .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
                 CoreCommandRepository::create_flow(
