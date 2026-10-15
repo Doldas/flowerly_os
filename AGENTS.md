@@ -5,7 +5,7 @@ This file provides **navigation and accuracy rules**, not authority to override 
 ## Development workflow
 
 - Active 0.0.4 integration target: `release/2`. Fetch its **current** SHA, active issues, PR states and CI before implementing anything.
-- Do not merge PRs unless the human explicitly authorizes it. Use scoped feature/docs branches, draft PRs, CI and real black-box evidence where practical; avoid declaring success from isolated spikes or green tests alone.
+- Do not merge implementation PRs unless the human explicitly authorizes it. Release-to-release forwarding may use GitHub's protected auto-merge **only after required checks** when explicitly configured. Master promotion is **never** auto-merged, even after tests pass. Use scoped feature/docs branches, draft PRs, CI and real black-box evidence.
 - Record material architecture decisions, failure findings, unclosed questions and reproducible acceptance tests in repository docs/issues. Next agent sessions must not depend on the previous chat's context.
 - For long-lived runtime and process behaviors, trust measured Linux process behavior over simulated state. Protect safety-critical invariants with failure-injection tests.
 
@@ -17,6 +17,19 @@ This file provides **navigation and accuracy rules**, not authority to override 
 - Do not reintroduce legacy state daemon binaries or inter-module Unix sockets.
 - Preserve authenticated IPC, PTY/cgroup containment, transactional SQLite semantics and unknown-outcome retry safety. Treat incomplete integration tests as merge blockers.
 - Hypervisor provisioning and bootable image builds remain explicitly unavailable, even when scaffolds exist.
+
+## Release propagation policy
+
+- Issue #112 tracks release branch forwarding. `branch-forward.yml` reconciles
+  adjacent `release/N → release/N+1` PRs and a draft latest release → master
+  candidate; no direct branch writes.
+- A separate `FLOWERLY_FORWARD_BOT_TOKEN` secret is required for bot-created
+  PRs to trigger required checks. Repository "Allow auto-merge" must also
+  be enabled for unattended adjacent-release merges; absent setup is a
+  visible configuration blocker.
+- Exact-SHA successful **push** CI including real Arch VM acceptance, security,
+  and CodeQL are required for any master PR. Master always needs maintainer
+  approval and manual merge. See [release model](web-docs/docs/releases.md).
 
 ## Present release versus proposals
 

@@ -34,28 +34,73 @@ artifact checksums    checksums of every published artifact
 
 ## Release branch model
 
-Flowerly OS uses a release-branch workflow to keep `master` stable and ensure
-every release inherits the full history of its predecessors:
+Flowerly uses **forward-only release propagation** while keeping `master`
+as the **latest verified and explicitly approved release**. Direct pushes to
+protected release branches and `master` remain forbidden.
 
-- `master` is the integration branch. It is protected: direct pushes are
-  forbidden; only merges from `release/*` branches are allowed.
-- Feature development happens on `release/N` branches (e.g., `release/1`,
-  `release/2`). PRs target the active release branch.
-- When a release is ready, `release/N` is merged into `master` via a PR that
-  passes the `release-source-check` gate (which enforces the head branch is
-  `release/*`).
-- The next release branch is cut from `master` with `scripts/release-cut.sh N+1`.
-  This ensures `release/N+1` contains everything merged into `release/N` and
-  promoted to `master`.
-- A release is tagged on `master` after the merge. Use `scripts/release-promote.sh`
-  to tag and build artifacts.
+```text
+feature/* / bugfix/* / docs/* -> release/2 -> release/3 -> release/4
+                                                    |
+                                   verified release-push CI
+                                   (real Arch VM + docs + security + CodeQL)
+                                                    |
+                                   draft release/4 -> master PR
+                                   (maintainer promotion approval)
+                                                    v
+                                                 master
+```
 
-This model guarantees that content flows monotonically:
-`release/1` → `master` → `release/2` → `master` → `release/3` → ...
+- `scripts/release-cut.sh N` creates the next release from the **highest
+  existing `release/N-1`**, not stale `master`. It requires consecutive
+  numbering, a clean worktree and a new branch.
+- Any protected `release/*` push runs
+  `.github/workflows/branch-forward.yml`, which reconciles **all adjacent
+  release branches** and opens idempotent forward PRs (`release/N` into
+  `release/N+1`). It never pushes directly to a target branch.
+- When GitHub's **Allow auto-merge** repository setting is enabled, the bot
+  requests a **merge commit** for adjacent-release PRs. GitHub merges them
+  only after the mandatory PR checks pass; conflicts leave the PR blocked.
+  Without that setting, forward PRs remain open for manual merge.
+- The same automation opens a **draft** PR from the **newest release branch**
+  to `master`. It never enables master auto-merge. The PR-policy check
+  rejects older release sources and requires successful **exact-head**
+  release-branch **push** CI (including the *executed and passed* Arch VM
+  acceptance step), security and CodeQL checks. Passing PR CI alone is
+  insufficient; a failed, stale or skipped Arch step blocks promotion.
+- Maintainers deliberately decide **when** a verified release is promoted.
+  Mark its draft PR ready for review after CI succeeds; this retriggers
+  verification. Review and merge manually through the protected PR path.
+  Recheck the required master PR checks and release evidence before merging.
 
-Eventually releases will also provide bootable images, packages, an SBOM,
-signatures and provenance metadata. Until then, releases ship source and
-artifacts with checksums.
+### One-time automation setup
+
+A repository maintainer must configure the GitHub Actions secret
+`FLOWERLY_FORWARD_BOT_TOKEN`, preferably from a dedicated bot account or
+GitHub App, with **Contents: read** and **Pull requests: read/write** on this
+repository. The bot must be authorized for protected source branches. GitHub
+does not trigger mandatory `pull_request` workflows for PRs created with
+the default `GITHUB_TOKEN`, so the workflow **fails visibly** if this secret
+is missing instead of silently opening unchecked PRs.
+
+To automatically finish adjacent-release forward merges, enable
+**Settings → General → Pull Requests → Allow auto-merge**. This setting does
+not weaken branch rules and does not enable promotion to `master`.
+After configuring the secret, trigger `branch-forward` using a
+`workflow_dispatch` on the active release branch to reconcile existing
+branches. Until setup is complete, changes still require manual PRs; the
+new workflows do not edit GitHub settings or store credentials.
+
+For a local offline policy regression run:
+
+```sh
+python3 scripts/test-branch-forward.py
+python3 scripts/release-gates.py validate
+```
+
+For stalled runs, inspect the automation logs and forward PR checks. Never
+force-push release refs, retry an auto-merge around a red required check,
+or promote an unverified candidate. A release source moving after its
+successful test must pass fresh exact-SHA verification.
 
 ## Final Arch-kernel validation
 

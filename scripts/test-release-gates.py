@@ -27,6 +27,7 @@ class ReleaseGateTests(unittest.TestCase):
             ".github/workflows/security.yml",
             ".github/workflows/codeql.yml",
             ".github/workflows/pr-validation.yml",
+            ".github/workflows/branch-forward.yml",
         )
         for filename in files:
             target = root / filename
@@ -63,6 +64,15 @@ class ReleaseGateTests(unittest.TestCase):
             security = root / ".github/workflows/security.yml"
             security.write_text(security.read_text() + "\ncontinue-on-error: true\n")
             with self.assertRaisesRegex(ValueError, "soft-fail"):
+                gates.validate(root)
+
+    def test_missing_master_exact_sha_gate_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._copy(root)
+            pr = root / ".github/workflows/pr-validation.yml"
+            pr.write_text(pr.read_text().replace("verify-master", "verify-later"))
+            with self.assertRaisesRegex(ValueError, "exact-SHA master evidence"):
                 gates.validate(root)
 
     def test_bypass_actor_is_rejected(self):
