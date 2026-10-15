@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use flowerly_core::default_runtime_dir;
-use flowerly_core::ipc::{self, Envelope, Payload};
+use flowerly_core::ipc::{Envelope, Payload};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 

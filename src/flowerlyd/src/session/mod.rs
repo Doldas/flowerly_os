@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #[cfg(target_os = "linux")]
 mod pty;
 

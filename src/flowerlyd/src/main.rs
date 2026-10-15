@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
         config.runtime_dir = runtime_dir;
     }
     init_tracing(&config.name, config.log_format);
-    let mut db = Store::open(&config.database_path()).context("opening unified state")?;
+    let mut db = Store::open(config.database_path()).context("opening unified state")?;
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
