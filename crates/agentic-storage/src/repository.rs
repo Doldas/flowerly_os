@@ -201,8 +201,12 @@ mod tests {
         )
         .expect("replay");
         assert_eq!(replay, response);
-        assert!(CoreQueryRepository::flow(&store, &first.id).unwrap().is_some());
-        assert!(CoreQueryRepository::flow(&store, &second.id).unwrap().is_none());
+        assert!(CoreQueryRepository::flow(&store, &first.id)
+            .unwrap()
+            .is_some());
+        assert!(CoreQueryRepository::flow(&store, &second.id)
+            .unwrap()
+            .is_none());
         assert_eq!(
             CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&first.id))
                 .unwrap()
@@ -232,7 +236,9 @@ mod tests {
             &operation,
         )
         .is_err());
-        assert!(CoreQueryRepository::flow(&store, &flow.id).unwrap().is_none());
+        assert!(CoreQueryRepository::flow(&store, &flow.id)
+            .unwrap()
+            .is_none());
     }
 
     struct RecordingRepository {
