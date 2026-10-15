@@ -7,6 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateGoal};
 use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
@@ -124,8 +125,7 @@ fn validate_goal_command(
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("missing string arg `id`"))?;
         let id = GoalId::from_str(raw).map_err(|error| invalid(&error.to_string()))?;
-        if store
-            .get_goal(&id)
+        if CoreQueryRepository::goal(store, &id)
             .map_err(|error| (storage_error_code(&error), error.to_string()))?
             .is_none()
         {
@@ -257,14 +257,25 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     request_payload: &request_json,
                     response_payload: &response_json,
                 };
-                let stored = store
-                    .insert_goal_with_provenance_once(&goal, &[created_edge], &operation)
-                    .map_err(CommandFailure::storage)?;
+                let stored = CoreCommandRepository::create_goal_once(
+                    store,
+                    CreateGoal {
+                        goal: &goal,
+                        provenance: std::slice::from_ref(&created_edge),
+                    },
+                    &operation,
+                )
+                .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
-                store
-                    .insert_goal_with_provenance(&goal, &[created_edge])
-                    .map_err(CommandFailure::storage)?;
+                CoreCommandRepository::create_goal(
+                    store,
+                    CreateGoal {
+                        goal: &goal,
+                        provenance: std::slice::from_ref(&created_edge),
+                    },
+                )
+                .map_err(CommandFailure::storage)?;
                 intended_response
             };
             tracing::info!(goal_id = %response["id"], objective, "goal create completed");
@@ -285,8 +296,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
-            if store
-                .get_goal(&parent)
+            if CoreQueryRepository::goal(store, &parent)
                 .map_err(CommandFailure::storage)?
                 .is_none()
             {
@@ -329,18 +339,25 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     request_payload: &request_json,
                     response_payload: &response_json,
                 };
-                let stored = store
-                    .insert_goal_with_provenance_once(
-                        &child,
-                        &[created_edge, parent_edge],
-                        &operation,
-                    )
-                    .map_err(CommandFailure::storage)?;
+                let stored = CoreCommandRepository::create_goal_once(
+                    store,
+                    CreateGoal {
+                        goal: &child,
+                        provenance: &[created_edge, parent_edge],
+                    },
+                    &operation,
+                )
+                .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
-                store
-                    .insert_goal_with_provenance(&child, &[created_edge, parent_edge])
-                    .map_err(CommandFailure::storage)?;
+                CoreCommandRepository::create_goal(
+                    store,
+                    CreateGoal {
+                        goal: &child,
+                        provenance: &[created_edge, parent_edge],
+                    },
+                )
+                .map_err(CommandFailure::storage)?;
                 intended_response
             };
             Ok(response)
@@ -350,8 +367,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
-            let goal = store
-                .get_goal(&GoalId::from_str(id).map_err(err_str)?)
+            let goal = CoreQueryRepository::goal(store, &GoalId::from_str(id).map_err(err_str)?)
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("goal not found: {id}"))?;
             Ok(serde_json::json!({
@@ -526,6 +542,55 @@ mod tests {
 
         assert_eq!(error, "arg `priority` must be an integer");
         assert!(store.list_goals().expect("list goals").is_empty());
+    }
+
+    #[test]
+    fn typed_goal_and_child_replay_keep_single_durable_effect() {
+        let mut store = migrated_store();
+        let create = serde_json::json!({
+            "objective": "parent",
+            "created_by": "uid:1000",
+            "operation_id": "goal-once-parent"
+        });
+        let first = run_command(&mut store, "goal.create", &create).expect("first goal");
+        let replay = run_command(&mut store, "goal.create", &create).expect("goal replay");
+        assert_eq!(first, replay);
+
+        let child = serde_json::json!({
+            "id": first["id"],
+            "objective": "child",
+            "created_by": "uid:1000",
+            "operation_id": "goal-once-child"
+        });
+        let first_child = run_command(&mut store, "goal.child", &child).expect("first child");
+        let replay_child = run_command(&mut store, "goal.child", &child).expect("child replay");
+        assert_eq!(first_child, replay_child);
+        assert_eq!(store.list_goals().expect("goals").len(), 2);
+
+        for id in [&first["id"], &first_child["id"]] {
+            let id = GoalId::from_str(id.as_str().expect("id")).expect("goal id");
+            let edges = CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+                .expect("provenance");
+            assert!(!edges.is_empty(), "created object needs provenance");
+        }
+    }
+
+    #[test]
+    fn typed_goal_replay_rejects_changed_request() {
+        let mut store = migrated_store();
+        let original = serde_json::json!({
+            "objective": "original",
+            "created_by": "uid:1000",
+            "operation_id": "goal-key-reused"
+        });
+        run_command(&mut store, "goal.create", &original).expect("original");
+        let changed = serde_json::json!({
+            "objective": "changed",
+            "created_by": "uid:1000",
+            "operation_id": "goal-key-reused"
+        });
+        assert!(run_command(&mut store, "goal.create", &changed).is_err());
+        assert_eq!(store.list_goals().expect("goals").len(), 1);
     }
 
     #[test]
