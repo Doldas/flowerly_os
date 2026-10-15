@@ -92,14 +92,21 @@ against the configuration file's directory, so building with
 Use the shared builder for local reproduction and GitHub Actions:
 
 ```sh
-python3 -m pip install -r web-docs/requirements-docs.txt
 bash scripts/build-docs-site.sh
 test -s site/index.html
 ```
 
+The builder creates a **temporary Python virtual environment** and installs
+the pinned MkDocs dependencies **inside that environment only**. This works on
+self-hosted Ubuntu runners whose distro-managed Python forbids global pip
+installs under PEP 668; do not use `--break-system-packages`. It requires a
+Python installation with `venv` support (the CI workflows use
+`actions/setup-python`). The temporary environment is removed after the
+build.
+
 The builder passes an **absolute** site output path and fails immediately if
-`site/index.html` is absent. The ordinary PR `docs` job runs the exact same
-build as the Pages publishing job, catching mismatches before merging.
+`site/index.html` is absent. Both the PR `docs` job and the Pages publishing
+job use this exact same isolated build, catching mismatches before merging.
 
 ## CI
 

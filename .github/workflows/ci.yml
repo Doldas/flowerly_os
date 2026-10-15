@@ -143,6 +143,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Self-hosted release runners may use distro-managed Python (PEP 668).
+      # Select a Python with venv support; the builder installs into a venv.
+      - name: Setup Python for documentation
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: web-docs/requirements-docs.txt
+
       - name: Install just
         uses: taiki-e/install-action@v2
         with:
@@ -157,10 +166,7 @@ jobs:
         run: ./scripts/check-docs.sh
 
       - name: Build documentation and verify GitHub Pages output
-        run: |
-          python3 -m pip install -r web-docs/requirements-docs.txt
-          bash ./scripts/build-docs-site.sh
-          test -s site/index.html
+        run: bash ./scripts/build-docs-site.sh
 
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh
