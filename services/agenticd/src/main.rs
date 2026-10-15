@@ -213,7 +213,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(serde_json::json!({ "execution": data }))
         }
         "execution.list" => {
-            let records = store.list_executions().map_err(CommandFailure::storage)?;
+            let records = CoreQueryRepository::executions(store).map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`").into()),
