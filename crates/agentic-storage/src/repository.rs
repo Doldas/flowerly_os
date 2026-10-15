@@ -344,7 +344,7 @@ mod tests {
         .expect("create execution");
         assert_eq!(
             CoreQueryRepository::session(&store, &session.id).unwrap(),
-            Some(session)
+            Some(session.clone())
         );
         assert_eq!(
             CoreQueryRepository::execution(&store, &execution.id).unwrap(),
