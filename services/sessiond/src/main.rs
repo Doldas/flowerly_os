@@ -10,6 +10,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateSession};
 use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
@@ -267,8 +268,7 @@ fn validate_session_command(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("missing string arg `id`"))?;
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            let existing = store
-                .get_session(&id)
+            let existing = CoreQueryRepository::session(store, &id)
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
             let session = existing
                 .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
@@ -414,14 +414,25 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     request_payload: &request_json,
                     response_payload: &response_json,
                 };
-                let stored = store
-                    .insert_session_with_provenance_once(&session, &[provenance], &operation)
-                    .map_err(CommandFailure::storage)?;
+                let stored = CoreCommandRepository::create_session_once(
+                    store,
+                    CreateSession {
+                        session: &session,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                    &operation,
+                )
+                .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
-                store
-                    .insert_session_with_provenance(&session, &[provenance])
-                    .map_err(CommandFailure::storage)?;
+                CoreCommandRepository::create_session(
+                    store,
+                    CreateSession {
+                        session: &session,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                )
+                .map_err(CommandFailure::storage)?;
                 intended_response
             };
             tracing::info!(session_id = %response["id"], kind, "session create completed");
@@ -451,8 +462,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let session_id = SessionId::from_str(id).map_err(err_str)?;
-            let session = store
-                .get_session(&session_id)
+            let session = CoreQueryRepository::session(store, &session_id)
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| format!("session not found: {id}"))?;
 
