@@ -71,6 +71,12 @@ jobs:
       - name: Black-box unified runtime, durable replay and separate hypervisor boundary
         run: python3 ./testbed/integration/test-unified-runtime.py target/release
 
+      - name: Multi-domain durable IPC operation-key replay and restart
+        run: python3 ./scripts/test-ipc-idempotency.py target/release
+
+      - name: External SQLite writer contention across unified modules
+        run: python3 ./scripts/test-sqlite-ipc-contention.py target/release
+
       - name: Verify delegated management cgroup writes the real supervisor PID
         run: bash ./scripts/arch-pty-cgroup-acceptance.sh --verify-management-pid
 
