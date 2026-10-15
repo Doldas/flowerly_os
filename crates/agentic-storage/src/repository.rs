@@ -70,7 +70,9 @@ pub trait CoreQueryRepository {
     fn flow(&self, id: &FlowId) -> Result<Option<Flow>>;
     fn goal(&self, id: &GoalId) -> Result<Option<Goal>>;
     fn session(&self, id: &SessionId) -> Result<Option<Session>>;
+    fn sessions(&self) -> Result<Vec<Session>>;
     fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>>;
+    fn executions(&self) -> Result<Vec<Execution>>;
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>>;
 }
 
@@ -133,8 +135,16 @@ impl CoreQueryRepository for Store {
         self.get_session(id)
     }
 
+    fn sessions(&self) -> Result<Vec<Session>> {
+        self.list_sessions()
+    }
+
     fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
         self.get_execution(id)
+    }
+
+    fn executions(&self) -> Result<Vec<Execution>> {
+        self.list_executions()
     }
 
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
