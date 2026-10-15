@@ -88,14 +88,35 @@ including modern Cargo dependencies and Actions, rather than reverting them to
 old `master` definitions. This documentation note is the only intended file
 change.
 
-**Merge the reconciliation PR into `release/2` using a MERGE COMMIT** after
-required CI passes. Do **not** squash or rebase it: that would lose the
-`master` ancestor and can leave the promotion PR conflicted. Do not
-force-push either protected branch or bypass release checks. Once merged,
-check that `master` is a Git ancestor of `release/2`, then wait for
-the **new exact release/2 SHA** to pass the real Arch VM and security gates
-before manually promoting PR #116. The reconciliation PR does not itself
-approve or merge a release into `master`.
+**IMPORTANT — select "Create a merge commit" in the GitHub merge-method
+dropdown for the reconciliation PR into `release/2`.** Do **not** select
+"Squash and merge" or "Rebase and merge". PR #117 was squash-merged on
+2026-10-15: its original two-parent commit `6d9aa72` had `master` as a
+parent, but the squash result `6f6e20a` has only `release/2` as a parent.
+That is why promotion PR #116 still reported the same conflicts.
+
+The follow-up reconciliation PR includes a fresh two-parent merge commit based
+on that new release head. Review its GitHub commit page and confirm its parents
+are the current `release/2` and `master` SHAs. **On completion verify
+ancestry, not just a green merge button:**
+
+```sh
+git fetch origin master release/2
+git merge-base --is-ancestor origin/master origin/release/2
+```
+
+This command must return exit code **0**. If it returns **1**, the merge was
+squashed/rebased again and the promotion conflict is not fixed. Never
+force-push either protected branch or bypass release checks. Once ancestry is
+verified, wait for the **new exact release/2 SHA** to pass the real Arch VM
+and security gates before manually promoting PR #116. The reconciliation PR
+does not itself approve or merge a release into `master`.
+
+Note: `master` currently has a GitHub ruleset requiring **linear history**,
+so its eventual promotion uses a method that respects that restriction; it is
+a separate operation from the **merge-commit reconciliation into release/2**.
+Future promotions should also account for the master's new squash/rebase
+commit in the next release branch to avoid reintroducing diverging history.
 
 ### One-time automation setup
 
