@@ -5,7 +5,10 @@
 //! incremental adapter over the accepted single-file SQLite Store: it neither
 //! creates a second backend nor changes existing service behavior.
 
-use agentic_types::{Flow, FlowId, Goal, GoalId, ObjectRef, ProvenanceEdge};
+use agentic_types::{
+    Execution, ExecutionId, Flow, FlowId, Goal, GoalId, ObjectRef, ProvenanceEdge, Session,
+    SessionId,
+};
 
 use crate::{MutationOperation, Result, Store};
 
@@ -19,6 +22,19 @@ pub struct CreateFlow<'a> {
 /// Goal creation with its causality evidence in one commit.
 pub struct CreateGoal<'a> {
     pub goal: &'a Goal,
+    pub provenance: &'a [ProvenanceEdge],
+}
+
+/// Session metadata creation is separate from PTY spawn or kernel authority.
+/// The session record and its provenance are one SQLite transaction.
+pub struct CreateSession<'a> {
+    pub session: &'a Session,
+    pub provenance: &'a [ProvenanceEdge],
+}
+
+/// Execution records and causal edges commit as one SQLite transaction.
+pub struct CreateExecution<'a> {
+    pub execution: &'a Execution,
     pub provenance: &'a [ProvenanceEdge],
 }
 
@@ -40,12 +56,21 @@ pub trait CoreCommandRepository {
         operation: &MutationOperation<'_>,
     ) -> Result<String>;
     fn activate_flow(&mut self, id: &FlowId) -> Result<()>;
+    fn create_session(&mut self, command: CreateSession<'_>) -> Result<()>;
+    fn create_session_once(
+        &mut self,
+        command: CreateSession<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String>;
+    fn create_execution(&mut self, command: CreateExecution<'_>) -> Result<()>;
 }
 
 /// Read-only, typed queries. No raw SQL or underlying driver handles escape.
 pub trait CoreQueryRepository {
     fn flow(&self, id: &FlowId) -> Result<Option<Flow>>;
     fn goal(&self, id: &GoalId) -> Result<Option<Goal>>;
+    fn session(&self, id: &SessionId) -> Result<Option<Session>>;
+    fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>>;
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>>;
 }
 
@@ -77,6 +102,22 @@ impl CoreCommandRepository for Store {
     fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
         Store::activate_flow(self, id)
     }
+
+    fn create_session(&mut self, command: CreateSession<'_>) -> Result<()> {
+        self.insert_session_with_provenance(command.session, command.provenance)
+    }
+
+    fn create_session_once(
+        &mut self,
+        command: CreateSession<'_>,
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        self.insert_session_with_provenance_once(command.session, command.provenance, operation)
+    }
+
+    fn create_execution(&mut self, command: CreateExecution<'_>) -> Result<()> {
+        self.insert_execution_with_provenance(command.execution, command.provenance)
+    }
 }
 
 impl CoreQueryRepository for Store {
@@ -86,6 +127,14 @@ impl CoreQueryRepository for Store {
 
     fn goal(&self, id: &GoalId) -> Result<Option<Goal>> {
         self.get_goal(id)
+    }
+
+    fn session(&self, id: &SessionId) -> Result<Option<Session>> {
+        self.get_session(id)
+    }
+
+    fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
+        self.get_execution(id)
     }
 
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
@@ -274,6 +323,24 @@ mod tests {
         }
 
         fn activate_flow(&mut self, _id: &FlowId) -> Result<()> {
+            Ok(())
+        }
+
+        fn create_session(&mut self, _command: CreateSession<'_>) -> Result<()> {
+            self.creations += 1;
+            Ok(())
+        }
+
+        fn create_session_once(
+            &mut self,
+            _command: CreateSession<'_>,
+            operation: &MutationOperation<'_>,
+        ) -> Result<String> {
+            Ok(operation.response_payload.to_owned())
+        }
+
+        fn create_execution(&mut self, _command: CreateExecution<'_>) -> Result<()> {
+            self.creations += 1;
             Ok(())
         }
     }
