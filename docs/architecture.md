@@ -140,6 +140,10 @@ single-database ACID model in accepted ADR-0011 until approved
 replacement, and maintain real kernel-credential/cgroup enforcement.
 Tracked through #91–#95 and the storage work #82–#89.
 
+For proposed implementation contracts, physical migration/recovery controls,
+Linux trusted-boundary exceptions, evidence criteria and ordered work, see the
+[architecture design packet](design/README.md). These are plans only.
+
 ## Target architecture (planned)
 
 The current services are the durable skeleton for a larger design. The target

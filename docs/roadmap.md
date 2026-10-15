@@ -93,6 +93,19 @@ storage design; concrete cgroup/host facade work must respect unresolved
 No automatic dependency additions, no release gate changes and no
 new accepted ADR without owner approval.
 
+## Pre-code architecture documentation pack (proposed)
+
+The consolidated [storage and Layer 1.5 design packet](design/README.md) captures
+the domain-typed API plan (#83), existing transaction ownership and fail-closed
+two-file migration prerequisites (#82/#84), installation/backend mode policy
+(#85/#88), memory and replication constraints (#86/#87), trusted Linux
+supervision boundaries (#91/#92/#95), driver-import/contract rules (#93/#94),
+and an exact-commit acceptance matrix (#89 and #50/#72-#74/#79).
+
+**Review of these documents does not mark ADR-0017/0018 Accepted or authorize
+a physical storage split.** ADR-0011 remains Accepted. All implementation work
+requires small, separate draft PRs and verified evidence; #55 is not included.
+
 ## Current task status snapshot (issue states checked 2026-10-15)
 
 - **Accepted implementation base:** 0.0.1–0.0.3 done; ADR-0011's
