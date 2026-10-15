@@ -80,6 +80,27 @@ later milestone adds Flowerly package installation, bootable disk output,
 initramfs/UKI handling, exact resolved package manifests and KVM boot tests. See
 [image-model.md](image-model.md).
 
+## GitHub Pages output
+
+The documentation source and MkDocs configuration live under `web-docs/`,
+but GitHub Pages uploads the generated files from the **repository-root**
+`site/` directory. MkDocs normally resolves relative `site_dir` values
+against the configuration file's directory, so building with
+`--config-file web-docs/mkdocs.yml --site-dir site` writes to
+`web-docs/site/` instead and the Pages uploader fails to find `site/`.
+
+Use the shared builder for local reproduction and GitHub Actions:
+
+```sh
+python3 -m pip install -r web-docs/requirements-docs.txt
+bash scripts/build-docs-site.sh
+test -s site/index.html
+```
+
+The builder passes an **absolute** site output path and fails immediately if
+`site/index.html` is absent. The ordinary PR `docs` job runs the exact same
+build as the Pages publishing job, catching mismatches before merging.
+
 ## CI
 
 GitHub Actions runs the same targets from a clean checkout, keeping local and CI

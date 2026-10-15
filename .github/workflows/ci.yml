@@ -156,6 +156,12 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Build documentation and verify GitHub Pages output
+        run: |
+          python3 -m pip install -r web-docs/requirements-docs.txt
+          bash ./scripts/build-docs-site.sh
+          test -s site/index.html
+
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh
 

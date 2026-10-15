@@ -38,8 +38,8 @@ jobs:
       - name: Install documentation dependencies
         run: pip install -r web-docs/requirements-docs.txt
 
-      - name: Build documentation
-        run: mkdocs build --config-file web-docs/mkdocs.yml --site-dir site
+      - name: Build and verify Pages site
+        run: bash ./scripts/build-docs-site.sh
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -47,6 +47,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
+          # The builder writes to ${GITHUB_WORKSPACE}/site, not web-docs/site.
           path: site
 
   deploy:
