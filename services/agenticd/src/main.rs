@@ -6,6 +6,7 @@ use agentic_core::{
     coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateExecution};
 use agentic_storage::{StorageError, Store};
 use agentic_types::{
     AgentId, Execution, ExecutionId, GoalId, ObjectRef, ProvenanceEdge, ProvenanceRelation,
@@ -180,9 +181,14 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 });
             }
 
-            store
-                .insert_execution_with_provenance(&exec, &edges)
-                .map_err(CommandFailure::storage)?;
+            CoreCommandRepository::create_execution(
+                store,
+                CreateExecution {
+                    execution: &exec,
+                    provenance: &edges,
+                },
+            )
+            .map_err(CommandFailure::storage)?;
             tracing::info!(
                 execution_id = %exec.id,
                 agent_id = ?exec.agent_id,
@@ -198,8 +204,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing `id`")?;
             let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
-            let record = store
-                .get_execution(&exec_id)
+            let record = CoreQueryRepository::execution(store, &exec_id)
                 .map_err(CommandFailure::storage)?;
             let data = match record {
                 Some(record) => serde_json::to_value(&record).map_err(err_str)?,
