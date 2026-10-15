@@ -55,6 +55,15 @@ cross-account request broker must be designed and independently authorized
 before `flowerlyd` can submit jobs to `evolutiond`. No unverified privileged
 execution path has been added.
 
+## Release-guest disk provisioning
+
+The Arch kernel acceptance harness uses a 32 GiB sparse QCOW2 overlay by
+default (`ARCH_VM_DISK_GB`, allowed 24–256). The verified upstream base image
+is never resized. Cloud-init grows the root partition and filesystem; a
+preflight requires at least 16 GiB total and 8 GiB free **before** `pacman`
+upgrades, preserving guest capacity diagnostics in the release report.
+See [building](build.md) for overrides and test coverage.
+
 ## Distribution artifacts and limitations
 
 `distro/base-image/arch` holds mkosi/Arch package definitions.

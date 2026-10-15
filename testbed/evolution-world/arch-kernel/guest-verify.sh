@@ -109,13 +109,7 @@ trap cleanup_runtime EXIT
 
 runtime_dir="$ROOT/target/flowerly-dev"
 services=(
-    agenticd
-    flowd
-    sessiond
-    goald
-    provenanced
-    capabilityd
-    generationd
+    flowerlyd
     evolutiond
 )
 

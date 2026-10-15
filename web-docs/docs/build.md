@@ -136,6 +136,33 @@ The official base image is cached under the runner user's
 evidence contains the tested git commit, image checksum, running kernel/package
 information, QEMU accelerator, guest report and serial log.
 
+#### Arch VM root disk capacity
+
+The official upstream cloud image has a small default virtual root disk. The
+release VM script creates a **sparse 32 GiB QCOW2 overlay** by default, without
+altering the SHA256-verified cached base image. To choose a larger disposable
+guest disk, set `ARCH_VM_DISK_GB` to a whole number from **24 to 256**:
+
+```sh
+ARCH_VM_DISK_GB=48 bash scripts/arch-kernel-vm-test.sh
+```
+
+Expanding the virtual QCOW2 capacity is not sufficient on its own. Cloud-init
+is configured to grow the root partition and resize the root filesystem at
+first boot. **Before `pacman -Syu`**, the harness checks that `/` has at
+least **16 GiB total** and **8 GiB free**, and writes evidence to
+`report/guest-disk-before-upgrade.txt`. If the expansion fails, it prints
+partition and filesystem diagnostics instead of attempting an upgrade that
+cannot fit. On Arch, the cloud-init growpart module requires the optional
+`cloud-guest-utils` package in the guest image.
+
+Use `bash scripts/test-arch-vm-disk.sh` to validate configuration bounds,
+the QEMU resize command and guest preflight logic without downloading or
+booting a VM. The 32 GiB limit refers to **virtual disk capacity**, not
+space immediately reserved on the host; actual QCOW2 host usage grows as
+the guest writes data. A real Arch boot test on the trusted release runner is
+still required for end-to-end confirmation.
+
 The workflow also supports `workflow_dispatch` with `force=true`, giving a
 manual final-validation path before tagging even if the same fingerprint passed
 overnight.

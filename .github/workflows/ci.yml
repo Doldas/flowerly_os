@@ -162,8 +162,14 @@ jobs:
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
+          bash -n ./scripts/lib/arch-vm-disk.sh
+          bash -n ./scripts/arch-vm-guest-disk-preflight.sh
+          bash -n ./scripts/test-arch-vm-disk.sh
           bash -n ./testbed/evolution-world/arch-kernel/guest-verify.sh
           bash -n ./scripts/arch-pty-cgroup-acceptance.sh
+
+      - name: Arch VM sparse disk growth and guest preflight regression
+        run: bash ./scripts/test-arch-vm-disk.sh
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@v24
