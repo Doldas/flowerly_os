@@ -7,6 +7,7 @@ use agentic_core::{
     ServiceConfig,
 };
 use agentic_ipc::{Envelope, ErrorCode, Payload};
+use agentic_storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateFlow};
 use agentic_storage::{MutationOperation, StorageError, Store};
 use agentic_types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
@@ -134,8 +135,7 @@ fn validate_flow_command(
                     .as_str()
                     .ok_or_else(|| invalid("arg `id` must be a string"))?;
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                store
-                    .get_flow(&id)
+                CoreQueryRepository::flow(store, &id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
             } else if let Some(value) = args.get("name") {
@@ -300,9 +300,14 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?;
                 serde_json::from_str(&stored).map_err(err_str)?
             } else {
-                store
-                    .insert_flow_with_provenance(&flow, &[provenance])
-                    .map_err(CommandFailure::storage)?;
+                CoreCommandRepository::create_flow(
+                    store,
+                    CreateFlow {
+                        flow: &flow,
+                        provenance: std::slice::from_ref(&provenance),
+                    },
+                )
+                .map_err(CommandFailure::storage)?;
                 intended_response
             };
             tracing::info!(flow_id = %response["id"], flow_name = name, "flow create completed");
@@ -327,8 +332,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 return Err("General cannot be archived".into());
             }
             if state == FlowState::Foreground {
-                store
-                    .activate_flow(&flow.id)
+                CoreCommandRepository::activate_flow(store, &flow.id)
                     .map_err(CommandFailure::storage)?;
             } else {
                 store
@@ -348,7 +352,9 @@ fn find_flow(
     if let Some(value) = args.get("id") {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) = store.get_flow(&id).map_err(CommandFailure::storage)? {
+        if let Some(flow) =
+            CoreQueryRepository::flow(store, &id).map_err(CommandFailure::storage)?
+        {
             return Ok(flow);
         }
         return Err(format!("flow not found: {id}").into());
