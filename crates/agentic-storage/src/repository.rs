@@ -290,6 +290,129 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn typed_session_and_execution_round_trip_with_provenance() {
+        use agentic_types::{
+            ExecutionId, ProvenanceRelation, SessionPresentationState, SessionState,
+        };
+
+        let mut store = Store::open_in_memory().expect("open");
+        store.migrate().expect("migrate");
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "metadata-only".to_owned(),
+            pid: None,
+            cwd: None,
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "uid:1000".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: None,
+            reason: Some("typed repository".to_owned()),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+            started_at: Timestamp::now(),
+        };
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&session.id),
+            relation: ProvenanceRelation::CreatedBy,
+            to: ObjectRef::actor("uid:1000").expect("actor"),
+            created_at: Timestamp::now(),
+            note: None,
+        };
+        CoreCommandRepository::create_session(
+            &mut store,
+            CreateSession {
+                session: &session,
+                provenance: std::slice::from_ref(&edge),
+            },
+        )
+        .expect("create session");
+        CoreCommandRepository::create_execution(
+            &mut store,
+            CreateExecution {
+                execution: &execution,
+                provenance: &[],
+            },
+        )
+        .expect("create execution");
+        assert_eq!(
+            CoreQueryRepository::session(&store, &session.id).unwrap(),
+            Some(session)
+        );
+        assert_eq!(
+            CoreQueryRepository::execution(&store, &execution.id).unwrap(),
+            Some(execution)
+        );
+        assert_eq!(
+            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&session.id))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn typed_session_idempotency_replay_does_not_duplicate_metadata() {
+        use agentic_types::{SessionPresentationState, SessionState};
+
+        let mut store = Store::open_in_memory().expect("open");
+        store.migrate().expect("migrate");
+        let session = Session {
+            id: SessionId::new(),
+            flow_id: None,
+            kind: "metadata-only".to_owned(),
+            pid: None,
+            cwd: None,
+            state: SessionState::Running,
+            presentation_state: SessionPresentationState::Detached,
+            created_by: "uid:1000".to_owned(),
+            created_at: Timestamp::now(),
+        };
+        let operation = MutationOperation {
+            actor: "uid:1000",
+            command: "session.create",
+            operation_id: "typed-session-1",
+            request_payload: r#"{"kind":"metadata-only"}"#,
+            response_payload: r#"{"result":"created"}"#,
+        };
+        let first = CoreCommandRepository::create_session_once(
+            &mut store,
+            CreateSession {
+                session: &session,
+                provenance: &[],
+            },
+            &operation,
+        )
+        .expect("initial session");
+        let retry = Session {
+            id: SessionId::new(),
+            ..session.clone()
+        };
+        let replay = CoreCommandRepository::create_session_once(
+            &mut store,
+            CreateSession {
+                session: &retry,
+                provenance: &[],
+            },
+            &operation,
+        )
+        .expect("replay session");
+        assert_eq!(first, replay);
+        assert!(CoreQueryRepository::session(&store, &session.id)
+            .unwrap()
+            .is_some());
+        assert!(CoreQueryRepository::session(&store, &retry.id)
+            .unwrap()
+            .is_none());
+    }
+
     struct RecordingRepository {
         creations: usize,
     }
