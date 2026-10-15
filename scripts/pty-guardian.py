@@ -57,19 +57,26 @@ class SessionCgroup:
             self.write("cpu.max", "100000 100000")
             if not self.read("cgroup.events"):
                 raise RuntimeError("cgroup.events unavailable")
-            if not self.exists("cgroup.kill"):
-                raise RuntimeError("cgroup.kill unavailable")
+            # cgroup.kill is kernel-owned and WRITE-ONLY (mode 0200 on cgroup v2).
+            # A read-only existence probe incorrectly rejects a valid delegated
+            # cgroup for an unprivileged service UID. Opening for writing is
+            # non-destructive: only writing "1" kills the group.
+            self.require_writable("cgroup.kill")
         except BaseException:
             self.cleanup()
             raise
 
-    def exists(self, name):
+    def require_writable(self, name):
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)
+            fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)
+        except OSError as exc:
+            # Fail closed if cgroup.kill does not exist, is a symlink, or
+            # cannot be opened for writing by the guardian's actual UID.
+            raise RuntimeError(
+                f"{name} unavailable or not writable (errno={exc.errno}: {exc.strerror})"
+            ) from exc
+        else:
             os.close(fd)
-            return True
-        except OSError:
-            return False
 
     def write(self, name, data):
         fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=self.group_fd)

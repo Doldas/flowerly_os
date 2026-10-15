@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,65 @@ import time
 import uuid
 
 GUARDIAN = Path(__file__).with_name("pty-guardian.py")
+
+
+def verify_write_only_cgroup_kill_probe():
+    """The real cgroup.kill file is write-only (0200), not readable.
+
+    Test the production SessionCgroup opener with a fake directory. We must
+    not write "1" to a live cgroup during this capability probe.
+    """
+    spec = importlib.util.spec_from_file_location("flowerly_pty_guardian", GUARDIAN)
+    guardian_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardian_module)
+
+    with tempfile.TemporaryDirectory(prefix="flowerly-pty-kill-probe-") as folder:
+        root = Path(folder)
+        kill_file = root / "cgroup.kill"
+        kill_file.touch(mode=0o600)
+        kill_file.chmod(0o200)
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            probe = guardian_module.SessionCgroup.__new__(guardian_module.SessionCgroup)
+            probe.group_fd = fd
+
+            # An unprivileged service account must be able to probe a
+            # WRITE-ONLY cgroup.kill without reading or modifying its contents.
+            probe.require_writable("cgroup.kill")
+            assert kill_file.stat().st_size == 0, "capability probe wrote to cgroup.kill"
+
+            # A read-only kill file must never be accepted: cleanup would fail.
+            kill_file.chmod(0o400)
+            if os.geteuid() != 0:
+                try:
+                    probe.require_writable("cgroup.kill")
+                except RuntimeError as exc:
+                    assert "not writable" in str(exc), str(exc)
+                else:
+                    raise AssertionError("read-only cgroup.kill passed writable probe")
+
+            kill_file.unlink()
+            try:
+                probe.require_writable("cgroup.kill")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("missing cgroup.kill passed writable probe")
+
+            # No symlink traversal even if the target is writable.
+            target = root / "not-cgroup-kill"
+            target.touch(mode=0o600)
+            kill_file.symlink_to(target.name)
+            try:
+                probe.require_writable("cgroup.kill")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("symlink cgroup.kill passed writable probe")
+        finally:
+            os.close(fd)
+
+    print("cgroup.kill write-only capability, fail-closed and no-symlink probes OK")
 
 
 def request(path, command):
@@ -194,6 +254,7 @@ def exercise_real_cgroup(root):
 def main():
     assert sys.platform == "linux"
     root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
+    verify_write_only_cgroup_kill_probe()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
