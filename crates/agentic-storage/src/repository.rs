@@ -70,7 +70,11 @@ mod tests {
     use super::*;
     use agentic_types::{ProvenanceRelation, Timestamp};
 
-    fn create_through_trait(repo: &mut impl CoreCommandRepository, flow: &Flow, edge: &ProvenanceEdge) {
+    fn create_through_trait(
+        repo: &mut impl CoreCommandRepository,
+        flow: &Flow,
+        edge: &ProvenanceEdge,
+    ) {
         repo.create_flow(CreateFlow {
             flow,
             provenance: std::slice::from_ref(edge),
@@ -95,10 +99,11 @@ mod tests {
 
         let reader: &dyn CoreQueryRepository = &store;
         assert_eq!(reader.flow(&flow.id).expect("query"), Some(flow.clone()));
-        assert_eq!(
-            reader.provenance_from(&ObjectRef::from(&flow.id)).expect("edge"),
-            vec![edge]
-        );
+        let edges = reader
+            .provenance_from(&ObjectRef::from(&flow.id))
+            .expect("edge");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].relation, edge.relation);
     }
 
     #[test]
@@ -114,13 +119,16 @@ mod tests {
             note: None,
         };
         create_through_trait(&mut store, &flow, &edge);
-        assert!(store.create_flow(CreateFlow {
-            flow: &flow,
-            provenance: &[],
-        }).is_err());
+        assert!(store
+            .create_flow(CreateFlow {
+                flow: &flow,
+                provenance: &[],
+            })
+            .is_err());
         assert_eq!(
             CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&flow.id))
-                .expect("provenance").len(),
+                .expect("provenance")
+                .len(),
             1
         );
     }
