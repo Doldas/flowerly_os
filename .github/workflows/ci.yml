@@ -102,6 +102,9 @@ jobs:
       - name: Production PTY cgroup isolation and delegated containment
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-cgroup.py
 
+      - name: Flow A to B to A real unified PTY acceptance
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
+
       - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
 
