@@ -559,6 +559,45 @@ mod tests {
     }
 
     #[test]
+    fn typed_session_create_replays_without_duplicate_or_lost_provenance() {
+        let mut store = migrated_store();
+        let args = serde_json::json!({
+            "kind": "metadata-only",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-1"
+        });
+        let first = run_command(&mut store, "session.create", &args).expect("first");
+        let replay = run_command(&mut store, "session.create", &args).expect("replay");
+        assert_eq!(first, replay);
+        assert_eq!(store.list_sessions().expect("sessions").len(), 1);
+        let id = SessionId::from_str(first["id"].as_str().expect("id")).expect("typed id");
+        assert_eq!(
+            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+                .expect("edges")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn typed_session_create_rejects_changed_retry_body() {
+        let mut store = migrated_store();
+        let first = serde_json::json!({
+            "kind": "metadata-only",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-conflict"
+        });
+        run_command(&mut store, "session.create", &first).expect("create");
+        let changed = serde_json::json!({
+            "kind": "different-kind",
+            "created_by": "uid:1000",
+            "operation_id": "typed-session-service-conflict"
+        });
+        assert!(run_command(&mut store, "session.create", &changed).is_err());
+        assert_eq!(store.list_sessions().expect("sessions").len(), 1);
+    }
+
+    #[test]
     fn session_command_validation_returns_explicit_codes() {
         let mut store = Store::open_in_memory().unwrap();
         store.migrate().unwrap();
