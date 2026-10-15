@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Arc::new(Mutex::new(store));
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.try_lock() {
-        Ok(store) => match store.list_sessions().map(|items| items.len()) {
+        Ok(store) => match CoreQueryRepository::sessions(&*store).map(|items| items.len()) {
             Ok(count) => serde_json::json!({"session_count": count, "ready": true}),
             Err(error) => serde_json::json!({"ready": false, "error": error.to_string()}),
         },
@@ -439,7 +439,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(response)
         }
         "session.list" => {
-            let sessions = store.list_sessions().map_err(CommandFailure::storage)?;
+            let sessions = CoreQueryRepository::sessions(store).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = sessions
                 .iter()
                 .map(|s| {
