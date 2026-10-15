@@ -552,10 +552,8 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-once-parent"
         });
-        let first = run_command(&mut store, "goal.create", &create)
-            .expect("first goal");
-        let replay = run_command(&mut store, "goal.create", &create)
-            .expect("goal replay");
+        let first = run_command(&mut store, "goal.create", &create).expect("first goal");
+        let replay = run_command(&mut store, "goal.create", &create).expect("goal replay");
         assert_eq!(first, replay);
 
         let child = serde_json::json!({
@@ -564,20 +562,15 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-once-child"
         });
-        let first_child = run_command(&mut store, "goal.child", &child)
-            .expect("first child");
-        let replay_child = run_command(&mut store, "goal.child", &child)
-            .expect("child replay");
+        let first_child = run_command(&mut store, "goal.child", &child).expect("first child");
+        let replay_child = run_command(&mut store, "goal.child", &child).expect("child replay");
         assert_eq!(first_child, replay_child);
         assert_eq!(store.list_goals().expect("goals").len(), 2);
 
         for id in [&first["id"], &first_child["id"]] {
             let id = GoalId::from_str(id.as_str().expect("id")).expect("goal id");
-            let edges = CoreQueryRepository::provenance_from(
-                &store,
-                &ObjectRef::from(&id),
-            )
-            .expect("provenance");
+            let edges = CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+                .expect("provenance");
             assert!(!edges.is_empty(), "created object needs provenance");
         }
     }
@@ -590,8 +583,7 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-key-reused"
         });
-        run_command(&mut store, "goal.create", &original)
-            .expect("original");
+        run_command(&mut store, "goal.create", &original).expect("original");
         let changed = serde_json::json!({
             "objective": "changed",
             "created_by": "uid:1000",
