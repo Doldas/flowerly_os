@@ -49,6 +49,15 @@ class BrokerProtocolTests(unittest.TestCase):
                 left.close()
                 right.close()
 
+    def test_session_quota_fails_without_mutating_cgroups(self):
+        self.broker.owned = {
+            "pty-session-" + format(i, "032x") for i in range(module.MAX_SESSIONS)
+        }
+        with self.assertRaisesRegex(RuntimeError, "quota"):
+            self.broker.execute(
+                {"op": "reserve", "name": "pty-session-" + "f" * 32}, 1000
+            )
+
     def test_other_uid_cannot_operate(self):
         with self.assertRaises(PermissionError):
             self.broker.execute(

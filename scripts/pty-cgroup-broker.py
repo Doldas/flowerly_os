@@ -16,6 +16,7 @@ import sys
 NAME = re.compile(r"pty-session-[0-9a-f]{32}\Z")
 LIMITS = {"pids.max": "64", "memory.max": str(512 * 1024 * 1024), "cpu.max": "100000 100000"}
 MAX_REQUEST = 4096
+MAX_SESSIONS = 64
 
 
 def read_request(conn):
@@ -72,6 +73,13 @@ class CgroupBroker:
             raise RuntimeError("root is not on cgroup v2 mount")
         self.authorized_uid = authorized_uid
         self.owned = set()
+        # Refuse adopting groups after SIGKILL until independently reconciled.
+        try:
+            if any(NAME.fullmatch(name) for name in os.listdir(self.root_fd)):
+                raise RuntimeError("unreconciled PTY cgroups: broker startup denied")
+        except BaseException:
+            os.close(self.root_fd)
+            raise
 
     def close(self):
         os.close(self.root_fd)
@@ -85,6 +93,8 @@ class CgroupBroker:
         if type(op) is not str or type(name) is not str or not NAME.fullmatch(name):
             raise ValueError("invalid operation or session identity")
         if op == "reserve":
+            if len(self.owned) >= MAX_SESSIONS:
+                raise RuntimeError("session quota exhausted")
             if name in self.owned:
                 raise ValueError("already reserved")
             os.mkdir(name, 0o700, dir_fd=self.root_fd)
