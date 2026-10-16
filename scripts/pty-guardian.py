@@ -47,6 +47,10 @@ class SessionCgroup:
                 raise RuntimeError("Linux cgroup v2 is required")
             if os.fstat(self.parent_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
                 raise RuntimeError("delegated root must reside on the cgroup v2 mount")
+            # Reject the known unsafe delegation before creating any child.
+            # This is not a substitute for a distinct-UID broker or its
+            # kernel-enforced lifecycle and migration ownership.
+            self.reject_writable_escape_targets()
             os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
             self.group_fd = os.open(
                 self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -62,7 +66,6 @@ class SessionCgroup:
             # cgroup for an unprivileged service UID. Opening for writing is
             # non-destructive: only writing "1" kills the group.
             self.require_writable("cgroup.kill")
-            self.reject_writable_escape_targets()
         except BaseException:
             self.cleanup()
             raise
