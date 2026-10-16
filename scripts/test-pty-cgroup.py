@@ -135,12 +135,33 @@ def assert_not_running(pid):
         try:
             with open(f"/proc/{pid}/stat", encoding="ascii") as state_file:
                 state = state_file.read().split(") ", 1)[1][0]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # procfs may report ESRCH when the task exits between opening
+            # /proc/<pid>/stat and reading it. Both mean it is gone.
             return
         if state in ("Z", "X"):
             return
         time.sleep(0.02)
     raise AssertionError(f"process {pid} survived cgroup termination")
+
+
+def verify_procfs_exit_race_handling():
+    """ESRCH during procfs read is a terminated process, not a test failure."""
+    from unittest.mock import patch
+
+    class DisappearingStat:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            raise ProcessLookupError(3, "No such process")
+
+    with patch("builtins.open", return_value=DisappearingStat()):
+        assert_not_running(999999)
+    print("PTY procfs: ESRCH during stat read treated as exited")
 
 
 def require_explicit_delegation(root):
@@ -317,6 +338,15 @@ def exercise_real_cgroup(root):
                     os.kill(descendant_pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    # The test manager is deliberately a different UID from
+                    # the shell. Never mask the original acceptance failure
+                    # with an unauthorized best-effort cleanup signal.
+                    print(
+                        "PTY test cleanup: descendant belongs to the isolated "
+                        "shell UID; unprivileged SIGKILL denied",
+                        file=sys.stderr,
+                    )
 
 
 def main():
@@ -325,6 +355,7 @@ def main():
     verify_write_only_cgroup_kill_probe()
     verify_writable_migration_targets_are_rejected()
     verify_shell_uid_configuration_rejected()
+    verify_procfs_exit_race_handling()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
