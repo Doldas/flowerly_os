@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unprivileged protocol negative tests; real kernel acceptance stays required."""
 import importlib.util
+import socket
+import threading
 from pathlib import Path
 import unittest
 
@@ -16,6 +18,36 @@ class BrokerProtocolTests(unittest.TestCase):
         self.broker = module.CgroupBroker.__new__(module.CgroupBroker)
         self.broker.authorized_uid = 1000
         self.broker.owned = set()
+
+    def test_fragmented_request_is_reassembled(self):
+        left, right = socket.socketpair()
+        try:
+            def writer():
+                left.sendall(b'{"op":"reserve",')
+                left.sendall(b'"name":"pty-session-' + b'a' * 32 + b'"}\n')
+                left.close()
+            thread = threading.Thread(target=writer)
+            thread.start()
+            response = module.read_request(right)
+            thread.join(timeout=2)
+            self.assertEqual(response["op"], "reserve")
+            self.assertEqual(response["name"], "pty-session-" + "a" * 32)
+        finally:
+            left.close()
+            right.close()
+
+    def test_truncated_or_multiple_commands_are_rejected(self):
+        for raw in (b'{"op":"reserve"', b'{}\n{}\n',
+                    b'{}\ntrailing', b'\n', b'x' * 4097 + b'\n'):
+            left, right = socket.socketpair()
+            try:
+                left.sendall(raw)
+                left.shutdown(socket.SHUT_WR)
+                with self.assertRaises(ValueError):
+                    module.read_request(right)
+            finally:
+                left.close()
+                right.close()
 
     def test_other_uid_cannot_operate(self):
         with self.assertRaises(PermissionError):
