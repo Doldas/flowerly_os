@@ -16,6 +16,23 @@ import sys
 NAME = re.compile(r"pty-session-[0-9a-f]{32}\Z")
 LIMITS = {"pids.max": "64", "memory.max": str(512 * 1024 * 1024), "cpu.max": "100000 100000"}
 MAX_REQUEST = 4096
+MAX_SESSIONS = 64
+
+
+def read_request(conn):
+    """Accept exactly one bounded, newline-terminated JSON object."""
+    chunks = bytearray()
+    while len(chunks) <= MAX_REQUEST:
+        part = conn.recv(MAX_REQUEST + 1 - len(chunks))
+        if not part:
+            raise ValueError("incomplete request")
+        chunks.extend(part)
+        if b"\n" in chunks:
+            line, tail = chunks.split(b"\n", 1)
+            if tail or not line or len(line) > MAX_REQUEST:
+                raise ValueError("extra bytes or invalid request length")
+            return json.loads(line)
+    raise ValueError("request too large")
 
 
 def peer_uid(sock):
@@ -47,6 +64,15 @@ class CgroupBroker:
             raise RuntimeError("root is not on cgroup v2 mount")
         self.authorized_uid = authorized_uid
         self.owned = set()
+        # In-memory ownership is lost on SIGKILL. Never adopt or overwrite
+        # stale PTY groups without independently verified recovery authority.
+        try:
+            names = os.listdir(self.root_fd)
+            if any(NAME.fullmatch(name) for name in names):
+                raise RuntimeError("unreconciled PTY cgroups: broker startup denied")
+        except BaseException:
+            os.close(self.root_fd)
+            raise
 
     def close(self):
         os.close(self.root_fd)
@@ -60,6 +86,8 @@ class CgroupBroker:
         if type(op) is not str or type(name) is not str or not NAME.fullmatch(name):
             raise ValueError("invalid operation or session identity")
         if op == "reserve":
+            if len(self.owned) >= MAX_SESSIONS:
+                raise RuntimeError("session quota exhausted")
             if name in self.owned:
                 raise ValueError("already reserved")
             os.mkdir(name, 0o700, dir_fd=self.root_fd)
@@ -101,10 +129,7 @@ def serve(socket_path, root, authorized_uid):
                 try:
                     conn.settimeout(2)
                     uid = peer_uid(conn)
-                    raw = conn.recv(MAX_REQUEST + 1)
-                    if not raw or len(raw) > MAX_REQUEST or b"\n" not in raw:
-                        raise ValueError("invalid message length")
-                    message = json.loads(raw.split(b"\n", 1)[0])
+                    message = read_request(conn)
                     response = broker.execute(message, uid)
                 except (OSError, ValueError, RuntimeError, PermissionError) as error:
                     response = {"error": type(error).__name__}
