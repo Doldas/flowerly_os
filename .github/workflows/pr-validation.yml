@@ -2,50 +2,106 @@ name: pr-validation
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches: [master, 'release/**']
 
 permissions:
   contents: read
   issues: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  validate-branch-name:
-    name: Validate branch name and issue link
+  validate-pr-policy:
+    name: Validate branch policy and issue link
     runs-on: ubuntu-latest
     steps:
-      - name: Check head branch follows convention
-        if: "!startsWith(github.head_ref, 'feature/') && !startsWith(github.head_ref, 'bugfix/') && !startsWith(github.head_ref, 'docs/')"
-        run: |
-          echo "::error::Branch name must follow convention: feature/*, bugfix/*, or docs/* (e.g., feature/flow-model, bugfix/generation-rollback)"
-          echo "Current branch: ${{ github.head_ref }}"
-          exit 1
+      - name: Validate PR metadata as data
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const head = pr.head.ref;
+            const base = pr.base.ref;
+            const body = pr.body || "";
 
-      - name: Check PR description references an issue
-        if: "!contains(github.event.pull_request.body, '#')"
-        run: |
-          echo "::error::PR description must reference an issue (e.g., 'Fixes #123', 'Relates to #456')"
-          echo "No issue reference found in PR body"
-          exit 1
+            const developmentHead = /^(feature|bugfix|docs)\/.+/;
+            const releaseBranch = /^release\/([1-9]\d*)$/;
 
-      - name: Verify issue exists
-        if: contains(github.event.pull_request.body, '#')
-        run: |
-          ISSUE_REFS=$(echo "${{ github.event.pull_request.body }}" | grep -oE '#[0-9]+' | sed 's/#//')
-          for issue in $ISSUE_REFS; do
-            RESPONSE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/$issue")
-            if echo "$RESPONSE" | grep -q '"state":'; then
-              echo "Issue #$issue exists"
-            else
-              echo "::error::Referenced issue #$issue does not exist"
-              exit 1
-            fi
-          done
+            if (base === "master") {
+              if (!releaseBranch.test(head)) {
+                core.setFailed(
+                  `PRs to master must originate from release/N; got ${head} -> ${base}`
+                );
+                return;
+              }
+            } else if (releaseBranch.test(base)) {
+              const from = head.match(releaseBranch);
+              const to = base.match(releaseBranch);
+              const adjacent = from && to &&
+                BigInt(from[1]) + 1n === BigInt(to[1]);
+              if (!developmentHead.test(head) && !adjacent) {
+                core.setFailed(
+                  `PRs to ${base} must originate from feature/*, bugfix/*, docs/*, ` +
+                  `or exactly the preceding release/N; got ${head}`
+                );
+                return;
+              }
+            } else {
+              core.setFailed(
+                `Unsupported PR base ${base}; expected master or release/N`
+              );
+              return;
+            }
 
-      - name: Check base branch is release/*
-        if: "!startsWith(github.base_ref, 'release/')"
+            const issueNumbers = [
+              ...new Set(
+                [...body.matchAll(/#(\d+)/g)].map((match) => Number(match[1]))
+              ),
+            ];
+
+            if (issueNumbers.length === 0) {
+              core.setFailed(
+                "PR description must reference an issue (for example: Fixes #123)"
+              );
+              return;
+            }
+
+            for (const issue_number of issueNumbers) {
+              try {
+                await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number,
+                });
+                core.info(`Issue #${issue_number} exists`);
+              } catch (error) {
+                if (error.status === 404) {
+                  core.setFailed(`Referenced issue #${issue_number} does not exist`);
+                  return;
+                }
+                throw error;
+              }
+            }
+
+            core.info(`Accepted branch policy: ${head} -> ${base}`);
+
+      # Required via the existing "Validate branch policy and issue link" job.
+      # Unlike pull_request CI, the release PUSH job actually boots an Arch VM.
+      - name: Checkout release promotion source
+        if: github.base_ref == 'master'
+        uses: actions/checkout@v7
+
+      - name: Verify latest release and exact-SHA Arch acceptance
+        if: github.base_ref == 'master'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "::error::PRs must target a release/* branch (e.g., release/1, release/2)"
-          echo "Base branch: ${{ github.base_ref }}"
-          exit 1
+          python3 scripts/branch-forward.py verify-master --head "$HEAD_REF" --sha "$HEAD_SHA"

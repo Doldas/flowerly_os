@@ -1,114 +1,74 @@
 # Flowerly OS
 
-Flowerly OS (internally "Agentic OS") is a self-evolving Linux distribution in
-which autonomous agents are first-class system actors. Persistent goals, flows,
-and sessions are first-class objects, system changes become reversible
-generations, aggressive experiments run in a KVM Evolution World, and every
-meaningful autonomous change carries provenance.
+Flowerly OS is an experimental, agent-oriented Linux distribution founded on
+Arch Linux, persistent goals and flows, durable sessions, reversible system
+generations, and evidence-based provenance. Basic administration must work
+without any AI provider.
 
-This repository is the source of the distribution, its system services, and the
-tooling that both humans and agents use to build it. It is an early foundation:
-most of the long-term direction is planned, not yet implemented.
+## Distribution-first architecture
 
-## What is Flowerly OS
+The target layout replaces eight lightweight OS daemons with a unified
+**`flowerlyd`** process and a separate, restricted **`evolutiond`** KVM
+boundary. The `agenticctl` command line tool remains available to humans and
+agents.
 
-A Linux distribution whose defining property is that the operating environment
-itself can evolve. Agents observe the system, pursue persistent goals, operate
-Linux directly, develop software, build and test candidate generations, and
-evolve the userspace around the actual needs of its owner. Linux remains the
-stable substrate; the innovation happens above the kernel.
-
-## Design principles
-
-1. The OS must boot and remain administrable without an AI provider.
-2. Build on existing Linux primitives; wrap them, do not replace them.
-3. Persistent goals, flows, and sessions are first-class objects.
-4. System changes become reversible generations.
-5. Aggressive experiments run in a KVM Evolution World.
-6. Every meaningful autonomous change carries provenance.
-7. Humans and agents use the same git/build/test/release pipeline.
-8. AI providers are replaceable and provider-neutral.
-9. Complexity is earned by use; the environment grows with the user.
-10. Evolution is evidence-driven, and failed experiments remain useful history.
-
-## Current status
-
-Sprint 0 and Sprint 1 are substantially complete at version 0.0.1. Implemented
-today:
-
-- A Rust Cargo workspace with the shared crates `agentic-types`,
-  `agentic-storage`, `agentic-ipc`, and `agentic-core`.
-- Rust services: `agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`,
-  `capabilityd`, `generationd`, and `evolutiond`.
-- The `agenticctl` control-plane CLI.
-- SQLite persistence with an ordered migration mechanism.
-- Unix-domain-socket, length-prefixed JSON IPC (protocol v1).
-
-Planned, not yet implemented: PTY-backed persistent sessions, the agent
-runtime, the KVM Evolution World, generation building, and self-modification.
-See [docs/roadmap.md](docs/roadmap.md).
-
-## Getting started
-
-Prerequisites: Linux x86-64, a stable Rust toolchain (`rustup`), and `just`.
-
-```sh
-just build    # compile the whole workspace (release)
-just check    # fast compile check of all targets
-just lint     # rustfmt check + clippy (warnings as errors)
-just test     # run the full test suite
+```text
+flowerly_os/
+├── distro/                 Arch base-image, target overlay and profiles
+├── src/
+│   ├── flowerlyd/          Flow, Goal, Session, Capability, Generation,
+│   │                       Provenance and Execution modules in one process
+│   ├── evolutiond/         separate high-privilege VM boundary (stub)
+│   └── shared/flowerly-core/  types, SQLite, framed JSON IPC and daemon support
+├── tools/
+│   ├── agenticctl/         human and agent control CLI
+│   └── distro-builder/     image input validator and future image builder
+├── testbed/                integration, KVM seeds and test fixtures
+└── web-docs/               MkDocs source, architecture, RFCs and ADRs
 ```
 
-### Quick smoke test
+`flowerlyd` owns the `flowerlyd.sock` CLI control plane. Its flow,
+generation and provenance workers use bounded Tokio channels in memory,
+instead of separate daemon sockets. The external protocol remains
+length-prefixed JSON v1 over authenticated same-UID Unix sockets.
+`evolutiond` uses a different account, runtime directory and socket.
 
-Build, start the whole local runtime, and query it through the control plane:
+The SQLite schema and existing durable migration sequence are preserved.
+Linux PTY guardians remain independently supervised child processes for
+containment, **not** separate long-running Flowerly service binaries.
+
+## Build and run
+
+Linux and a Rust toolchain are required. Install `just` and run:
 
 ```sh
+just check
+just test
 just build
-just serve    # starts all daemons against a dev runtime directory
-just status   # prints structured status for every service
-just stop     # shuts the dev runtime down cleanly
+just serve            # start flowerlyd and evolutiond for local development
+just status
+./target/release/agenticctl flow list
+just stop
 ```
 
-## Repository layout
+For image definitions:
 
-| Path | Contents |
-| --- | --- |
-| `crates/` | Shared Rust crates: `agentic-types`, `agentic-storage`, `agentic-ipc`, `agentic-core` |
-| `services/` | Daemons (`agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`, `capabilityd`, `generationd`, `evolutiond`) |
-| `tools/` | `agenticctl` control-plane CLI |
-| `docs/` | Architecture specifications, design updates, ADRs, RFCs, specs |
-| `scripts/` | Development tooling |
+```sh
+cargo run -p distro-builder -- validate
+```
 
-## Language policy
+## Implemented versus planned
 
-- **Rust** is the default for trusted, long-lived OS services and the core
-  runtime.
-- **Go** is preferred for distributed and orchestration-heavy services.
-- **Python** is used for research, experiments, analysis, and temporary tools.
-- **C** is used only where direct low-level Linux integration justifies it.
-- **Java** is allowed only where a JVM ecosystem provides a concrete advantage.
+This architecture migration is subject to pull-request CI and real process
+tests. The current `evolutiond` has **no working KVM hypervisor**, and the
+distro builder does **not** produce bootable Arch images. Generation promotion,
+remote authenticated sessions, and AI-controlled system modification remain
+roadmap work. No provider selection confers OS privileges.
 
-## Project documents
-
-- [docs/vision.md](docs/vision.md) — long-term direction.
-- [docs/architecture.md](docs/architecture.md) — what exists today and the target.
-- [docs/roadmap.md](docs/roadmap.md) — the execution plan.
-- [docs/decisions.md](docs/decisions.md) — index of major decisions.
-- [docs/journal.md](docs/journal.md) — chronological engineering notes.
-- [CHANGELOG.md](CHANGELOG.md) — release history.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
-- [SECURITY.md](SECURITY.md) — reporting and security policy.
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community expectations.
-- [docs/](docs/) — specifications and design updates.
-- [docs/adr/](docs/adr/) — Architecture Decision Records.
-
-## Release model
-
-Releases are semantic-ish and pre-1.0. `0.0.x` marks foundational internal
-capability; `0.1.0` will be the first coherent, real Flowerly OS development
-release. Each release carries a source tag, release notes, build manifest, test
-summary, known limitations, and artifact checksums. See [docs/roadmap.md](docs/roadmap.md).
+The architecture, roadmap, design decisions and release limitations are in
+[web-docs/docs/](web-docs/docs/) and especially
+[web-docs/docs/architecture.md](web-docs/docs/architecture.md).
+The public docs site is https://doldas.github.io/flowerly_os/.
 
 ## License
 

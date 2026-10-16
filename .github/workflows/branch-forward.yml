@@ -1,0 +1,37 @@
+name: branch-forward
+
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+
+# A dedicated bot token is required: GitHub suppresses pull_request checks
+# for PRs opened with the default GITHUB_TOKEN.
+permissions:
+  contents: read
+
+concurrency:
+  group: flowerly-branch-forward
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile adjacent releases and draft master promotion
+    if: startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout protected release
+        uses: actions/checkout@v7
+
+      - name: Reconcile protected branch PRs
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.FLOWERLY_FORWARD_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GITHUB_TOKEN" ]]; then
+            echo "::error::Configure FLOWERLY_FORWARD_BOT_TOKEN (Contents read, Pull requests write). The default GITHUB_TOKEN cannot trigger PR checks."
+            exit 1
+          fi
+          python3 scripts/branch-forward.py reconcile

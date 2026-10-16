@@ -1,0 +1,5 @@
+# Declarative distribution profile. This is a planning input, not active runtime policy.
+name = "laptop-ui"
+system_daemons = ["flowerlyd", "evolutiond"]
+bootable_image_supported = false
+evolution_world_provisioned = false

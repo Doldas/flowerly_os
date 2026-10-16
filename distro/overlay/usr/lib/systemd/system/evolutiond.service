@@ -1,0 +1,28 @@
+[Unit]
+Description=Flowerly OS Evolution World Boundary (KVM not provisioned)
+After=local-fs.target
+Requires=local-fs.target
+
+[Service]
+Type=simple
+User=flowerly-evolution
+Group=flowerly-evolution
+SupplementaryGroups=kvm
+Environment=AGENTIC_RUNTIME_DIR=/run/flowerly-evolution
+Environment=AGENTIC_STATE_DIR=/var/lib/flowerly-evolution
+ExecStart=/usr/bin/evolutiond
+RuntimeDirectory=flowerly-evolution
+RuntimeDirectoryMode=0700
+StateDirectory=flowerly-evolution
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+ProtectSystem=strict
+ProtectHome=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

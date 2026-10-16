@@ -5,15 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-line control plane for Flowerly OS services."
-
-[[bin]]
-name = "agenticctl"
-path = "src/main.rs"
+description = "CLI for Flowerly OS"
 
 [dependencies]
-agentic-core.workspace = true
-agentic-ipc.workspace = true
+flowerly-core.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

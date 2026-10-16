@@ -5,6 +5,15 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+### Architecture transition (proposed, awaiting validation)
+
+- Unified Flowerly state handlers under `src/flowerlyd` with bounded Tokio work queues.
+- Combined types, SQLite migrations and IPC framing in `flowerly-core`.
+- Isolated `evolutiond` and distribution-oriented `distro/`, `tools/`, `testbed/`, `web-docs/` layouts.
+- Updated CLI socket routing, systemd unit scaffolds and input validation.
+- KVM execution and bootable images remain unimplemented.
+
+
 ### Added
 
 - Rust Cargo workspace with the shared crates `agentic-types`,

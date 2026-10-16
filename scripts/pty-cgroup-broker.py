@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Fail-closed cgroup broker foundation; never launches or migrates a shell.
+
+Run as a dedicated *non-root* trusted UID with a separately delegated cgroup.
+The caller's UID must be different. No arbitrary PID or path is accepted.
+The Unix socket is private until independently reviewed systemd socket
+activation and cross-UID credential authorization are available.
+"""
+import json
+import os
+import re
+import socket
+import struct
+import sys
+
+NAME = re.compile(r"pty-session-[0-9a-f]{32}\Z")
+LIMITS = {"pids.max": "64", "memory.max": str(512 * 1024 * 1024), "cpu.max": "100000 100000"}
+MAX_REQUEST = 4096
+MAX_SESSIONS = 64
+
+
+def read_request(conn):
+    """Read exactly one bounded newline-terminated JSON message.
+
+    A partial recv is not a complete message, and trailing data must not be
+    accepted as an additional command. Never execute a truncated request.
+    """
+    raw = bytearray()
+    while True:
+        chunk = conn.recv(min(1024, MAX_REQUEST + 1 - len(raw)))
+        if not chunk:
+            raise ValueError("incomplete message")
+        raw.extend(chunk)
+        if len(raw) > MAX_REQUEST:
+            raise ValueError("oversized message")
+        if b"\n" in chunk:
+            line, extra = bytes(raw).split(b"\n", 1)
+            if extra or not line:
+                raise ValueError("invalid message framing")
+            try:
+                return json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("invalid JSON") from error
+
+
+
+def peer_uid(sock):
+    data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    return struct.unpack("3i", data)[1]
+
+
+def write_control(directory_fd, name, value):
+    fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+    try:
+        payload = value.encode("ascii")
+        if os.write(fd, payload) != len(payload):
+            raise OSError("incomplete cgroup control write")
+    finally:
+        os.close(fd)
+
+
+class CgroupBroker:
+    def __init__(self, root, authorized_uid):
+        if os.geteuid() == 0:
+            raise PermissionError("root-owned PTY broker forbidden")
+        if os.geteuid() == authorized_uid:
+            raise PermissionError("broker and client must have separate UIDs")
+        if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
+            raise RuntimeError("unified cgroup v2 required")
+        self.root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if os.fstat(self.root_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
+            os.close(self.root_fd)
+            raise RuntimeError("root is not on cgroup v2 mount")
+        self.authorized_uid = authorized_uid
+        self.owned = set()
+        # Pin each reservation to its original kernel directory identity.
+        # A matching name alone never authorizes cgroup.kill.
+        self.identities = {}
+        # Refuse adopting groups after SIGKILL until independently reconciled.
+        try:
+            if any(NAME.fullmatch(name) for name in os.listdir(self.root_fd)):
+                raise RuntimeError("unreconciled PTY cgroups: broker startup denied")
+        except BaseException:
+            os.close(self.root_fd)
+            raise
+
+    def close(self):
+        os.close(self.root_fd)
+
+    def execute(self, request, uid):
+        if uid != self.authorized_uid:
+            raise PermissionError("unauthorized caller")
+        if type(request) is not dict or set(request) != {"op", "name"}:
+            raise ValueError("invalid request")
+        op, name = request["op"], request["name"]
+        if type(op) is not str or type(name) is not str or not NAME.fullmatch(name):
+            raise ValueError("invalid operation or session identity")
+        if op == "reserve":
+            if len(self.owned) >= MAX_SESSIONS:
+                raise RuntimeError("session quota exhausted")
+            if name in self.owned:
+                raise ValueError("already reserved")
+            os.mkdir(name, 0o700, dir_fd=self.root_fd)
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.root_fd)
+            try:
+                for control, value in LIMITS.items():
+                    write_control(fd, control, value)
+            except BaseException:
+                os.close(fd)
+                # Do not remove or reassign an ambiguously initialized group.
+                # A trusted operator must inspect and reconcile it.
+                raise
+            try:
+                identity = os.fstat(fd)
+            finally:
+                os.close(fd)
+            self.identities[name] = (identity.st_dev, identity.st_ino)
+            self.owned.add(name)
+            return {"reserved": name}
+        if op == "reap":
+            if name not in self.owned or name not in self.identities:
+                raise PermissionError("unowned session")
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.root_fd)
+            try:
+                identity = os.fstat(fd)
+                if (identity.st_dev, identity.st_ino) != self.identities[name]:
+                    raise RuntimeError("cgroup identity changed; refusing to kill")
+                write_control(fd, "cgroup.kill", "1")
+            finally:
+                os.close(fd)
+            # Revalidate the name before unlinking. This remains fail-closed
+            # if a different object has been substituted.
+            identity = os.stat(name, dir_fd=self.root_fd, follow_symlinks=False)
+            if (identity.st_dev, identity.st_ino) != self.identities[name]:
+                raise RuntimeError("cgroup identity changed before removal")
+            os.rmdir(name, dir_fd=self.root_fd)
+            self.owned.remove(name)
+            del self.identities[name]
+            return {"reaped": name}
+        raise ValueError("unsupported operation")
+
+
+def serve(socket_path, root, authorized_uid):
+    broker = CgroupBroker(root, authorized_uid)
+    listener = socket.socket(socket.AF_UNIX)
+    try:
+        listener.bind(socket_path)
+        os.chmod(socket_path, 0o600)
+        listener.listen(4)
+        while True:
+            conn, _ = listener.accept()
+            with conn:
+                try:
+                    conn.settimeout(2)
+                    uid = peer_uid(conn)
+                    message = read_request(conn)
+                    response = broker.execute(message, uid)
+                except (OSError, ValueError, RuntimeError, PermissionError) as error:
+                    response = {"error": type(error).__name__}
+                conn.sendall(json.dumps(response).encode("ascii") + b"\n")
+    finally:
+        broker.close()
+        listener.close()
+        os.unlink(socket_path)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        raise SystemExit("usage: pty-cgroup-broker.py SOCKET DELEGATED_ROOT AUTHORIZED_UID")
+    serve(sys.argv[1], sys.argv[2], int(sys.argv[3]))

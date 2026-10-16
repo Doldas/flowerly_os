@@ -1,10 +1,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use agentic_core::default_runtime_dir;
-use agentic_ipc::{self, Envelope, Payload};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use flowerly_core::default_runtime_dir;
+use flowerly_core::ipc::{Envelope, Payload};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
@@ -27,7 +27,7 @@ enum Command {
     #[command(about = "Liveness probe for a service.")]
     Ping {
         #[arg(
-            default_value = "agenticd",
+            default_value = "flowerlyd",
             help = "Service to ping (default: agenticd)."
         )]
         service: String,
@@ -35,7 +35,7 @@ enum Command {
     #[command(about = "Fetch structured status from a service.")]
     Status {
         #[arg(
-            default_value = "agenticd",
+            default_value = "flowerlyd",
             help = "Service to query (default: agenticd)."
         )]
         service: String,
@@ -68,6 +68,11 @@ enum FlowAction {
     Create {
         #[arg(help = "Flow name.")]
         name: String,
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
+        operation_id: Option<String>,
     },
     #[command(about = "List Flows.")]
     List,
@@ -97,6 +102,11 @@ enum GoalAction {
         objective: String,
         #[arg(long, help = "Priority.")]
         priority: Option<i32>,
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
+        operation_id: Option<String>,
     },
     #[command(about = "List Goals.")]
     List,
@@ -133,8 +143,17 @@ enum SessionAction {
             help = "Session kind (local-pty, ssh, container, vm-console)."
         )]
         kind: String,
+        #[arg(long, help = "Associate the session with a Flow id.")]
+        flow_id: Option<String>,
+        #[arg(long, help = "Known process id for a registered runtime.")]
+        pid: Option<i32>,
         #[arg(long, help = "Working directory.")]
         cwd: Option<String>,
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
+        operation_id: Option<String>,
     },
     #[command(about = "List registered sessions.")]
     List,
@@ -155,8 +174,16 @@ struct GenerationArgs {
 enum GenerationAction {
     #[command(about = "Create a candidate generation.")]
     Create {
+        #[arg(long, help = "Parent generation id.")]
+        parent: Option<String>,
         #[arg(long, help = "Source commit.")]
         source_commit: Option<String>,
+        #[arg(long, help = "Resolved system manifest identity.")]
+        system_manifest: Option<String>,
+        #[arg(long, help = "Goal that motivated this generation.")]
+        reason_goal: Option<String>,
+        #[arg(long, help = "Experiment associated with this generation.")]
+        experiment: Option<String>,
     },
     #[command(about = "List generations.")]
     List,
@@ -196,6 +223,11 @@ enum ProvenanceAction {
         #[arg(help = "Object reference.")]
         reference: String,
     },
+    #[command(about = "Query edges pointing to an object.")]
+    To {
+        #[arg(help = "Object reference.")]
+        reference: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -210,12 +242,16 @@ enum ExecutionAction {
     Create {
         #[arg(long, help = "Command or operation executed.")]
         command: String,
+        #[arg(long, help = "Reason for the execution.")]
+        reason: Option<String>,
         #[arg(long, help = "Agent id.")]
         agent_id: Option<String>,
         #[arg(long, help = "Goal id.")]
         goal_id: Option<String>,
         #[arg(long, help = "Exit code.")]
         exit_code: Option<i32>,
+        #[arg(long, help = "Execution duration in milliseconds.")]
+        duration_ms: Option<i64>,
     },
     #[command(about = "Show an execution.")]
     Show {
@@ -275,9 +311,9 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
 async fn dispatch_flow(runtime_dir: &std::path::Path, action: FlowAction) -> Result<Value> {
     let socket = socket(runtime_dir, "flowd");
     let payload = match action {
-        FlowAction::Create { name } => Payload::Command {
+        FlowAction::Create { name, operation_id } => Payload::Command {
             name: "flow.create".into(),
-            args: serde_json::json!({ "name": name, "created_by": "agenticctl" }),
+            args: serde_json::json!({ "name": name, "created_by": "agenticctl", "operation_id": operation_id }),
         },
         FlowAction::List => Payload::Command {
             name: "flow.list".into(),
@@ -301,11 +337,13 @@ async fn dispatch_goal(runtime_dir: &std::path::Path, action: GoalAction) -> Res
         GoalAction::Create {
             objective,
             priority,
+            operation_id,
         } => Payload::Command {
             name: "goal.create".into(),
             args: serde_json::json!({
                 "objective": objective,
                 "priority": priority,
+                "operation_id": operation_id,
                 "created_by": "agenticctl",
             }),
         },
@@ -332,9 +370,21 @@ async fn dispatch_goal(runtime_dir: &std::path::Path, action: GoalAction) -> Res
 async fn dispatch_session(runtime_dir: &std::path::Path, action: SessionAction) -> Result<Value> {
     let socket = socket(runtime_dir, "sessiond");
     let payload = match action {
-        SessionAction::Create { kind, cwd } => Payload::Command {
+        SessionAction::Create {
+            kind,
+            flow_id,
+            pid,
+            cwd,
+            operation_id,
+        } => Payload::Command {
             name: "session.create".into(),
-            args: serde_json::json!({ "kind": kind, "cwd": cwd }),
+            args: serde_json::json!({
+                "kind": kind,
+                "flow_id": flow_id,
+                "pid": pid,
+                "cwd": cwd,
+                "operation_id": operation_id
+            }),
         },
         SessionAction::List => Payload::Command {
             name: "session.list".into(),
@@ -354,9 +404,21 @@ async fn dispatch_generation(
 ) -> Result<Value> {
     let socket = socket(runtime_dir, "generationd");
     let payload = match action {
-        GenerationAction::Create { source_commit } => Payload::Command {
+        GenerationAction::Create {
+            parent,
+            source_commit,
+            system_manifest,
+            reason_goal,
+            experiment,
+        } => Payload::Command {
             name: "generation.create".into(),
-            args: serde_json::json!({ "source_commit": source_commit }),
+            args: serde_json::json!({
+                "parent": parent,
+                "source_commit": source_commit,
+                "system_manifest": system_manifest,
+                "reason_goal": reason_goal,
+                "experiment": experiment,
+            }),
         },
         GenerationAction::List => Payload::Command {
             name: "generation.list".into(),
@@ -393,6 +455,10 @@ async fn dispatch_provenance(
             name: "provenance.from".into(),
             args: serde_json::json!({ "ref": reference }),
         },
+        ProvenanceAction::To { reference } => Payload::Command {
+            name: "provenance.to".into(),
+            args: serde_json::json!({ "ref": reference }),
+        },
     };
     reply_value(call(&socket, payload).await?)
 }
@@ -405,16 +471,20 @@ async fn dispatch_execution(
     let payload = match action {
         ExecutionAction::Create {
             command,
+            reason,
             agent_id,
             goal_id,
             exit_code,
+            duration_ms,
         } => Payload::Command {
             name: "execution.create".into(),
             args: serde_json::json!({
                 "command": command,
+                "reason": reason,
                 "agent_id": agent_id,
                 "goal_id": goal_id,
                 "exit_code": exit_code,
+                "duration_ms": duration_ms,
             }),
         },
         ExecutionAction::Show { id } => Payload::Command {
@@ -438,22 +508,32 @@ fn flow_reference(target: &str) -> Value {
 }
 
 fn socket(runtime_dir: &std::path::Path, service: &str) -> PathBuf {
-    runtime_dir.join(format!("{service}.sock"))
+    let daemon = if service == "evolutiond" {
+        "evolutiond"
+    } else {
+        "flowerlyd"
+    };
+    flowerly_core::ipc::socket_path(runtime_dir, daemon)
 }
 
 async fn call(socket: &std::path::Path, payload: Payload) -> Result<Envelope> {
-    agentic_ipc::call(socket, payload).await.with_context(|| {
-        format!(
-            "cannot contact service at {} — is the daemon running?",
-            socket.display()
-        )
-    })
+    flowerly_core::ipc::call(socket, payload)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot contact service at {} — is the daemon running?",
+                socket.display()
+            )
+        })
 }
 
 fn reply_value(envelope: Envelope) -> Result<Value> {
     match envelope.payload {
         Payload::Ok { data } => Ok(data),
-        Payload::Err { message } => anyhow::bail!("service error: {message}"),
+        Payload::Err { message, code } => match code {
+            Some(code) => anyhow::bail!("service error ({code:?}): {message}"),
+            None => anyhow::bail!("service error: {message}"),
+        },
         other => Ok(serde_json::json!({ "type": format!("{other:?}") })),
     }
 }

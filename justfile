@@ -65,8 +65,14 @@ release: build
     @echo "next steps: bump version, update CHANGELOG.md, tag v<version>, create GitHub release"
 
 
-image:
-    @echo "image target is a placeholder — not implemented yet"
+image-inputs:
+    bash ./scripts/check-image-inputs.sh
+    cargo run -p distro-builder -- validate
+
+
+image: image-inputs
+    @echo "Arch image inputs are ready, but bootable image production is not implemented yet."
+    @echo "See distro/base-image/README.md and web-docs/docs/image-model.md."
     exit 1
 
 
