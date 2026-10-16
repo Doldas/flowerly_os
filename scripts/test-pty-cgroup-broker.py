@@ -2,6 +2,8 @@
 """Unprivileged protocol negative tests; real kernel acceptance stays required."""
 import importlib.util
 import socket
+import os
+import tempfile
 import threading
 from pathlib import Path
 import unittest
@@ -57,6 +59,33 @@ class BrokerProtocolTests(unittest.TestCase):
             self.broker.execute(
                 {"op": "reserve", "name": "pty-session-" + "f" * 32}, 1000
             )
+
+    def test_reap_rejects_replaced_directory_before_kill(self):
+        name = "pty-session-" + "a" * 32
+        with tempfile.TemporaryDirectory() as folder:
+            with tempfile.TemporaryDirectory() as archive:
+                root_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.mkdir(name, dir_fd=root_fd)
+                    original = os.stat(name, dir_fd=root_fd)
+                    self.broker.root_fd = root_fd
+                    self.broker.owned = {name}
+                    self.broker.identities = {name: (original.st_dev, original.st_ino)}
+                    os.rename(os.path.join(folder, name), os.path.join(archive, name))
+                    os.mkdir(name, dir_fd=root_fd)
+                    with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                        self.broker.execute({"op": "reap", "name": name}, 1000)
+                    self.assertIn(name, self.broker.owned)
+                    self.assertTrue(os.path.isdir(os.path.join(folder, name)))
+                finally:
+                    os.close(root_fd)
+
+    def test_reap_requires_pinned_reservation_identity(self):
+        name = "pty-session-" + "b" * 32
+        self.broker.owned = {name}
+        self.broker.identities = {}
+        with self.assertRaises(PermissionError):
+            self.broker.execute({"op": "reap", "name": name}, 1000)
 
     def test_other_uid_cannot_operate(self):
         with self.assertRaises(PermissionError):

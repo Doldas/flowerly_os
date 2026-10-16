@@ -73,6 +73,9 @@ class CgroupBroker:
             raise RuntimeError("root is not on cgroup v2 mount")
         self.authorized_uid = authorized_uid
         self.owned = set()
+        # Pin each reservation to its original kernel directory identity.
+        # A matching name alone never authorizes cgroup.kill.
+        self.identities = {}
         # Refuse adopting groups after SIGKILL until independently reconciled.
         try:
             if any(NAME.fullmatch(name) for name in os.listdir(self.root_fd)):
@@ -107,19 +110,32 @@ class CgroupBroker:
                 # Do not remove or reassign an ambiguously initialized group.
                 # A trusted operator must inspect and reconcile it.
                 raise
-            os.close(fd)
+            try:
+                identity = os.fstat(fd)
+            finally:
+                os.close(fd)
+            self.identities[name] = (identity.st_dev, identity.st_ino)
             self.owned.add(name)
             return {"reserved": name}
         if op == "reap":
-            if name not in self.owned:
+            if name not in self.owned or name not in self.identities:
                 raise PermissionError("unowned session")
             fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.root_fd)
             try:
+                identity = os.fstat(fd)
+                if (identity.st_dev, identity.st_ino) != self.identities[name]:
+                    raise RuntimeError("cgroup identity changed; refusing to kill")
                 write_control(fd, "cgroup.kill", "1")
             finally:
                 os.close(fd)
+            # Revalidate the name before unlinking. This remains fail-closed
+            # if a different object has been substituted.
+            identity = os.stat(name, dir_fd=self.root_fd, follow_symlinks=False)
+            if (identity.st_dev, identity.st_ino) != self.identities[name]:
+                raise RuntimeError("cgroup identity changed before removal")
             os.rmdir(name, dir_fd=self.root_fd)
             self.owned.remove(name)
+            del self.identities[name]
             return {"reaped": name}
         raise ValueError("unsupported operation")
 
