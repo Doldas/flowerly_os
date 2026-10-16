@@ -18,6 +18,31 @@ LIMITS = {"pids.max": "64", "memory.max": str(512 * 1024 * 1024), "cpu.max": "10
 MAX_REQUEST = 4096
 
 
+def read_request(conn):
+    """Read exactly one bounded newline-terminated JSON message.
+
+    A partial recv is not a complete message, and trailing data must not be
+    accepted as an additional command. Never execute a truncated request.
+    """
+    raw = bytearray()
+    while True:
+        chunk = conn.recv(min(1024, MAX_REQUEST + 1 - len(raw)))
+        if not chunk:
+            raise ValueError("incomplete message")
+        raw.extend(chunk)
+        if len(raw) > MAX_REQUEST:
+            raise ValueError("oversized message")
+        if b"\n" in chunk:
+            line, extra = bytes(raw).split(b"\n", 1)
+            if extra or not line:
+                raise ValueError("invalid message framing")
+            try:
+                return json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("invalid JSON") from error
+
+
+
 def peer_uid(sock):
     data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     return struct.unpack("3i", data)[1]
@@ -69,7 +94,8 @@ class CgroupBroker:
                     write_control(fd, control, value)
             except BaseException:
                 os.close(fd)
-                os.rmdir(name, dir_fd=self.root_fd)
+                # Do not remove or reassign an ambiguously initialized group.
+                # A trusted operator must inspect and reconcile it.
                 raise
             os.close(fd)
             self.owned.add(name)
@@ -101,10 +127,7 @@ def serve(socket_path, root, authorized_uid):
                 try:
                     conn.settimeout(2)
                     uid = peer_uid(conn)
-                    raw = conn.recv(MAX_REQUEST + 1)
-                    if not raw or len(raw) > MAX_REQUEST or b"\n" not in raw:
-                        raise ValueError("invalid message length")
-                    message = json.loads(raw.split(b"\n", 1)[0])
+                    message = read_request(conn)
                     response = broker.execute(message, uid)
                 except (OSError, ValueError, RuntimeError, PermissionError) as error:
                     response = {"error": type(error).__name__}
