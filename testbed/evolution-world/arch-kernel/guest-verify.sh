@@ -119,9 +119,16 @@ cleanup_runtime() {
 }
 trap cleanup_runtime EXIT
 
-./scripts/dev-runtime.sh start
-
+# Pin the runtime directory instead of inheriting the session default:
+# dev-runtime.sh otherwise resolves it from XDG_RUNTIME_DIR, so an SSH
+# session with XDG_RUNTIME_DIR set would start the daemons at
+# /run/user/<uid>/flowerly-dev while the explicit agenticctl calls below
+# would look for them under the repository target directory.
 runtime_dir="$ROOT/target/flowerly-dev"
+export RUNTIME_DIR="${RUNTIME_DIR:-$runtime_dir}"
+runtime_dir="$RUNTIME_DIR"
+
+./scripts/dev-runtime.sh start
 services=(
     flowerlyd
     evolutiond
