@@ -196,9 +196,21 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             historical = list(pool.map(historical_reader, range(16)))
-        assert all(reply["truncated"] for reply in historical), historical
-        assert all(0 < len(output(reply)) <= 65536 for reply in historical)
-        assert len({reply["cursor"] for reply in historical}) == 1, historical
+        # Never print output_base64 on failure: sixteen concurrent readers can
+        # otherwise turn one assertion into megabytes of unusable CI output.
+        observations = [
+            {
+                "reader": index,
+                "cursor": reply["cursor"],
+                "truncated": reply["truncated"],
+                "output_bytes": len(output(reply)),
+                "running": reply["running"],
+            }
+            for index, reply in enumerate(historical)
+        ]
+        assert all(reply["truncated"] for reply in historical), observations
+        assert all(0 < len(output(reply)) <= 65536 for reply in historical), observations
+        assert len({reply["cursor"] for reply in historical}) == 1, observations
 
         cursor = historical[-1]["cursor"]
         marker = "FLOWERLY_MULTIREADER_FOLLOW"
