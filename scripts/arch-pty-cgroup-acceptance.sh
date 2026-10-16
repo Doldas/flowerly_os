@@ -28,8 +28,15 @@ if [[ "${1:-}" == "--system" ]]; then
     printf '%s\n' "System-delegated PTY acceptance must not use an account with supplementary groups" >&2
     exit 1
   fi
+  if [[ -z "${3:-}" || $(id -u "$3") -eq 0 || $(id -u "$3") -eq $(id -u "$2") ]]; then
+    printf '%s\\n' "Distinct non-root shell UID is required for production acceptance" >&2
+    exit 1
+  fi
   exec systemd-run --system --wait --collect --pipe \
     --property=Delegate=yes --property="User=$2" \
+    --property="AmbientCapabilities=CAP_SETUID CAP_SETGID" \
+    --property=NoNewPrivileges=no \
+    --setenv="FLOWERLY_PTY_SHELL_UID=$(id -u "$3")" \
     --property="WorkingDirectory=$PWD" \
     /bin/bash "$PWD/scripts/arch-pty-cgroup-acceptance.sh" --delegated
 fi
