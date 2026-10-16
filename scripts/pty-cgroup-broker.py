@@ -20,19 +20,28 @@ MAX_SESSIONS = 64
 
 
 def read_request(conn):
-    """Accept exactly one bounded, newline-terminated JSON object."""
-    chunks = bytearray()
-    while len(chunks) <= MAX_REQUEST:
-        part = conn.recv(MAX_REQUEST + 1 - len(chunks))
-        if not part:
-            raise ValueError("incomplete request")
-        chunks.extend(part)
-        if b"\n" in chunks:
-            line, tail = chunks.split(b"\n", 1)
-            if tail or not line or len(line) > MAX_REQUEST:
-                raise ValueError("extra bytes or invalid request length")
-            return json.loads(line)
-    raise ValueError("request too large")
+    """Read exactly one bounded newline-terminated JSON message.
+
+    A partial recv is not a complete message, and trailing data must not be
+    accepted as an additional command. Never execute a truncated request.
+    """
+    raw = bytearray()
+    while True:
+        chunk = conn.recv(min(1024, MAX_REQUEST + 1 - len(raw)))
+        if not chunk:
+            raise ValueError("incomplete message")
+        raw.extend(chunk)
+        if len(raw) > MAX_REQUEST:
+            raise ValueError("oversized message")
+        if b"\n" in chunk:
+            line, extra = bytes(raw).split(b"\n", 1)
+            if extra or not line:
+                raise ValueError("invalid message framing")
+            try:
+                return json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("invalid JSON") from error
+
 
 
 def peer_uid(sock):
@@ -64,11 +73,9 @@ class CgroupBroker:
             raise RuntimeError("root is not on cgroup v2 mount")
         self.authorized_uid = authorized_uid
         self.owned = set()
-        # In-memory ownership is lost on SIGKILL. Never adopt or overwrite
-        # stale PTY groups without independently verified recovery authority.
+        # Refuse adopting groups after SIGKILL until independently reconciled.
         try:
-            names = os.listdir(self.root_fd)
-            if any(NAME.fullmatch(name) for name in names):
+            if any(NAME.fullmatch(name) for name in os.listdir(self.root_fd)):
                 raise RuntimeError("unreconciled PTY cgroups: broker startup denied")
         except BaseException:
             os.close(self.root_fd)
@@ -97,7 +104,8 @@ class CgroupBroker:
                     write_control(fd, control, value)
             except BaseException:
                 os.close(fd)
-                os.rmdir(name, dir_fd=self.root_fd)
+                # Do not remove or reassign an ambiguously initialized group.
+                # A trusted operator must inspect and reconcile it.
                 raise
             os.close(fd)
             self.owned.add(name)

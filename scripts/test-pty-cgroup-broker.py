@@ -2,6 +2,7 @@
 """Unprivileged protocol negative tests; real kernel acceptance stays required."""
 import importlib.util
 import socket
+import threading
 from pathlib import Path
 import unittest
 
@@ -18,41 +19,40 @@ class BrokerProtocolTests(unittest.TestCase):
         self.broker.authorized_uid = 1000
         self.broker.owned = set()
 
-    def test_framing_accepts_fragmented_single_request(self):
-        reader, writer = socket.socketpair()
+    def test_fragmented_request_is_reassembled(self):
+        left, right = socket.socketpair()
         try:
-            writer.sendall(b'{"op":"reserve",')
-            writer.sendall(b'"name":"pty-session-' + b'a' * 32 + b'"}\n')
-            request = module.read_request(reader)
-            self.assertEqual(request["op"], "reserve")
+            def writer():
+                left.sendall(b'{"op":"reserve",')
+                left.sendall(b'"name":"pty-session-' + b'a' * 32 + b'"}\n')
+                left.close()
+            thread = threading.Thread(target=writer)
+            thread.start()
+            response = module.read_request(right)
+            thread.join(timeout=2)
+            self.assertEqual(response["op"], "reserve")
+            self.assertEqual(response["name"], "pty-session-" + "a" * 32)
         finally:
-            reader.close()
-            writer.close()
+            left.close()
+            right.close()
 
-    def test_framing_rejects_trailing_command(self):
-        reader, writer = socket.socketpair()
-        try:
-            writer.sendall(b'{"op":"reserve"}\n{"op":"reap"}\n')
-            with self.assertRaises(ValueError):
-                module.read_request(reader)
-        finally:
-            reader.close()
-            writer.close()
-
-    def test_framing_rejects_oversized_or_truncated_request(self):
-        for payload in (b'x' * (module.MAX_REQUEST + 1), b'{"op":'):
-            reader, writer = socket.socketpair()
+    def test_truncated_or_multiple_commands_are_rejected(self):
+        for raw in (b'{"op":"reserve"', b'{}\n{}\n',
+                    b'{}\ntrailing', b'\n', b'x' * 4097 + b'\n'):
+            left, right = socket.socketpair()
             try:
-                writer.sendall(payload)
-                writer.shutdown(socket.SHUT_WR)
+                left.sendall(raw)
+                left.shutdown(socket.SHUT_WR)
                 with self.assertRaises(ValueError):
-                    module.read_request(reader)
+                    module.read_request(right)
             finally:
-                reader.close()
-                writer.close()
+                left.close()
+                right.close()
 
     def test_session_quota_fails_without_mutating_cgroups(self):
-        self.broker.owned = {"pty-session-" + format(i, "032x") for i in range(module.MAX_SESSIONS)}
+        self.broker.owned = {
+            "pty-session-" + format(i, "032x") for i in range(module.MAX_SESSIONS)
+        }
         with self.assertRaisesRegex(RuntimeError, "quota"):
             self.broker.execute(
                 {"op": "reserve", "name": "pty-session-" + "f" * 32}, 1000
