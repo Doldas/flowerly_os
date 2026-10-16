@@ -110,8 +110,10 @@ class CgroupBroker:
                 # Do not remove or reassign an ambiguously initialized group.
                 # A trusted operator must inspect and reconcile it.
                 raise
-            identity = os.fstat(fd)
-            os.close(fd)
+            try:
+                identity = os.fstat(fd)
+            finally:
+                os.close(fd)
             self.identities[name] = (identity.st_dev, identity.st_ino)
             self.owned.add(name)
             return {"reserved": name}
