@@ -145,6 +145,25 @@ def assert_not_running(pid):
     raise AssertionError(f"process {pid} survived cgroup termination")
 
 
+def verify_procfs_exit_race_handling():
+    """ESRCH during procfs read is a terminated process, not a test failure."""
+    from unittest.mock import patch
+
+    class DisappearingStat:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            raise ProcessLookupError(3, "No such process")
+
+    with patch("builtins.open", return_value=DisappearingStat()):
+        assert_not_running(999999)
+    print("PTY procfs: ESRCH during stat read treated as exited")
+
+
 def require_explicit_delegation(root):
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-strict-") as folder:
         path = Path(folder) / "strict.sock"
@@ -336,6 +355,7 @@ def main():
     verify_write_only_cgroup_kill_probe()
     verify_writable_migration_targets_are_rejected()
     verify_shell_uid_configuration_rejected()
+    verify_procfs_exit_race_handling()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
