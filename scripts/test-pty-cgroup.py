@@ -103,6 +103,23 @@ def verify_writable_migration_targets_are_rejected():
     print("Same-UID writable migration target refused before PTY spawn")
 
 
+def verify_shell_uid_configuration_rejected():
+    """An opt-in split identity must never be root or the guardian UID."""
+    spec = importlib.util.spec_from_file_location("flowerly_pty_guardian", GUARDIAN)
+    guardian_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardian_module)
+    from unittest.mock import patch
+    for raw in ("0", str(os.geteuid()), "not-a-uid"):
+        with patch.dict(os.environ, {"FLOWERLY_PTY_SHELL_UID": raw}):
+            try:
+                guardian_module.shell_credentials()
+            except (PermissionError, ValueError):
+                pass
+            else:
+                raise AssertionError(f"unsafe PTY shell UID accepted: {raw}")
+    print("PTY shell UID configuration: root and same-UID identities refused")
+
+
 def request(path, command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(4)
@@ -307,6 +324,7 @@ def main():
     root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
     verify_write_only_cgroup_kill_probe()
     verify_writable_migration_targets_are_rejected()
+    verify_shell_uid_configuration_rejected()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
