@@ -71,11 +71,25 @@ python3 scripts/test-sessiond-pty-flow.py target/release
 echo
 echo "== Production delegated cgroup v2, same-UID escape, setsid descendant and guardian crash =="
 acceptance_user=flowerly-pty-ci
+shell_user=flowerly-pty-shell-ci
 acceptance_root=/opt/flowerly-pty-acceptance
 if ! id "$acceptance_user" >/dev/null 2>&1; then
     sudo useradd --system --user-group --create-home \
         --home-dir /var/lib/flowerly-pty-ci \
         --shell "$(command -v nologin)" "$acceptance_user"
+fi
+if ! id "$shell_user" >/dev/null 2>&1; then
+    sudo useradd --system --user-group --create-home \
+        --home-dir /var/lib/flowerly-pty-shell-ci \
+        --shell "$(command -v nologin)" "$shell_user"
+fi
+if [[ "$(id -Gn "$shell_user")" != "$shell_user" ]]; then
+    echo "PTY shell acceptance user must have no supplementary groups" >&2
+    exit 1
+fi
+if [[ "$(id -u "$shell_user")" == "$(id -u "$acceptance_user")" ]]; then
+    echo "PTY shell must not share the trusted manager UID" >&2
+    exit 1
 fi
 if [[ "$(id -Gn "$acceptance_user")" != "$acceptance_user" ]]; then
     echo "PTY acceptance user must have no supplementary groups" >&2
@@ -87,7 +101,7 @@ sudo install -m 0644 scripts/arch-pty-cgroup-acceptance.sh \
     "$acceptance_root/scripts"
 (
     cd "$acceptance_root"
-    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user"
+    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user"
 )
 
 echo

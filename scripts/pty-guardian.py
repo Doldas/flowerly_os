@@ -6,6 +6,7 @@ import errno
 import fcntl
 import json
 import os
+import pwd
 import resource
 import re
 import select
@@ -19,6 +20,90 @@ import uuid
 
 REPLAY_LIMIT = 65536
 REQUEST_LIMIT = 32768
+PR_SET_NO_NEW_PRIVS = 38
+
+
+def shell_credentials():
+    """Explicit opt-in only; legacy same-UID mode stays fail-closed."""
+    raw = os.environ.get("FLOWERLY_PTY_SHELL_UID")
+    if raw is None:
+        return None
+    if not raw.isdecimal() or raw.startswith("+"):
+        raise ValueError("invalid PTY shell UID")
+    uid = int(raw)
+    if uid == 0 or uid == os.geteuid():
+        raise PermissionError("PTY shell must have a separate non-root UID")
+    account = pwd.getpwuid(uid)
+    if account.pw_gid == 0:
+        raise PermissionError("PTY shell primary group must not be root")
+    return uid, account.pw_gid
+
+
+def drop_to_shell(credentials):
+    """Drop groups, GID, UID, and future privilege escalation before exec."""
+    uid, gid = credentials
+    os.setgroups([])
+    os.setresgid(gid, gid, gid)
+    os.setresuid(uid, uid, uid)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
+    # A non-root-to-non-root UID transition does not reliably clear all
+    # process capabilities. Empty the effective, permitted and inheritable
+    # sets explicitly with Linux capset v3 before executing untrusted code.
+    class CapabilityHeader(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+    class CapabilityData(ctypes.Structure):
+        _fields_ = [
+            ("effective", ctypes.c_uint32),
+            ("permitted", ctypes.c_uint32),
+            ("inheritable", ctypes.c_uint32),
+        ]
+
+    header = CapabilityHeader(0x20080522, 0)
+    data = (CapabilityData * 2)()
+    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+        raise OSError(ctypes.get_errno(), "PTY capability drop failed")
+    if os.getresuid() != (uid, uid, uid) or os.getresgid() != (gid, gid, gid):
+        raise RuntimeError("PTY shell credentials not fully dropped")
+    if os.getgroups():
+        raise RuntimeError("PTY shell inherited supplementary groups")
+
+
+def verify_shell_migration_boundary(credentials, root_fd):
+    """Kernel open probe with shell credentials, no writes or PID migration."""
+    targets = (("cgroup.procs", root_fd),)
+    management_fd = os.open(
+        "management", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=root_fd,
+    )
+    try:
+        targets += (("cgroup.procs", management_fd),)
+        child = os.fork()
+        if child == 0:
+            try:
+                drop_to_shell(credentials)
+                for name, directory in targets:
+                    try:
+                        fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory)
+                    except OSError as error:
+                        if error.errno not in (errno.EPERM, errno.EACCES):
+                            os._exit(10)
+                    else:
+                        os.close(fd)
+                        os._exit(11)
+                os._exit(0)
+            except BaseException:
+                os._exit(12)
+        _, status = os.waitpid(child, 0)
+        if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+            raise RuntimeError(
+                "unsafe or unverifiable PTY shell cgroup migration boundary"
+            )
+    finally:
+        os.close(management_fd)
+
 
 
 class SessionCgroup:
@@ -26,6 +111,7 @@ class SessionCgroup:
         self.mode = os.environ.get("FLOWERLY_PTY_ISOLATION", "required")
         self.parent_fd = None
         self.group_fd = None
+        self.shell_creds = shell_credentials()
         self.name = None
         if self.mode == "development":
             return
@@ -50,7 +136,10 @@ class SessionCgroup:
             # Reject the known unsafe delegation before creating any child.
             # This is not a substitute for a distinct-UID broker or its
             # kernel-enforced lifecycle and migration ownership.
-            self.reject_writable_escape_targets()
+            if self.shell_creds is None:
+                self.reject_writable_escape_targets()
+            else:
+                verify_shell_migration_boundary(self.shell_creds, self.parent_fd)
             os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
             self.group_fd = os.open(
                 self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -260,6 +349,11 @@ def supervise(path, shell, parent_pid):
         if os.getppid() != guardian_pid or os.read(release_read, 1) != b"1":
             os._exit(127)
         os.close(release_read)
+        if isolation.shell_creds is not None:
+            try:
+                drop_to_shell(isolation.shell_creds)
+            except BaseException:
+                os._exit(127)
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))

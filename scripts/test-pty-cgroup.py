@@ -103,6 +103,23 @@ def verify_writable_migration_targets_are_rejected():
     print("Same-UID writable migration target refused before PTY spawn")
 
 
+def verify_shell_uid_configuration_rejected():
+    """An opt-in split identity must never be root or the guardian UID."""
+    spec = importlib.util.spec_from_file_location("flowerly_pty_guardian", GUARDIAN)
+    guardian_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardian_module)
+    from unittest.mock import patch
+    for raw in ("0", str(os.geteuid()), "not-a-uid"):
+        with patch.dict(os.environ, {"FLOWERLY_PTY_SHELL_UID": raw}):
+            try:
+                guardian_module.shell_credentials()
+            except (PermissionError, ValueError):
+                pass
+            else:
+                raise AssertionError(f"unsafe PTY shell UID accepted: {raw}")
+    print("PTY shell UID configuration: root and same-UID identities refused")
+
+
 def request(path, command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(4)
@@ -238,6 +255,29 @@ def exercise_real_cgroup(root):
             assert (group / "memory.max").read_text().strip() == str(512 * 1024 * 1024)
             assert (group / "cpu.max").read_text().strip() == "100000 100000"
             assert str(shell_pid) in (group / "cgroup.procs").read_text().split()
+            expected_shell_uid = os.environ.get("FLOWERLY_PTY_SHELL_UID")
+            if expected_shell_uid is not None:
+                expected_shell_uid = int(expected_shell_uid)
+                # Inspect kernel credentials, not client-controlled PTY output.
+                for _ in range(150):
+                    status = Path(f"/proc/{shell_pid}/status").read_text()
+                    fields = dict(
+                        line.split(":", 1) for line in status.splitlines() if ":" in line
+                    )
+                    uids = tuple(map(int, fields["Uid"].split()))
+                    if uids == (expected_shell_uid,) * 4:
+                        break
+                    time.sleep(0.02)
+                else:
+                    raise AssertionError("PTY shell did not assume separate UID")
+                for key in ("CapEff", "CapPrm", "CapAmb"):
+                    assert int(fields[key].strip(), 16) == 0, (
+                        f"PTY shell retains privileged capabilities: {key}"
+                    )
+                assert fields["Groups"].strip() == "", (
+                    "PTY shell retained supplementary groups"
+                )
+                print("PTY shell: separate UID, no effective/permitted/ambient capabilities")
             assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name)
             command = (
                 b"python3 -c 'import subprocess; p=subprocess.Popen("
@@ -284,6 +324,7 @@ def main():
     root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
     verify_write_only_cgroup_kill_probe()
     verify_writable_migration_targets_are_rejected()
+    verify_shell_uid_configuration_rejected()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
