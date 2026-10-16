@@ -48,6 +48,23 @@ def drop_to_shell(credentials):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
+    # A non-root-to-non-root UID transition does not reliably clear all
+    # process capabilities. Empty the effective, permitted and inheritable
+    # sets explicitly with Linux capset v3 before executing untrusted code.
+    class CapabilityHeader(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+    class CapabilityData(ctypes.Structure):
+        _fields_ = [
+            ("effective", ctypes.c_uint32),
+            ("permitted", ctypes.c_uint32),
+            ("inheritable", ctypes.c_uint32),
+        ]
+
+    header = CapabilityHeader(0x20080522, 0)
+    data = (CapabilityData * 2)()
+    if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
+        raise OSError(ctypes.get_errno(), "PTY capability drop failed")
     if os.getresuid() != (uid, uid, uid) or os.getresgid() != (gid, gid, gid):
         raise RuntimeError("PTY shell credentials not fully dropped")
     if os.getgroups():
