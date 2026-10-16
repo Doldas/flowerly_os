@@ -189,6 +189,28 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         else:
             raise AssertionError("burst output did not reach bounded replay")
 
+        # The cursor is live, not a frozen snapshot: the interactive shell
+        # may still emit its final prompt after the 180000-byte burst. Wait
+        # until a completed command and its prompt have gone quiet before
+        # asserting that concurrently fetched historical snapshots agree.
+        previous = None
+        stable = 0
+        for _ in range(250):
+            snapshot = successful(session, "session.read", {
+                "id": identifier, "cursor": 0, "control_token": control,
+            })
+            current = snapshot["cursor"]
+            if current == previous:
+                stable += 1
+                if stable >= 5:
+                    break
+            else:
+                stable = 0
+            previous = current
+            time.sleep(0.04)
+        else:
+            raise AssertionError("PTY burst cursor never stabilized before parallel reads")
+
         def historical_reader(_):
             return successful(session, "session.read", {
                 "id": identifier, "cursor": 0, "control_token": control,
