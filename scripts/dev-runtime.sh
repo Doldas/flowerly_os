@@ -24,9 +24,9 @@ ctl() {
 # /proc/pid/stat field 22 identifies the process incarnation (PID reuse).
 start_ticks() {
     local stat
-    [[ -r "/proc/$1/stat" ]] || return 1
-    stat="$(cat "/proc/$1/stat")"
+    stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
     stat="${stat##*) }"
+    [[ -n "$stat" ]] || return 1
     awk '{print $20}' <<< "$stat"
 }
 
@@ -37,7 +37,9 @@ is_owned() {
     [[ "$observed" == "$ticks" ]] || return 1
     [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "$service" ]] || return 1
     # Recheck the environment: a matching process name is not ownership.
-    env_path="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fx "AGENTIC_RUNTIME_DIR=$RUNTIME_DIR" || true)"
+    # Let cat open the file so a process dying mid-check cannot leak a
+    # shell redirection failure onto the caller's stderr.
+    env_path="$(cat "/proc/$pid/environ" 2>/dev/null | tr '\0' '\n' | grep -Fx "AGENTIC_RUNTIME_DIR=$RUNTIME_DIR" || true)"
     [[ -n "$env_path" ]]
 }
 
