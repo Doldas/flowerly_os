@@ -75,6 +75,34 @@ def verify_write_only_cgroup_kill_probe():
     print("cgroup.kill write-only capability, fail-closed and no-symlink probes OK")
 
 
+def verify_writable_migration_targets_are_rejected():
+    """Check access refusal only; real kernel confinement needs Arch tests."""
+    spec = importlib.util.spec_from_file_location("flowerly_pty_guardian", GUARDIAN)
+    guardian_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardian_module)
+    with tempfile.TemporaryDirectory(prefix="flowerly-pty-escape-probe-") as folder:
+        root = Path(folder)
+        management = root / "management"
+        management.mkdir()
+        (root / "cgroup.procs").write_bytes(b"")
+        (management / "cgroup.procs").write_bytes(b"")
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            probe = guardian_module.SessionCgroup.__new__(guardian_module.SessionCgroup)
+            probe.parent_fd = root_fd
+            try:
+                probe.reject_writable_escape_targets()
+            except RuntimeError as error:
+                assert "unsafe PTY cgroup delegation" in str(error), str(error)
+            else:
+                raise AssertionError("writable parent cgroup.procs accepted")
+            assert (root / "cgroup.procs").read_bytes() == b""
+            assert (management / "cgroup.procs").read_bytes() == b""
+        finally:
+            os.close(root_fd)
+    print("Same-UID writable migration target refused before PTY spawn")
+
+
 def request(path, command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(4)
@@ -255,6 +283,7 @@ def main():
     assert sys.platform == "linux"
     root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
     verify_write_only_cgroup_kill_probe()
+    verify_writable_migration_targets_are_rejected()
     require_explicit_delegation(root)
     if root:
         exercise_real_cgroup(root)
