@@ -62,9 +62,62 @@ class SessionCgroup:
             # cgroup for an unprivileged service UID. Opening for writing is
             # non-destructive: only writing "1" kills the group.
             self.require_writable("cgroup.kill")
+            self.reject_writable_escape_targets()
         except BaseException:
             self.cleanup()
             raise
+
+    def reject_writable_escape_targets(self):
+        """Conservatively refuse writable migration paths for the shell UID.
+
+        This does not prove security against future same-UID sibling creation:
+        the delegated parent and trusted management paths must be isolated by
+        a separately privileged broker before required PTY is enabled.
+        """
+        for directory, name in ((self.parent_fd, "cgroup.procs"),):
+            try:
+                fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory)
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EPERM):
+                    raise RuntimeError(
+                        f"unverifiable parent cgroup migration boundary: {error}"
+                    ) from error
+            else:
+                os.close(fd)
+                raise RuntimeError(
+                    "unsafe PTY cgroup delegation: parent cgroup.procs is "
+                    "writable by session UID"
+                )
+
+        try:
+            management_fd = os.open(
+                "management",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=self.parent_fd,
+            )
+        except OSError as error:
+            raise RuntimeError(
+                f"trusted management cgroup missing or inaccessible: {error}"
+            ) from error
+        try:
+            try:
+                fd = os.open(
+                    "cgroup.procs", os.O_WRONLY | os.O_NOFOLLOW,
+                    dir_fd=management_fd,
+                )
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EPERM):
+                    raise RuntimeError(
+                        f"unverifiable management cgroup boundary: {error}"
+                    ) from error
+            else:
+                os.close(fd)
+                raise RuntimeError(
+                    "unsafe PTY cgroup delegation: management cgroup.procs "
+                    "is writable by session UID"
+                )
+        finally:
+            os.close(management_fd)
 
     def require_writable(self, name):
         try:
