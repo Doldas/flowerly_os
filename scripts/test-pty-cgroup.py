@@ -135,7 +135,9 @@ def assert_not_running(pid):
         try:
             with open(f"/proc/{pid}/stat", encoding="ascii") as state_file:
                 state = state_file.read().split(") ", 1)[1][0]
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # procfs may report ESRCH when the task exits between opening
+            # /proc/<pid>/stat and reading it. Both mean it is gone.
             return
         if state in ("Z", "X"):
             return
@@ -317,6 +319,15 @@ def exercise_real_cgroup(root):
                     os.kill(descendant_pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    # The test manager is deliberately a different UID from
+                    # the shell. Never mask the original acceptance failure
+                    # with an unauthorized best-effort cleanup signal.
+                    print(
+                        "PTY test cleanup: descendant belongs to the isolated "
+                        "shell UID; unprivileged SIGKILL denied",
+                        file=sys.stderr,
+                    )
 
 
 def main():
