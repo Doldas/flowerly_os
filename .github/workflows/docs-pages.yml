@@ -40,10 +40,39 @@ jobs:
       - name: Build and verify Pages site
         run: bash ./scripts/build-docs-site.sh
 
+      # Release branches validate docs in CI but do not publish a Pages site.
+      # A new Pages site must first be enabled under Settings > Pages using
+      # Source: GitHub Actions. Alternatively a scoped bootstrap secret can
+      # enable the site via configure-pages with an elevated token.
+      - name: Verify Pages provisioning
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_TOKEN: ${{ secrets.PAGES_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages")"
+          if [[ "${code}" == "404" && -z "${BOOTSTRAP_TOKEN}" ]]; then
+            echo "::error::GitHub Pages is not enabled. In repository Settings > Pages, set Build and deployment > Source to GitHub Actions. Alternatively configure PAGES_BOOTSTRAP_TOKEN with Pages write and repository administration write access."
+            exit 1
+          fi
+          if [[ "${code}" != "200" && "${code}" != "404" ]]; then
+            echo "::error::GitHub Pages status request failed: HTTP ${code}"
+            exit 1
+          fi
+
       - name: Setup Pages
+        if: github.ref == 'refs/heads/master'
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
+          token: ${{ secrets.PAGES_BOOTSTRAP_TOKEN || github.token }}
 
       - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/master'
         uses: actions/upload-pages-artifact@v3
         with:
           # The builder writes to ${GITHUB_WORKSPACE}/site, not web-docs/site.
