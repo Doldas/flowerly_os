@@ -28,8 +28,8 @@ impl SessionRuntime {
                     .context("listing sessions for PTY recovery")?
                 {
                     if session.kind == "local-pty" && session.pid.is_some() {
-                        if let Ok(root) = &cgroup_root {
-                            terminate_stale_cgroup(&session.id, root.as_deref())?;
+                        if let Ok(Some(root)) = &cgroup_root {
+                            terminate_stale_cgroup(&session.id, Some(root))?;
                         } else {
                             tracing::warn!(session_id = %session.id, "PTY recovery requires cgroup delegation");
                         }

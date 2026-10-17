@@ -16,6 +16,94 @@ import uuid
 GUARDIAN = Path(__file__).with_name("pty-guardian.py")
 
 
+def load_guardian():
+    spec = importlib.util.spec_from_file_location("flowerly_pty_guardian", GUARDIAN)
+    guardian_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guardian_module)
+    return guardian_module
+
+
+def verify_management_cgroup_configuration():
+    """The daemon-selected management group must be the exact probe target.
+
+    Default remains the plain `management` group used by the acceptance
+    harness; daemon style `management-<uuid>` must be accepted and all other
+    identities refused fail-closed before any child or write.
+    """
+    guardian = load_guardian()
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop(guardian.MANAGEMENT_ENV, None)
+        assert guardian.management_name() == "management"
+    daemon_style = "management-" + uuid.uuid4().hex
+    with patch.dict(os.environ, {guardian.MANAGEMENT_ENV: daemon_style}):
+        assert guardian.management_name() == daemon_style
+    for raw in ("../escape", "", "management/../escape", "station-" + uuid.uuid4().hex,
+                "pty-session-" + uuid.uuid4().hex, "management-" + uuid.uuid4().hex + "x",
+                "MANAGEMENT"):
+        with patch.dict(os.environ, {guardian.MANAGEMENT_ENV: raw}):
+            try:
+                guardian.management_name()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"unsafe management cgroup identity accepted: {raw!r}")
+    print("Management cgroup identity: default, daemon style and traversal refused")
+
+
+def verify_management_probe_targets_configured_group():
+    """Same-UID guard must probe the configured management group only.
+
+    The parent `cgroup.procs` stub is made read-only (0444) to mirror a real
+    non-delegated parent boundary; only the management stub exercises the
+    management identity contract.
+    """
+    guardian = load_guardian()
+    from unittest.mock import patch
+
+    daemon_style = "management-" + uuid.uuid4().hex
+    root_fd = None
+    scenarios = {}
+    with tempfile.TemporaryDirectory(prefix="flowerly-pty-management-probe-") as folder:
+        root = Path(folder)
+        management = root / daemon_style
+        management.mkdir()
+        wrong = root / "management"
+        wrong.mkdir()
+        parent_procs = root / "cgroup.procs"
+        parent_procs.write_bytes(b"")
+        parent_procs.chmod(0o444)
+        (management / "cgroup.procs").write_bytes(b"")
+        (wrong / "cgroup.procs").write_bytes(b"")
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        probe = guardian.SessionCgroup.__new__(guardian.SessionCgroup)
+        probe.parent_fd = root_fd
+        scenarios["writable configured management is refused"] = (
+            {guardian.MANAGEMENT_ENV: daemon_style},
+            "unsafe PTY cgroup delegation",
+        )
+        scenarios["missing configured management is refused"] = (
+            {guardian.MANAGEMENT_ENV: "management-" + uuid.uuid4().hex},
+            "trusted management cgroup missing or inaccessible",
+        )
+        try:
+            for reason, (environment, expected) in scenarios.items():
+                with patch.dict(os.environ, environment):
+                    try:
+                        probe.reject_writable_escape_targets()
+                    except RuntimeError as error:
+                        assert expected in str(error), f"{reason}: {error}"
+                    else:
+                        raise AssertionError(reason + " accepted")
+            for path in (root, management, wrong):
+                for name in path.glob("cgroup.procs"):
+                    assert name.read_bytes() == b"", f"unexpected write into {name}"
+        finally:
+            os.close(root_fd)
+    print("Same-UID management probe follows the configured identity fail-closed")
+
+
 def verify_write_only_cgroup_kill_probe():
     """The real cgroup.kill file is write-only (0200), not readable.
 
@@ -353,6 +441,8 @@ def main():
     assert sys.platform == "linux"
     root = os.environ.get("FLOWERLY_PTY_CGROUP_ROOT")
     verify_write_only_cgroup_kill_probe()
+    verify_management_cgroup_configuration()
+    verify_management_probe_targets_configured_group()
     verify_writable_migration_targets_are_rejected()
     verify_shell_uid_configuration_rejected()
     verify_procfs_exit_race_handling()
