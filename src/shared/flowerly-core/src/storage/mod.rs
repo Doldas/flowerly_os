@@ -7,8 +7,8 @@ use std::str::FromStr;
 
 use crate::types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, Session, SessionId,
-    SessionPresentationState, SessionState, Timestamp,
+    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProvenanceEdge,
+    Session, SessionId, SessionPresentationState, SessionState, Timestamp,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -87,6 +87,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "idempotent_operations",
         sql: include_str!("../../migrations/0005_idempotent_operations.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "model_catalog",
+        sql: include_str!("../../migrations/0006_model_catalog.sql"),
     },
 ];
 
@@ -406,6 +411,110 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Durable, actor-scoped opt-in retry identity for model registration.
+    pub fn insert_model_with_provenance(
+        &mut self,
+        model: &ModelRecord,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_model_row(&tx, model)?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn insert_model_with_provenance_once(
+        &mut self,
+        model: &ModelRecord,
+        edges: &[ProvenanceEdge],
+        operation: &MutationOperation<'_>,
+    ) -> Result<String> {
+        if operation.actor != model.created_by {
+            return Err(StorageError::OperationConflict(
+                "operation actor does not match durable creator".into(),
+            ));
+        }
+        self.insert_once(operation, |conn| {
+            insert_model_row(conn, model)?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn get_model(&self, id: &ModelId) -> Result<Option<ModelRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, family, architecture, backend, context_tokens,
+                        measured_memory_bytes, modalities, license, evidence,
+                        created_by, created_at, retired_at
+                 FROM models WHERE id = ?1",
+                params![id.as_str()],
+                map_model,
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    /// Active (non-retired) catalog rows only; retired rows keep provenance.
+    pub fn list_models(&self) -> Result<Vec<ModelRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, family, architecture, backend, context_tokens,
+                    measured_memory_bytes, modalities, license, evidence,
+                    created_by, created_at, retired_at
+             FROM models WHERE retired_at IS NULL ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], map_model)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Soft-retire transactionally. A missing id is a typed NotFound;
+    /// an already retired id stays retirement without a duplicate edge.
+    pub fn retire_model(&mut self, id: &ModelId, retired_by: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE models
+                 SET retired_at = ?2
+                 WHERE id = ?1 AND retired_at IS NULL",
+            params![id.as_str(), Timestamp::now().as_millis()],
+        )?;
+        if changed == 0 {
+            let exists: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM models WHERE id = ?1",
+                    params![id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            tx.commit()?;
+            return exists
+                .map(|_| ())
+                .ok_or_else(|| StorageError::NotFound(format!("model not found: {id}")));
+        }
+        insert_provenance_row(
+            &tx,
+            &ProvenanceEdge {
+                from: ObjectRef::from(id),
+                relation: crate::types::ProvenanceRelation::CausedBy,
+                to: ObjectRef::actor(format!("retire:{retired_by}")).map_err(|error| {
+                    StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+                })?,
+                created_at: Timestamp::now(),
+                note: Some("model catalog retirement".to_owned()),
+            },
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
@@ -876,6 +985,74 @@ fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()>
     Ok(())
 }
 
+fn insert_model_row(conn: &Connection, model: &ModelRecord) -> Result<()> {
+    conn.execute(
+        "INSERT INTO models (id, name, family, architecture, backend, context_tokens,
+                             measured_memory_bytes, modalities, license, evidence,
+                             created_by, created_at, retired_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            model.id.as_str(),
+            model.name,
+            model.family,
+            model.architecture,
+            model.backend.as_str(),
+            model.context_tokens.map(|v| v as i64),
+            model.measured_memory_bytes.map(|v| v as i64),
+            serde_json::to_string(&model.modalities)?,
+            model.license,
+            model.evidence,
+            model.created_by,
+            model.created_at.as_millis(),
+            model.retired_at.map(|t| t.as_millis()),
+        ],
+    )?;
+    Ok(())
+}
+
+fn map_model(row: &Row<'_>) -> rusqlite::Result<ModelRecord> {
+    let family: Option<String> = row.get(2)?;
+    let architecture: Option<String> = row.get(3)?;
+    let backend: String = row.get(4)?;
+    let context_tokens: Option<i64> = row.get(5)?;
+    let measured_memory_bytes: Option<i64> = row.get(6)?;
+    let modalities_json: String = row.get(7)?;
+    let modalities: Vec<String> = serde_json::from_str(&modalities_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+    })?;
+    let license: Option<String> = row.get(8)?;
+    let evidence: Option<String> = row.get(9)?;
+    let created_at: i64 = row.get(11)?;
+    let retired_at: Option<i64> = row.get(12)?;
+    let map_u64 = |v: Option<i64>, column: usize| -> rusqlite::Result<Option<u64>> {
+        match v {
+            Some(value) if value < 0 => Err(rusqlite::Error::FromSqlConversionFailure(
+                column,
+                Type::Integer,
+                Box::new(StorageError::InvalidOperation(
+                    "negative catalog quantity in storage".into(),
+                )),
+            )),
+            value => Ok(value.map(|raw| raw as u64)),
+        }
+    };
+    Ok(ModelRecord {
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        name: row.get(1)?,
+        family,
+        architecture,
+        backend: parse_text(backend, 4)?,
+        context_tokens: map_u64(context_tokens, 5)?,
+        measured_memory_bytes: map_u64(measured_memory_bytes, 6)?,
+        modalities,
+        license,
+        evidence,
+        created_by: row.get(10)?,
+        created_at: Timestamp::from_millis(created_at),
+        retired_at: retired_at.map(Timestamp::from_millis),
+    })
+}
+
 fn parse_text<T>(raw: String, column: usize) -> rusqlite::Result<T>
 where
     T: FromStr,
@@ -991,12 +1168,96 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ProvenanceRelation;
+    use crate::types::{ModelBackend, ProvenanceRelation};
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
         store
+    }
+
+    fn example_model() -> ModelRecord {
+        let mut model = ModelRecord::new("qwen2-coder-14b", "uid:1000");
+        model.family = Some("qwen2".into());
+        model.architecture = Some("transformer".into());
+        model.backend = ModelBackend::Cpu;
+        model.context_tokens = Some(32_768);
+        model.measured_memory_bytes = Some(9_000_000_000);
+        model.modalities = vec!["text".into()];
+        model.license = Some("apache-2.0".into());
+        model.evidence = Some("measure:gold-rss".into());
+        model
+    }
+
+    fn model_operation<'a>(model: &'a ModelRecord, replay: &'a str) -> MutationOperation<'a> {
+        MutationOperation {
+            actor: model.created_by.as_str(),
+            command: "model.register",
+            operation_id: replay,
+            request_payload: "static",
+            response_payload: "static",
+        }
+    }
+
+    #[test]
+    fn model_registration_is_idempotent_and_durable() {
+        let mut store = migrated_store();
+        let model = example_model();
+        let edge = ProvenanceEdge {
+            from: ObjectRef::from(&model.id),
+            relation: ProvenanceRelation::CreatedBy,
+            to: ObjectRef::actor(model.created_by.clone()).unwrap(),
+            created_at: Timestamp::now(),
+            note: Some("registered by profile test".into()),
+        };
+        let operation = model_operation(&model, "replay-1");
+        let first = store
+            .insert_model_with_provenance_once(&model, std::slice::from_ref(&edge), &operation)
+            .unwrap();
+        let replayed = store
+            .insert_model_with_provenance_once(&model, &[edge], &operation)
+            .unwrap();
+        assert_eq!(first, replayed);
+        assert_eq!(store.list_models().unwrap().len(), 1);
+        let stored = store.get_model(&model.id).unwrap().unwrap();
+        assert_eq!(stored.name, "qwen2-coder-14b");
+        assert_eq!(stored.backend, ModelBackend::Cpu);
+        assert_eq!(stored.modalities, vec!["text".to_owned()]);
+        assert!(stored.retired_at.is_none());
+    }
+
+    #[test]
+    fn model_operation_replay_with_changed_payload_conflicts() {
+        let mut store = migrated_store();
+        let model = example_model();
+        let operation = model_operation(&model, "replay-2");
+        store
+            .insert_model_with_provenance_once(&model, &[], &operation)
+            .unwrap();
+        let mut conflicting = model_operation(&model, "replay-2");
+        conflicting.request_payload = "changed";
+        let result = store.insert_model_with_provenance_once(&model, &[], &conflicting);
+        assert!(matches!(result, Err(StorageError::OperationConflict(_))));
+    }
+
+    #[test]
+    fn model_retirement_is_soft_and_typed() {
+        let mut store = migrated_store();
+        let model = example_model();
+        let operation = model_operation(&model, "replay-3");
+        store
+            .insert_model_with_provenance_once(&model, &[], &operation)
+            .unwrap();
+        let missing = store.retire_model(&ModelId::from_raw("model-missing"), "uid:1000");
+        assert!(matches!(missing, Err(StorageError::NotFound(_))));
+        store.retire_model(&model.id, "uid:1000").unwrap();
+        let retired = store.get_model(&model.id).unwrap().unwrap();
+        assert!(retired.is_retired());
+        assert!(
+            store.list_models().unwrap().is_empty(),
+            "retired rows leave the active list"
+        );
+        store.retire_model(&model.id, "uid:1000").unwrap();
     }
 
     #[test]
@@ -1067,11 +1328,12 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 4);
+        assert_eq!(applied.len(), 5);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
         assert_eq!(applied[3].version, 5);
+        assert_eq!(applied[4].version, 6);
 
         let session = store
             .get_session(&session_id)
