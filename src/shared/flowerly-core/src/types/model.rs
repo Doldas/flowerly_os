@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use super::{
     AgentId, ArtifactId, ExecutionId, ExperimentId, FlowId, GenerationId, GoalId, ModelId,
-    ObjectRef, SessionId, Timestamp,
+    ObjectRef, ProviderId, SessionId, Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -466,6 +466,28 @@ impl ModelRecord {
     pub fn is_retired(&self) -> bool {
         self.retired_at.is_some()
     }
+}
+
+/// An admitted inference provider registration. Only capability labels live
+/// here: no credentials, no grants and no remote endpoints until egress
+/// policy authorization exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRecord {
+    pub id: ProviderId,
+
+    pub name: String,
+
+    pub kind: String,
+
+    pub endpoint: Option<String>,
+
+    pub capabilities: Vec<String>,
+
+    pub created_by: String,
+
+    pub created_at: Timestamp,
+
+    pub retired_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

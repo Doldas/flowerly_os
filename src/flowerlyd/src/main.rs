@@ -118,7 +118,9 @@ impl Router {
             Some("session") => self.session.handle(&self.store, request),
             Some("execution") | Some("agent") => agentic::handle_command(&self.store, request),
             Some("capability") => capability::handle_command(request),
-            Some("model") | Some("device") => via_queue(&self.compute, request),
+            Some("model") | Some("device") | Some("profile") | Some("provider") => {
+                via_queue(&self.compute, request)
+            }
             _ => coded_error_envelope(
                 request.id.clone(),
                 ErrorCode::InvalidArgument,

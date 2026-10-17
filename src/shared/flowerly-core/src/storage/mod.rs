@@ -7,8 +7,9 @@ use std::str::FromStr;
 
 use crate::types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProvenanceEdge,
-    Session, SessionId, SessionPresentationState, SessionState, Timestamp,
+    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProfileId,
+    ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
+    SessionState, Timestamp,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -36,6 +37,17 @@ pub enum StorageError {
 }
 
 impl StorageError {
+    /// A failed UNIQUE constraint on a business name means the same name was
+    /// already taken; the typed IPC mapping for this is `Conflict`.
+    #[must_use]
+    pub fn is_unique_violation(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation
+        )
+    }
+
     /// SQLite writer contention is a transient availability condition, not
     /// corrupt user input or an internal application error.
     #[must_use]
@@ -92,6 +104,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "model_catalog",
         sql: include_str!("../../migrations/0006_model_catalog.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "profiles_providers",
+        sql: include_str!("../../migrations/0007_profiles_providers.sql"),
     },
 ];
 
@@ -448,6 +465,271 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Create a profile record with its first append-only version in one
+    /// immediate transaction. When an idempotent operation is supplied the
+    /// stored response JSON is replayed; a fresh creation returns an empty
+    /// string so callers can distinguish the two.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_profile(
+        &mut self,
+        id: &ProfileId,
+        name: &str,
+        created_by: &str,
+        toml: &str,
+        summary: &str,
+        operation: Option<MutationOperation<'_>>,
+        edges: &[ProvenanceEdge],
+    ) -> Result<String> {
+        let now = Timestamp::now();
+        let write = |conn: &Connection| -> Result<()> {
+            conn.execute(
+                "INSERT INTO ai_profiles (id, name, created_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id.as_str(), name, created_by, now.as_millis()],
+            )?;
+            conn.execute(
+                "INSERT INTO ai_profile_versions
+                     (profile_id, version, toml, summary, created_by, created_at)
+                 VALUES (?1, 1, ?2, ?3, ?4, ?5)",
+                params![id.as_str(), toml, summary, created_by, now.as_millis()],
+            )?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        };
+        match operation {
+            Some(operation) => self.insert_once(&operation, write),
+            None => {
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                write(&tx)?;
+                tx.commit()?;
+                Ok(String::new())
+            }
+        }
+    }
+
+    /// Append a new version; the caller has fully validated the TOML and the
+    /// name is immutable after creation (renames update the profile row).
+    pub fn append_profile_version(
+        &mut self,
+        id: &ProfileId,
+        toml: &str,
+        summary: &str,
+        appended_by: &str,
+        edges: &[ProvenanceEdge],
+    ) -> Result<u32> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = Timestamp::now();
+        let next: u32 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) + 1
+                 FROM ai_profile_versions WHERE profile_id = ?1",
+                params![id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(1);
+        tx.execute(
+            "INSERT INTO ai_profile_versions
+                 (profile_id, version, toml, summary, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id.as_str(),
+                next,
+                toml,
+                summary,
+                appended_by,
+                now.as_millis()
+            ],
+        )?;
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
+        Ok(next)
+    }
+
+    pub fn rename_profile(
+        &mut self,
+        id: &ProfileId,
+        new_name: &str,
+        renamed_by: &str,
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE ai_profiles SET name = ?2 WHERE id = ?1",
+            params![id.as_str(), new_name],
+        )?;
+        if changed == 0 {
+            tx.commit()?;
+            return Err(StorageError::NotFound(format!("profile not found: {id}")));
+        }
+        insert_provenance_row(
+            &tx,
+            &ProvenanceEdge {
+                from: ObjectRef::from(id),
+                relation: crate::types::ProvenanceRelation::CausedBy,
+                to: ObjectRef::actor(format!("rename:{renamed_by}")).map_err(|error| {
+                    StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
+                })?,
+                created_at: Timestamp::now(),
+                note: Some("profile rename".to_owned()),
+            },
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn profile_row(&self, id: &ProfileId) -> Result<Option<(String, String, i64)>> {
+        self.conn
+            .query_row(
+                "SELECT name, created_by, created_at FROM ai_profiles WHERE id = ?1",
+                params![id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    pub fn profile_by_name(&self, name: &str) -> Result<Option<(ProfileId, String, i64)>> {
+        self.conn
+            .query_row(
+                "SELECT id, created_by, created_at FROM ai_profiles WHERE name = ?1",
+                params![name],
+                |row| {
+                    let id: ProfileId = parse_text(row.get::<_, String>(0)?, 0)?;
+                    Ok((id, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                },
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<(ProfileId, String, u32, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.name, COALESCE(MAX(v.version), 0), p.created_at
+             FROM ai_profiles p
+             LEFT JOIN ai_profile_versions v ON v.profile_id = p.id
+             GROUP BY p.id ORDER BY p.created_at",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let raw: String = row.get(0)?;
+            Ok((
+                parse_text::<ProfileId>(raw, 0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn profile_version(
+        &self,
+        id: &ProfileId,
+        version: u32,
+    ) -> Result<Option<(String, String, String, i64)>> {
+        self.conn
+            .query_row(
+                "SELECT toml, summary, created_by, created_at
+                 FROM ai_profile_versions WHERE profile_id = ?1 AND version = ?2",
+                params![id.as_str(), version],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    /// Latest version tuple `(version, toml, summary)`.
+    pub fn profile_latest(&self, id: &ProfileId) -> Result<Option<(u32, String, String)>> {
+        self.conn
+            .query_row(
+                "SELECT version, toml, summary
+                 FROM ai_profile_versions
+                 WHERE profile_id = ?1 ORDER BY version DESC LIMIT 1",
+                params![id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    /// Register a provider. Remote kinds never pass storage here; the daemon
+    /// must refuse them against egress policy before calling this.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_provider(
+        &mut self,
+        id: &ProviderId,
+        name: &str,
+        kind: &str,
+        endpoint: Option<&str>,
+        capabilities: &[String],
+        created_by: &str,
+        operation: Option<MutationOperation<'_>>,
+        edges: &[ProvenanceEdge],
+    ) -> Result<String> {
+        let now = Timestamp::now();
+        let write = |conn: &Connection| -> Result<()> {
+            conn.execute(
+                "INSERT INTO ai_providers
+                     (id, name, kind, endpoint, capabilities, created_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id.as_str(),
+                    name,
+                    kind,
+                    endpoint,
+                    serde_json::to_string(&capabilities)?,
+                    created_by,
+                    now.as_millis(),
+                ],
+            )?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        };
+        match operation {
+            Some(operation) => self.insert_once(&operation, write),
+            None => {
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                write(&tx)?;
+                tx.commit()?;
+                Ok(String::new())
+            }
+        }
+    }
+
+    pub fn list_providers(&self) -> Result<Vec<ProviderRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, endpoint, capabilities, created_by, created_at, retired_at
+             FROM ai_providers WHERE retired_at IS NULL ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], map_provider)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn get_provider(&self, id: &ProviderId) -> Result<Option<ProviderRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, kind, endpoint, capabilities, created_by, created_at, retired_at
+                 FROM ai_providers WHERE id = ?1",
+                params![id.as_str()],
+                map_provider,
+            )
+            .optional()
+            .map_err(StorageError::from)
     }
 
     pub fn get_model(&self, id: &ModelId) -> Result<Option<ModelRecord>> {
@@ -1063,6 +1345,26 @@ where
     })
 }
 
+fn map_provider(row: &Row<'_>) -> rusqlite::Result<ProviderRecord> {
+    let endpoint: Option<String> = row.get(3)?;
+    let capabilities_json: String = row.get(4)?;
+    let capabilities: Vec<String> = serde_json::from_str(&capabilities_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+    })?;
+    let created_at: i64 = row.get(6)?;
+    let retired_at: Option<i64> = row.get(7)?;
+    Ok(ProviderRecord {
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        name: row.get(1)?,
+        kind: row.get(2)?,
+        endpoint,
+        capabilities,
+        created_by: row.get(5)?,
+        created_at: Timestamp::from_millis(created_at),
+        retired_at: retired_at.map(Timestamp::from_millis),
+    })
+}
+
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
     let parent: Option<String> = row.get(3)?;
     let last_active: Option<i64> = row.get(7)?;
@@ -1261,6 +1563,110 @@ mod tests {
     }
 
     #[test]
+    fn profile_create_replays_and_rejects_name_conflicts() {
+        let mut store = migrated_store();
+        let first = store
+            .create_profile(
+                &ProfileId::from_raw("profile-static"),
+                "expert",
+                "uid:1000",
+                "capability_tier = 'advanced'\n",
+                "{}",
+                Some(MutationOperation {
+                    actor: "uid:1000",
+                    command: "profile.create",
+                    operation_id: "op-profile-1",
+                    request_payload: "static",
+                    response_payload: "{\"id\":\"profile-static\",\"version\":1}",
+                }),
+                &[],
+            )
+            .unwrap();
+        let replay = store
+            .create_profile(
+                &ProfileId::from_raw("profile-static-replay-must-not-insert"),
+                "expert",
+                "uid:1000",
+                "capability_tier = 'advanced'\n",
+                "{}",
+                Some(MutationOperation {
+                    actor: "uid:1000",
+                    command: "profile.create",
+                    operation_id: "op-profile-1",
+                    request_payload: "static",
+                    response_payload: "static",
+                }),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(first, replay);
+        assert!(replay.contains("profile-static"));
+        let duplicate = store.create_profile(
+            &ProfileId::new(),
+            "expert",
+            "uid:1000",
+            "fallback = 'queue'\n",
+            "{}",
+            None,
+            &[],
+        );
+        assert!(duplicate.unwrap_err().is_unique_violation());
+    }
+
+    #[test]
+    fn profile_versions_are_append_only_and_rename_is_typed() {
+        let mut store = migrated_store();
+        let id = ProfileId::new();
+        store
+            .create_profile(
+                &id,
+                "base",
+                "uid:1000",
+                "fallback = 'ask'\n",
+                "{}",
+                None,
+                &[],
+            )
+            .unwrap();
+        let v2 = store
+            .append_profile_version(&id, "fallback = 'queue'\n", "{}", "uid:1000", &[])
+            .unwrap();
+        assert_eq!(v2, 2);
+        let (latest, latest_toml, _) = store.profile_latest(&id).unwrap().unwrap();
+        assert_eq!(latest, 2);
+        assert!(latest_toml.contains("queue"));
+        store.rename_profile(&id, "renamed", "uid:1000").unwrap();
+        let (name, _, _) = store.profile_row(&id).unwrap().unwrap();
+        assert_eq!(name, "renamed");
+        let missing = store.rename_profile(&ProfileId::from_raw("profile-none"), "x", "uid:1000");
+        assert!(matches!(missing, Err(StorageError::NotFound(_))));
+        let (by_name_id, _, _) = store.profile_by_name("renamed").unwrap().unwrap();
+        assert_eq!(by_name_id, id);
+        assert_eq!(store.list_profiles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn provider_registration_is_portfolio_only() {
+        let mut store = migrated_store();
+        store
+            .register_provider(
+                &ProviderId::new(),
+                "local-echo",
+                "local-unix",
+                None,
+                &["text".to_owned()],
+                "uid:1000",
+                None,
+                &[],
+            )
+            .unwrap();
+        let rows = store.list_providers().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].endpoint.is_none());
+        assert_eq!(rows[0].capabilities, vec!["text".to_owned()]);
+    }
+
+    #[test]
     fn migration_is_idempotent() {
         let mut store = Store::open_in_memory().expect("open store");
         let first = store.migrate().expect("first migrate");
@@ -1328,12 +1734,13 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 5);
+        assert_eq!(applied.len(), 6);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
         assert_eq!(applied[3].version, 5);
         assert_eq!(applied[4].version, 6);
+        assert_eq!(applied[5].version, 7);
 
         let session = store
             .get_session(&session_id)
