@@ -21,6 +21,23 @@ import uuid
 REPLAY_LIMIT = 65536
 REQUEST_LIMIT = 32768
 PR_SET_NO_NEW_PRIVS = 38
+MANAGEMENT_PATTERN = re.compile(r"management(?:-[0-9a-f]{32})?\Z")
+MANAGEMENT_ENV = "FLOWERLY_PTY_CGROUP_MANAGEMENT"
+
+
+def management_name():
+    """Trusted management cgroup identity, validated fail-closed.
+
+    The daemon names its own management group `management-<uuid>`; the
+    acceptance default is the plain `management` group. Traversal or
+    foreign prefixes must never become a probe target.
+    """
+    chosen = os.environ.get(MANAGEMENT_ENV)
+    if chosen is None:
+        return "management"
+    if not MANAGEMENT_PATTERN.fullmatch(chosen):
+        raise ValueError("invalid supervised management cgroup identity")
+    return chosen
 
 
 def shell_credentials():
@@ -73,9 +90,10 @@ def drop_to_shell(credentials):
 
 def verify_shell_migration_boundary(credentials, root_fd):
     """Kernel open probe with shell credentials, no writes or PID migration."""
+    management = management_name()
     targets = (("cgroup.procs", root_fd),)
     management_fd = os.open(
-        "management", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        management, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
         dir_fd=root_fd,
     )
     try:
@@ -183,7 +201,7 @@ class SessionCgroup:
 
         try:
             management_fd = os.open(
-                "management",
+                management_name(),
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=self.parent_fd,
             )

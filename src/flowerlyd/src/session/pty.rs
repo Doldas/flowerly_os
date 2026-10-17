@@ -18,6 +18,9 @@ use flowerly_core::{coded_error_envelope, ok_envelope};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+#[cfg(target_os = "linux")]
+use super::DelegatedCgroupRoot;
+
 type Failure = (ErrorCode, String);
 
 fn invalid(message: impl Into<String>) -> Failure {
@@ -86,13 +89,13 @@ const WRITER_LEASE: Duration = Duration::from_secs(60);
 
 pub struct Supervisor {
     runtime: PathBuf,
-    cgroup_root: Result<Option<PathBuf>, String>,
+    cgroup_root: Result<Option<DelegatedCgroupRoot>, String>,
     launch: Mutex<()>,
     sessions: Mutex<HashMap<String, Guardian>>,
 }
 
 impl Supervisor {
-    pub fn new(runtime: PathBuf, cgroup_root: Result<Option<PathBuf>, String>) -> Self {
+    pub fn new(runtime: PathBuf, cgroup_root: Result<Option<DelegatedCgroupRoot>, String>) -> Self {
         Self {
             runtime,
             cgroup_root,
@@ -324,7 +327,8 @@ impl Supervisor {
             Ok(Some(root)) => {
                 command
                     .env("FLOWERLY_PTY_ISOLATION", "required")
-                    .env("FLOWERLY_PTY_CGROUP_ROOT", root);
+                    .env("FLOWERLY_PTY_CGROUP_ROOT", &root.path)
+                    .env("FLOWERLY_PTY_CGROUP_MANAGEMENT", &root.management);
             }
             Ok(None) => {
                 command
