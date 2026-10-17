@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use super::{
     AgentId, ArtifactId, ExecutionId, ExperimentId, FlowId, GenerationId, GoalId, ModelId,
-    ObjectRef, SessionId, Timestamp,
+    ObjectRef, ProfileId, ProviderId, SessionId, Timestamp, UsageId, WorkloadId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -468,6 +468,134 @@ impl ModelRecord {
     }
 }
 
+/// An admitted inference provider registration. Only capability labels live
+/// here: no credentials, no grants and no remote endpoints until egress
+/// policy authorization exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRecord {
+    pub id: ProviderId,
+
+    pub name: String,
+
+    pub kind: String,
+
+    pub endpoint: Option<String>,
+
+    pub capabilities: Vec<String>,
+
+    pub created_by: String,
+
+    pub created_at: Timestamp,
+
+    pub retired_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WorkloadState {
+    Queued,
+
+    Admitted,
+
+    Refused,
+
+    Stopped,
+
+    Completed,
+}
+
+impl WorkloadState {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "QUEUED",
+            Self::Admitted => "ADMITTED",
+            Self::Refused => "REFUSED",
+            Self::Stopped => "STOPPED",
+            Self::Completed => "COMPLETED",
+        }
+    }
+}
+
+impl FromStr for WorkloadState {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "QUEUED" => Ok(Self::Queued),
+            "ADMITTED" => Ok(Self::Admitted),
+            "REFUSED" => Ok(Self::Refused),
+            "STOPPED" => Ok(Self::Stopped),
+            "COMPLETED" => Ok(Self::Completed),
+            other => Err(StateParseError::Workload(other.to_owned())),
+        }
+    }
+}
+
+impl fmt::Display for WorkloadState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One admission-decision ledger row, snapshotting the effective ceilings
+/// applied at submit time. `reason` always explains the decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkloadRecord {
+    pub id: WorkloadId,
+
+    pub profile_id: ProfileId,
+
+    pub profile_name: String,
+
+    pub model_id: ModelId,
+
+    pub background: crate::profile::BackgroundActivity,
+
+    pub priority: i32,
+
+    pub state: WorkloadState,
+
+    pub reason: String,
+
+    pub ceilings: serde_json::Value,
+
+    pub created_by: String,
+
+    pub created_at: Timestamp,
+
+    pub admitted_at: Option<Timestamp>,
+
+    pub stopped_at: Option<Timestamp>,
+
+    pub completed_at: Option<Timestamp>,
+
+    pub operation_id: Option<String>,
+}
+
+/// One usage-ledger entry (tokens/latency/cost). Credentials never appear;
+/// the provider attribution is a label for the later provider boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageRecord {
+    pub id: UsageId,
+
+    pub workload_id: WorkloadId,
+
+    pub model_id: ModelId,
+
+    pub tokens_in: u64,
+
+    pub tokens_out: u64,
+
+    pub latency_ms: u64,
+
+    pub cost_micros: u64,
+
+    pub created_by: String,
+
+    pub created_at: Timestamp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvenanceEdge {
     pub from: ObjectRef,
@@ -572,6 +700,9 @@ pub enum StateParseError {
 
     #[error("invalid model backend: `{0}`")]
     Backend(String),
+
+    #[error("invalid workload state: `{0}`")]
+    Workload(String),
 
     #[error("invalid provenance relation: `{0}`")]
     ProvenanceRelation(String),

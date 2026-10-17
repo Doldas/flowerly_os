@@ -18,7 +18,7 @@ use flowerly_core::types::{
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-type SharedStore = Arc<std::sync::Mutex<Store>>;
+pub(crate) type SharedStore = Arc<std::sync::Mutex<Store>>;
 
 pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
@@ -39,8 +39,14 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelop
     ok_envelope(request.id.clone(), data)
 }
 
+mod admission;
+mod inference;
+mod profiles;
+
+pub(crate) use inference::init_runtime_dir;
+
 #[derive(Debug)]
-struct CommandFailure {
+pub(crate) struct CommandFailure {
     code: ErrorCode,
     message: String,
 }
@@ -74,7 +80,7 @@ impl From<&str> for CommandFailure {
     }
 }
 
-type CommandResult = Result<Value, CommandFailure>;
+pub(crate) type CommandResult = Result<Value, CommandFailure>;
 
 fn parse_u64(args: &Value, field: &str) -> Result<Option<u64>, CommandFailure> {
     let Some(value) = args.get(field) else {
@@ -225,9 +231,21 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> CommandResult {
     match name {
         "model.register" => validate_registration(args)?,
         "model.list" | "model.show" | "model.retire" | "device.budget" | "model.compatibility" => {}
-        other => {
+        _ => {
+            if name.starts_with("profile.") {
+                return profiles::run_profile(store, name, args);
+            }
+            if name.starts_with("provider.") {
+                return profiles::run_provider(store, name, args);
+            }
+            if name.starts_with("workload.") || name.starts_with("usage.") {
+                return admission::run(store, name, args);
+            }
+            if name.starts_with("inference.") {
+                return inference::run_inference(store, name, args);
+            }
             return Err(CommandFailure::invalid(format!(
-                "compute: unknown command `{other}`"
+                "compute: unknown command `{name}`"
             )));
         }
     }
@@ -289,7 +307,7 @@ fn parse_model_id(args: &Value) -> Result<ModelId, CommandFailure> {
         .map_err(|error| CommandFailure::invalid(format!("invalid model id: {error}")))
 }
 
-fn actor_from(args: &Value) -> String {
+pub(crate) fn actor_from(args: &Value) -> String {
     args.get("created_by")
         .and_then(Value::as_str)
         .unwrap_or("user")
@@ -552,6 +570,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
     if budget.total_memory_bytes.is_none() && budget.meminfo_source_available {
         anyhow::bail!("meminfo claims availability without parseable memory totals");
     }
+    admission::self_probe().map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

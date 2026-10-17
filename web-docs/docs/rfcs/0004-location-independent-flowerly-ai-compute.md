@@ -1,6 +1,6 @@
 # RFC 0004: Location-independent Flowerly and AI compute profiles
 
-Status: **Proposed vision / architecture exploration, NOT an accepted ADR or implemented capability**  
+Status: **Proposed vision / architecture exploration; partial local prototype implemented under ADR-0020 — see the implementation-status addendum at the bottom. NOT an accepted capability and no release commitment**  
 Date: 2026-10-13  
 Scope: post-0.0.4 architecture; do not bypass active runtime, identity, security or release gates
 
@@ -93,3 +93,43 @@ Test at minimum: local-only no-provider operation; hardware model incompatibilit
 - How do organizational policies remain inspectable and user agency remain meaningful?
 
 This RFC documents the **user's proposed direction**, not a delivered feature, committed commercial strategy or approved technical decision.
+
+## Implementation status addendum (2026-10-17)
+
+Three prototype tranches exist under the direction of this RFC, gated by
+[ADR-0020](../adr/0020-ai-compute-layer-is-a-module.md) (accepted): the AI
+compute layer lives inside flowerlyd as modules until enforcement evidence
+exists. They implement the **local** sub-tranche of interface 2 (provider
+registry boundary), interface 3 (catalog/compatibility) and part of
+interface 4 (admission bookkeeping):
+
+- **Tranche 1 — model catalog + measured device budget:** `models`
+  (migration 0006), metric-honest compatibility verdicts
+  (`UNKNOWN` with reasons instead of estimates), `/proc/meminfo`-only
+  numbers, per-process VRAM explicitly `not-enforced`
+  ([compute-catalog](../compute-catalog.md)).
+- **Tranche 2 — expert profiles + provider registry:** credential-free
+  TOML profiles, append-only versions, depth-bounded acyclic inheritance
+  with only-tightening locality; providers restricted to `local-unix`,
+  remote kinds refused `PermissionDenied` because no egress policy
+  authorization exists ([compute-profiles](../compute-profiles.md)).
+- **Tranche 3 — workload admission + usage ledger:** fail-closed admission
+  against measured evidence and effective ceilings (GPU backends refused
+  this tranche; missing evidence refused), PSI pressure guard, queueing
+  per `concurrency_max`, durable decision/ceiling/reason snapshots and a
+  token/latency/cost ledger ([compute-scheduling](../compute-scheduling.md)).
+- **Tranche 4 — reference provider execution contract:** a fault-isolated
+  `providerd` process (ADR-0021) with bounded synthetic echo generation,
+  capability discovery, ADMITTED-only execution through flowerlyd,
+  operation_id replay on the ledger row, and profile-fallback outage
+  semantics (`ask`/`queue`/`fail` with explicit consent; `downgrade`
+  refused) ([compute-inference](../compute-inference.md)).
+
+What remains **gated and NOT implemented**: any execution of inference,
+cgroup/GPU-enforced resource controls for inference, remote provider
+policy authorization, the runtime-facing client protocol / multi-device
+reattach, remote runtime & fleet management, organization policy
+hierarchy, and every enterprise deployment shape. The RFC's own decision
+gates and issue #64 constraints remain: no release-number commitment, no
+claims of delivered capability, security and action authority enforced by
+OS mechanisms rather than model or profile selection.

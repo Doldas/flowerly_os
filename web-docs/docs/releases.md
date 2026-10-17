@@ -118,6 +118,34 @@ a separate operation from the **merge-commit reconciliation into release/2**.
 Future promotions should also account for the master's new squash/rebase
 commit in the next release branch to avoid reintroducing diverging history.
 
+### Model-catalog ancestry reconciliation for PR #140 (2026-10-17)
+
+After the preceding release promotion (#137), `master` at
+`3fe7f4917ecd16a6f3bc1c6bc52705f4b67275e6` already includes the first
+local-model-catalog tranche (#136). Meanwhile `release/2` at
+`7d5ea00bfa1e6951ddd381829c8b19c7ba82eae1` independently contains
+that same catalog, plus expert AI profiles, workload admission and usage
+accounting, and the fault-isolated synthetic inference provider (tranches
+2–4). The common ancestor predates the catalog on both paths. Git therefore
+reports overlapping edits and add/add conflicts for the draft promotion
+PR #140 even though the release branch supersets the catalog behavior.
+
+Resolve the ancestry *through a separate PR into `release/2`*, without
+pushing to either protected branch. Its reconciliation commit must have
+the above `release/2` SHA as its **first parent**, the above `master` SHA
+as its **second parent**, and a resolved tree that retains every
+`release/2` runtime, schema, test, CI and documentation change. This note
+is the only additional file change. Do not replace the later compute
+features with the older `master` versions.
+
+**Merge that reconciliation PR using "Create a merge commit" only.**
+Squash/rebase discards the `master` ancestry; #117 demonstrates the
+failure mode. Confirm afterwards that `git merge-base --is-ancestor
+origin/master origin/release/2` succeeds, then re-check #140. Treat
+the new exact `release/2` SHA as *unverified* until release-branch push
+CI, the executed real Arch VM step, security and CodeQL pass. Keep
+PR #140 in draft until explicit maintainer approval; never auto-merge it.
+
 ### One-time automation setup
 
 A repository maintainer must configure the GitHub Actions secret

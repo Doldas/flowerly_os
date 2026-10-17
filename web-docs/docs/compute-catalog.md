@@ -57,3 +57,5 @@ replay conflict → `Conflict`; SQLite busy → `Unavailable`.
   judgments.
 - No inference execution happens in this module: the catalog describes
   candidates; scheduling is a separate, later gated tranche.
+
+Continue with [expert profiles and the provider registry](compute-profiles.md).

@@ -104,6 +104,10 @@ typed_id!(DecisionId, "decision");
 typed_id!(ArtifactId, "artifact");
 typed_id!(ProjectId, "project");
 typed_id!(ModelId, "model");
+typed_id!(ProfileId, "profile");
+typed_id!(ProviderId, "provider");
+typed_id!(WorkloadId, "work");
+typed_id!(UsageId, "usage");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -167,6 +171,9 @@ pub enum ObjectRef {
     Artifact(ArtifactId),
     Project(ProjectId),
     Model(ModelId),
+    Profile(ProfileId),
+    Provider(ProviderId),
+    Workload(WorkloadId),
     Actor(String),
 }
 
@@ -200,6 +207,9 @@ impl ObjectRef {
             Self::Artifact(id) => id.as_str(),
             Self::Project(id) => id.as_str(),
             Self::Model(id) => id.as_str(),
+            Self::Profile(id) => id.as_str(),
+            Self::Provider(id) => id.as_str(),
+            Self::Workload(id) => id.as_str(),
             Self::Actor(actor) => actor.as_str(),
         }
     }
@@ -245,6 +255,10 @@ impl FromStr for ObjectRef {
         parse_variant!("artifact", ArtifactId, Artifact);
         parse_variant!("project", ProjectId, Project);
         parse_variant!("model", ModelId, Model);
+        parse_variant!("profile", ProfileId, Profile);
+        parse_variant!("provider", ProviderId, Provider);
+        parse_variant!("work", WorkloadId, Workload);
+        parse_variant!("work", WorkloadId, Workload);
 
         Err(ObjectRefParseError::Invalid(s.to_owned()))
     }
@@ -299,6 +313,9 @@ object_ref_from_id!(DecisionId, Decision);
 object_ref_from_id!(ArtifactId, Artifact);
 object_ref_from_id!(ProjectId, Project);
 object_ref_from_id!(ModelId, Model);
+object_ref_from_id!(ProfileId, Profile);
+object_ref_from_id!(ProviderId, Provider);
+object_ref_from_id!(WorkloadId, Workload);
 
 #[cfg(test)]
 mod tests {

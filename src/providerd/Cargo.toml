@@ -1,0 +1,19 @@
+[package]
+name = "providerd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Flowerly OS reference local inference provider (fault-isolated, fail-closed, no egress)"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+flowerly-core = { workspace = true }
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+uuid.workspace = true
