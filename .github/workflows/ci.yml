@@ -83,6 +83,9 @@ jobs:
       - name: Session daemon remains available without PTY cgroup delegation
         run: python3 ./scripts/test-sessiond-pty-unavailable.py target/release
 
+      - name: Local model catalog honest evidence and replay contract
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-catalog.py target/release
+
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh

@@ -15,6 +15,8 @@ mod agentic;
 #[allow(dead_code)]
 mod capability;
 #[allow(dead_code)]
+mod compute;
+#[allow(dead_code)]
 mod flow;
 #[allow(dead_code)]
 mod generation;
@@ -96,6 +98,7 @@ struct Router {
     flow: Queue,
     generation: Queue,
     provenance: Queue,
+    compute: Queue,
 }
 
 impl Router {
@@ -115,6 +118,7 @@ impl Router {
             Some("session") => self.session.handle(&self.store, request),
             Some("execution") | Some("agent") => agentic::handle_command(&self.store, request),
             Some("capability") => capability::handle_command(request),
+            Some("model") | Some("device") => via_queue(&self.compute, request),
             _ => coded_error_envelope(
                 request.id.clone(),
                 ErrorCode::InvalidArgument,
@@ -129,6 +133,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.self_test {
         agentic::self_test().await?;
+        compute::self_test().await?;
         flow::self_test().await?;
         goal::self_test().await?;
         generation::self_test().await?;
@@ -159,6 +164,7 @@ async fn main() -> Result<()> {
         flow: spawn_worker(&store, flow::handle_command),
         generation: spawn_worker(&store, generation::handle_command),
         provenance: spawn_worker(&store, provenance::handle_command),
+        compute: spawn_worker(&store, compute::handle_command),
         store: Arc::clone(&store),
         session,
     });
@@ -166,7 +172,7 @@ async fn main() -> Result<()> {
     let status = Arc::new(move || match status_store.try_lock() {
         Ok(db) => serde_json::json!({
             "ready": true,
-            "modules": ["capability","flow","goal","session","generation","provenance","execution"],
+            "modules": ["capability","compute","flow","goal","session","generation","provenance","execution"],
             "flow_count": db.list_flows().map(|rows| rows.len()).ok(),
             "default_flow": "General",
             "goal_count": db.list_goals().map(|rows| rows.len()).ok()
