@@ -118,6 +118,12 @@ interface 4 (admission bookkeeping):
   this tranche; missing evidence refused), PSI pressure guard, queueing
   per `concurrency_max`, durable decision/ceiling/reason snapshots and a
   token/latency/cost ledger ([compute-scheduling](../compute-scheduling.md)).
+- **Tranche 4 — reference provider execution contract:** a fault-isolated
+  `providerd` process (ADR-0021) with bounded synthetic echo generation,
+  capability discovery, ADMITTED-only execution through flowerlyd,
+  operation_id replay on the ledger row, and profile-fallback outage
+  semantics (`ask`/`queue`/`fail` with explicit consent; `downgrade`
+  refused) ([compute-inference](../compute-inference.md)).
 
 What remains **gated and NOT implemented**: any execution of inference,
 cgroup/GPU-enforced resource controls for inference, remote provider

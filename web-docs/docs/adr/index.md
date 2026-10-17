@@ -21,6 +21,7 @@ and the reasoning behind them.
 14. [Linux authority is the enforcement substrate](0014-linux-authority-is-the-enforcement-substrate.md)
 15. [Arch Linux as the initial userspace substrate](0015-arch-linux-userspace-substrate.md)
 16. [AI compute layer is a flowerlyd module until enforcement evidence exists](0020-ai-compute-layer-is-a-module.md)
+17. [Reference inference provider runs as a fault-isolated process](0021-provider-fault-isolation.md)
 
 ## Proposed decisions under review
 

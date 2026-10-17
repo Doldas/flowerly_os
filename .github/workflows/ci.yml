@@ -92,6 +92,9 @@ jobs:
       - name: Workload admission honesty and usage ledger durability
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-scheduling.py target/release
 
+      - name: Reference provider execution, outage consent and replay safety
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-inference.py target/release
+
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh

@@ -40,7 +40,10 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelop
 }
 
 mod admission;
+mod inference;
 mod profiles;
+
+pub(crate) use inference::init_runtime_dir;
 
 #[derive(Debug)]
 pub(crate) struct CommandFailure {
@@ -237,6 +240,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> CommandResult {
             }
             if name.starts_with("workload.") || name.starts_with("usage.") {
                 return admission::run(store, name, args);
+            }
+            if name.starts_with("inference.") {
+                return inference::run_inference(store, name, args);
             }
             return Err(CommandFailure::invalid(format!(
                 "compute: unknown command `{name}`"
