@@ -3,8 +3,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use super::{
-    AgentId, ArtifactId, ExecutionId, ExperimentId, FlowId, GenerationId, GoalId, ObjectRef,
-    SessionId, Timestamp,
+    AgentId, ArtifactId, ExecutionId, ExperimentId, FlowId, GenerationId, GoalId, ModelId,
+    ObjectRef, SessionId, Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -356,6 +356,118 @@ pub struct Generation {
     pub created_at: Timestamp,
 }
 
+/// Execution substrate a model was actually measured on. Honest labeling:
+/// `Unknown` must never be presented as a supported backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ModelBackend {
+    Cpu,
+
+    Cuda,
+
+    Vulkan,
+
+    Rocm,
+
+    Npu,
+
+    Unknown,
+}
+
+impl ModelBackend {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Cuda => "CUDA",
+            Self::Vulkan => "VULKAN",
+            Self::Rocm => "ROCM",
+            Self::Npu => "NPU",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+impl fmt::Display for ModelBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ModelBackend {
+    type Err = StateParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "CPU" => Ok(Self::Cpu),
+            "CUDA" => Ok(Self::Cuda),
+            "VULKAN" => Ok(Self::Vulkan),
+            "ROCM" => Ok(Self::Rocm),
+            "NPU" => Ok(Self::Npu),
+            "UNKNOWN" => Ok(Self::Unknown),
+            other => Err(StateParseError::Backend(other.to_owned())),
+        }
+    }
+}
+
+/// A durable, de-duplicated model registry row. Every numeric claim must come
+/// from a measured or explicitly recorded source; the catalog stores evidence
+/// labels, not predictions. Retiring keeps provenance and history intact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRecord {
+    pub id: ModelId,
+
+    pub name: String,
+
+    pub family: Option<String>,
+
+    pub architecture: Option<String>,
+
+    pub backend: ModelBackend,
+
+    pub context_tokens: Option<u64>,
+
+    pub measured_memory_bytes: Option<u64>,
+
+    pub modalities: Vec<String>,
+
+    pub license: Option<String>,
+
+    pub evidence: Option<String>,
+
+    pub created_by: String,
+
+    pub created_at: Timestamp,
+
+    pub retired_at: Option<Timestamp>,
+}
+
+impl ModelRecord {
+    #[must_use]
+    pub fn new(name: impl Into<String>, created_by: impl Into<String>) -> Self {
+        Self {
+            id: ModelId::new(),
+            name: name.into(),
+            family: None,
+            architecture: None,
+            backend: ModelBackend::Unknown,
+            context_tokens: None,
+            measured_memory_bytes: None,
+            modalities: Vec::new(),
+            license: None,
+            evidence: None,
+            created_by: created_by.into(),
+            created_at: Timestamp::now(),
+            retired_at: None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.retired_at.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvenanceEdge {
     pub from: ObjectRef,
@@ -457,6 +569,9 @@ pub enum StateParseError {
 
     #[error("invalid generation status: `{0}`")]
     Generation(String),
+
+    #[error("invalid model backend: `{0}`")]
+    Backend(String),
 
     #[error("invalid provenance relation: `{0}`")]
     ProvenanceRelation(String),
