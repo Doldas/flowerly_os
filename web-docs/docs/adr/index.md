@@ -20,6 +20,7 @@ and the reasoning behind them.
 13. [Process boundaries require justification](0013-process-boundaries-require-justification.md)
 14. [Linux authority is the enforcement substrate](0014-linux-authority-is-the-enforcement-substrate.md)
 15. [Arch Linux as the initial userspace substrate](0015-arch-linux-userspace-substrate.md)
+16. [AI compute layer is a flowerlyd module until enforcement evidence exists](0020-ai-compute-layer-is-a-module.md)
 
 ## Proposed decisions under review
 

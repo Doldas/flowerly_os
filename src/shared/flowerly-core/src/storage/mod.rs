@@ -9,7 +9,7 @@ use crate::types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
     GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProfileId,
     ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
-    SessionState, Timestamp,
+    SessionState, Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -109,6 +109,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "profiles_providers",
         sql: include_str!("../../migrations/0007_profiles_providers.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "workloads_usage",
+        sql: include_str!("../../migrations/0008_workloads_usage.sql"),
     },
 ];
 
@@ -732,6 +737,208 @@ impl Store {
             .map_err(StorageError::from)
     }
 
+    /// Record one admission decision in an immediate transaction together
+    /// with its provenance edge.
+    pub fn insert_workload(
+        &mut self,
+        workload: &WorkloadRecord,
+        edges: &[ProvenanceEdge],
+        operation: Option<MutationOperation<'_>>,
+    ) -> Result<String> {
+        let write = |conn: &Connection| -> Result<()> {
+            conn.execute(
+                "INSERT INTO inference_workloads
+                     (id, profile_id, profile_name, model_id, background, priority,
+                      state, reason, ceilings, created_by, created_at,
+                      admitted_at, stopped_at, completed_at, operation_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    workload.id.as_str(),
+                    workload.profile_id.as_str(),
+                    workload.profile_name,
+                    workload.model_id.as_str(),
+                    workload.background.as_str(),
+                    workload.priority,
+                    workload.state.to_string(),
+                    workload.reason,
+                    serde_json::to_string(&workload.ceilings)?,
+                    workload.created_by,
+                    workload.created_at.as_millis(),
+                    workload.admitted_at.map(|t| t.as_millis()),
+                    workload.stopped_at.map(|t| t.as_millis()),
+                    workload.completed_at.map(|t| t.as_millis()),
+                    workload.operation_id,
+                ],
+            )?;
+            for edge in edges {
+                insert_provenance_row(conn, edge)?;
+            }
+            Ok(())
+        };
+        match operation {
+            Some(operation) => self.insert_once(&operation, write),
+            None => {
+                let tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                write(&tx)?;
+                tx.commit()?;
+                Ok(String::new())
+            }
+        }
+    }
+
+    /// Count admission over all started (queued+admitted) workloads of a
+    /// profile for the concurrency ceiling check; owner = caller-relevant
+    /// filter by `created_by` when Some("")
+    pub fn count_active_workloads_for_profile(
+        &self,
+        id: &ProfileId,
+        created_by: Option<&str>,
+    ) -> Result<u32> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM inference_workloads
+             WHERE profile_id = ?1
+               AND state IN ('QUEUED', 'ADMITTED')
+               AND (?2 IS NULL OR created_by = ?2)",
+                params![id.as_str(), created_by],
+                |row| row.get(0),
+            )
+            .map_err(StorageError::from)
+    }
+
+    pub fn get_workload(&self, id: &WorkloadId) -> Result<Option<WorkloadRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, profile_id, profile_name, model_id, background, priority,
+                        state, reason, ceilings, created_by, created_at,
+                        admitted_at, stopped_at, completed_at, operation_id
+                 FROM inference_workloads WHERE id = ?1",
+                params![id.as_str()],
+                map_workload,
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    pub fn list_workloads(&self, created_by: Option<&str>) -> Result<Vec<WorkloadRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, profile_id, profile_name, model_id, background, priority,
+                    state, reason, ceilings, created_by, created_at,
+                    admitted_at, stopped_at, completed_at, operation_id
+             FROM inference_workloads
+             WHERE (?1 IS NULL OR created_by = ?1)
+             ORDER BY priority DESC, created_at",
+        )?;
+        let rows = stmt.query_map(params![created_by], map_workload)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Stop or complete a workload. The target state must be a terminal
+    /// transition from QUEUED or ADMITTED; anything else is a typed conflict.
+    pub fn transition_workload(
+        &mut self,
+        id: &WorkloadId,
+        target: WorkloadState,
+        edges: &[ProvenanceEdge],
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = Timestamp::now().as_millis();
+        let column = match target {
+            WorkloadState::Stopped => "stopped_at",
+            WorkloadState::Completed => "completed_at",
+            other => {
+                return Err(StorageError::InvalidOperation(format!(
+                    "invalid terminal workload transition to {other}"
+                )));
+            }
+        };
+        let changed = tx.execute(
+            &format!(
+                "UPDATE inference_workloads
+                 SET state = ?2, {column} = ?3
+                 WHERE id = ?1 AND state IN ('QUEUED', 'ADMITTED')"
+            ),
+            params![id.as_str(), target.to_string(), now],
+        )?;
+        if changed == 0 {
+            let exists: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM inference_workloads WHERE id = ?1",
+                    params![id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            tx.commit()?;
+            return match exists {
+                None => Err(StorageError::NotFound(format!("workload not found: {id}"))),
+                Some(_) => Err(StorageError::OperationConflict(format!(
+                    "workload {id} is not running for a {target} transition"
+                ))),
+            };
+        }
+        for edge in edges {
+            insert_provenance_row(&tx, edge)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record one usage ledger entry; the workload must exist.
+    pub fn insert_usage(&mut self, usage: &UsageRecord) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if load_workload_state(&tx, &usage.workload_id)?.is_none() {
+            return Err(StorageError::NotFound(format!(
+                "workload not found: {}",
+                usage.workload_id
+            )));
+        }
+        tx.execute(
+            "INSERT INTO inference_usage
+                 (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
+                  cost_micros, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                usage.id.as_str(),
+                usage.workload_id.as_str(),
+                usage.model_id.as_str(),
+                usage.tokens_in as i64,
+                usage.tokens_out as i64,
+                usage.latency_ms as i64,
+                usage.cost_micros as i64,
+                usage.created_by,
+                usage.created_at.as_millis(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Aggregate usage per model plus the caller-provided ceilings, so the
+    /// budget view can compare totals with profile ceilings honestly.
+    pub fn usage_totals_per_model(&self, model_id: &ModelId) -> Result<(u64, u64, u64)> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0),
+                    COALESCE(SUM(cost_micros), 0)
+             FROM inference_usage WHERE model_id = ?1",
+                params![model_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as u64,
+                        row.get::<_, i64>(1)? as u64,
+                        row.get::<_, i64>(2)? as u64,
+                    ))
+                },
+            )
+            .map_err(StorageError::from)
+    }
+
     pub fn get_model(&self, id: &ModelId) -> Result<Option<ModelRecord>> {
         self.conn
             .query_row(
@@ -1335,6 +1542,60 @@ fn map_model(row: &Row<'_>) -> rusqlite::Result<ModelRecord> {
     })
 }
 
+fn map_workload(row: &Row<'_>) -> rusqlite::Result<WorkloadRecord> {
+    let ceilings: String = row.get(8)?;
+    let ceilings = serde_json::from_str(&ceilings).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(8, Type::Text, Box::new(error))
+    })?;
+    let background: String = row.get(4)?;
+    let state: String = row.get(6)?;
+    let created_at: i64 = row.get(10)?;
+    let admitted_at: Option<i64> = row.get(11)?;
+    let stopped_at: Option<i64> = row.get(12)?;
+    let completed_at: Option<i64> = row.get(13)?;
+    Ok(WorkloadRecord {
+        id: parse_text(row.get::<_, String>(0)?, 0)?,
+        profile_id: parse_text(row.get::<_, String>(1)?, 1)?,
+        profile_name: row.get(2)?,
+        model_id: parse_text(row.get::<_, String>(3)?, 3)?,
+        background: parse_workload_background(&background)?,
+        priority: row.get(5)?,
+        state: parse_text(state, 6)?,
+        reason: row.get(7)?,
+        ceilings,
+        created_by: row.get(9)?,
+        created_at: Timestamp::from_millis(created_at),
+        admitted_at: admitted_at.map(Timestamp::from_millis),
+        stopped_at: stopped_at.map(Timestamp::from_millis),
+        completed_at: completed_at.map(Timestamp::from_millis),
+        operation_id: row.get(14)?,
+    })
+}
+
+/// Fetch the raw state string for a workload existence check.
+fn load_workload_state(
+    conn: &Connection,
+    id: &WorkloadId,
+) -> std::result::Result<Option<WorkloadState>, StorageError> {
+    conn.query_row(
+        "SELECT state FROM inference_workloads WHERE id = ?1",
+        params![id.as_str()],
+        |row| parse_text::<WorkloadState>(row.get::<_, String>(0)?, 0),
+    )
+    .optional()
+    .map_err(StorageError::from)
+}
+
+fn parse_workload_background(raw: &str) -> rusqlite::Result<crate::profile::BackgroundActivity> {
+    raw.parse().map_err(|error: String| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            Type::Text,
+            Box::new(StorageError::InvalidOperation(error)),
+        )
+    })
+}
+
 fn parse_text<T>(raw: String, column: usize) -> rusqlite::Result<T>
 where
     T: FromStr,
@@ -1734,13 +1995,14 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 6);
+        assert_eq!(applied.len(), 7);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
         assert_eq!(applied[3].version, 5);
         assert_eq!(applied[4].version, 6);
         assert_eq!(applied[5].version, 7);
+        assert_eq!(applied[6].version, 8);
 
         let session = store
             .get_session(&session_id)
