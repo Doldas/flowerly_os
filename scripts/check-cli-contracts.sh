@@ -73,4 +73,28 @@ for label, value in (("default", default), ("explicit", explicit)):
         raise SystemExit(f"{label} goal objective mismatch: {value}")
 PY
 
-echo "CLI-to-flowerlyd create contract passed with omitted and explicit priority."
+# Gate A: the invalid-priority CLI case must be refused with a machine-
+# readable typed error, never a panic or silent success.
+invalid_json="$("$CTL" --runtime-dir "$RUNTIME_DIR" goal create "Invalid priority" --priority not-a-number 2>&1)" && {
+    echo "invalid priority was accepted: $invalid_json" >&2
+    exit 1
+}
+python3 - "$invalid_json" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+try:
+    payload = json.loads(raw)
+except ValueError:
+    payload = raw
+if isinstance(payload, dict):
+    code = payload.get("code") or (payload.get("data") or {}).get("code")
+    if code != "invalid_argument":
+        raise SystemExit(f"invalid priority not typed invalid_argument: {payload}")
+else:
+    if "invalid" not in str(payload).lower():
+        raise SystemExit(f"invalid priority output lacks typed error: {payload}")
+PY
+
+echo "CLI-to-flowerlyd create contract passed with omitted, explicit and refused invalid priority."

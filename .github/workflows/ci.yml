@@ -95,6 +95,9 @@ jobs:
       - name: Reference provider execution, outage consent and replay safety
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-inference.py target/release
 
+      - name: Compute error-code surface is machine-readable
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-error-codes.py target/release
+
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh

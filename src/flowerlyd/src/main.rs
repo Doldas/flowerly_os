@@ -179,7 +179,19 @@ async fn main() -> Result<()> {
             "modules": ["capability","compute","flow","goal","session","generation","provenance","execution"],
             "flow_count": db.list_flows().map(|rows| rows.len()).ok(),
             "default_flow": "General",
-            "goal_count": db.list_goals().map(|rows| rows.len()).ok()
+            "goal_count": db.list_goals().map(|rows| rows.len()).ok(),
+            "model_count": db.list_models().map(|rows| rows.len()).ok(),
+            "profile_count": db.list_profiles().map(|rows| rows.len()).ok(),
+            "active_workload_count": db
+                .list_workloads(None)
+                .map(|rows| rows.iter().filter(|row| {
+                    row.state == flowerly_core::types::WorkloadState::Queued
+                        || row.state == flowerly_core::types::WorkloadState::Admitted
+                })
+                .count())
+                .ok(),
+            "provider_count": db.list_providers().map(|rows| rows.len()).ok(),
+            "database": "ready"
         }),
         Err(_) => serde_json::json!({"ready": false, "reason": "store busy"}),
     });
