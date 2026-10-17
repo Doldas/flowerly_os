@@ -19,7 +19,13 @@ use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
 #[cfg(target_os = "linux")]
-fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
+pub(crate) struct DelegatedCgroupRoot {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) management: String,
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
     use std::os::unix::fs::MetadataExt;
 
     let isolation =
@@ -51,20 +57,27 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<PathBuf>> {
     if host.dev() != delegated.dev() || !root.join("cgroup.controllers").is_file() {
         anyhow::bail!("PTY supervision requires a real delegated Linux cgroup v2 root");
     }
-    let management = root.join(format!("management-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&management).context("creating PTY supervisor management cgroup")?;
+    let management = format!("management-{}", uuid::Uuid::new_v4().simple());
+    std::fs::create_dir(root.join(&management))
+        .context("creating PTY supervisor management cgroup")?;
     std::fs::write(
-        management.join("cgroup.procs"),
+        root.join(&management).join("cgroup.procs"),
         std::process::id().to_string(),
     )
     .context("moving sessiond into its management cgroup")?;
     std::fs::write(root.join("cgroup.subtree_control"), "+cpu +memory +pids")
         .context("enabling delegated PTY resource controllers")?;
-    Ok(Some(root))
+    Ok(Some(DelegatedCgroupRoot {
+        path: root,
+        management,
+    }))
 }
 
 #[cfg(target_os = "linux")]
-fn terminate_stale_cgroup(id: &SessionId, root: Option<&std::path::Path>) -> anyhow::Result<()> {
+fn terminate_stale_cgroup(
+    id: &SessionId,
+    root: Option<&DelegatedCgroupRoot>,
+) -> anyhow::Result<()> {
     let Some(root) = root else {
         return Ok(());
     };
@@ -74,7 +87,7 @@ fn terminate_stale_cgroup(id: &SessionId, root: Option<&std::path::Path>) -> any
     if identifier.len() != 32 || !identifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         anyhow::bail!("invalid persisted Session cgroup identifier");
     }
-    let location = root.join(format!("pty-{}", id.as_str()));
+    let location = root.path.join(format!("pty-{}", id.as_str()));
     match std::fs::symlink_metadata(&location) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
