@@ -614,7 +614,20 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
             }
             let endpoint = match args.get("endpoint") {
                 None | Some(Value::Null) => None,
-                Some(Value::String(text)) => Some(text.clone()),
+                Some(Value::String(text)) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty()
+                        || trimmed != text
+                        || trimmed.contains('/')
+                        || trimmed.contains('\\')
+                        || trimmed.contains("..")
+                    {
+                        return Err(super::CommandFailure::invalid(
+                            "`endpoint` must be a bare filename inside the runtime directory",
+                        ));
+                    }
+                    Some(text.clone())
+                }
                 Some(other) => {
                     return Err(super::CommandFailure::invalid(format!(
                         "`endpoint` must be a string or null: {other:?}"

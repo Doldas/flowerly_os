@@ -273,3 +273,18 @@ preference/accounting data that grants no OS authority; remote kinds and
 egress remain structurally refused, and the runtime-facing client protocol,
 multi-device reattach and enforcement-grade scheduling stay gated exactly
 as the RFC demands.
+
+
+## 2026-10-17 — RFC 0004 tranche 4: reference provider execution
+
+The local provider execution contract is now prototyped end to end: a
+fault-isolated `providerd` process (ADR-0021) speaks the same authenticated
+local IPC, generates bounded synthetic echo results, and fails closed under
+an injected outage seam. flowerlyd fronts it with ADMITTED-only execution,
+bounded prompts/tokens, runtime-dir-local endpoint enforcement, ledger rows
+with operation_id replay, and profile-fallback outage semantics (ask/queue/
+fail with explicit consent; downgrade refused). The provider cannot grant OS
+authority; the only durable artifact is the bounded ledger row. Black-box
+acceptance covers discovery, replay, outage consent, recovery and restart
+durability. Real model execution, streaming, GPU inference and remote
+providers remain gated exactly as the RFC demands.

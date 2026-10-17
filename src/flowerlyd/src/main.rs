@@ -119,7 +119,9 @@ impl Router {
             Some("execution") | Some("agent") => agentic::handle_command(&self.store, request),
             Some("capability") => capability::handle_command(request),
             Some("model") | Some("device") | Some("profile") | Some("provider")
-            | Some("workload") | Some("usage") => via_queue(&self.compute, request),
+            | Some("workload") | Some("usage") | Some("inference") => {
+                via_queue(&self.compute, request)
+            }
             _ => coded_error_envelope(
                 request.id.clone(),
                 ErrorCode::InvalidArgument,
@@ -159,6 +161,7 @@ async fn main() -> Result<()> {
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
+    compute::init_runtime_dir(config.runtime_dir.clone());
     let store: SharedStore = Arc::new(Mutex::new(db));
     let session = session::SessionRuntime::start(&config, &store)?;
     let router = Arc::new(Router {

@@ -424,6 +424,20 @@ pub async fn call(path: impl AsRef<Path>, payload: Payload) -> Result<Envelope> 
     client.request(payload).await
 }
 
+/// Blocking variant of [`call`] for bounded worker threads inside daemons
+/// that are not inside a Tokio async context. Builds a single-threaded
+/// temporary runtime per call so the IPC deadline guarantees still apply.
+///
+/// # Errors
+/// Returns the IPC framing/deadline error on failure.
+pub fn call_blocking(path: impl AsRef<Path>, payload: Payload) -> Result<Envelope> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(IpcError::Io)?
+        .block_on(call(path, payload))
+}
+
 #[must_use]
 pub fn socket_path(runtime_dir: impl AsRef<Path>, service: &str) -> PathBuf {
     runtime_dir.as_ref().join(format!("{service}.sock"))

@@ -45,6 +45,7 @@ nav:
       - Compute Catalog: compute-catalog.md
       - Compute Profiles: compute-profiles.md
       - Compute Scheduling: compute-scheduling.md
+      - Compute Inference: compute-inference.md
       - User Model: user-model.md
       - Threat Model: threat-model.md
       - Language Policy: language-policy.md

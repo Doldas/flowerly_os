@@ -464,6 +464,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "providerd"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "flowerly-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

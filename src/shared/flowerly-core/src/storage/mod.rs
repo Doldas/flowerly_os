@@ -919,6 +919,42 @@ impl Store {
         Ok(())
     }
 
+    /// Usage ledger write with unknown-outcome replay (#63): the stored
+    /// response JSON is returned on retry of the same operation identity.
+    pub fn insert_usage_once(
+        &mut self,
+        usage: &UsageRecord,
+        operation: MutationOperation<'_>,
+    ) -> Result<String> {
+        let write = |conn: &Connection| -> Result<()> {
+            if load_workload_state(conn, &usage.workload_id)?.is_none() {
+                return Err(StorageError::NotFound(format!(
+                    "workload not found: {}",
+                    usage.workload_id
+                )));
+            }
+            conn.execute(
+                "INSERT INTO inference_usage
+                     (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
+                      cost_micros, created_by, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    usage.id.as_str(),
+                    usage.workload_id.as_str(),
+                    usage.model_id.as_str(),
+                    usage.tokens_in as i64,
+                    usage.tokens_out as i64,
+                    usage.latency_ms as i64,
+                    usage.cost_micros as i64,
+                    usage.created_by,
+                    usage.created_at.as_millis(),
+                ],
+            )?;
+            Ok(())
+        };
+        self.insert_once(&operation, write)
+    }
+
     /// Aggregate usage per model plus the caller-provided ceilings, so the
     /// budget view can compare totals with profile ceilings honestly.
     pub fn usage_totals_per_model(&self, model_id: &ModelId) -> Result<(u64, u64, u64)> {
