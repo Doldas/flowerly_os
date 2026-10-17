@@ -89,6 +89,9 @@ jobs:
       - name: Expert profiles credential-free versioning and fail-closed provider boundary
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-profiles.py target/release
 
+      - name: Workload admission honesty and usage ledger durability
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-scheduling.py target/release
+
 
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh

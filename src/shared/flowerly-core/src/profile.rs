@@ -69,6 +69,19 @@ impl BackgroundActivity {
     }
 }
 
+impl std::str::FromStr for BackgroundActivity {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "quiet" | "QUIET" => Ok(Self::Quiet),
+            "normal" | "NORMAL" => Ok(Self::Normal),
+            "intensive" | "INTENSIVE" => Ok(Self::Intensive),
+            other => Err(format!("unknown background activity `{other}`")),
+        }
+    }
+}
+
 /// Data locality preference. `local` is the default and the only fully
 /// supported value: egress policy authorization does not exist yet, so any
 /// other recorded preference is honest future intent, not an entitlement.

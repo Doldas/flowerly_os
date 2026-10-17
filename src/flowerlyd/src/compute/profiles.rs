@@ -500,7 +500,56 @@ fn resolve_chain(store: &mut Store, args: &Value) -> CommandResult {
             code: ErrorCode::NotFound,
             message: format!("profile not found: {start_id}"),
         })?;
-    let (_, spec_toml, _) = resolve_version_toml_summary(store, &start_id, requested)?;
+    if requested.is_some() {
+        // Pinned-version resolution stops at exactly that version: history
+        // must stay immutable, so parent links follow the stored document.
+        let (_, spec_toml, _) = resolve_version_toml_summary(store, &start_id, requested)?;
+        let spec = validate_toml(&spec_toml)?;
+        spec.validate().map_err(super::CommandFailure::invalid)?;
+        return Ok(serde_json::json!({
+            "id": start_id.as_str(),
+            "name": name,
+            "chain": [name],
+            "pinned_version": requested,
+            "effective": spec_summary(&spec),
+            "promise": "preference-data-only",
+        }));
+    }
+    let (_, spec) = resolve_effective(store, &start_id)?;
+    let mut chain = vec![name.clone()];
+    if let Some(parent) = &spec.base {
+        chain.push(parent.clone());
+    }
+    Ok(serde_json::json!({
+        "id": start_id.as_str(),
+        "name": name,
+        "chain": chain,
+        "effective": spec_summary(&spec),
+        "promise": "preference-data-only",
+    }))
+}
+
+/// Resolve a profile's effective spec across its explicit inheritance
+/// chain (latest versions, depth-bounded, cycle-detecting). Returns the
+/// display name and the effective merged spec.
+pub(crate) fn resolve_effective(
+    store: &Store,
+    id: &ProfileId,
+) -> Result<(String, ProfileSpec), super::CommandFailure> {
+    let (name, _, _) = store
+        .profile_row(id)
+        .map_err(profile_failure)?
+        .ok_or_else(|| super::CommandFailure {
+            code: ErrorCode::NotFound,
+            message: format!("profile not found: {id}"),
+        })?;
+    let (_, spec_toml, _) = store
+        .profile_latest(id)
+        .map_err(profile_failure)?
+        .ok_or_else(|| super::CommandFailure {
+            code: ErrorCode::NotFound,
+            message: format!("profile has no versions: {id}"),
+        })?;
     let mut spec = validate_toml(&spec_toml)?;
     let mut seen = vec![name.clone()];
     let mut base = spec.base.clone();
@@ -537,13 +586,7 @@ fn resolve_chain(store: &mut Store, args: &Value) -> CommandResult {
         spec = spec.resolve_over(&parent);
     }
     spec.validate().map_err(super::CommandFailure::invalid)?;
-    Ok(serde_json::json!({
-        "id": start_id.as_str(),
-        "name": name,
-        "chain": seen,
-        "effective": spec_summary(&spec),
-        "promise": "preference-data-only",
-    }))
+    Ok((name, spec))
 }
 
 const LOCAL_PROVIDER_KIND: &str = "local-unix";

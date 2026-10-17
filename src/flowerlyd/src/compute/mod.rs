@@ -39,6 +39,7 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelop
     ok_envelope(request.id.clone(), data)
 }
 
+mod admission;
 mod profiles;
 
 #[derive(Debug)]
@@ -233,6 +234,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> CommandResult {
             }
             if name.starts_with("provider.") {
                 return profiles::run_provider(store, name, args);
+            }
+            if name.starts_with("workload.") || name.starts_with("usage.") {
+                return admission::run(store, name, args);
             }
             return Err(CommandFailure::invalid(format!(
                 "compute: unknown command `{name}`"
@@ -560,6 +564,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
     if budget.total_memory_bytes.is_none() && budget.meminfo_source_available {
         anyhow::bail!("meminfo claims availability without parseable memory totals");
     }
+    admission::self_probe().map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

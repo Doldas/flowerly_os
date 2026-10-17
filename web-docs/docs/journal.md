@@ -257,3 +257,19 @@ Later release requirements are recorded but intentionally not implemented yet:
 semantics; 0.0.6 consumes that fixture in Evolution World; 0.0.7 focuses on Goal
 execution semantics; 0.0.8 requires authenticated/bounded authority before
 agents; and 0.0.9 becomes the distribution-grade image milestone.
+
+## 2026-10-17 — RFC 0004 local compute tranches 1–3 prototype
+
+Owner approved turning RFC 0004 / issue #64 into implementable prototype
+tranches. Implemented as flowerlyd modules per ADR-0013 and the fresh,
+accepted ADR-0020: the model catalog records only measured evidence
+(migration 0006), expert TOML profiles are credential-free and append-only
+versioned with acyclic depth-bounded inheritance (0007), and workload
+admission + the usage ledger (0008) refuse GPU/accelerator backends and
+unmeasured models fail-closed, gate on PSI memory pressure, and queue per
+concurrency ceilings. All three tranches were written by the agent in one
+Gauntlet session, black-box accepted on the real supervisor, and stay
+preference/accounting data that grants no OS authority; remote kinds and
+egress remain structurally refused, and the runtime-facing client protocol,
+multi-device reattach and enforcement-grade scheduling stay gated exactly
+as the RFC demands.

@@ -64,8 +64,9 @@ version_history|resolve` and `provider.register|list|show`.
 
 ## Honest limitations
 
-- No inference execution, scheduling or cost accrual yet (scheduler is the
-  next gated tranche).
+- Ceiling values are preference data for the
+  [workload admission tranche](compute-scheduling.md); no executor
+  consumes them yet.
 - `profile.resolve` reflects recorded preference data; it does not perform
   feasibility checks against the device budget yet.
 - Registry kinds beyond `local-unix` are intentionally unreachable until

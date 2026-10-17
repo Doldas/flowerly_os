@@ -44,6 +44,7 @@ nav:
       - Capabilities: capabilities.md
       - Compute Catalog: compute-catalog.md
       - Compute Profiles: compute-profiles.md
+      - Compute Scheduling: compute-scheduling.md
       - User Model: user-model.md
       - Threat Model: threat-model.md
       - Language Policy: language-policy.md
