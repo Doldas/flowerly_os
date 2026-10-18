@@ -2,6 +2,7 @@
 
 pub mod repository;
 
+use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -13,6 +14,7 @@ use crate::types::{
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -28,6 +30,12 @@ pub enum StorageError {
 
     #[error("record not found: {0}")]
     NotFound(String),
+
+    #[error("unique constraint violation: {0}")]
+    UniqueViolation(String),
+
+    #[error("foreign key constraint violation: {0}")]
+    ForeignKeyViolation(String),
 
     #[error("operation conflict: {0}")]
     OperationConflict(String),
@@ -45,7 +53,7 @@ impl StorageError {
             self,
             Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::ConstraintViolation
-        )
+        ) || matches!(self, Self::UniqueViolation(_))
     }
 
     /// SQLite writer contention is a transient availability condition, not
@@ -60,6 +68,217 @@ impl StorageError {
                     rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
                 )
         )
+    }
+
+    /// Check if this is a foreign key violation.
+    #[must_use]
+    pub fn is_foreign_key_violation(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation
+                    && error.to_string().contains("FOREIGN KEY")
+        ) || matches!(self, Self::ForeignKeyViolation(_))
+    }
+}
+
+/// Retry configuration for operations that may encounter transient SQLite contention.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            base_delay_ms: 10,
+            max_delay_ms: 1000,
+        }
+    }
+}
+
+/// Execute a fallible operation with exponential backoff retry on SQLite busy errors.
+pub fn retry_on_busy<T, F>(config: RetryConfig, mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    let mut attempt = 0;
+    let mut delay = config.base_delay_ms;
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if err.is_busy() && attempt < config.max_attempts - 1 {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    delay = (delay * 2).min(config.max_delay_ms);
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
+/// Idempotent operation key for retry safety.
+/// Operations with the same key are guaranteed to execute at most once.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OperationKey(pub String);
+
+impl OperationKey {
+    /// Create a new random operation key.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Create from an existing string (e.g., client-provided idempotency key).
+    #[must_use]
+    pub fn from_string(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl Default for OperationKey {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for OperationKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for OperationKey {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+/// Result of an idempotent operation check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdempotentResult<T> {
+    /// Operation not seen before; caller should execute it.
+    Execute,
+    /// Operation already completed; return cached result.
+    Completed(T),
+}
+
+/// Check if an operation has been recorded, recording it if not.
+/// Returns `Execute` if the operation is new, `Completed(value)` if already done.
+pub fn check_idempotent<T, F>(
+    conn: &Connection,
+    key: &OperationKey,
+    deserialize: F,
+) -> Result<IdempotentResult<T>>
+where
+    F: FnOnce(&str) -> Result<T>,
+{
+    // Create table if not exists
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS idempotent_operations (
+            key TEXT PRIMARY KEY,
+            result TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    // Try to insert the key (will fail if already exists)
+    let now = crate::types::Timestamp::now().as_millis();
+    let insert_result = conn.execute(
+        "INSERT OR IGNORE INTO idempotent_operations (key, result, created_at) VALUES (?1, ?2, ?3)",
+        params![key.to_string(), "pending", now],
+    )?;
+
+    if insert_result == 1 {
+        // We inserted the key; operation should be executed
+        Ok(IdempotentResult::Execute)
+    } else {
+        // Key already exists; check if result is available
+        let result: Option<String> = conn
+            .query_row(
+                "SELECT result FROM idempotent_operations WHERE key = ?1",
+                params![key.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match result {
+            Some(cached) if cached != "pending" => {
+                deserialize(&cached).map(IdempotentResult::Completed)
+            }
+            _ => {
+                // Operation is still pending (another process executing it)
+                // Treat as "execute" but caller should handle conflict
+                Ok(IdempotentResult::Execute)
+            }
+        }
+    }
+}
+
+/// Record the result of an idempotent operation.
+pub fn record_idempotent<T>(conn: &Connection, key: &OperationKey, result: &T) -> Result<()>
+where
+    T: Serialize,
+{
+    let serialized = serde_json::to_string(result)?;
+    conn.execute(
+        "UPDATE idempotent_operations SET result = ?2 WHERE key = ?1",
+        params![key.to_string(), serialized],
+    )?;
+    Ok(())
+}
+
+/// Execute an operation idempotently with SQLite busy retry.
+/// If the operation key was already executed, returns the cached result.
+pub fn execute_idempotent<T, F>(
+    conn: &Connection,
+    key: &OperationKey,
+    mut operation: F,
+) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+    T: Serialize + for<'de> Deserialize<'de>,
+{
+    let config = RetryConfig::default();
+    let mut attempt = 0;
+    let mut delay = config.base_delay_ms;
+
+    loop {
+        // Check if already executed
+        let check = check_idempotent(conn, key, |s| {
+            serde_json::from_str(s).map_err(StorageError::from)
+        });
+        match check {
+            Ok(IdempotentResult::Completed(cached)) => return Ok(cached),
+            Ok(IdempotentResult::Execute) => {}
+            Err(err) => return Err(err),
+        }
+
+        // Execute the operation
+        match operation() {
+            Ok(value) => {
+                // Record success
+                record_idempotent(conn, key, &value)?;
+                return Ok(value);
+            }
+            Err(err) => {
+                if err.is_busy() && attempt < config.max_attempts - 1 {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    delay = (delay * 2).min(config.max_delay_ms);
+                    continue;
+                }
+                // On non-busy error, don't record (allows retry with same key)
+                return Err(err);
+            }
+        }
     }
 }
 
@@ -1043,7 +1262,7 @@ impl Store {
     }
 
     pub fn insert_flow(&self, flow: &Flow) -> Result<()> {
-        insert_flow_row(&self.conn, flow)
+        retry_on_busy(RetryConfig::default(), || insert_flow_row(&self.conn, flow))
     }
 
     pub fn insert_flow_with_provenance(
@@ -1051,15 +1270,17 @@ impl Store {
         flow: &Flow,
         edges: &[ProvenanceEdge],
     ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        insert_flow_row(&tx, flow)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_flow_row(&tx, flow)?;
+            for edge in edges {
+                insert_provenance_row(&tx, edge)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_flow(&self, id: &FlowId) -> Result<Option<Flow>> {
@@ -1119,18 +1340,20 @@ impl Store {
             ));
         }
 
-        let changed = self.conn.execute(
-            "UPDATE flows SET state = ?2 WHERE id = ?1",
-            params![id.as_str(), state.to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let changed = self.conn.execute(
+                "UPDATE flows SET state = ?2 WHERE id = ?1",
+                params![id.as_str(), state.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            Ok(())
+        })
     }
 
     pub fn insert_goal(&self, goal: &Goal) -> Result<()> {
-        insert_goal_row(&self.conn, goal)
+        retry_on_busy(RetryConfig::default(), || insert_goal_row(&self.conn, goal))
     }
 
     pub fn insert_goal_with_provenance(
@@ -1138,15 +1361,17 @@ impl Store {
         goal: &Goal,
         edges: &[ProvenanceEdge],
     ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        insert_goal_row(&tx, goal)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_goal_row(&tx, goal)?;
+            for edge in edges {
+                insert_provenance_row(&tx, edge)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_goal(&self, id: &GoalId) -> Result<Option<Goal>> {
@@ -1171,18 +1396,22 @@ impl Store {
     }
 
     pub fn set_goal_status(&self, id: &GoalId, status: GoalStatus) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE goals SET status = ?2 WHERE id = ?1",
-            params![id.as_str(), status.to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let changed = self.conn.execute(
+                "UPDATE goals SET status = ?2 WHERE id = ?1",
+                params![id.as_str(), status.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            Ok(())
+        })
     }
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
-        insert_session_row(&self.conn, session)
+        retry_on_busy(RetryConfig::default(), || {
+            insert_session_row(&self.conn, session)
+        })
     }
 
     pub fn insert_session_with_provenance(
@@ -1190,15 +1419,17 @@ impl Store {
         session: &Session,
         edges: &[ProvenanceEdge],
     ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        insert_session_row(&tx, session)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_session_row(&tx, session)?;
+            for edge in edges {
+                insert_provenance_row(&tx, edge)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
@@ -1223,14 +1454,16 @@ impl Store {
     }
 
     pub fn update_session_state(&self, id: &SessionId, state: SessionState) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE sessions SET state = ?2 WHERE id = ?1",
-            params![id.as_str(), state.to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let changed = self.conn.execute(
+                "UPDATE sessions SET state = ?2 WHERE id = ?1",
+                params![id.as_str(), state.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            Ok(())
+        })
     }
 
     pub fn update_session_presentation_state(
@@ -1249,7 +1482,9 @@ impl Store {
     }
 
     pub fn insert_execution(&self, exec: &Execution) -> Result<()> {
-        insert_execution_row(&self.conn, exec)
+        retry_on_busy(RetryConfig::default(), || {
+            insert_execution_row(&self.conn, exec)
+        })
     }
 
     pub fn insert_execution_with_provenance(
@@ -1257,15 +1492,17 @@ impl Store {
         exec: &Execution,
         edges: &[ProvenanceEdge],
     ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        insert_execution_row(&tx, exec)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_execution_row(&tx, exec)?;
+            for edge in edges {
+                insert_provenance_row(&tx, edge)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
@@ -1290,7 +1527,9 @@ impl Store {
     }
 
     pub fn insert_generation(&self, generation: &Generation) -> Result<()> {
-        insert_generation_row(&self.conn, generation)
+        retry_on_busy(RetryConfig::default(), || {
+            insert_generation_row(&self.conn, generation)
+        })
     }
 
     pub fn insert_generation_with_provenance(
@@ -1298,15 +1537,17 @@ impl Store {
         generation: &Generation,
         edges: &[ProvenanceEdge],
     ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        insert_generation_row(&tx, generation)?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_generation_row(&tx, generation)?;
+            for edge in edges {
+                insert_provenance_row(&tx, edge)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn get_generation(&self, id: &GenerationId) -> Result<Option<Generation>> {
@@ -1331,51 +1572,55 @@ impl Store {
     }
 
     pub fn set_generation_status(&self, id: &GenerationId, status: GenerationStatus) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE generations SET status = ?2 WHERE id = ?1",
-            params![id.as_str(), status.to_string()],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        Ok(())
+        retry_on_busy(RetryConfig::default(), || {
+            let changed = self.conn.execute(
+                "UPDATE generations SET status = ?2 WHERE id = ?1",
+                params![id.as_str(), status.to_string()],
+            )?;
+            if changed == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            Ok(())
+        })
     }
 
     /// Promote one generation to STABLE and supersede any previous STABLE
     /// generation in the same SQLite transaction.
     pub fn activate_generation(&mut self, id: &GenerationId) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let exists = tx
-            .query_row(
-                "SELECT id FROM generations WHERE id = ?1",
-                params![id.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
+            let exists = tx
+                .query_row(
+                    "SELECT id FROM generations WHERE id = ?1",
+                    params![id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
 
-        tx.execute(
-            "UPDATE generations
-             SET status = ?1
-             WHERE status = ?2 AND id <> ?3",
-            params![
-                GenerationStatus::Superseded.to_string(),
-                GenerationStatus::Stable.to_string(),
-                id.as_str(),
-            ],
-        )?;
-        tx.execute(
-            "UPDATE generations SET status = ?2 WHERE id = ?1",
-            params![id.as_str(), GenerationStatus::Stable.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(())
+            tx.execute(
+                "UPDATE generations
+                 SET status = ?1
+                 WHERE status = ?2 AND id <> ?3",
+                params![
+                    GenerationStatus::Superseded.to_string(),
+                    GenerationStatus::Stable.to_string(),
+                    id.as_str(),
+                ],
+            )?;
+            tx.execute(
+                "UPDATE generations SET status = ?2 WHERE id = ?1",
+                params![id.as_str(), GenerationStatus::Stable.to_string()],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {

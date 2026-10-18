@@ -184,14 +184,16 @@ fn validate_session_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if matches!(error, StorageError::InvalidOperation(_)) {
-        ErrorCode::InvalidArgument
-    } else if matches!(error, StorageError::OperationConflict(_)) {
-        ErrorCode::Conflict
-    } else if error.is_busy() {
-        ErrorCode::Unavailable
-    } else {
-        ErrorCode::Internal
+    match error {
+        StorageError::NotFound(_) => ErrorCode::NotFound,
+        StorageError::InvalidOperation(_) | StorageError::ForeignKeyViolation(_) => {
+            ErrorCode::InvalidArgument
+        }
+        StorageError::OperationConflict(_) | StorageError::UniqueViolation(_) => {
+            ErrorCode::Conflict
+        }
+        _ if error.is_busy() => ErrorCode::Unavailable,
+        _ => ErrorCode::Internal,
     }
 }
 
