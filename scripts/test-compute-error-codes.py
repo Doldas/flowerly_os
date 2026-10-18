@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Gate B acceptance: structured machine-readable error codes for compute.
+"""Gate B acceptance: structured machine-readable error codes.
 
-Exercises every RFC 0004 compute command family's error paths through the
-real supervisor and asserts each refusal carries a typed snake_case error
-code (invalid_argument / not_found / conflict / unavailable /
-permission_denied). No command may fail silently, panic, or return an
-untouched exception string without a code.
+Exercises the compute command families plus the generation, provenance,
+execution (agentic) and capability modules' error paths through the real
+supervisor and asserts each refusal carries a typed snake_case error code
+(invalid_argument / not_found / conflict / unavailable / permission_denied).
+No command may fail silently, panic, or return an untouched exception
+string without a code.
 """
 import json
 import os
@@ -106,6 +107,46 @@ def main(bin_dir):
                 ("inference.request", {"workload_id": "work-" + uuid.uuid4().hex, "provider_id": "provider-" + uuid.uuid4().hex,
                   "prompt": "hi", "request_id": "r-1"}, "not_found", "inference missing workload"),
             ]
+            # Generation classifications.
+            checks += [
+                ("generation.create", {"parent": "not-a-generation"},
+                 "invalid_argument", "generation.create bad parent"),
+                ("generation.create", {"parent": "gen-" + uuid.uuid4().hex},
+                 "not_found", "generation.create missing parent"),
+                ("generation.create", {"reason_goal": "goal-" + uuid.uuid4().hex},
+                 "not_found", "generation.create missing goal"),
+                ("generation.inspect", {}, "invalid_argument", "generation.inspect missing id"),
+                ("generation.inspect", {"id": "gen-" + uuid.uuid4().hex},
+                 "not_found", "generation.inspect unknown"),
+                ("generation.activate", {"id": 42}, "invalid_argument", "generation.activate bad id"),
+                ("generation.activate", {"id": "gen-" + uuid.uuid4().hex},
+                 "not_found", "generation.activate unknown"),
+            ]
+            # Provenance classifications.
+            checks += [
+                ("provenance.add", {"relation": "caused_by", "to": "goal-1"},
+                 "invalid_argument", "provenance.add missing from"),
+                ("provenance.add", {"from": "exec-123", "relation": "WAT", "to": "goal-1"},
+                 "invalid_argument", "provenance.add unknown relation"),
+                ("provenance.add", {"from": "plain", "relation": "caused_by", "to": "goal-1"},
+                 "invalid_argument", "provenance.add untyped from"),
+                ("provenance.to", {"ref": "plain-string"},
+                 "invalid_argument", "provenance.to untyped ref"),
+            ]
+            # Execution (agentic) classifications.
+            checks += [
+                ("execution.create", {"command": "true", "goal_id": "not-a-goal"},
+                 "invalid_argument", "execution.create bad goal"),
+                ("execution.create", {"command": "true", "goal_id": "goal-" + uuid.uuid4().hex},
+                 "not_found", "execution.create missing goal"),
+                ("execution.show", {}, "invalid_argument", "execution.show missing id"),
+                ("execution.show", {"id": "not-an-execution"},
+                 "invalid_argument", "execution.show bad id"),
+            ]
+            # Capability classifications.
+            checks += [
+                ("capability", {}, "invalid_argument", "capability empty command"),
+            ]
             for family, args, code, name in checks:
                 reply = request(sock, family, args)
                 assert_error(reply, code, name)
@@ -127,13 +168,20 @@ def main(bin_dir):
 
             # Unknown commands stay typed invalid_argument.
             for name in ["model.delete", "provider.connect", "workload.execute",
-                         "usage.spam", "inference.chat"]:
+                         "usage.spam", "inference.chat", "generation.delete",
+                         "provenance.delete", "execution.delete", "capability.delete"]:
                 assert_error(request(sock, name, {}), "invalid_argument", name)
 
             # Healthy commands remain ok (codes are for failures, not noise).
             ok = request(sock, "device.budget", {})
             assert ok["type"] == "ok", ok
             ok = request(sock, "model.list", {})
+            assert ok["type"] == "ok", ok
+            ok = request(sock, "capability.list", {})
+            assert ok["type"] == "ok", ok
+            ok = request(sock, "generation.list", {})
+            assert ok["type"] == "ok", ok
+            ok = request(sock, "provenance.from", {"ref": "goal-" + uuid.uuid4().hex})
             assert ok["type"] == "ok", ok
         finally:
             if proc.poll() is None:

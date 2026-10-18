@@ -1,5 +1,5 @@
-use flowerly_core::ipc::{Envelope, Payload};
-use flowerly_core::ok_envelope;
+use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::{coded_error_envelope, ok_envelope};
 
 const CAPABILITIES: &[&str] = &[
     "file.read",
@@ -20,6 +20,15 @@ pub(crate) fn handle_command(request: &Envelope) -> Envelope {
             request.id.clone(),
             serde_json::json!({"capabilities": CAPABILITIES}),
         ),
-        _ => flowerly_core::error_envelope(request.id.clone(), "unknown capability command"),
+        Payload::Command { name, .. } => coded_error_envelope(
+            request.id.clone(),
+            ErrorCode::InvalidArgument,
+            format!("capabilityd: unknown command `{name}`"),
+        ),
+        _ => coded_error_envelope(
+            request.id.clone(),
+            ErrorCode::InvalidArgument,
+            "capabilityd: unexpected request type",
+        ),
     }
 }

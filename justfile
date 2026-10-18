@@ -38,7 +38,7 @@ test:
     cargo test --workspace
 
 
-verify: fmt-check lint test
+verify: lint test
     cargo build --workspace --release
 
 

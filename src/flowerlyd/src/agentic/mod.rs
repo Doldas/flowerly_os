@@ -22,14 +22,68 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
+    if let Err((code, message)) = validate_execution_command(&store, name, args) {
+        return coded_error_envelope(request.id.clone(), code, message);
+    }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
+/// Validate client-facing execution errors while the store lock is held.
+/// SQLite errors remain internal instead of being inferred from error text.
+fn validate_execution_command(
+    store: &Store,
+    name: &str,
+    args: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
+    match name {
+        "execution.create" => {
+            parse_optional_typed::<AgentId>(args, "agent_id").map_err(|e| invalid(&e))?;
+            let goal_id: Option<GoalId> =
+                parse_optional_typed(args, "goal_id").map_err(|e| invalid(&e))?;
+            if let Some(goal_id) = &goal_id {
+                if store
+                    .get_goal(goal_id)
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
+                    .is_none()
+                {
+                    return Err((ErrorCode::NotFound, format!("goal not found: {goal_id}")));
+                }
+            }
+            parse_optional_string(args, "reason").map_err(|e| invalid(&e))?;
+            parse_optional_string(args, "command").map_err(|e| invalid(&e))?;
+            parse_optional_i32(args, "exit_code").map_err(|e| invalid(&e))?;
+            parse_optional_i64(args, "duration_ms").map_err(|e| invalid(&e))?;
+        }
+        "execution.show" => {
+            let raw = args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `id`"))?;
+            ExecutionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+        }
+        "execution.list" => {}
+        other => {
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("agenticd: unknown command `{other}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::NotFound(_)) {
+        ErrorCode::NotFound
+    } else if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -354,6 +408,60 @@ mod tests {
         assert_eq!(error, "arg `duration_ms` must be an integer or null");
 
         assert!(store.list_executions().expect("list executions").is_empty());
+    }
+
+    #[test]
+    fn execution_errors_have_explicit_codes() {
+        let store = migrated_store();
+        let cases = [
+            (
+                "execution.create",
+                serde_json::json!({"goal_id": "not-a-goal"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "execution.create",
+                serde_json::json!({"goal_id": GoalId::new().to_string()}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "execution.create",
+                serde_json::json!({"exit_code": i64::from(i32::MAX) + 1}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "execution.create",
+                serde_json::json!({"duration_ms": "fast"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "execution.show",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "execution.show",
+                serde_json::json!({"id": "not-an-execution"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "execution.delete",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+        ];
+        for (command, args, expected) in cases {
+            let error = validate_execution_command(&store, command, &args)
+                .unwrap_err()
+                .0;
+            assert_eq!(error, expected, "{command} {args}");
+        }
+        assert!(validate_execution_command(
+            &store,
+            "execution.create",
+            &serde_json::json!({"command": "true"}),
+        )
+        .is_ok());
     }
 
     #[test]
