@@ -19,14 +19,87 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
+    if let Err((code, message)) = validate_generation_command(&store, name, args) {
+        return coded_error_envelope(request.id.clone(), code, message);
+    }
     match run_command(&mut store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
+/// Validate client-facing generation errors while the store lock is held.
+/// SQLite errors remain internal instead of being inferred from error text.
+fn validate_generation_command(
+    store: &Store,
+    name: &str,
+    args: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
+    match name {
+        "generation.create" => {
+            let parent: Option<GenerationId> =
+                parse_optional_typed(args, "parent").map_err(|e| invalid(&e))?;
+            if let Some(parent) = &parent {
+                if store
+                    .get_generation(parent)
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
+                    .is_none()
+                {
+                    return Err((
+                        ErrorCode::NotFound,
+                        format!("generation not found: {parent}"),
+                    ));
+                }
+            }
+            let reason_goal: Option<GoalId> =
+                parse_optional_typed(args, "reason_goal").map_err(|e| invalid(&e))?;
+            if let Some(goal_id) = &reason_goal {
+                if store
+                    .get_goal(goal_id)
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
+                    .is_none()
+                {
+                    return Err((ErrorCode::NotFound, format!("goal not found: {goal_id}")));
+                }
+            }
+            parse_optional_typed::<ExperimentId>(args, "experiment").map_err(|e| invalid(&e))?;
+            parse_optional_string(args, "source_commit").map_err(|e| invalid(&e))?;
+            parse_optional_string(args, "system_manifest").map_err(|e| invalid(&e))?;
+        }
+        "generation.list" => {}
+        "generation.inspect" | "generation.activate" => {
+            let raw = args
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `id`"))?;
+            let id = GenerationId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+            if store
+                .get_generation(&id)
+                .map_err(|e| (storage_error_code(&e), e.to_string()))?
+                .is_none()
+            {
+                return Err((ErrorCode::NotFound, format!("generation not found: {raw}")));
+            }
+        }
+        other => {
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("generationd: unknown command `{other}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::NotFound(_)) {
+        ErrorCode::NotFound
+    } else if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -403,6 +476,66 @@ mod tests {
         assert!(edges.iter().any(|edge| {
             edge.relation == ProvenanceRelation::TestedBy && edge.to == ObjectRef::from(&experiment)
         }));
+    }
+
+    #[test]
+    fn generation_errors_have_explicit_codes() {
+        let store = migrated_store();
+        let cases = [
+            (
+                "generation.create",
+                serde_json::json!({"parent": "not-a-generation"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.create",
+                serde_json::json!({"parent": GenerationId::new().to_string()}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.create",
+                serde_json::json!({"reason_goal": GoalId::new().to_string()}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.inspect",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.inspect",
+                serde_json::json!({"id": "gen-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.activate",
+                serde_json::json!({"id": 42}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.activate",
+                serde_json::json!({"id": "gen-missing"}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.delete",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+        ];
+        for (command, args, expected) in cases {
+            let error = validate_generation_command(&store, command, &args)
+                .unwrap_err()
+                .0;
+            assert_eq!(error, expected, "{command} {args}");
+        }
+        store
+            .insert_generation(&candidate(None))
+            .expect("insert generation");
+        assert!(
+            validate_generation_command(&store, "generation.create", &serde_json::json!({}),)
+                .is_ok()
+        );
     }
 
     #[test]

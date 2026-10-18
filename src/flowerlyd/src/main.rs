@@ -180,6 +180,9 @@ async fn main() -> Result<()> {
             "flow_count": db.list_flows().map(|rows| rows.len()).ok(),
             "default_flow": "General",
             "goal_count": db.list_goals().map(|rows| rows.len()).ok(),
+            "session_count": db.list_sessions().map(|rows| rows.len()).ok(),
+            "execution_count": db.list_executions().map(|rows| rows.len()).ok(),
+            "generation_count": db.list_generations().map(|rows| rows.len()).ok(),
             "model_count": db.list_models().map(|rows| rows.len()).ok(),
             "profile_count": db.list_profiles().map(|rows| rows.len()).ok(),
             "active_workload_count": db

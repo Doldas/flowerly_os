@@ -16,14 +16,71 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
+    if let Err((code, message)) = validate_provenance_command(name, args) {
+        return coded_error_envelope(request.id.clone(), code, message);
+    }
     match run_command(&store, name, args) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
+/// Validate client-facing provenance errors while the store lock is held.
+fn validate_provenance_command(name: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
+    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
+    match name {
+        "provenance.add" => {
+            let from = args
+                .get("from")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `from`"))?;
+            ObjectRef::from_str(from).map_err(|e| invalid(&e.to_string()))?;
+            let relation = args
+                .get("relation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `relation`"))?;
+            parse_relation(relation).map_err(|e| invalid(&e))?;
+            let to = args
+                .get("to")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `to`"))?;
+            ObjectRef::from_str(to).map_err(|e| invalid(&e.to_string()))?;
+            if let Some(note) = args.get("note").filter(|value| !value.is_null()) {
+                note.as_str()
+                    .ok_or_else(|| invalid("arg `note` must be a string or null"))?;
+            }
+        }
+        "provenance.from" | "provenance.to" => {
+            let key = if name == "provenance.to" {
+                "to"
+            } else {
+                "from"
+            };
+            let raw = args
+                .get("ref")
+                .or_else(|| args.get(key))
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing string arg `ref`"))?;
+            ObjectRef::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+        }
+        other => {
+            return Err((
+                ErrorCode::InvalidArgument,
+                format!("provenanced: unknown command `{other}`"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    if error.is_busy() {
+    if matches!(error, StorageError::NotFound(_)) {
+        ErrorCode::NotFound
+    } else if matches!(error, StorageError::InvalidOperation(_)) {
+        ErrorCode::InvalidArgument
+    } else if matches!(error, StorageError::OperationConflict(_)) {
+        ErrorCode::Conflict
+    } else if error.is_busy() {
         ErrorCode::Unavailable
     } else {
         ErrorCode::Internal
@@ -244,5 +301,55 @@ mod tests {
             error.contains("object reference"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn provenance_errors_have_explicit_codes() {
+        let cases = [
+            (
+                "provenance.add",
+                serde_json::json!({"relation": "caused_by", "to": "goal-1"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.add",
+                serde_json::json!({"from": "exec-123", "relation": "WAT", "to": "goal-1"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.add",
+                serde_json::json!({"from": "plain", "relation": "caused_by", "to": "goal-1"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.add",
+                serde_json::json!({"from": "exec-123", "relation": "caused_by", "to": "plain"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.to",
+                serde_json::json!({"ref": "plain-string"}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.from",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "provenance.delete",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+        ];
+        for (command, args, expected) in cases {
+            let error = validate_provenance_command(command, &args).unwrap_err().0;
+            assert_eq!(error, expected, "{command} {args}");
+        }
+        assert!(validate_provenance_command(
+            "provenance.add",
+            &serde_json::json!({"from": "exec-123", "relation": "caused_by", "to": "goal-1"}),
+        )
+        .is_ok());
     }
 }

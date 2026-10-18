@@ -31,6 +31,13 @@ jobs:
             const developmentHead = /^(feature|bugfix|docs)\/.+/;
             const releaseBranch = /^release\/([1-9]\d*)$/;
 
+            // Skip full validation for release->master promotion PRs
+            const isPromotion = base === "master" && releaseBranch.test(head);
+            if (isPromotion) {
+              core.info(`Release promotion PR ${head} -> ${base}, skipping issue-link requirement`);
+              return;
+            }
+
             if (base === "master") {
               if (!releaseBranch.test(head)) {
                 core.setFailed(
