@@ -6,6 +6,7 @@ on:
   # Same-repo branches only in this repository.
   pull_request:
     types: [opened, reopened, ready_for_review]
+    branches: [master]
   schedule:
     # Daily field reconciliation; keeps Sprint/release views accurate.
     - cron: "23 3 * * *"
@@ -24,6 +25,7 @@ concurrency:
 
 jobs:
   sync:
+    if: github.repository == 'Doldas/flowerly_os' && github.event.repository.default_branch == github.ref
     runs-on: ubuntu-latest
     steps:
       - name: Add opened issue or PR to Flowerly engineering roadmap
