@@ -3,23 +3,20 @@ name: Sync issues and PRs to project
 on:
   issues:
     types: [opened, reopened]
-  # Same-repo branches only in this repository; pull_request_target would
-  # trigger empty push-validation runs that GitHub marks as failed.
+  # Same-repo branches only in this repository.
   pull_request:
     types: [opened, reopened, ready_for_review]
   schedule:
     # Daily field reconciliation; keeps Sprint/release views accurate.
     - cron: "23 3 * * *"
-  # workflow_dispatch intentionally lives in project-sync-manual.yml:
-  # the {issues, pull_request, workflow_dispatch} trigger combination makes
-  # GitHub create empty push-validation runs marked failed (verified
-  # empirically on 2026-10-18 with mini workflow probes).
-
-permissions:
-  issues: write
-  pull-requests: write
-  contents: read
-  projects: write
+  # NOTE: workflow_dispatch intentionally lives in project-sync-manual.yml.
+  # NOTE: no top-level `permissions:` block here. Empirical mini-workflow
+  # probes on 2026-10-18 (15 variants, throwaway branches) showed GitHub
+  # creates empty push-validation runs marked failed for some
+  # permissions/trigger combinations, while {issues, pull_request,
+  # schedule} without a permissions block produces none. If the default
+  # GITHUB_TOKEN cannot write to the project, configure the
+  # FLOWERLY_PROJECT_TOKEN secret (PAT with 'project' scope).
 
 concurrency:
   group: project-sync-${{ github.event_name }}
@@ -29,7 +26,6 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      # Runs on same-repo pull requests only; posts an item link, no code.
       - name: Add opened issue or PR to Flowerly engineering roadmap
         if: github.event_name == 'issues' || github.event_name == 'pull_request'
         uses: actions/add-to-project@v1.0.2
