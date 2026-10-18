@@ -127,5 +127,49 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("cursor=cursor_1", data.call_args_list[1].args)
 
 
+    def test_sync_only_skips_field_and_view_creation(self):
+        with patch.object(bootstrap, "gh"), patch.object(
+                bootstrap, "ensure_project", return_value=(7, "PVT_7")), patch.object(
+                bootstrap, "ensure_field") as ensure, patch.object(
+                bootstrap, "ensure_views") as views, patch.object(
+                bootstrap, "sync") as sync:
+            bootstrap.main(["--project", "7", "--sync-only"])
+        ensure.assert_not_called()
+        views.assert_not_called()
+        sync.assert_called_once_with(7, "PVT_7")
+
+    def test_sync_only_defaults_to_reusing_the_existing_board(self):
+        with patch.object(bootstrap, "gh"), patch.object(
+                bootstrap, "ensure_project", return_value=(7, "PVT_7")) as project, patch.object(
+                bootstrap, "ensure_field"), patch.object(
+                bootstrap, "ensure_views"), patch.object(
+                bootstrap, "sync") as sync:
+            bootstrap.main(["--sync-only"])
+        project.assert_called_once_with(None)
+        sync.assert_called_once_with(7, "PVT_7")
+
+
+class SyncWrapperTests(unittest.TestCase):
+    def _load(self, name):
+        spec = importlib.util.spec_from_file_location(
+            name, pathlib.Path(__file__).with_name("sync-project.py"))
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_wrapper_delegates_to_bootstrap_sync_only(self):
+        sync_project = self._load("sync_project")
+        with patch.object(sync_project._bootstrap, "main") as main:
+            sync_project.main([])
+        main.assert_called_once_with(["--project", "7", "--sync-only"])
+
+    def test_wrapper_preserves_explicit_project_number(self):
+        sync_project = self._load("sync_project2")
+        with patch.object(sync_project._bootstrap, "main") as main:
+            sync_project.main(["--project", "3"])
+        main.assert_called_once_with(["--project", "3", "--sync-only"])
+
+
 if __name__ == "__main__":
     unittest.main()

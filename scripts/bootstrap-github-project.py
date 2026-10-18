@@ -252,9 +252,17 @@ def sync(number, project_id):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=int, help="Resume a specific existing Project number")
+    parser.add_argument("--sync-only", action="store_true",
+                        help="Only add missing items and fill unset fields; "
+                             "do not create fields or views")
     options = parser.parse_args(argv)
     gh("auth", "status")
     number, project_id = ensure_project(options.project)
+    if options.sync_only:
+        sync(number, project_id)
+        print("Project URL: https://github.com/users/" + OWNER +
+              "/projects/" + str(number))
+        return
     ensure_field(number, "Target release", "SINGLE_SELECT", RELEASES)
     ensure_field(number, "Delivery stage", "SINGLE_SELECT",
                  ["Backlog", "Ready", "In progress", "Review", "Done"])

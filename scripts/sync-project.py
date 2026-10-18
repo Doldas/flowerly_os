@@ -1,36 +1,38 @@
 #!/usr/bin/env python3
-"""Sync all issues and PRs to GitHub Project with field mappings."""
-import json
-import subprocess
+"""Sync every issue and PR into the Flowerly OS engineering project board.
+
+Adds missing items and fills unset project fields (Target release, Delivery
+stage, Work type, Area, Priority, Sprint, Owner). Populated fields are never
+overwritten, so human edits in the GitHub UI are preserved. Safe to rerun.
+
+Usage (GitHub CLI authenticated with 'project' scope):
+  gh auth refresh -s project
+  python3 scripts/sync-project.py
+
+CI usage: the same script runs with --project from the repository default.
+"""
+import importlib.util
+import pathlib
 import sys
 
-OWNER = "Doldas"
-REPO = "Doldas/flowerly_os"
-PROJECT = 7
-PROJECT_ID = "PVT_kwHOAEke784BmvSp"
+_BOOTSTRAP = pathlib.Path(__file__).with_name("bootstrap-github-project.py")
+_spec = importlib.util.spec_from_file_location("bootstrap", _BOOTSTRAP)
+assert _spec is not None and _spec.loader is not None
+_bootstrap = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bootstrap)
 
-def gh(*args):
-    p = subprocess.run(['gh', *map(str, args)], text=True, capture_output=True)
-    if p.returncode != 0:
-        return None
-    return p.stdout.strip()
 
-# Release mappings
-MILESTONE_MAP = {
-    6: "0.0.2",
-    7: "0.0.3",
-    8: "0.0.4",
-    9: "0.0.5",
-    10: "0.0.6",
-    11: "0.0.7",
-    12: "0.0.8",
-    13: "0.0.9",
-    14: "0.1.0",
-    31: "0.0.4",
-}
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--project" not in argv:
+        argv += ["--project", "7"]
+    argv.append("--sync-only")
+    _bootstrap.main(argv)
 
-SPRINT_MAP = {1: "Sprint 1", 2: "Sprint 2", 3: "Sprint 3", 4: "Sprint 4"}
 
 if __name__ == "__main__":
-    # Ensure all issues/PRs in project (project already has them)
-    print("Project sync complete")
+    try:
+        main()
+    except (RuntimeError, KeyError, ValueError) as e:
+        print("Project sync failed:", e, file=sys.stderr)
+        sys.exit(1)

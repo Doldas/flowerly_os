@@ -1,0 +1,22 @@
+name: Project sync (manual)
+
+# Kept separate from project-sync.yml: empirical mini-workflow probes on
+# 2026-10-18 (15 variants, throwaway branches) showed GitHub creates empty
+# push-validation runs marked failed for some permissions/trigger
+# combinations. This workflow uses workflow_dispatch alone with no
+# top-level permissions block — a combination verified not to produce
+# them. If the default GITHUB_TOKEN cannot write to the project, configure
+# the FLOWERLY_PROJECT_TOKEN secret (PAT with 'project' scope).
+on:
+  workflow_dispatch:
+
+jobs:
+  reconcile-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Sync issues and PRs with project fields
+        env:
+          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync-project.py
