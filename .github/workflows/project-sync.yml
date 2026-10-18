@@ -3,7 +3,9 @@ name: Sync issues and PRs to project
 on:
   issues:
     types: [opened, reopened]
-  pull_request_target:
+  # Same-repo branches only in this repository; pull_request_target would
+  # trigger empty push-validation runs that GitHub marks as failed.
+  pull_request:
     types: [opened, reopened, ready_for_review]
   schedule:
     # Daily field reconciliation; keeps Sprint/release views accurate.
@@ -24,9 +26,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      # pull_request_target runs no PR code; this only posts an item link.
+      # Runs on same-repo pull requests only; posts an item link, no code.
       - name: Add opened issue or PR to Flowerly engineering roadmap
-        if: github.event_name == 'issues' || github.event_name == 'pull_request_target'
+        if: github.event_name == 'issues' || github.event_name == 'pull_request'
         uses: actions/add-to-project@v1.0.2
         with:
           project-url: https://github.com/users/Doldas/projects/7
@@ -45,6 +47,6 @@ jobs:
       # Keep non-matching events (for example push validations) green instead
       # of a run whose every step was filtered out.
       - name: No action required for this event
-        if: github.event_name != 'issues' && github.event_name != 'pull_request_target'
+        if: github.event_name != 'issues' && github.event_name != 'pull_request'
             && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "event=${{ github.event_name }} needs no project sync"
