@@ -2,15 +2,12 @@ name: Sync issues and PRs to project
 
 on:
   issues:
-    types:
-      - opened
-      - reopened
-      - transferred
-  pull_request:
-    types:
-      - opened
-      - reopened
-      - ready_for_review
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+  schedule:
+    # Daily field reconciliation; keeps Sprint/release views accurate.
+    - cron: "23 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,12 +16,28 @@ permissions:
   contents: read
   projects: write
 
+concurrency:
+  group: project-sync-${{ github.event_name }}
+  cancel-in-progress: false
+
 jobs:
   add-to-project:
+    if: github.event_name == 'issues' || github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - name: Add item to project
+      - name: Add item to Flowerly engineering roadmap
         uses: actions/add-to-project@v1.0.2
         with:
           project-url: https://github.com/users/Doldas/projects/7
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+
+  reconcile-fields:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Sync issues and PRs with project fields
+        env:
+          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync-project.py
