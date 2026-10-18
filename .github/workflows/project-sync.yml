@@ -21,23 +21,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  add-to-project:
-    if: github.event_name == 'issues' || github.event_name == 'pull_request_target'
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Add item to Flowerly engineering roadmap
+      # pull_request_target runs no PR code; this only posts an item link.
+      - name: Add opened issue or PR to Flowerly engineering roadmap
+        if: github.event_name == 'issues' || github.event_name == 'pull_request_target'
         uses: actions/add-to-project@v1.0.2
         with:
           project-url: https://github.com/users/Doldas/projects/7
           github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
 
-  reconcile-fields:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
       - name: Checkout
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v7
-      - name: Sync issues and PRs with project fields
+
+      - name: Reconcile project fields
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
         run: python3 scripts/sync-project.py

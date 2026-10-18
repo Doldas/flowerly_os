@@ -150,20 +150,22 @@ class BootstrapTests(unittest.TestCase):
 
 
 class SyncWrapperTests(unittest.TestCase):
-    def test_wrapper_delegates_to_bootstrap_sync_only(self):
+    def _load(self, name):
         spec = importlib.util.spec_from_file_location(
-            "sync_project", pathlib.Path(__file__).with_name("sync-project.py"))
-        sync_project = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sync_project)
+            name, pathlib.Path(__file__).with_name("sync-project.py"))
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_wrapper_delegates_to_bootstrap_sync_only(self):
+        sync_project = self._load("sync_project")
         with patch.object(sync_project._bootstrap, "main") as main:
             sync_project.main([])
         main.assert_called_once_with(["--project", "7", "--sync-only"])
 
     def test_wrapper_preserves_explicit_project_number(self):
-        spec = importlib.util.spec_from_file_location(
-            "sync_project2", pathlib.Path(__file__).with_name("sync-project.py"))
-        sync_project = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sync_project)
+        sync_project = self._load("sync_project2")
         with patch.object(sync_project._bootstrap, "main") as main:
             sync_project.main(["--project", "3"])
         main.assert_called_once_with(["--project", "3", "--sync-only"])
