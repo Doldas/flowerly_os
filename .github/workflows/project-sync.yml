@@ -41,3 +41,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
         run: python3 scripts/sync-project.py
+
+      # Keep non-matching events (for example push validations) green instead
+      # of a run whose every step was filtered out.
+      - name: No action required for this event
+        if: github.event_name != 'issues' && github.event_name != 'pull_request_target'
+            && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: echo "event=${{ github.event_name }} needs no project sync"
