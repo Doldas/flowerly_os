@@ -10,7 +10,10 @@ on:
   schedule:
     # Daily field reconciliation; keeps Sprint/release views accurate.
     - cron: "23 3 * * *"
-  workflow_dispatch:
+  # workflow_dispatch intentionally lives in project-sync-manual.yml:
+  # the {issues, pull_request, workflow_dispatch} trigger combination makes
+  # GitHub create empty push-validation runs marked failed (verified
+  # empirically on 2026-10-18 with mini workflow probes).
 
 permissions:
   issues: write
@@ -35,18 +38,18 @@ jobs:
           github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Checkout
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'schedule'
         uses: actions/checkout@v7
 
       - name: Reconcile project fields
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
         run: python3 scripts/sync-project.py
 
-      # Keep non-matching events (for example push validations) green instead
-      # of a run whose every step was filtered out.
+      # Keep non-matching events green instead of a run whose every step
+      # was filtered out.
       - name: No action required for this event
         if: github.event_name != 'issues' && github.event_name != 'pull_request'
-            && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+            && github.event_name != 'schedule'
         run: echo "event=${{ github.event_name }} needs no project sync"

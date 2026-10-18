@@ -1,0 +1,23 @@
+name: Project sync (manual)
+
+# Kept separate from project-sync.yml: the {issues, pull_request,
+# workflow_dispatch} trigger combination in one workflow makes GitHub
+# create empty push-validation runs marked failed (verified empirically
+# 2026-10-18 with mini workflow probes on a throwaway branch).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  projects: write
+
+jobs:
+  reconcile-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Sync issues and PRs with project fields
+        env:
+          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync-project.py
