@@ -511,6 +511,37 @@ impl Supervisor {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
+        // Long-poll observers must NEVER retain the per-Session command lock
+        // for their entire wait window. Each snapshot is a nonblocking
+        // guardian read; the lock is released before sleeping, allowing
+        // writers, resize and termination to proceed between polls.
+        if name == "session.follow" {
+            let wait_ms = match args.get("wait_ms") {
+                None => 100,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| *value <= 250)
+                    .ok_or_else(|| invalid("session.follow wait_ms must be an integer from 0 to 250"))?,
+            };
+            if wait_ms > 0 {
+                let mut snapshot_args = args.clone();
+                snapshot_args["wait_ms"] = json!(0);
+                let deadline = Instant::now() + Duration::from_millis(wait_ms);
+                loop {
+                    let snapshot = self.control(store, name, &snapshot_args)?;
+                    let requested = args.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                    if snapshot.get("cursor").and_then(Value::as_u64).is_some_and(|cursor| cursor > requested)
+                        || snapshot.get("running") == Some(&Value::Bool(false))
+                        || Instant::now() >= deadline
+                    {
+                        return Ok(snapshot);
+                    }
+                    std::thread::sleep(
+                        (deadline - Instant::now()).min(Duration::from_millis(25)),
+                    );
+                }
+            }
+        }
         let raw = args
             .get("id")
             .and_then(Value::as_str)
