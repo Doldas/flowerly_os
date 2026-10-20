@@ -659,16 +659,21 @@ impl Store {
         actor: &str,
         operation_id: &str,
     ) -> Result<Option<SessionId>> {
-        let raw: Option<String> = self.conn.query_row(
-            "SELECT response_payload FROM ipc_operations
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT response_payload FROM ipc_operations
              WHERE actor = ?1 AND command = 'session.spawn' AND operation_id = ?2",
-            params![actor, operation_id],
-            |row| row.get(0),
-        ).optional()?;
+                params![actor, operation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         match raw {
-            Some(raw) => Ok(Some(SessionId::from_str(&raw).map_err(|error| {
-                StorageError::InvalidOperation(error.to_string())
-            })?)),
+            Some(raw) => {
+                Ok(Some(SessionId::from_str(&raw).map_err(|error| {
+                    StorageError::InvalidOperation(error.to_string())
+                })?))
+            }
             None => Ok(None),
         }
     }
@@ -684,9 +689,10 @@ impl Store {
         let mut ids = Vec::new();
         for row in rows {
             let raw = row?;
-            ids.push(SessionId::from_str(&raw).map_err(|error| {
-                StorageError::InvalidOperation(error.to_string())
-            })?);
+            ids.push(
+                SessionId::from_str(&raw)
+                    .map_err(|error| StorageError::InvalidOperation(error.to_string()))?,
+            );
         }
         Ok(ids)
     }
