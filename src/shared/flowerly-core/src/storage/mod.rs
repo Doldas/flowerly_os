@@ -606,22 +606,26 @@ impl Store {
     ) -> Result<bool> {
         if operation_id.is_empty()
             || operation_id.len() > 128
-            || !operation_id.bytes().all(|ch| {
-                ch.is_ascii_alphanumeric() || b"._:-".contains(&ch)
-            })
+            || !operation_id
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
             || request_payload.len() > 64 * 1024
         {
             return Err(StorageError::InvalidOperation(
                 "invalid external operation_id or request payload".into(),
             ));
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let previous: Option<String> = tx.query_row(
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous: Option<String> = tx
+            .query_row(
             "SELECT request_payload FROM ipc_operations
              WHERE actor = ?1 AND command = 'session.spawn' AND operation_id = ?2",
             params![actor, operation_id],
             |row| row.get(0),
-        ).optional()?;
+            )
+            .optional()?;
         if let Some(previous) = previous {
             if previous != request_payload {
                 return Err(StorageError::OperationConflict(
@@ -635,7 +639,12 @@ impl Store {
             "INSERT INTO ipc_operations
              (actor, command, operation_id, request_payload, response_payload, created_at)
              VALUES (?1, 'session.spawn', ?2, ?3, 'pending-external-effect', ?4)",
-            params![actor, operation_id, request_payload, Timestamp::now().as_millis()],
+            params![
+                actor,
+                operation_id,
+                request_payload,
+                Timestamp::now().as_millis()
+            ],
         )?;
         tx.commit()?;
         Ok(true)

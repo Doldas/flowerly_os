@@ -307,7 +307,8 @@ impl Supervisor {
                 "shell": shell,
                 "created_by": actor,
                 "flow_id": flow_id.as_ref().map(ToString::to_string)
-            }).to_string();
+            })
+            .to_string();
             let reserved = store
                 .lock()
                 .map_err(|_| internal("store lock poisoned"))?
