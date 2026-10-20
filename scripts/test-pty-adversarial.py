@@ -318,6 +318,39 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             followers = list(pool.map(independent_follower, range(6)))
         assert all(marker.encode() in output(reply) for reply in followers)
 
+        # Each follow is allowed to wait 250ms, but a backlog of idle
+        # followers must not serialize a writer resize behind their combined
+        # waits. The guardian wakes its follower when a new client connects.
+        idle_cursor = successful(session, "session.status", {
+            "id": identifier,
+        })["cursor"]
+        from threading import Barrier
+        barrier = Barrier(13)
+
+        def waiting_follower(_):
+            barrier.wait(timeout=5)
+            return successful(session, "session.follow", {
+                "id": identifier, "control_token": control,
+                "cursor": idle_cursor, "wait_ms": 250,
+            })
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            pending = [pool.submit(waiting_follower, i) for i in range(12)]
+            barrier.wait(timeout=5)
+            time.sleep(0.04)
+            began = time.monotonic()
+            resized = successful(session, "session.resize", {
+                "id": identifier, "attachment_token": token,
+                "rows": 37, "cols": 95,
+            })
+            latency = time.monotonic() - began
+            assert resized["rows"] == 37 and resized["cols"] == 95
+            assert latency < 1.25, (
+                f"writer starved by queued long-poll followers: {latency:.3f}s"
+            )
+            for future in pending:
+                assert future.result(timeout=5)["cursor"] >= idle_cursor
+
         follower_cursor = successful(session, "session.status", {
             "id": identifier,
         })["cursor"]
