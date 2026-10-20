@@ -37,6 +37,38 @@ DRM render-node observation only; per-process VRAM quotas are labeled
 Typed errors: invalid metadata → `InvalidArgument`; unknown id → `NotFound`;
 replay conflict → `Conflict`; SQLite busy → `Unavailable`.
 
+
+## Human-facing CLI
+
+The `agenticctl` control-plane tool exposes the same **local-only** catalog
+through the authenticated `flowerlyd` socket. Commands return JSON and
+preserve the service's typed refusals:
+
+```sh
+agenticctl device budget
+agenticctl model list
+agenticctl model register "example-cpu-model" --backend CPU \
+  --context-tokens 2048 --modality text --evidence "operator-recorded" \
+  --operation-id example-model-registration-1
+MODEL_ID="model-..." # copy the id returned by model register
+agenticctl model show "$MODEL_ID"
+agenticctl model compatibility "$MODEL_ID"
+agenticctl model retire "$MODEL_ID"
+```
+
+Repeat `--modality` for additional labels. Supply `--measured-memory-bytes`
+**only when a real memory measurement exists**; leaving it out gives an
+`UNKNOWN` compatibility verdict, not a guessed fit. The optional
+`--operation-id` safely replays identical registrations, including after a
+daemon restart; changing the input under the same key is a typed conflict.
+`model list` omits retired records, but `model show` still retrieves them.
+
+This is **metadata management only**: registration does not download,
+execute, authorize, or grant OS privileges to a model. Device compatibility is
+advisory; GPU VRAM enforcement and real model inference are not provided.
+The black-box CLI regression runs against an actual `flowerlyd` process
+in hosted CI (`scripts/test-cli-compute.py`).
+
 ## Security boundaries (RFC 0004 invariants)
 
 - The catalog **cannot grant OS authority**: no command spawns, opens files or
