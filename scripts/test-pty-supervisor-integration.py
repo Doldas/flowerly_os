@@ -106,6 +106,18 @@ def main():
             }
             spawn_response = request(sock, "session.spawn", spawn_args)
             assert spawn_response["type"] == "ok", spawn_response
+            lookup = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "retry-pty-001",
+            })
+            assert lookup["type"] == "ok", lookup
+            assert lookup["data"]["session_id"] == spawn_response["data"]["id"]
+            assert lookup["data"]["guardian_supervised"] is True, lookup
+            assert lookup["data"]["session_recorded"] is True, lookup
+            missing_lookup = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "missing-pty-key",
+            })
+            assert missing_lookup["type"] == "err", missing_lookup
+            assert missing_lookup["code"] == "not_found", missing_lookup
             before = request(sock, "session.list", {})
             before_ids = {entry["id"] for entry in before["data"]["sessions"]}
             repeat = request(sock, "session.spawn", spawn_args)
@@ -222,6 +234,13 @@ def main():
             retry_after_restart = request(sock, "session.spawn", spawn_args)
             assert retry_after_restart["type"] == "err", retry_after_restart
             assert retry_after_restart["code"] == "unavailable", retry_after_restart
+            lookup_restart = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "retry-pty-001",
+            })
+            assert lookup_restart["type"] == "ok", lookup_restart
+            assert lookup_restart["data"]["session_id"] == session_id
+            assert lookup_restart["data"]["guardian_supervised"] is False
+            assert lookup_restart["data"]["external_outcome"] == "unknown"
             after_restart_retry = request(sock, "session.list", {})
             assert after_restart_retry["data"]["count"] == before_restart_retry["data"]["count"]
             print("PTY durable reservation preserved across restart", flush=True)

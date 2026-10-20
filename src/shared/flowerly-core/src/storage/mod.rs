@@ -603,6 +603,7 @@ impl Store {
         actor: &str,
         operation_id: &str,
         request_payload: &str,
+        session_id: &SessionId,
     ) -> Result<bool> {
         if operation_id.is_empty()
             || operation_id.len() > 128
@@ -638,16 +639,38 @@ impl Store {
         tx.execute(
             "INSERT INTO ipc_operations
              (actor, command, operation_id, request_payload, response_payload, created_at)
-             VALUES (?1, 'session.spawn', ?2, ?3, 'pending-external-effect', ?4)",
+             VALUES (?1, 'session.spawn', ?2, ?3, ?4, ?5)",
             params![
                 actor,
                 operation_id,
                 request_payload,
+                session_id.as_str(),
                 Timestamp::now().as_millis()
             ],
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Query the durable operation-to-Session identity. This does not imply
+    /// that the external process survived or that the caller owns its FDs.
+    pub fn lookup_external_spawn(
+        &self,
+        actor: &str,
+        operation_id: &str,
+    ) -> Result<Option<SessionId>> {
+        let raw: Option<String> = self.conn.query_row(
+            "SELECT response_payload FROM ipc_operations
+             WHERE actor = ?1 AND command = 'session.spawn' AND operation_id = ?2",
+            params![actor, operation_id],
+            |row| row.get(0),
+        ).optional()?;
+        match raw {
+            Some(raw) => Ok(Some(SessionId::from_str(&raw).map_err(|error| {
+                StorageError::InvalidOperation(error.to_string())
+            })?)),
+            None => Ok(None),
+        }
     }
 
     /// Durable, actor-scoped opt-in retry identity for Flow creation.

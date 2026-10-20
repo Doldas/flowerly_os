@@ -108,6 +108,7 @@ impl Supervisor {
         if matches!(
             name,
             "session.spawn"
+                | "session.spawn.lookup"
                 | "session.attach"
                 | "session.detach"
                 | "session.heartbeat"
@@ -137,6 +138,8 @@ impl Supervisor {
         };
         let result = if name == "session.spawn" {
             self.spawn(store, args)
+        } else if name == "session.spawn.lookup" {
+            self.lookup_spawn(store, args)
         } else {
             self.control(store, name, args)
         };
@@ -302,6 +305,7 @@ impl Supervisor {
             let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
             super::parse_optional_flow_id(&db, args).map_err(|error| (error.code, error.message))?
         };
+        let session_id = SessionId::new();
         if let Some(operation_id) = operation_id {
             let payload = json!({
                 "shell": shell,
@@ -312,7 +316,7 @@ impl Supervisor {
             let reserved = store
                 .lock()
                 .map_err(|_| internal("store lock poisoned"))?
-                .reserve_external_spawn(actor, operation_id, &payload)
+                .reserve_external_spawn(actor, operation_id, &payload, &session_id)
                 .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
             if !reserved {
                 return Err((
@@ -321,7 +325,6 @@ impl Supervisor {
                 ));
             }
         }
-        let session_id = SessionId::new();
         let socket = self
             .runtime
             .join(format!("pty-{}.sock", session_id.as_str()));
@@ -434,6 +437,46 @@ impl Supervisor {
         Ok(
             json!({"id": session_id, "pid": pid, "supervisor_pid": supervisor_pid, "control_token": control_token, "state": "running", "presentation_state": "detached"}),
         )
+    }
+
+    /// A lookup never adopts a PID, grants a control token or starts a shell.
+    /// It only identifies the reserved Session and whether its guardian is
+    /// currently supervised by this daemon instance.
+    fn lookup_spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+        let key = args
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("operation_id must be a string"))?;
+        let actor = args
+            .get("created_by")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        let id = store
+            .lock()
+            .map_err(|_| internal("store lock poisoned"))?
+            .lookup_external_spawn(actor, key)
+            .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
+            .ok_or_else(|| (ErrorCode::NotFound, "unknown operation_id".to_owned()))?;
+        let supervised = self
+            .sessions
+            .lock()
+            .map_err(|_| internal("registry lock poisoned"))?
+            .get(id.as_str())
+            .is_some_and(|guardian| guardian.actor == actor);
+        let durable = store
+            .lock()
+            .map_err(|_| internal("store lock poisoned"))?
+            .get_session(&id)
+            .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
+            .is_some();
+        Ok(json!({
+            "session_id": id,
+            "reservation": "durable",
+            "session_recorded": durable,
+            "guardian_supervised": supervised,
+            "external_outcome": if supervised { "supervised" } else { "unknown" },
+            "retry_safe": false
+        }))
     }
 
     fn mark_unavailable(&self, store: &Arc<Mutex<Store>>, id: &SessionId) -> Result<(), Failure> {
