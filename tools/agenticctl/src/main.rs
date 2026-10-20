@@ -266,7 +266,6 @@ enum ExecutionAction {
     List,
 }
 
-
 #[derive(Debug, Args)]
 struct ModelArgs {
     #[command(subcommand)]
@@ -283,7 +282,10 @@ enum ModelAction {
         family: Option<String>,
         #[arg(long)]
         architecture: Option<String>,
-        #[arg(long, help = "Recorded execution backend (CPU, CUDA, VULKAN, ROCM, NPU).")]
+        #[arg(
+            long,
+            help = "Recorded execution backend (CPU, CUDA, VULKAN, ROCM, NPU)."
+        )]
         backend: Option<String>,
         #[arg(long, help = "Recorded context window, if known.")]
         context_tokens: Option<u64>,
@@ -293,7 +295,10 @@ enum ModelAction {
         modalities: Vec<String>,
         #[arg(long)]
         license: Option<String>,
-        #[arg(long, help = "Measurement source or evidence label, not inferred performance.")]
+        #[arg(
+            long,
+            help = "Measurement source or evidence label, not inferred performance."
+        )]
         evidence: Option<String>,
         #[arg(long, help = "Durable key for safe repeated registration requests.")]
         operation_id: Option<String>,
@@ -567,7 +572,6 @@ async fn dispatch_execution(
     };
     reply_value(call(&socket, payload).await?)
 }
-
 
 async fn dispatch_model(runtime_dir: &std::path::Path, action: ModelAction) -> Result<Value> {
     let payload = match action {
