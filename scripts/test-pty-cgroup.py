@@ -406,6 +406,18 @@ def exercise_real_cgroup(root):
                 time.sleep(0.02)
             assert descendant_pid, "escaped-session process PID not reported"
             assert os.getsid(descendant_pid) != shell_pid, "child did not escape terminal session"
+            # A new session/process-group is not allowed to escape the
+            # kernel-owned cgroup. Checking only that the process died later
+            # could falsely pass through the guardian parent-death fallback.
+            descendant_group = Path(f"/proc/{descendant_pid}/cgroup").read_text()
+            member = descendant_group.splitlines()
+            assert len(member) == 1 and member[0].startswith("0::"), member
+            assert member[0].split("::", 1)[1].rstrip("/").endswith(
+                "/" + group_name
+            ), ("setsid descendant escaped assigned cgroup", member, group_name)
+            assert str(descendant_pid) in (
+                group / "cgroup.procs"
+            ).read_text().split(), "setsid descendant not owned by cgroup"
             guardian.kill()
             guardian.wait(timeout=5)
             assert_not_running(shell_pid)
