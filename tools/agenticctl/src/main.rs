@@ -163,7 +163,10 @@ enum SessionAction {
     Spawn {
         #[arg(long, default_value = "/bin/sh", help = "Allowlisted shell path.")]
         shell: String,
-        #[arg(long, help = "Stable durable reservation ID; required for safe retry admission.")]
+        #[arg(
+            long,
+            help = "Stable durable reservation ID; required for safe retry admission."
+        )]
         operation_id: String,
     },
     #[command(about = "Read a PTY spawn reservation without starting another process.")]

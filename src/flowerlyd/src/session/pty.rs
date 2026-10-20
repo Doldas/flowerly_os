@@ -475,7 +475,10 @@ impl Supervisor {
             .get_mut(id.as_str())
             .is_some_and(|guardian| {
                 guardian.actor == actor
-                    && guardian.process.try_wait().is_ok_and(|result| result.is_none())
+                    && guardian
+                        .process
+                        .try_wait()
+                        .is_ok_and(|result| result.is_none())
             });
         let durable = store
             .lock()
