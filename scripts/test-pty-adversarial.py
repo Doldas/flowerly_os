@@ -217,6 +217,32 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             "id": identifier,
         })["running"]
 
+        other = daemon.spawn()
+        try:
+            other_id = other["id"]
+            other_control = other["control_token"]
+            assert other_id != identifier and other_control != control
+            for operation, arguments in (
+                ("session.attach", {"id": other_id, "control_token": control}),
+                ("session.read", {"id": other_id, "control_token": control,
+                                  "cursor": 0}),
+                ("session.terminate", {"id": other_id, "control_token": control}),
+                ("session.attach", {"id": identifier,
+                                    "control_token": other_control}),
+                ("session.write", {"id": other_id,
+                                   "attachment_token": token,
+                                   "data": "echo unauthorized\\n"}),
+            ):
+                rejected = request(session, operation, arguments)
+                assert rejected["type"] == "err" and rejected.get("code") == "conflict", (
+                    operation, rejected.get("type"), rejected.get("code")
+                )
+            assert successful(session, "session.status", {"id": other_id})["running"]
+        finally:
+            successful(session, "session.terminate", {
+                "id": other["id"], "control_token": other["control_token"],
+            })
+
         burst = 'python3 -c ' + "'import sys; sys.stdout.write(\"Q\"*180000); sys.stdout.flush()'" + "\n"
         assert write(session, identifier, token, burst)["written"] == len(burst)
         for _ in range(250):
