@@ -179,6 +179,44 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
     })
     token = attachment["attachment_token"]
     try:
+        # A burst of independent IPC clients competing for the existing writer
+        # must never acquire an additional lease. The single active writer
+        # remains usable despite this concurrent denial-of-service attempt.
+        def competing_attach(_):
+            return request(session, "session.attach", {
+                "id": identifier, "control_token": control,
+            })
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            contenders = list(pool.map(competing_attach, range(24)))
+        assert all(
+            reply["type"] == "err" and reply.get("code") == "conflict"
+            for reply in contenders
+        ), [(reply.get("type"), reply.get("code")) for reply in contenders]
+        assert successful(session, "session.heartbeat", {
+            "id": identifier, "attachment_token": token,
+        })["lease_active"]
+
+        # A control token is an opaque capability. Same-UID connectivity to
+        # the socket does not authorize reading another session's replay.
+        for command, arguments in (
+            ("session.read", {"id": identifier, "control_token": "wrong", "cursor": 0}),
+            ("session.follow", {"id": identifier, "control_token": "wrong",
+                                "cursor": 0, "wait_ms": 0}),
+            ("session.terminate", {"id": identifier, "control_token": "wrong"}),
+            ("session.write", {"id": identifier, "attachment_token": "wrong",
+                               "data": "echo forbidden\\n"}),
+            ("session.resize", {"id": identifier, "attachment_token": "wrong",
+                                "rows": 25, "cols": 90}),
+        ):
+            reply = request(session, command, arguments)
+            assert reply["type"] == "err" and reply.get("code") == "conflict", (
+                command, reply.get("type"), reply.get("code")
+            )
+        assert successful(session, "session.status", {
+            "id": identifier,
+        })["running"]
+
         burst = 'python3 -c ' + "'import sys; sys.stdout.write(\"Q\"*180000); sys.stdout.flush()'" + "\n"
         assert write(session, identifier, token, burst)["written"] == len(burst)
         for _ in range(250):
