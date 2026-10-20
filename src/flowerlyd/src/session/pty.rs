@@ -99,7 +99,6 @@ impl Drop for FollowPermit {
     }
 }
 
-
 pub struct Supervisor {
     runtime: PathBuf,
     cgroup_root: Result<Option<DelegatedCgroupRoot>, String>,
@@ -547,7 +546,10 @@ impl Supervisor {
                         .and_then(Value::as_str)
                         .ok_or_else(|| invalid("missing string session id"))?;
                     let guardian = sessions.get(id).ok_or_else(|| {
-                        (ErrorCode::Unavailable, "PTY is no longer supervised".to_owned())
+                        (
+                            ErrorCode::Unavailable,
+                            "PTY is no longer supervised".to_owned(),
+                        )
                     })?;
                     if args.get("control_token").and_then(Value::as_str)
                         != Some(guardian.control_token.as_str())
@@ -564,7 +566,10 @@ impl Supervisor {
                         (count < MAX_WAITING_FOLLOWERS).then_some(count + 1)
                     })
                     .map_err(|_| {
-                        (ErrorCode::Unavailable, "too many concurrent PTY followers".to_owned())
+                        (
+                            ErrorCode::Unavailable,
+                            "too many concurrent PTY followers".to_owned(),
+                        )
                     })?;
                 let _permit = FollowPermit(counter);
                 let mut snapshot_args = args.clone();
