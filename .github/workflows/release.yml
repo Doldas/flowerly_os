@@ -62,7 +62,7 @@ jobs:
 
       - name: Upload final Arch VM evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: arch-kernel-release-${{ github.ref_name }}-${{ github.sha }}
           path: target/arch-kernel/release-tag/report/
