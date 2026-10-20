@@ -39,10 +39,13 @@ containment, **not** separate long-running Flowerly service binaries.
 
 ## Build and run
 
-Linux and a Rust toolchain are required. Install `just` and run:
+Linux, `rustup` and `just` are required. The repository pins Rust 1.99.1
+(workspace MSRV 1.99) and aims to track the latest stable Rust release.
+`rustup` selects the pinned compiler automatically. Run:
 
 ```sh
 just check
+just lint
 just test
 just build
 just serve            # start flowerlyd and evolutiond for local development

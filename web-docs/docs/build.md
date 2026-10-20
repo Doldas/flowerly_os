@@ -5,9 +5,11 @@ same targets.
 
 ## Prerequisites
 
-- **Rust:** the toolchain is pinned in `rust-toolchain.toml` (`stable`, with
-  `rustfmt` and `clippy`); a `rustup` install picks it up automatically. The
-  minimum supported Rust version is set intentionally in `Cargo.toml`.
+- **Rust:** the toolchain is pinned in `rust-toolchain.toml` (`1.99.1`, with
+  `rustfmt` and `clippy`); `rustup` selects it automatically in this checkout.
+  `Cargo.toml` sets the workspace minimum supported Rust version (MSRV) to
+  `1.99`. The project aims to upgrade to each latest stable Rust release after
+  CI and release-build validation; bump the toolchain, MSRV and CI together.
 - **just:** the primary developer command runner (https://github.com/casey/just).
 - **Git** and build essentials; a C compiler is needed for the bundled SQLite.
 - **Optional:** Go and Python 3 for future components. QEMU/KVM plus OVMF and
@@ -27,7 +29,7 @@ just run      # build and start the local unified daemon runtime
 ```
 
 Underlying them are ordinary Cargo invocations (`cargo build --workspace --release / cargo check/test --workspace`,
-`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- --deny warnings`);
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- --deny warnings`);
 `just` does not hide build behavior behind opaque scripts.
 
 ## Makefile fallback
