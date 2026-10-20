@@ -55,14 +55,15 @@ one coherent change.
 
 ## Development loop
 
-1. Install [`just`](https://github.com/casey/just) and a stable Rust toolchain
-   (`rustup`, which respects `rust-toolchain.toml`).
+1. Install [`just`](https://github.com/casey/just) and `rustup`. The repository
+   pins Rust 1.99.1 via `rust-toolchain.toml`; the workspace MSRV is 1.99.
+   Upgrade pins to newer stable releases together with CI after verification.
 2. Create a short-lived branch.
 3. Make the change and run the checks:
 
 ```sh
-just check    # formatting + clippy + tests
-just test     # test suite
+just check    # cargo check across all workspace targets
+just test     # workspace test suite
 just lint     # formatting + clippy
 just build    # compile the workspace
 ```

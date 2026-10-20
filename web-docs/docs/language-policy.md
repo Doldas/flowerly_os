@@ -9,7 +9,10 @@ Rust is the default language for permanent system software: trusted daemons,
 storage, IPC, provenance, capabilities, generation management, privileged
 integration and system APIs. It gives memory and thread safety without a garbage
 collector, predictable performance, and mostly static single-binary services.
-The workspace is pinned to `stable` in `rust-toolchain.toml`. `unsafe` is
+The workspace currently pins Rust `1.99.1` in `rust-toolchain.toml`, with
+MSRV `1.99` declared in `Cargo.toml`. We aim to adopt the latest stable Rust
+release promptly, updating both the pinned toolchain and CI while keeping
+formatting, Clippy, integration tests and release builds green. `unsafe` is
 avoided; every unavoidable `unsafe` block carries a safety comment.
 See [ADR-0001](adr/0001-rust-as-primary-system-language.md).
 

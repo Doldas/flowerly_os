@@ -186,7 +186,7 @@ fn validate_registration(args: &Value) -> Result<(), CommandFailure> {
                 "unknown model backend `{backend}`"
             )));
         }
-    } else if !args.get("backend").map_or(true, Value::is_null) {
+    } else if !args.get("backend").is_none_or(Value::is_null) {
         return Err(CommandFailure::invalid(
             "`backend` must be a string or null",
         ));

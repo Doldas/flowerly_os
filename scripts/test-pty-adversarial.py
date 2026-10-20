@@ -351,6 +351,29 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             for future in pending:
                 assert future.result(timeout=5)["cursor"] >= idle_cursor
 
+        # The admission bound is per-session and never allows invalid
+        # capability holders to reserve a follower slot. With 24 observers,
+        # each accepted follow must finish within its own bounded wait;
+        # rejected excess requests must report an explicit unavailable.
+        crowd_cursor = successful(session, "session.status", {
+            "id": identifier,
+        })["cursor"]
+        with ThreadPoolExecutor(max_workers=24) as pool:
+            crowded = list(pool.map(
+                lambda _: request(session, "session.follow", {
+                    "id": identifier, "control_token": control,
+                    "cursor": crowd_cursor, "wait_ms": 250,
+                }), range(24),
+            ))
+        assert all(
+            reply["type"] == "ok"
+            or (reply["type"] == "err" and reply.get("code") == "unavailable")
+            for reply in crowded
+        ), [(reply.get("type"), reply.get("code")) for reply in crowded]
+        assert successful(session, "session.heartbeat", {
+            "id": identifier, "attachment_token": token,
+        })["lease_active"]
+
         follower_cursor = successful(session, "session.status", {
             "id": identifier,
         })["cursor"]
