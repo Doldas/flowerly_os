@@ -86,6 +86,9 @@ jobs:
       - name: Local model catalog honest evidence and replay contract
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-catalog.py target/release
 
+      - name: CLI local model catalog lifecycle and device-budget contract
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-cli-compute.py target/release
+
       - name: Expert profiles credential-free versioning and fail-closed provider boundary
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-profiles.py target/release
 
@@ -126,6 +129,9 @@ jobs:
       - name: Flow A to B to A real unified PTY acceptance
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-sessiond-pty-flow.py target/release
 
+      - name: Durable PTY spawn reservation, concurrent retry and restart lookup
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-supervisor-integration.py
+
       - name: PTY independent followers, backpressure, disconnect and abrupt sessiond death
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
 
@@ -144,7 +150,7 @@ jobs:
 
       - name: Preserve exact-SHA Arch guest and failed kernel acceptance evidence
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: arch-release-pty-${{ github.sha }}
           path: target/arch-kernel/release-push/report/
@@ -161,7 +167,7 @@ jobs:
       # Self-hosted release runners may use distro-managed Python (PEP 668).
       # Select a Python with venv support; the builder installs into a venv.
       - name: Setup Python for documentation
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -185,6 +191,9 @@ jobs:
 
       - name: Build documentation and verify GitHub Pages output
         run: bash ./scripts/build-docs-site.sh
+
+      - name: Verify Make and just task parity and documentation paths
+        run: python3 ./scripts/test-build-task-parity.py
 
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh

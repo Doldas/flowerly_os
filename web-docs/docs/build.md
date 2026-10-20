@@ -19,14 +19,14 @@ same targets.
 The canonical interface is `just`:
 
 ```text
-just build    # build the workspace (debug)
+just build    # build the workspace (release)
 just check    # cargo check across the workspace
 just test     # run the test suite
 just lint     # cargo fmt --check and cargo clippy
-just run      # run a service (see the justfile for arguments)
+just run      # build and start the local unified daemon runtime
 ```
 
-Underlying them are ordinary Cargo invocations (`cargo build/check/test --workspace`,
+Underlying them are ordinary Cargo invocations (`cargo build --workspace --release / cargo check/test --workspace`,
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- --deny warnings`);
 `just` does not hide build behavior behind opaque scripts.
 
@@ -35,10 +35,12 @@ Underlying them are ordinary Cargo invocations (`cargo build/check/test --worksp
 Where `just` is not available, a `Makefile` mirrors these targets (`make build`,
 `make check`, `make test`, `make lint`, `make run`), invoking the same underlying
 commands. `just` remains primary; the `Makefile` only keeps the project buildable
-without extra tooling.
+without extra tooling. The parity test fails CI if equivalent task recipes
+diverge or either runner stops refusing unsupported image/VM operations.
 
-Services are foreground processes, so `cargo run -p flowd` or
-`cargo run -p agenticctl -- status` works directly. They create Unix sockets
+The development runtime starts the unified `flowerlyd` and restricted
+`evolutiond` processes; `cargo run -p flowerlyd` or
+`cargo run -p agenticctl -- status` is also available. They create Unix sockets
 under `$XDG_RUNTIME_DIR/flowerly` and persist structured state in one local
 SQLite `state.db` under the XDG state directory (normally
 `$XDG_STATE_HOME/flowerly` or `$HOME/.local/state/flowerly`). All of this works
@@ -60,7 +62,7 @@ directory.
 
 The initial distribution substrate is Arch Linux. The current repository does
 not yet produce the 0.0.9 bootable image, but the image inputs are concrete
-under `image/arch/`.
+under `distro/`.
 
 Validate them with:
 
@@ -121,7 +123,10 @@ cargo build --workspace --release
 ```
 
 Go and Python checks (`go test`/`go vet`, `ruff`/`pytest`) run only when such code
-is present. Documentation checks validate required docs and relative links;
+is present. Documentation checks validate required docs; `scripts/test-build-task-parity.py`
+verifies the key `make`/`just` task commands, intentional incomplete image/VM
+targets, release documentation links, and this guide's current daemon paths;
+
 security checks run `cargo audit` and `cargo deny`. A red CI cannot be
 released; see [releases.md](releases.md).
 
