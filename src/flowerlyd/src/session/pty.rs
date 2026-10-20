@@ -276,11 +276,14 @@ impl Supervisor {
                 "PTY session limit (16) reached".to_owned(),
             ));
         }
-        if args.get("operation_id").is_some_and(|v| !v.is_null()) {
-            return Err(invalid(
-                "session.spawn cannot safely replay external process effects",
-            ));
-        }
+        // An external effect cannot be rolled back by SQLite. Persist the key
+        // before Command::spawn. On retry, fail closed even after daemon restart;
+        // the outcome may still be unknown and must NOT launch another shell.
+        let operation_id = match args.get("operation_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.as_str()),
+            Some(_) => return Err(invalid("operation_id must be a string or null")),
+        };
         if args.get("pid").is_some() {
             return Err(invalid("session.spawn does not accept a caller PID"));
         }
@@ -299,6 +302,24 @@ impl Supervisor {
             let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
             super::parse_optional_flow_id(&db, args).map_err(|error| (error.code, error.message))?
         };
+        if let Some(operation_id) = operation_id {
+            let payload = json!({
+                "shell": shell,
+                "created_by": actor,
+                "flow_id": flow_id.as_ref().map(ToString::to_string)
+            }).to_string();
+            let reserved = store
+                .lock()
+                .map_err(|_| internal("store lock poisoned"))?
+                .reserve_external_spawn(actor, operation_id, &payload)
+                .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+            if !reserved {
+                return Err((
+                    ErrorCode::Unavailable,
+                    "session.spawn prior attempt has an unknown external outcome; no automatic retry".to_owned(),
+                ));
+            }
+        }
         let session_id = SessionId::new();
         let socket = self
             .runtime

@@ -555,7 +555,7 @@ impl Store {
         // Expiry cannot guarantee protection from retries beyond this window.
         let expires_before = Timestamp::now().as_millis() - 30_i64 * 24 * 60 * 60 * 1000;
         tx.execute(
-            "DELETE FROM ipc_operations WHERE created_at < ?1",
+            "DELETE FROM ipc_operations WHERE created_at < ?1 AND command != 'session.spawn'",
             params![expires_before],
         )?;
         let recorded: Option<(String, String)> = tx
@@ -591,6 +591,54 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(operation.response_payload.to_owned())
+    }
+
+    /// Reserve an externally effective PTY operation BEFORE launching anything.
+    /// A reservation is never pruned by normal 30-day mutation housekeeping:
+    /// expiring one could silently launch a second process on a late retry.
+    /// A repeated reservation is not proof the guardian survived; callers must
+    /// answer unavailable until recovery is independently proven.
+    pub fn reserve_external_spawn(
+        &mut self,
+        actor: &str,
+        operation_id: &str,
+        request_payload: &str,
+    ) -> Result<bool> {
+        if operation_id.is_empty()
+            || operation_id.len() > 128
+            || !operation_id.bytes().all(|ch| {
+                ch.is_ascii_alphanumeric() || b"._:-".contains(&ch)
+            })
+            || request_payload.len() > 64 * 1024
+        {
+            return Err(StorageError::InvalidOperation(
+                "invalid external operation_id or request payload".into(),
+            ));
+        }
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let previous: Option<String> = tx.query_row(
+            "SELECT request_payload FROM ipc_operations
+             WHERE actor = ?1 AND command = 'session.spawn' AND operation_id = ?2",
+            params![actor, operation_id],
+            |row| row.get(0),
+        ).optional()?;
+        if let Some(previous) = previous {
+            if previous != request_payload {
+                return Err(StorageError::OperationConflict(
+                    "operation_id was already used with different spawn arguments".into(),
+                ));
+            }
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO ipc_operations
+             (actor, command, operation_id, request_payload, response_payload, created_at)
+             VALUES (?1, 'session.spawn', ?2, ?3, 'pending-external-effect', ?4)",
+            params![actor, operation_id, request_payload, Timestamp::now().as_millis()],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Durable, actor-scoped opt-in retry identity for Flow creation.
