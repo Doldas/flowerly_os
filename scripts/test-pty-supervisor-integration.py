@@ -9,6 +9,8 @@ Tests the full lifecycle of a PTY session through the flowerlyd IPC:
 """
 
 import base64
+import concurrent.futures
+import sqlite3
 import json
 import os
 import pathlib
@@ -118,6 +120,22 @@ def main():
             })
             assert missing_lookup["type"] == "err", missing_lookup
             assert missing_lookup["code"] == "not_found", missing_lookup
+            with sqlite3.connect(state / "state.db") as db:
+                records = db.execute(
+                    "SELECT actor, response_payload FROM ipc_operations "
+                    "WHERE command = 'session.spawn' AND operation_id = ?",
+                    ("retry-pty-001",),
+                ).fetchall()
+            assert records == [(f"uid:{os.getuid()}", spawn_response["data"]["id"])], records
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                replies = list(pool.map(
+                    lambda _: request(sock, "session.spawn", spawn_args),
+                    range(4),
+                ))
+            assert all(
+                r["type"] == "err" and r["code"] == "unavailable"
+                for r in replies
+            ), replies
             before = request(sock, "session.list", {})
             before_ids = {entry["id"] for entry in before["data"]["sessions"]}
             repeat = request(sock, "session.spawn", spawn_args)
