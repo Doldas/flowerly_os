@@ -97,6 +97,24 @@ def main():
         try:
             wait_ready(sock, proc, log)
 
+            # External process creation must not silently adopt ordinary
+            # SQLite operation-key replay: a timed-out launch is UNKNOWN,
+            # not safe to repeat. Verify rejected attempts have no side effect.
+            before = request(sock, "session.list", {})
+            before_ids = {entry["id"] for entry in before["data"]["sessions"]}
+            for key in ("retry-pty-001", "retry-pty-001"):
+                rejected = request(sock, "session.spawn", {
+                    "shell": "/bin/sh",
+                    "created_by": "uid:1000",
+                    "operation_id": key,
+                })
+                assert rejected["type"] == "err", rejected
+                assert rejected["code"] == "invalid_argument", rejected
+            after = request(sock, "session.list", {})
+            after_ids = {entry["id"] for entry in after["data"]["sessions"]}
+            assert after_ids == before_ids, (before_ids, after_ids)
+            print("PTY retry safety: operation IDs rejected without spawning", flush=True)
+
             # Spawn a PTY session (this actually launches the guardian)
             spawn_response = request(sock, "session.spawn", {
                 "shell": "/bin/sh",
