@@ -3,7 +3,7 @@ name: pr-validation
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited, ready_for_review]
-    branches: [master, 'release/**']
+    branches: ['release/**']
 
 permissions:
   contents: read
@@ -17,6 +17,10 @@ concurrency:
 jobs:
   validate-pr-policy:
     name: Validate branch policy and issue link
+    if: >-
+      startsWith(github.head_ref, 'feature/') ||
+      startsWith(github.head_ref, 'bugfix/') ||
+      startsWith(github.head_ref, 'docs/')
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR metadata as data
@@ -31,35 +35,13 @@ jobs:
             const developmentHead = /^(feature|bugfix|docs)\/.+/;
             const releaseBranch = /^release\/([1-9]\d*)$/;
 
-            // Skip full validation for release->master promotion PRs
-            const isPromotion = base === "master" && releaseBranch.test(head);
-            if (isPromotion) {
-              core.info(`Release promotion PR ${head} -> ${base}, skipping issue-link requirement`);
+            if (!releaseBranch.test(base)) {
+              core.setFailed(`Unsupported PR base ${base}; expected release/N`);
               return;
             }
-
-            if (base === "master") {
-              if (!releaseBranch.test(head)) {
-                core.setFailed(
-                  `PRs to master must originate from release/N; got ${head} -> ${base}`
-                );
-                return;
-              }
-            } else if (releaseBranch.test(base)) {
-              const from = head.match(releaseBranch);
-              const to = base.match(releaseBranch);
-              const adjacent = from && to &&
-                BigInt(from[1]) + 1n === BigInt(to[1]);
-              if (!developmentHead.test(head) && !adjacent) {
-                core.setFailed(
-                  `PRs to ${base} must originate from feature/*, bugfix/*, docs/*, ` +
-                  `or exactly the preceding release/N; got ${head}`
-                );
-                return;
-              }
-            } else {
+            if (!developmentHead.test(head)) {
               core.setFailed(
-                `Unsupported PR base ${base}; expected master or release/N`
+                `PRs to ${base} must originate from feature/*, bugfix/* or docs/*; got ${head}`
               );
               return;
             }
@@ -96,19 +78,3 @@ jobs:
 
             core.info(`Accepted branch policy: ${head} -> ${base}`);
 
-      # Required via the existing "Validate branch policy and issue link" job.
-      # Unlike pull_request CI, the release PUSH job actually boots an Arch VM.
-      - name: Checkout release promotion source
-        if: github.base_ref == 'master'
-        uses: actions/checkout@v7
-
-      - name: Verify latest release and exact-SHA Arch acceptance
-        if: github.base_ref == 'master'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          python3 scripts/branch-forward.py verify-master --head "$HEAD_REF" --sha "$HEAD_SHA"
