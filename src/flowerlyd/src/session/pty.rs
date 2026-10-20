@@ -561,16 +561,24 @@ impl Supervisor {
                     }
                     Arc::clone(&guardian.waiting_followers)
                 };
-                counter
-                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                        (count < MAX_WAITING_FOLLOWERS).then_some(count + 1)
-                    })
-                    .map_err(|_| {
-                        (
+                let mut count = counter.load(Ordering::Acquire);
+                loop {
+                    if count >= MAX_WAITING_FOLLOWERS {
+                        return Err((
                             ErrorCode::Unavailable,
                             "too many concurrent PTY followers".to_owned(),
-                        )
-                    })?;
+                        ));
+                    }
+                    match counter.compare_exchange_weak(
+                        count,
+                        count + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(observed) => count = observed,
+                    }
+                }
                 let _permit = FollowPermit(counter);
                 let mut snapshot_args = args.clone();
                 snapshot_args["wait_ms"] = json!(0);
