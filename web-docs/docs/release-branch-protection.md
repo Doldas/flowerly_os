@@ -18,7 +18,9 @@ rulesets but **cannot create or modify** repository rulesets.
 ## Managed gate
 
 Install the separate `FLOWERLY_RELEASE_REQUIRED_CHECKS` branch ruleset for
-both the default branch and `refs/heads/release/*`. It layers with
+`refs/heads/release/*` only. The master promotion workflow has its own
+exact-SHA acceptance check; administrators must configure an independent
+required check for master before merging this policy change. It layers with
 `MERGERULES` without overwriting or relaxing its existing review rules.
 
 - Require a pull request, resolved review threads, and **no bypass actors**
@@ -68,7 +70,7 @@ GH_TOKEN="$(gh auth token)" python3 scripts/release-gates.py verify
 
 The script only creates/updates its dedicated named ruleset; it does not
 alter `MERGERULES`. It verifies GitHub's effective branch rules for
-`master` and `release/2`. If verification fails, do not claim #55 is done.
+`release/2`. Master protection must be audited independently. If verification fails, do not claim #55 is done.
 Use the [repository rulesets page](https://github.com/Doldas/flowerly_os/settings/rules)
 to inspect enforcement, including bypass actors and merge queue behavior.
 
