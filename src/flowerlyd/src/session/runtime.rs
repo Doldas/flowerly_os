@@ -23,6 +23,23 @@ impl SessionRuntime {
                 let db = store
                     .lock()
                     .map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
+                // Reservations are committed before the guardian is launched.
+                // A crash may leave a live cgroup WITHOUT a Session row. Kill
+                // only its exact, validated pre-reserved cgroup name; never
+                // probe or signal a bare PID vulnerable to reuse.
+                for id in db
+                    .list_external_spawn_reservations()
+                    .context("listing reserved external spawns")?
+                {
+                    if let Ok(Some(root)) = &cgroup_root {
+                        terminate_stale_cgroup(&id, Some(root))?;
+                    } else {
+                        tracing::warn!(
+                            session_id = %id,
+                            "external spawn recovery cannot prove cgroup cleanup"
+                        );
+                    }
+                }
                 for session in db
                     .list_sessions()
                     .context("listing sessions for PTY recovery")?

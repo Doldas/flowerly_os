@@ -673,6 +673,24 @@ impl Store {
         }
     }
 
+    /// Includes reserved IDs without Session rows: the daemon may have died
+    /// between launching a guardian and persisting the Session result.
+    pub fn list_external_spawn_reservations(&self) -> Result<Vec<SessionId>> {
+        let mut statement = self.conn.prepare(
+            "SELECT response_payload FROM ipc_operations
+             WHERE command = 'session.spawn'",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let raw = row?;
+            ids.push(SessionId::from_str(&raw).map_err(|error| {
+                StorageError::InvalidOperation(error.to_string())
+            })?);
+        }
+        Ok(ids)
+    }
+
     /// Durable, actor-scoped opt-in retry identity for Flow creation.
     pub fn insert_flow_with_provenance_once(
         &mut self,
