@@ -87,7 +87,7 @@ def validate(root=ROOT):
     for name, content in (("security", security), ("codeql", codeql)):
         if "paths-ignore:" in content or re.search(r"(?m)^\s+paths:\s*$", content):
             raise ValueError(f"{name}: mandatory job cannot be skipped by file path")
-    if not re.search(r"(?m)^  pull_request:\\s*$", pr) or "branches: ['release/**']" not in pr:
+    if not re.search(r"(?m)^  pull_request:\s*$", pr) or "branches: ['release/**']" not in pr:
         raise ValueError("pr-validation: release-only PR trigger required")
     if "branches: [master]" in pr:
         raise ValueError("pr-validation must not run for master promotions")
