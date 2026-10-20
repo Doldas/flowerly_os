@@ -189,6 +189,9 @@ jobs:
       - name: Build documentation and verify GitHub Pages output
         run: bash ./scripts/build-docs-site.sh
 
+      - name: Verify Make and just task parity and documentation paths
+        run: python3 ./scripts/test-build-task-parity.py
+
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh
 

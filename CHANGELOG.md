@@ -5,7 +5,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
-### Architecture transition (proposed, awaiting validation)
+### Distribution-first architecture transition (integration; not release-certified)
 
 - Unified Flowerly state handlers under `src/flowerlyd` with bounded Tokio work queues.
 - Combined types, SQLite migrations and IPC framing in `flowerly-core`.
@@ -16,8 +16,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ### Added
 
-- Rust Cargo workspace with the shared crates `agentic-types`,
-  `agentic-storage`, `agentic-ipc`, and `agentic-core`.
+- Rust Cargo workspace with the shared `flowerly-core` crate.
 - Typed, prefixed, UUID-backed identifiers and durable domain models
   (Flow, Goal, Session, Execution, Generation, ProvenanceEdge, and others).
 - SQLite-backed storage with an ordered, idempotent migration runner and the
@@ -25,10 +24,10 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 - Unix-domain-socket, length-prefixed JSON IPC (protocol v1).
 - Shared daemon foundations: `ServiceConfig`, structured tracing, and
   `run_service` with SIGTERM and IPC shutdown.
-- Services `agenticd`, `flowd`, `sessiond`, `goald`, `provenanced`,
-  `capabilityd`, `generationd`, and `evolutiond`.
+- Unified `flowerlyd` for Flow, Goal, Session, Generation, Provenance,
+  Capability, Compute and Execution modules; separate `evolutiond` boundary.
 - The `agenticctl` control-plane CLI.
-- Root documentation and the architecture specification under `docs/`.
+- Root documentation and architecture guides under `web-docs/docs/`.
 
 ## 0.0.1 — Repository Foundation
 
