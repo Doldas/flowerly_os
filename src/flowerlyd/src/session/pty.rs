@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -102,6 +103,16 @@ impl Supervisor {
             launch: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Kernel-owned runtime directory is tied to the same UID as the
+    /// credential-checked Unix socket. Do not use client JSON `created_by`
+    /// as an authorization principal for durable external operations.
+    fn principal(&self) -> Result<String, Failure> {
+        let owner = std::fs::metadata(&self.runtime)
+            .map_err(|error| internal(format!("runtime ownership unavailable: {error}")))?
+            .uid();
+        Ok(format!("uid:{owner}"))
     }
 
     pub fn routes(&self, name: &str, args: &Value) -> bool {
@@ -316,7 +327,7 @@ impl Supervisor {
             let reserved = store
                 .lock()
                 .map_err(|_| internal("store lock poisoned"))?
-                .reserve_external_spawn(actor, operation_id, &payload, &session_id)
+                .reserve_external_spawn(&self.principal()?, operation_id, &payload, &session_id)
                 .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
             if !reserved {
                 return Err((
@@ -454,15 +465,18 @@ impl Supervisor {
         let id = store
             .lock()
             .map_err(|_| internal("store lock poisoned"))?
-            .lookup_external_spawn(actor, key)
+            .lookup_external_spawn(&self.principal()?, key)
             .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
             .ok_or_else(|| (ErrorCode::NotFound, "unknown operation_id".to_owned()))?;
         let supervised = self
             .sessions
             .lock()
             .map_err(|_| internal("registry lock poisoned"))?
-            .get(id.as_str())
-            .is_some_and(|guardian| guardian.actor == actor);
+            .get_mut(id.as_str())
+            .is_some_and(|guardian| {
+                guardian.actor == actor
+                    && guardian.process.try_wait().is_ok_and(|result| result.is_none())
+            });
         let durable = store
             .lock()
             .map_err(|_| internal("store lock poisoned"))?
