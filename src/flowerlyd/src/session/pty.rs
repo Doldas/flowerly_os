@@ -511,17 +511,17 @@ impl Supervisor {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
-        // Long-poll observers must NEVER retain the per-Session command lock
-        // for their entire wait window. Each snapshot is a nonblocking
-        // guardian read; the lock is released before sleeping, allowing
-        // writers, resize and termination to proceed between polls.
+        // Long-poll observers must never hold the Session command lock while
+        // waiting for output. Yield between short nonblocking snapshots.
         if name == "session.follow" {
             let wait_ms = match args.get("wait_ms") {
                 None => 100,
                 Some(value) => value
                     .as_u64()
                     .filter(|value| *value <= 250)
-                    .ok_or_else(|| invalid("session.follow wait_ms must be an integer from 0 to 250"))?,
+                    .ok_or_else(|| {
+                        invalid("session.follow wait_ms must be an integer from 0 to 250")
+                    })?,
             };
             if wait_ms > 0 {
                 let mut snapshot_args = args.clone();
@@ -530,14 +530,19 @@ impl Supervisor {
                 loop {
                     let snapshot = self.control(store, name, &snapshot_args)?;
                     let requested = args.get("cursor").and_then(Value::as_u64).unwrap_or(0);
-                    if snapshot.get("cursor").and_then(Value::as_u64).is_some_and(|cursor| cursor > requested)
+                    if snapshot
+                        .get("cursor")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|cursor| cursor > requested)
                         || snapshot.get("running") == Some(&Value::Bool(false))
                         || Instant::now() >= deadline
                     {
                         return Ok(snapshot);
                     }
                     std::thread::sleep(
-                        (deadline - Instant::now()).min(Duration::from_millis(25)),
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(25)),
                     );
                 }
             }
