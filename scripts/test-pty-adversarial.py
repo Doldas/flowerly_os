@@ -334,13 +334,15 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
         entry["id"] for entry in successful(session, "session.list", {})["sessions"]
     }
     known_sockets = set(daemon.runtime.glob("pty-*.sock"))
+    operation_key = "pty-failed-durable-insert-001"
+    spawn_args = {"shell": "/bin/sh", "operation_id": operation_key}
     with sqlite3.connect(database, isolation_level=None) as connection:
         connection.execute(
             "CREATE TRIGGER reject_pty_session_insert BEFORE INSERT ON sessions "
             "BEGIN SELECT RAISE(ABORT, 'deliberate durable insertion failure'); END"
         )
     try:
-        rejected = request(session, "session.spawn", {"shell": "/bin/sh"})
+        rejected = request(session, "session.spawn", spawn_args)
         assert rejected["type"] == "err", rejected
     finally:
         with sqlite3.connect(database, isolation_level=None) as connection:
@@ -368,12 +370,37 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
         entry["id"] for entry in successful(session, "session.list", {})["sessions"]
     }
     assert after == known_sessions, (known_sessions, after)
+    # SQLite rejected the Session row, but the external-effect admission was
+    # committed before the guardian started. The reservation must survive
+    # and a retry must NEVER start a new process (even after reboot).
+    with sqlite3.connect(database) as connection:
+        reserved = connection.execute(
+            "SELECT actor, response_payload FROM ipc_operations "
+            "WHERE command = 'session.spawn' AND operation_id = ?",
+            (operation_key,),
+        ).fetchone()
+    assert reserved is not None, "failed spawn lost its durable reservation"
+    assert reserved[0] == f"uid:{os.geteuid()}", reserved
+    assert re.fullmatch(r"session-[0-9a-f]{32}", reserved[1]), reserved
+    lookup = successful(session, "session.spawn.lookup", {
+        "operation_id": operation_key,
+    })
+    assert lookup["session_id"] == reserved[1], lookup
+    assert lookup["session_recorded"] is False, lookup
+    assert lookup["external_outcome"] == "unknown", lookup
+    rejected_retry = request(session, "session.spawn", spawn_args)
+    assert rejected_retry["type"] == "err" and rejected_retry["code"] == "unavailable", rejected_retry
+    mismatch = request(
+        session, "session.spawn", dict(spawn_args, shell="/bin/bash"),
+    )
+    assert mismatch["type"] == "err" and mismatch["code"] == "conflict", mismatch
+    assert {row["id"] for row in successful(session, "session.list", {})["sessions"]} == known_sessions
     replacement = daemon.spawn()
     successful(session, "session.terminate", {
         "id": replacement["id"],
         "control_token": replacement["control_token"],
     })
-    print("PTY failed SQLite spawn: uncommitted guardian stopped, no durable ghost, subsequent spawn succeeds")
+    print("PTY failed SQLite spawn: guardian reaped, durable reservation retained, retry refused")
 
 
 def create_spawn_with_lost_response(daemon):
