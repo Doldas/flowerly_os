@@ -243,11 +243,39 @@ def main():
             # being completed/terminated. The reservation survives in SQLite.
             proc.terminate()
             assert proc.wait(timeout=10) == 0
+            # Crash-window fixture: the pre-launch reservation committed, but
+            # the daemon died before any Session row was saved. This must still
+            # be queried and must block a fresh guardian under the same key.
+            orphan_key = "retry-pty-before-session"
+            orphan_id = f"session-{uuid.uuid4().hex}"
+            with sqlite3.connect(state / "state.db") as db:
+                payload = db.execute(
+                    "SELECT request_payload FROM ipc_operations "
+                    "WHERE command = 'session.spawn' AND operation_id = ?",
+                    ("retry-pty-001",),
+                ).fetchone()[0]
+                db.execute(
+                    "INSERT INTO ipc_operations "
+                    "(actor, command, operation_id, request_payload, response_payload, created_at) "
+                    "VALUES (?, 'session.spawn', ?, ?, ?, ?)",
+                    (f"uid:{os.getuid()}", orphan_key, payload, orphan_id,
+                     int(time.time() * 1000)),
+                )
             proc = subprocess.Popen(
                 [str(pathlib.Path("target/release/flowerlyd"))], env=env,
                 stdout=log.open("ab"), stderr=subprocess.STDOUT,
             )
             wait_ready(sock, proc, log)
+            orphan = request(sock, "session.spawn.lookup", {
+                "operation_id": orphan_key,
+            })
+            assert orphan["type"] == "ok", orphan
+            assert orphan["data"]["session_id"] == orphan_id, orphan
+            assert orphan["data"]["session_recorded"] is False, orphan
+            orphan_retry = request(
+                sock, "session.spawn", dict(spawn_args, operation_id=orphan_key)
+            )
+            assert orphan_retry["type"] == "err" and orphan_retry["code"] == "unavailable"
             before_restart_retry = request(sock, "session.list", {})
             retry_after_restart = request(sock, "session.spawn", spawn_args)
             assert retry_after_restart["type"] == "err", retry_after_restart
