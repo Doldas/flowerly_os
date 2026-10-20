@@ -208,6 +208,24 @@ def main():
             else:
                 raise AssertionError("PTY socket not cleaned up")
 
+            # Restart the supervisor and attempt the exact same external key.
+            # No new guardian may be launched despite the original outcome
+            # being completed/terminated. The reservation survives in SQLite.
+            proc.terminate()
+            assert proc.wait(timeout=10) == 0
+            proc = subprocess.Popen(
+                [str(pathlib.Path("target/release/flowerlyd"))], env=env,
+                stdout=log.open("ab"), stderr=subprocess.STDOUT,
+            )
+            wait_ready(sock, proc, log)
+            before_restart_retry = request(sock, "session.list", {})
+            retry_after_restart = request(sock, "session.spawn", spawn_args)
+            assert retry_after_restart["type"] == "err", retry_after_restart
+            assert retry_after_restart["code"] == "unavailable", retry_after_restart
+            after_restart_retry = request(sock, "session.list", {})
+            assert after_restart_retry["data"]["count"] == before_restart_retry["data"]["count"]
+            print("PTY durable reservation preserved across restart", flush=True)
+
             print("\nPTY supervisor integration test PASSED")
 
         finally:
