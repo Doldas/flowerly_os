@@ -159,6 +159,21 @@ enum SessionAction {
         )]
         operation_id: Option<String>,
     },
+    #[command(about = "Spawn a guarded local PTY; never retry automatically after timeout.")]
+    Spawn {
+        #[arg(long, default_value = "/bin/sh", help = "Allowlisted shell path.")]
+        shell: String,
+        #[arg(
+            long,
+            help = "Stable durable reservation ID; required for safe retry admission."
+        )]
+        operation_id: String,
+    },
+    #[command(about = "Read a PTY spawn reservation without starting another process.")]
+    SpawnLookup {
+        #[arg(help = "Original spawn operation ID.")]
+        operation_id: String,
+    },
     #[command(about = "List registered sessions.")]
     List,
     #[command(about = "Mark a session exited.")]
@@ -459,6 +474,17 @@ async fn dispatch_session(runtime_dir: &std::path::Path, action: SessionAction) 
                 "cwd": cwd,
                 "operation_id": operation_id
             }),
+        },
+        SessionAction::Spawn {
+            shell,
+            operation_id,
+        } => Payload::Command {
+            name: "session.spawn".into(),
+            args: serde_json::json!({ "shell": shell, "operation_id": operation_id }),
+        },
+        SessionAction::SpawnLookup { operation_id } => Payload::Command {
+            name: "session.spawn.lookup".into(),
+            args: serde_json::json!({ "operation_id": operation_id }),
         },
         SessionAction::List => Payload::Command {
             name: "session.list".into(),

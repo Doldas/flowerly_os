@@ -1,13 +1,13 @@
 # IPC mutation outcomes, retries and SQLite contention
 
-Status: **P1 draft implementation and remaining limitations**, issues #56, #62 and #63. The optional create-operation mechanism below is proposed in draft PR #66, NOT on the release branch until merged.
+Status: **implemented SQLite retries, externally effective PTY safety under review** (issues #62 and #63). The original durable SQLite create-key implementation was merged in PRs #66–#67; PR #156 adds separately scoped PTY guardrails.
 
 ## What current IPC responses guarantee
 
 - Each request uses a correlated IPC v1 response ID and has a bounded network/queue/handler response deadline.
 - The worker holding an IPC handler slot continues until its blocking SQLite work returns, even if the client has already received a timeout. A timeout does **not** prove a database transaction was rolled back.
 - `unavailable` caused by SQLite BUSY/LOCKED means SQLite rejected the operation under lock contention. `unavailable` from an overall IPC deadline **can have an unknown mutation outcome**.
-- The envelope correlation ID is not a durable idempotency key. Legacy calls with no explicit `operation_id` remain non-idempotent. Draft PR #66 introduces opt-in, actor-scoped durable results for SQLite `flow.create`, `goal.create` and metadata-only `session.create`; it does not cover externally visible side effects.
+- The envelope correlation ID is not a durable idempotency key. Legacy calls with no explicit `operation_id` remain non-idempotent. Merged PRs #66–#67 introduced opt-in, actor-scoped durable results for SQLite `flow.create`, `goal.create` and metadata-only `session.create`; it does not cover externally visible side effects.
 - Read-after-timeout reconciliation is possible in some cases by listing or querying domain records, but names and goals are not guaranteed unique and that alone is **not** a correctness proof of idempotency.
 
 ## Safe interim client policy
@@ -18,7 +18,7 @@ Status: **P1 draft implementation and remaining limitations**, issues #56, #62 a
 4. Include correlation ID, actor identity, command name, elapsed time and response classification in diagnostics without logging secrets or full sensitive payloads.
 5. No agent may guess that a task is safe to repeat merely because it is conceptually a "retry".
 
-## Opt-in durable create-operation identity (draft PR #66)
+## Opt-in durable create-operation identity (merged PRs #66–#67)
 
 For `flow.create`, `goal.create`, `goal.child`, and `session.create` (metadata-only), specify an optional `operation_id` string with 1–128 ASCII letters, numbers, dot, underscore, colon or hyphen. Null or omitted means legacy non-idempotent behavior; other JSON types are rejected. Keyed request/response bodies are limited to 64 KiB each; oversized requests are rejected with `invalid_argument`. The same operation ID must be reused on retry, not regenerated. A CLI user may pass `agenticctl flow create "Plan" --operation-id my-request-123`, with analogous `goal create` and `session create` options.
 
@@ -33,6 +33,44 @@ Example (JSON command arguments; core replaces `created_by` with the trusted act
 The registry stores serialized request arguments as well as original response payloads in the local state database for 30 days. Treat this database as sensitive persistent data: back up and protect it appropriately. A future design may substitute a cryptographic payload fingerprint to reduce duplicated sensitive text. An operation identity is a transaction-level replay guarantee **only for those SQLite create commands**; other metadata mutations, file writes, shell execution, PTY spawn, external API calls, generation activation, and deployments still need separate outcome/retry semantics.
 
 No unsupported, silent, automatic retries should be introduced into agenticctl or autonomous agents. Do not claim general exactly-once delivery, failover, seamless process recovery or indefinite retention.
+
+## Externally effective `session.spawn` (PR #156)
+
+Unlike a metadata-only Session create, spawning a shell is an external process
+effect. For `session.spawn`, an optional `operation_id` is now reserved with
+an immutable Session ID in an IMMEDIATE SQLite transaction **before**
+`Command::spawn` executes. The reservation actor comes from the owner of the
+kernel-owned single-user runtime directory, rather than JSON `created_by`.
+The key is bound to normalized `shell`, `created_by`, and `flow_id` arguments.
+The key's reservation is **not pruned after 30 days** because forgetting a
+potentially live external effect would make a late retry dangerous.
+
+The first request may create a real shell and return its Session ID and control
+token as before. A duplicate key (even after a supervisor restart) returns
+typed `unavailable` without launching anything. Changed spawn arguments with
+the same key return typed `conflict`. This is **at-most-once admission** for a
+key, not at-least-once execution: a failed launch can leave the key reserved,
+and a response timeout always means its effect is unknown.
+
+A read-only `session.spawn.lookup` IPC command takes
+`{"operation_id":"my-pty-request"}`. It returns the reserved `session_id`,
+whether a Session row exists, and whether this daemon currently has a live
+guardian. It never adopts a numeric PID, mints a control token or retries the
+process. When ownership cannot be proven, `external_outcome: "unknown"` is
+returned, including after a restart.
+
+On startup the daemon scans all external reservations (including reservations
+whose process started but whose Session row was not saved). With genuine
+delegated cgroup-v2 authority it kills exact Session-ID-scoped stale cgroups,
+never a bare PID that could have been reused. If cgroup recovery cannot be
+proved, this is **not** an assertion that the old shell exited: remain in
+unknown-outcome state and do not automatically retry. Development mode lacks
+the production cgroup guarantee.
+
+Client policy: retain a stable operation ID, inspect `session.spawn.lookup`
+after an ambiguous response, and do **not** submit the same effect again
+under a new key until it has been explicitly reconciled. No guarantee is made
+about adopting old file descriptors or replaying capabilities across crashes.
 
 ## Required evidence before closing #63
 

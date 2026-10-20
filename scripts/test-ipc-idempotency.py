@@ -36,6 +36,7 @@ def request(socket_path, name, args):
         "name": name,
         "args": args,
     }).encode("utf-8")
+    started = time.monotonic()
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -45,6 +46,10 @@ def request(socket_path, name, args):
         reply = json.loads(recv_exact(client, size))
     assert reply["id"] == correlation, (name, reply)
     assert reply["version"] == 1, (name, reply)
+    elapsed_ms = (time.monotonic() - started) * 1000
+    print(f"ipc-observation command={name} request_id={correlation} "
+          f"elapsed_ms={elapsed_ms:.1f} outcome={reply['type']} "
+          f"object_id={reply.get('data', {}).get('id', '-')}", flush=True)
     return reply
 
 
@@ -181,6 +186,13 @@ def main(bin_dir):
                     "SELECT actor, command, operation_id FROM ipc_operations"
                 ).fetchall()
             assert len(rows) == 4, rows
+            # A durable operation record is the commit witness. Keep its
+            # actor-scoped key and count visible in CI after the restart.
+            for actor, command, key in sorted(rows):
+                print(f"durable-commit actor={actor} command={command} "
+                      f"operation_id={key}", flush=True)
+            print(f"durable-commit-count={len(rows)} "
+                  f"expected-object-counts={expected}", flush=True)
             assert all(actor == f"uid:{os.getuid()}" for actor, _, _ in rows), rows
             print(
                 "IPC idempotency OK: creates/child, exact replay, mismatch, "

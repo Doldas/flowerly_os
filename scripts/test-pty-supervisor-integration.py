@@ -9,6 +9,8 @@ Tests the full lifecycle of a PTY session through the flowerlyd IPC:
 """
 
 import base64
+import concurrent.futures
+import sqlite3
 import json
 import os
 import pathlib
@@ -97,11 +99,54 @@ def main():
         try:
             wait_ready(sock, proc, log)
 
-            # Spawn a PTY session (this actually launches the guardian)
-            spawn_response = request(sock, "session.spawn", {
+            # Durable reservation is committed before any PTY guardian starts.
+            # Repeating an ambiguous request must not create a second shell.
+            spawn_args = {
                 "shell": "/bin/sh",
                 "created_by": "uid:1000",
+                "operation_id": "retry-pty-001",
+            }
+            spawn_response = request(sock, "session.spawn", spawn_args)
+            assert spawn_response["type"] == "ok", spawn_response
+            lookup = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "retry-pty-001",
             })
+            assert lookup["type"] == "ok", lookup
+            assert lookup["data"]["session_id"] == spawn_response["data"]["id"]
+            assert lookup["data"]["guardian_supervised"] is True, lookup
+            assert lookup["data"]["session_recorded"] is True, lookup
+            missing_lookup = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "missing-pty-key",
+            })
+            assert missing_lookup["type"] == "err", missing_lookup
+            assert missing_lookup["code"] == "not_found", missing_lookup
+            with sqlite3.connect(state / "state.db") as db:
+                records = db.execute(
+                    "SELECT actor, response_payload FROM ipc_operations "
+                    "WHERE command = 'session.spawn' AND operation_id = ?",
+                    ("retry-pty-001",),
+                ).fetchall()
+            assert records == [(f"uid:{os.getuid()}", spawn_response["data"]["id"])], records
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                replies = list(pool.map(
+                    lambda _: request(sock, "session.spawn", spawn_args),
+                    range(4),
+                ))
+            assert all(
+                r["type"] == "err" and r["code"] == "unavailable"
+                for r in replies
+            ), replies
+            before = request(sock, "session.list", {})
+            before_ids = {entry["id"] for entry in before["data"]["sessions"]}
+            repeat = request(sock, "session.spawn", spawn_args)
+            assert repeat["type"] == "err", repeat
+            assert repeat["code"] == "unavailable", repeat
+            mismatch = request(sock, "session.spawn", dict(spawn_args, shell="/bin/bash"))
+            assert mismatch["type"] == "err" and mismatch["code"] == "conflict", mismatch
+            after = request(sock, "session.list", {})
+            assert {entry["id"] for entry in after["data"]["sessions"]} == before_ids
+            print("PTY durable key: no duplicate guardian or shell", flush=True)
+
             session_id = spawn_response["data"]["id"]
             print(f"Spawned PTY session: {session_id}")
 
@@ -192,6 +237,59 @@ def main():
                 time.sleep(0.02)
             else:
                 raise AssertionError("PTY socket not cleaned up")
+
+            # Restart the supervisor and attempt the exact same external key.
+            # No new guardian may be launched despite the original outcome
+            # being completed/terminated. The reservation survives in SQLite.
+            proc.terminate()
+            assert proc.wait(timeout=10) == 0
+            # Crash-window fixture: the pre-launch reservation committed, but
+            # the daemon died before any Session row was saved. This must still
+            # be queried and must block a fresh guardian under the same key.
+            orphan_key = "retry-pty-before-session"
+            orphan_id = f"session-{uuid.uuid4().hex}"
+            with sqlite3.connect(state / "state.db") as db:
+                payload = db.execute(
+                    "SELECT request_payload FROM ipc_operations "
+                    "WHERE command = 'session.spawn' AND operation_id = ?",
+                    ("retry-pty-001",),
+                ).fetchone()[0]
+                db.execute(
+                    "INSERT INTO ipc_operations "
+                    "(actor, command, operation_id, request_payload, response_payload, created_at) "
+                    "VALUES (?, 'session.spawn', ?, ?, ?, ?)",
+                    (f"uid:{os.getuid()}", orphan_key, payload, orphan_id,
+                     int(time.time() * 1000)),
+                )
+            proc = subprocess.Popen(
+                [str(pathlib.Path("target/release/flowerlyd"))], env=env,
+                stdout=log.open("ab"), stderr=subprocess.STDOUT,
+            )
+            wait_ready(sock, proc, log)
+            orphan = request(sock, "session.spawn.lookup", {
+                "operation_id": orphan_key,
+            })
+            assert orphan["type"] == "ok", orphan
+            assert orphan["data"]["session_id"] == orphan_id, orphan
+            assert orphan["data"]["session_recorded"] is False, orphan
+            orphan_retry = request(
+                sock, "session.spawn", dict(spawn_args, operation_id=orphan_key)
+            )
+            assert orphan_retry["type"] == "err" and orphan_retry["code"] == "unavailable"
+            before_restart_retry = request(sock, "session.list", {})
+            retry_after_restart = request(sock, "session.spawn", spawn_args)
+            assert retry_after_restart["type"] == "err", retry_after_restart
+            assert retry_after_restart["code"] == "unavailable", retry_after_restart
+            lookup_restart = request(sock, "session.spawn.lookup", {
+                "created_by": "uid:1000", "operation_id": "retry-pty-001",
+            })
+            assert lookup_restart["type"] == "ok", lookup_restart
+            assert lookup_restart["data"]["session_id"] == session_id
+            assert lookup_restart["data"]["guardian_supervised"] is False
+            assert lookup_restart["data"]["external_outcome"] == "unknown"
+            after_restart_retry = request(sock, "session.list", {})
+            assert after_restart_retry["data"]["count"] == before_restart_retry["data"]["count"]
+            print("PTY durable reservation preserved across restart", flush=True)
 
             print("\nPTY supervisor integration test PASSED")
 
