@@ -71,7 +71,7 @@ def test_forced_guardian_death(root):
             try:
                 with open(f"/proc/{child}/stat", encoding="utf-8") as child_stat:
                     status = child_stat.read().split(") ", 1)[1][0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 break
             if status in ("Z", "X"):
                 break
@@ -82,7 +82,7 @@ def test_forced_guardian_death(root):
             try:
                 with open(f"/proc/{background}/stat", encoding="utf-8") as bg_stat:
                     status = bg_stat.read().split(") ", 1)[1][0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 break
             if status in ("Z", "X"):
                 break
