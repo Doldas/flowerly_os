@@ -620,10 +620,10 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous: Option<String> = tx
             .query_row(
-            "SELECT request_payload FROM ipc_operations
+                "SELECT request_payload FROM ipc_operations
              WHERE actor = ?1 AND command = 'session.spawn' AND operation_id = ?2",
-            params![actor, operation_id],
-            |row| row.get(0),
+                params![actor, operation_id],
+                |row| row.get(0),
             )
             .optional()?;
         if let Some(previous) = previous {
