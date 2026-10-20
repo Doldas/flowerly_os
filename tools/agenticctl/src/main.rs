@@ -28,7 +28,7 @@ enum Command {
     Ping {
         #[arg(
             default_value = "flowerlyd",
-            help = "Service to ping (default: agenticd)."
+            help = "Service to ping (default: flowerlyd)."
         )]
         service: String,
     },
@@ -36,7 +36,7 @@ enum Command {
     Status {
         #[arg(
             default_value = "flowerlyd",
-            help = "Service to query (default: agenticd)."
+            help = "Service to query (default: flowerlyd)."
         )]
         service: String,
     },
@@ -52,6 +52,10 @@ enum Command {
     Provenance(ProvenanceArgs),
     #[command(about = "Execution operations.")]
     Execution(ExecutionArgs),
+    #[command(about = "Manage local AI model catalog metadata (prototype).")]
+    Model(ModelArgs),
+    #[command(about = "Inspect local device resource observations (advisory only).")]
+    Device(DeviceArgs),
     #[command(about = "List the capability catalog.")]
     Capability,
 }
@@ -262,6 +266,74 @@ enum ExecutionAction {
     List,
 }
 
+#[derive(Debug, Args)]
+struct ModelArgs {
+    #[command(subcommand)]
+    action: ModelAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelAction {
+    #[command(about = "Register local model metadata, not a model executable.")]
+    Register {
+        #[arg(help = "Display name for this model record.")]
+        name: String,
+        #[arg(long)]
+        family: Option<String>,
+        #[arg(long)]
+        architecture: Option<String>,
+        #[arg(
+            long,
+            help = "Recorded execution backend (CPU, CUDA, VULKAN, ROCM, NPU)."
+        )]
+        backend: Option<String>,
+        #[arg(long, help = "Recorded context window, if known.")]
+        context_tokens: Option<u64>,
+        #[arg(long, help = "Measured memory footprint in bytes, if known.")]
+        measured_memory_bytes: Option<u64>,
+        #[arg(long = "modality", help = "Modality label; repeat to record several.")]
+        modalities: Vec<String>,
+        #[arg(long)]
+        license: Option<String>,
+        #[arg(
+            long,
+            help = "Measurement source or evidence label, not inferred performance."
+        )]
+        evidence: Option<String>,
+        #[arg(long, help = "Durable key for safe repeated registration requests.")]
+        operation_id: Option<String>,
+    },
+    #[command(about = "List active model records (retired records remain inspectable).")]
+    List,
+    #[command(about = "Show a model record, including retired metadata.")]
+    Show {
+        #[arg(help = "Model id.")]
+        id: String,
+    },
+    #[command(about = "Soft-retire a model record without deleting provenance.")]
+    Retire {
+        #[arg(help = "Model id.")]
+        id: String,
+    },
+    #[command(about = "Check advisory compatibility against measured memory.")]
+    Compatibility {
+        #[arg(help = "Model id.")]
+        id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct DeviceArgs {
+    #[command(subcommand)]
+    action: DeviceAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum DeviceAction {
+    #[command(about = "Read local memory observations and explicit enforcement limits.")]
+    Budget,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let runtime_dir = cli.runtime_dir.unwrap_or_else(default_runtime_dir);
@@ -294,6 +366,8 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
         Command::Generation(action) => dispatch_generation(runtime_dir, action.action).await,
         Command::Provenance(action) => dispatch_provenance(runtime_dir, action.action).await,
         Command::Execution(action) => dispatch_execution(runtime_dir, action.action).await,
+        Command::Model(action) => dispatch_model(runtime_dir, action.action).await,
+        Command::Device(action) => dispatch_device(runtime_dir, action.action).await,
         Command::Capability => {
             let response = call(
                 &socket(runtime_dir, "capabilityd"),
@@ -497,6 +571,64 @@ async fn dispatch_execution(
         },
     };
     reply_value(call(&socket, payload).await?)
+}
+
+async fn dispatch_model(runtime_dir: &std::path::Path, action: ModelAction) -> Result<Value> {
+    let payload = match action {
+        ModelAction::Register {
+            name,
+            family,
+            architecture,
+            backend,
+            context_tokens,
+            measured_memory_bytes,
+            modalities,
+            license,
+            evidence,
+            operation_id,
+        } => Payload::Command {
+            name: "model.register".into(),
+            args: serde_json::json!({
+                "name": name,
+                "family": family,
+                "architecture": architecture,
+                "backend": backend,
+                "context_tokens": context_tokens,
+                "measured_memory_bytes": measured_memory_bytes,
+                "modalities": modalities,
+                "license": license,
+                "evidence": evidence,
+                "operation_id": operation_id,
+            }),
+        },
+        ModelAction::List => Payload::Command {
+            name: "model.list".into(),
+            args: serde_json::json!({}),
+        },
+        ModelAction::Show { id } => Payload::Command {
+            name: "model.show".into(),
+            args: serde_json::json!({ "id": id }),
+        },
+        ModelAction::Retire { id } => Payload::Command {
+            name: "model.retire".into(),
+            args: serde_json::json!({ "id": id }),
+        },
+        ModelAction::Compatibility { id } => Payload::Command {
+            name: "model.compatibility".into(),
+            args: serde_json::json!({ "id": id }),
+        },
+    };
+    reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
+}
+
+async fn dispatch_device(runtime_dir: &std::path::Path, action: DeviceAction) -> Result<Value> {
+    let payload = match action {
+        DeviceAction::Budget => Payload::Command {
+            name: "device.budget".into(),
+            args: serde_json::json!({}),
+        },
+    };
+    reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
 }
 
 fn flow_reference(target: &str) -> Value {
