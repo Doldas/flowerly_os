@@ -25,7 +25,7 @@ def populate(rootfs):
         dest = rootfs / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("ID=arch\n" if name.endswith("os-release") else "fixture\n")
-        if name in ("usr/lib/systemd/systemd", "usr/bin/flowerlyd", "usr/bin/systemd-sysusers"):
+        if name in ("usr/lib/systemd/systemd", "usr/bin/flowerlyd", "usr/bin/agenticctl", "usr/bin/systemd-sysusers"):
             dest.chmod(0o755)
 
 
