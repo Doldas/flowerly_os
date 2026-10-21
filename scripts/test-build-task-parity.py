@@ -16,7 +16,7 @@ CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
 
 SHARED = ("fmt", "fmt-check", "lint", "check", "build", "test", "verify",
           "run", "serve", "stop", "status", "release", "image-inputs",
-          "image", "vm", "vm-test")
+          "image-rootfs", "image", "vm", "vm-test")
 
 
 def recipes(text, flavor):
@@ -87,6 +87,7 @@ assert just["status"][1] == ["./scripts/dev-runtime.sh status"]
 assert make["status"][1] == ["./scripts/dev-runtime.sh status"]
 assert "check-image-inputs.sh" in " ".join(make["image-inputs"][1])
 assert "check-image-inputs.sh" in " ".join(just["image-inputs"][1])
+assert make["image-rootfs"] == just["image-rootfs"], "image-rootfs tasks differ"
 for name in ("image", "vm", "vm-test"):
     for flavor, recipeset in (("make", make), ("just", just)):
         joined = "\n".join(recipeset[name][1])
