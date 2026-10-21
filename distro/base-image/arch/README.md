@@ -65,6 +65,13 @@ observing systemd's multi-user target over serial console. It requires QEMU
 and actual `/boot` artifacts and is **not** a partitioned or standalone disk
 image; full service and isolation verification remains outstanding.
 
+The Arch package set explicitly includes `python-pefile` for Python PE/EFI
+processing during mkosi image finalization. This prevents a missing
+`pefile` module inside the image; if mkosi instead uses host Python, install
+the same package on the host (`sudo pacman -S python-pefile`) and confirm
+`python -c 'import pefile'`. A real image build is still required to validate
+this environment-specific fix.
+
 ## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
