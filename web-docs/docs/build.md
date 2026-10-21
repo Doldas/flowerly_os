@@ -104,6 +104,15 @@ Requires host e2fsprogs (`mkfs.ext4` and `dumpe2fs`), creates a sparse
 This is **not a bootable disk**: partitioning, bootloader, initramfs and
 QEMU acceptance still need implementation.
 
+The next integration probe, `python3 scripts/probe-arch-qemu-boot.py`, launches
+QEMU with the **real** `/boot/vmlinuz-linux` and `/boot/initramfs-linux.img`
+from that same Arch rootfs, attaching the populated ext4 volume via virtio.
+It uses a non-persistent QEMU snapshot and a serial-console log, refusing
+to pass unless systemd's multi-user target is observed before the deadline.
+The command requires QEMU and actual kernel/initramfs artifacts; it is not
+run as a heavyweight VM test in ordinary PR CI (offline protocol tests are).
+It does not establish a standalone bootloader or prove Flowerly service health.
+
 `just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.
