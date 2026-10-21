@@ -44,7 +44,12 @@ generation builder must capture exact resolved versions, architecture, package
 hashes/repository provenance, kernel identity, Flowerly source commit and output
 hashes.
 
-Build a real Arch directory rootfs on a host with mkosi and pacman using\n`just image-rootfs`. This verifies Arch identity and core userspace files; it\ndoes not produce a bootable disk or install Flowerly binaries.\n\n## Current scope
+Build a real Arch directory rootfs on a host with mkosi and pacman using\n`just image-rootfs`. This verifies Arch identity and core userspace files; it\ndoes not produce a bootable disk or install Flowerly binaries.\n\nUse `bash scripts/install-flowerly-rootfs.sh` (from the repository root) after
+building the Arch rootfs and release binaries. This stages the three Flowerly
+executables, existing systemd units, and sysusers declarations without enabling
+services; an installed runnable OS still needs boot and service validation.
+
+## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
 Installing locally built Flowerly packages/services, producing a bootable disk,
