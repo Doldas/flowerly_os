@@ -207,7 +207,11 @@ run as a heavyweight VM test in ordinary PR CI (offline protocol tests are).
 It does not establish a standalone bootloader or prove Flowerly service health.
 
 The boot preparation now installs and enables `flowerly-boot-witness.service`,
-a one-shot systemd unit ordered after `flowerlyd`. It runs a bounded `agenticctl --runtime-dir /run/flowerly ping flowerlyd`\nprobe as the unprivileged Flowerly user and prints\n`FLOWERLY_BOOT_IPC_HEALTHY` to the serial console only after a successful\nIPC reply. QEMU requires both this marker and the systemd multi-user target.\nThis establishes point-in-time IPC readiness, not sustained daemon health.
+a one-shot systemd unit ordered after `flowerlyd`. It runs a bounded `agenticctl --runtime-dir /run/flowerly ping flowerlyd` 
+probe as the unprivileged Flowerly user and prints
+`FLOWERLY_BOOT_IPC_HEALTHY` to the serial console only after a successful
+IPC reply. QEMU requires both this marker and the systemd multi-user target.
+This establishes point-in-time IPC readiness, not sustained daemon health.
 
 If the boot probe reports missing `/boot/vmlinuz-linux`, inspect
 `rootfs/usr/lib/modules/*/vmlinuz`: mkosi may retain its packaged kernel
