@@ -6,7 +6,7 @@
 CARGO ?= cargo
 TARGET ?= target
 
-.PHONY: fmt fmt-check lint check build test verify run serve stop status release image-inputs image vm vm-test
+.PHONY: fmt fmt-check lint check build test verify run serve stop status release image-inputs image-rootfs image vm vm-test
 
 fmt:
 	$(CARGO) fmt --all
@@ -46,6 +46,9 @@ release: build
 
 image-inputs:
 	bash ./scripts/check-image-inputs.sh
+
+image-rootfs: image-inputs
+	bash ./scripts/build-arch-rootfs.sh
 
 image: image-inputs
 	@echo "Arch image inputs are ready, but bootable image production is not implemented yet."
