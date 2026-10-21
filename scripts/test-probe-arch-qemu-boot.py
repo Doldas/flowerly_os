@@ -34,9 +34,22 @@ class BootProbeTests(unittest.TestCase):
         self.args = mock.Mock(rootfs=self.rootfs, volume=self.volume,
                               log=self.base / "serial.log", timeout=10)
 
+    def test_packaged_kernel_path_accepted(self):
+        packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
+        packaged.parent.mkdir(parents=True)
+        (self.rootfs / "boot/vmlinuz-linux").rename(packaged)
+        self.simulate("[  OK  ] Reached target Multi-User System.\\n")
+
+    def test_ambiguous_kernels_rejected(self):
+        packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
+        packaged.parent.mkdir(parents=True)
+        packaged.write_bytes(b"kernel")
+        with self.assertRaisesRegex(ValueError, "exactly one kernel"):
+            boot.run(self.args)
+
     def test_missing_initramfs_rejected(self):
         (self.rootfs / "boot/initramfs-linux.img").unlink()
-        with self.assertRaisesRegex(ValueError, "kernel/initramfs"):
+        with self.assertRaisesRegex(ValueError, "Build and stage an Arch initramfs"):
             boot.run(self.args)
 
     def test_wrong_distro_rejected(self):

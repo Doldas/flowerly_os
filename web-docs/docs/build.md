@@ -176,6 +176,52 @@ prove that path exists. Verify the actual `boot/` files before running QEMU.
 
 `just image` and `just vm` are still intentionally unimplemented and
 fail closed. See [image-model.md](image-model.md) for the architecture.
+The installation adds `flowerlyd`, `evolutiond` and `agenticctl`, service units
+and unprivileged systemd-sysusers declarations. It deliberately does **not**
+enable or start services; image boot testing and service readiness have not
+been verified.
+
+Once the rootfs includes staged Flowerly services, opt in to supervisor boot
+enablement with `bash scripts/prepare-arch-boot.sh`. This checks Arch
+identity, the Flowerly binary and systemd-sysusers, then enables only
+`flowerlyd` for `multi-user.target`. `evolutiond` remains disabled until
+its KVM and privilege boundaries are validated. This is **not** a bootable
+disk image; initramfs, bootloader and QEMU startup are not yet implemented.
+
+After installing the Flowerly services and preparing the Arch rootfs, run
+`bash scripts/build-arch-root-volume.sh` to build a populated, unpartitioned
+ext4 filesystem at `target/flowerly-arch-rootfs/flowerly-root.ext4`.
+Requires host e2fsprogs (`mkfs.ext4` and `dumpe2fs`), creates a sparse
+4 GiB volume by default, and refuses to overwrite existing output. Use
+`FLOWERLY_ROOT_SIZE_MB` to choose another size (512–65536 MiB).
+This is **not a bootable disk**: partitioning, bootloader, initramfs and
+QEMU acceptance still need implementation.
+
+The next integration probe, `python3 scripts/probe-arch-qemu-boot.py`, launches
+QEMU with the **real** `/boot/vmlinuz-linux` and `/boot/initramfs-linux.img`
+from that same Arch rootfs, attaching the populated ext4 volume via virtio.
+It uses a non-persistent QEMU snapshot and a serial-console log, refusing
+to pass unless systemd's multi-user target is observed before the deadline.
+The command requires QEMU and actual kernel/initramfs artifacts; it is not
+run as a heavyweight VM test in ordinary PR CI (offline protocol tests are).
+It does not establish a standalone bootloader or prove Flowerly service health.
+
+If the boot probe reports missing `/boot/vmlinuz-linux`, inspect
+`rootfs/usr/lib/modules/*/vmlinuz`: mkosi may retain its packaged kernel
+there instead. The probe accepts exactly one kernel from the built Arch
+rootfs and never substitutes the host's kernel. It still requires a real
+`rootfs/boot/initramfs-linux.img`; mkosi's temporary module initrd is not
+assumed to be a complete boot initramfs. Rebuild the ext4 volume if the
+rootfs contents are changed before boot testing.
+
+`just image` deliberately still fails after validation because a successful
+command named `image` must eventually produce a real image artifact. The
+project will not report the scaffold as a completed bootable image.
+
+The current mkosi prototype uses Arch Linux and a directory/rootfs output. A
+later milestone adds Flowerly package installation, bootable disk output,
+initramfs/UKI handling, exact resolved package manifests and KVM boot tests. See
+[image-model.md](image-model.md).
 
 ## GitHub Pages output
 
