@@ -6,6 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,7 @@ struct Guardian {
     control_token: String,
     writer: Option<WriterLease>,
     command_lock: Arc<Mutex<()>>,
+    waiting_followers: Arc<AtomicUsize>,
     finished_at: Option<Instant>,
 }
 
@@ -87,6 +89,15 @@ impl Drop for PendingGuardian {
 }
 
 const WRITER_LEASE: Duration = Duration::from_secs(60);
+const MAX_WAITING_FOLLOWERS: usize = 16;
+
+struct FollowPermit(Arc<AtomicUsize>);
+
+impl Drop for FollowPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
 
 pub struct Supervisor {
     runtime: PathBuf,
@@ -442,6 +453,7 @@ impl Supervisor {
                 control_token: control_token.clone(),
                 writer: None,
                 command_lock: Arc::new(Mutex::new(())),
+                waiting_followers: Arc::new(AtomicUsize::new(0)),
                 finished_at: None,
             },
         );
@@ -511,6 +523,86 @@ impl Supervisor {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
+        // Long-poll observers must never hold the Session command lock while
+        // waiting for output. Yield between short nonblocking snapshots.
+        if name == "session.follow" {
+            let wait_ms = match args.get("wait_ms") {
+                None => 100,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| *value <= 250)
+                    .ok_or_else(|| {
+                        invalid("session.follow wait_ms must be an integer from 0 to 250")
+                    })?,
+            };
+            if wait_ms > 0 {
+                let counter = {
+                    let sessions = self
+                        .sessions
+                        .lock()
+                        .map_err(|_| internal("registry lock poisoned"))?;
+                    let id = args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| invalid("missing string session id"))?;
+                    let guardian = sessions.get(id).ok_or_else(|| {
+                        (
+                            ErrorCode::Unavailable,
+                            "PTY is no longer supervised".to_owned(),
+                        )
+                    })?;
+                    if args.get("control_token").and_then(Value::as_str)
+                        != Some(guardian.control_token.as_str())
+                    {
+                        return Err((
+                            ErrorCode::Conflict,
+                            "session control token required or invalid".to_owned(),
+                        ));
+                    }
+                    Arc::clone(&guardian.waiting_followers)
+                };
+                let mut count = counter.load(Ordering::Acquire);
+                loop {
+                    if count >= MAX_WAITING_FOLLOWERS {
+                        return Err((
+                            ErrorCode::Unavailable,
+                            "too many concurrent PTY followers".to_owned(),
+                        ));
+                    }
+                    match counter.compare_exchange_weak(
+                        count,
+                        count + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(observed) => count = observed,
+                    }
+                }
+                let _permit = FollowPermit(counter);
+                let mut snapshot_args = args.clone();
+                snapshot_args["wait_ms"] = json!(0);
+                let deadline = Instant::now() + Duration::from_millis(wait_ms);
+                loop {
+                    let snapshot = self.control(store, name, &snapshot_args)?;
+                    let requested = args.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                    if snapshot
+                        .get("cursor")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|cursor| cursor > requested)
+                        || snapshot.get("running") == Some(&Value::Bool(false))
+                        || Instant::now() >= deadline
+                    {
+                        return Ok(snapshot);
+                    }
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(25)),
+                    );
+                }
+            }
+        }
         let raw = args
             .get("id")
             .and_then(Value::as_str)

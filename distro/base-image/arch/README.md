@@ -44,11 +44,52 @@ generation builder must capture exact resolved versions, architecture, package
 hashes/repository provenance, kernel identity, Flowerly source commit and output
 hashes.
 
+## Host dependencies and staging
+
+On an Arch Linux host, install `mkosi`, `pacman`,
+`arch-install-scripts`, `python-pefile`, `e2fsprogs` and
+`qemu-desktop` before building. The source build additionally needs
+Rust (via `rustup`) and `just`. See the
+[complete build guide](../../../web-docs/docs/build.md) for installation
+commands, checks, and troubleshooting.
+
+Run the stages one at a time, stopping immediately if one fails:
+
+```sh
+just build
+just image-rootfs
+bash scripts/install-flowerly-rootfs.sh
+bash scripts/prepare-arch-boot.sh
+bash scripts/build-arch-root-volume.sh
+python3 scripts/probe-arch-qemu-boot.py
+```
+
+The rootfs builder produces a directory tree. The installation stage copies
+all three Flowerly release binaries and existing systemd units; only
+`flowerlyd` is enabled by boot preparation. The ext4 stage constructs an
+unpartitioned filesystem, and the QEMU stage attempts a direct-kernel boot
+using kernel and initramfs files from that rootfs. No stage proves an
+independently bootable disk or production service health.
+
+The rootfs may contain unreadable, security-sensitive package files.
+A real build observed `mkfs.ext4 -d` failing with `Permission denied` on
+`dbus-daemon-launch-helper`. This is **not** a successful ext4 build.
+Do not recursively change rootfs permissions or silently run all stages as
+root; an ownership-aware build fix and real acceptance are still needed.
+
+The experimental `bash scripts/build-arch-initrd.sh` command builds a
+separate generic mkosi cpio initrd and stages it under
+`boot/initramfs-linux.img`. It must run before ext4 volume creation.
+Kernel-specific module inclusion and QEMU boot remain unverified.
+
+The opt-in boot preparation also stages a Flowerly boot witness unit. The
+QEMU acceptance probe requires its `FLOWERLY_BOOT_SUPERVISOR_ACTIVE` serial
+marker as well as systemd's multi-user target. The marker demonstrates only
+that systemd observed `flowerlyd` active; it does not verify IPC health.
+
 ## Current scope
 
-The mkosi configuration intentionally builds only the Arch rootfs substrate.
-Installing locally built Flowerly packages/services, producing a bootable disk,
-creating initramfs/UKIs, signing, and KVM boot testing remain future work.
-
-This staged approach keeps the repository honest: the direction is concrete
-without pretending that the 0.0.9 bootable-image milestone is complete.
+The mkosi configuration produces an Arch package substrate. Flowerly
+service staging and QEMU probing are implemented as separate experimental
+steps. A partitioned bootable disk/ISO, verified VM boot and generation
+promotion remain unimplemented.

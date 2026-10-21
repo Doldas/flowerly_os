@@ -179,6 +179,70 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
     })
     token = attachment["attachment_token"]
     try:
+        # A burst of independent IPC clients competing for the existing writer
+        # must never acquire an additional lease. The single active writer
+        # remains usable despite this concurrent denial-of-service attempt.
+        def competing_attach(_):
+            return request(session, "session.attach", {
+                "id": identifier, "control_token": control,
+            })
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            contenders = list(pool.map(competing_attach, range(24)))
+        assert all(
+            reply["type"] == "err" and reply.get("code") == "conflict"
+            for reply in contenders
+        ), [(reply.get("type"), reply.get("code")) for reply in contenders]
+        assert successful(session, "session.heartbeat", {
+            "id": identifier, "attachment_token": token,
+        })["lease_active"]
+
+        # A control token is an opaque capability. Same-UID connectivity to
+        # the socket does not authorize reading another session's replay.
+        for command, arguments in (
+            ("session.read", {"id": identifier, "control_token": "wrong", "cursor": 0}),
+            ("session.follow", {"id": identifier, "control_token": "wrong",
+                                "cursor": 0, "wait_ms": 0}),
+            ("session.terminate", {"id": identifier, "control_token": "wrong"}),
+            ("session.write", {"id": identifier, "attachment_token": "wrong",
+                               "data": "echo forbidden\\n"}),
+            ("session.resize", {"id": identifier, "attachment_token": "wrong",
+                                "rows": 25, "cols": 90}),
+        ):
+            reply = request(session, command, arguments)
+            assert reply["type"] == "err" and reply.get("code") == "conflict", (
+                command, reply.get("type"), reply.get("code")
+            )
+        assert successful(session, "session.status", {
+            "id": identifier,
+        })["running"]
+
+        other = daemon.spawn()
+        try:
+            other_id = other["id"]
+            other_control = other["control_token"]
+            assert other_id != identifier and other_control != control
+            for operation, arguments in (
+                ("session.attach", {"id": other_id, "control_token": control}),
+                ("session.read", {"id": other_id, "control_token": control,
+                                  "cursor": 0}),
+                ("session.terminate", {"id": other_id, "control_token": control}),
+                ("session.attach", {"id": identifier,
+                                    "control_token": other_control}),
+                ("session.write", {"id": other_id,
+                                   "attachment_token": token,
+                                   "data": "echo unauthorized\\n"}),
+            ):
+                rejected = request(session, operation, arguments)
+                assert rejected["type"] == "err" and rejected.get("code") == "conflict", (
+                    operation, rejected.get("type"), rejected.get("code")
+                )
+            assert successful(session, "session.status", {"id": other_id})["running"]
+        finally:
+            successful(session, "session.terminate", {
+                "id": other["id"], "control_token": other["control_token"],
+            })
+
         burst = 'python3 -c ' + "'import sys; sys.stdout.write(\"Q\"*180000); sys.stdout.flush()'" + "\n"
         assert write(session, identifier, token, burst)["written"] == len(burst)
         for _ in range(250):
@@ -253,6 +317,62 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         with ThreadPoolExecutor(max_workers=6) as pool:
             followers = list(pool.map(independent_follower, range(6)))
         assert all(marker.encode() in output(reply) for reply in followers)
+
+        # Each follow is allowed to wait 250ms, but a backlog of idle
+        # followers must not serialize a writer resize behind their combined
+        # waits. The guardian wakes its follower when a new client connects.
+        idle_cursor = successful(session, "session.status", {
+            "id": identifier,
+        })["cursor"]
+        from threading import Barrier
+        barrier = Barrier(13)
+
+        def waiting_follower(_):
+            barrier.wait(timeout=5)
+            return successful(session, "session.follow", {
+                "id": identifier, "control_token": control,
+                "cursor": idle_cursor, "wait_ms": 250,
+            })
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            pending = [pool.submit(waiting_follower, i) for i in range(12)]
+            barrier.wait(timeout=5)
+            time.sleep(0.04)
+            began = time.monotonic()
+            resized = successful(session, "session.resize", {
+                "id": identifier, "attachment_token": token,
+                "rows": 37, "cols": 95,
+            })
+            latency = time.monotonic() - began
+            assert resized["rows"] == 37 and resized["cols"] == 95
+            assert latency < 1.25, (
+                f"writer starved by queued long-poll followers: {latency:.3f}s"
+            )
+            for future in pending:
+                assert future.result(timeout=5)["cursor"] >= idle_cursor
+
+        # The admission bound is per-session and never allows invalid
+        # capability holders to reserve a follower slot. With 24 observers,
+        # each accepted follow must finish within its own bounded wait;
+        # rejected excess requests must report an explicit unavailable.
+        crowd_cursor = successful(session, "session.status", {
+            "id": identifier,
+        })["cursor"]
+        with ThreadPoolExecutor(max_workers=24) as pool:
+            crowded = list(pool.map(
+                lambda _: request(session, "session.follow", {
+                    "id": identifier, "control_token": control,
+                    "cursor": crowd_cursor, "wait_ms": 250,
+                }), range(24),
+            ))
+        assert all(
+            reply["type"] == "ok"
+            or (reply["type"] == "err" and reply.get("code") == "unavailable")
+            for reply in crowded
+        ), [(reply.get("type"), reply.get("code")) for reply in crowded]
+        assert successful(session, "session.heartbeat", {
+            "id": identifier, "attachment_token": token,
+        })["lease_active"]
 
         follower_cursor = successful(session, "session.status", {
             "id": identifier,
@@ -334,13 +454,15 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
         entry["id"] for entry in successful(session, "session.list", {})["sessions"]
     }
     known_sockets = set(daemon.runtime.glob("pty-*.sock"))
+    operation_key = "pty-failed-durable-insert-001"
+    spawn_args = {"shell": "/bin/sh", "operation_id": operation_key}
     with sqlite3.connect(database, isolation_level=None) as connection:
         connection.execute(
             "CREATE TRIGGER reject_pty_session_insert BEFORE INSERT ON sessions "
             "BEGIN SELECT RAISE(ABORT, 'deliberate durable insertion failure'); END"
         )
     try:
-        rejected = request(session, "session.spawn", {"shell": "/bin/sh"})
+        rejected = request(session, "session.spawn", spawn_args)
         assert rejected["type"] == "err", rejected
     finally:
         with sqlite3.connect(database, isolation_level=None) as connection:
@@ -368,12 +490,37 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
         entry["id"] for entry in successful(session, "session.list", {})["sessions"]
     }
     assert after == known_sessions, (known_sessions, after)
+    # SQLite rejected the Session row, but the external-effect admission was
+    # committed before the guardian started. The reservation must survive
+    # and a retry must NEVER start a new process (even after reboot).
+    with sqlite3.connect(database) as connection:
+        reserved = connection.execute(
+            "SELECT actor, response_payload FROM ipc_operations "
+            "WHERE command = 'session.spawn' AND operation_id = ?",
+            (operation_key,),
+        ).fetchone()
+    assert reserved is not None, "failed spawn lost its durable reservation"
+    assert reserved[0] == f"uid:{os.geteuid()}", reserved
+    assert re.fullmatch(r"session-[0-9a-f]{32}", reserved[1]), reserved
+    lookup = successful(session, "session.spawn.lookup", {
+        "operation_id": operation_key,
+    })
+    assert lookup["session_id"] == reserved[1], lookup
+    assert lookup["session_recorded"] is False, lookup
+    assert lookup["external_outcome"] == "unknown", lookup
+    rejected_retry = request(session, "session.spawn", spawn_args)
+    assert rejected_retry["type"] == "err" and rejected_retry["code"] == "unavailable", rejected_retry
+    mismatch = request(
+        session, "session.spawn", dict(spawn_args, shell="/bin/bash"),
+    )
+    assert mismatch["type"] == "err" and mismatch["code"] == "conflict", mismatch
+    assert {row["id"] for row in successful(session, "session.list", {})["sessions"]} == known_sessions
     replacement = daemon.spawn()
     successful(session, "session.terminate", {
         "id": replacement["id"],
         "control_token": replacement["control_token"],
     })
-    print("PTY failed SQLite spawn: uncommitted guardian stopped, no durable ghost, subsequent spawn succeeds")
+    print("PTY failed SQLite spawn: guardian reaped, durable reservation retained, retry refused")
 
 
 def create_spawn_with_lost_response(daemon):

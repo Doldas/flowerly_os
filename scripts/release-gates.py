@@ -45,8 +45,8 @@ def validate(root=ROOT):
     if policy.get("bypass_actors") != []:
         raise ValueError("release checks must not have bypass actors")
     includes = policy.get("conditions", {}).get("ref_name", {}).get("include")
-    if includes != ["~DEFAULT_BRANCH", "refs/heads/release/*"]:
-        raise ValueError("ruleset must match master and release/*")
+    if includes != ["refs/heads/release/*"]:
+        raise ValueError("ruleset must match release/* only")
     if policy.get("conditions", {}).get("ref_name", {}).get("exclude") != []:
         raise ValueError("release ruleset cannot exclude branches")
     if len(policy.get("rules", [])) != 2:
@@ -77,8 +77,9 @@ def validate(root=ROOT):
     security = workflow("security.yml")
     codeql = workflow("codeql.yml")
     pr = workflow("pr-validation.yml")
+    promotion = workflow("release-promotion-validation.yml")
     for name, content in (("ci", ci), ("security", security),
-                          ("codeql", codeql), ("pr-validation", pr)):
+                          ("codeql", codeql)):
         if not re.search(r"(?m)^  pull_request:\s*$", content):
             raise ValueError(f"{name}: PR trigger required on release branches")
         if "branches: [master, 'release/**']" not in content:
@@ -86,12 +87,18 @@ def validate(root=ROOT):
     for name, content in (("security", security), ("codeql", codeql)):
         if "paths-ignore:" in content or re.search(r"(?m)^\s+paths:\s*$", content):
             raise ValueError(f"{name}: mandatory job cannot be skipped by file path")
+    if not re.search(r"(?m)^  pull_request:\s*$", pr) or "branches: ['release/**']" not in pr:
+        raise ValueError("pr-validation: release-only PR trigger required")
+    if "branches: [master]" in pr:
+        raise ValueError("pr-validation must not run for master promotions")
+    if not all(f"startsWith(github.head_ref, '{prefix}/')" in pr for prefix in ("feature", "bugfix", "docs")):
+        raise ValueError("pr-validation must select development branches")
+    if "branches: [master]" not in promotion or "verify-master" not in promotion:
+        raise ValueError("exact-SHA master evidence gate missing")
     if "name: rust" not in ci or "name: docs" not in ci:
         raise ValueError("CI must report rust and docs check names")
     if "name: Validate branch policy and issue link" not in pr:
         raise ValueError("PR validation check was renamed")
-    if "verify-master" not in pr or "BigInt(from[1]) + 1n" not in pr:
-        raise ValueError("forward-only PR and exact-SHA master evidence gate missing")
     forward = workflow("branch-forward.yml")
     if "FLOWERLY_FORWARD_BOT_TOKEN" not in forward or "branch-forward.py reconcile" not in forward:
         raise ValueError("bot branch propagation workflow missing or unprotected")
@@ -175,7 +182,7 @@ def verify(policy):
     actual = api("GET", f"/rulesets/{ruleset_id}")
     assert_rule_enforcement(policy, actual)
     # GitHub computes effective branch rules from ALL applicable rulesets.
-    for branch in ("master", "release/2"):
+    for branch in ("release/2",):
         encoded = parse.quote(branch, safe="")
         effective = api("GET", f"/rules/branches/{encoded}")
         if isinstance(effective, dict):
@@ -201,8 +208,8 @@ def verify_probe(policy, pr_number):
     pr = api("GET", f"/pulls/{pr_number}")
     if pr.get("state") != "open" or pr.get("draft"):
         raise ValueError("negative probe must be an open non-draft PR")
-    if pr.get("base", {}).get("ref") not in ("release/2", "master"):
-        raise ValueError("probe must target protected release/2 or master")
+    if pr.get("base", {}).get("ref") != "release/2":
+        raise ValueError("probe must target protected release/2")
     if pr.get("mergeable_state") != "blocked":
         raise ValueError(f"probe is not blocked: {pr.get('mergeable_state')}")
     head = pr["head"]["sha"]

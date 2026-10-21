@@ -455,7 +455,12 @@ def supervise(path, shell, parent_pid):
                 if type(wait_ms) is not int or not 0 <= wait_ms <= 250:
                     return {"error": "invalid wait_ms"}
                 if position == cursor and exit_code is None and wait_ms:
-                    ready, _, _ = select.select([fd], [], [], wait_ms / 1000)
+                    # A follower must not monopolize the single-threaded
+                    # guardian while a writer/resize/terminate is queued.
+                    # Wake on the listening socket as well as PTY output,
+                    # return the current bounded replay and service the
+                    # newly arrived command on the next event-loop turn.
+                    ready, _, _ = select.select([fd, listener], [], [], wait_ms / 1000)
                     if fd in ready:
                         harvest()
                     poll()

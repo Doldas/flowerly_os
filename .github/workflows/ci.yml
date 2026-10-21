@@ -34,6 +34,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.99.1"
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -197,6 +198,27 @@ jobs:
 
       - name: Check Arch image inputs
         run: bash ./scripts/check-image-inputs.sh
+
+      - name: Verify Arch rootfs build contract offline
+        run: python3 ./scripts/test-build-arch-rootfs.py
+
+      - name: Verify Flowerly rootfs installation offline
+        run: python3 ./scripts/test-install-flowerly-rootfs.py
+
+      - name: Verify Arch boot preparation offline
+        run: python3 ./scripts/test-prepare-arch-boot.py
+
+      - name: Verify Flowerly boot IPC witness offline
+        run: python3 ./scripts/test-boot-ipc-health.py
+
+      - name: Verify populated ext4 image creation offline
+        run: python3 ./scripts/test-build-arch-root-volume.py
+
+      - name: Verify direct QEMU boot probe offline
+        run: python3 ./scripts/test-probe-arch-qemu-boot.py
+
+      - name: Verify mkosi initramfs staging offline
+        run: python3 ./scripts/test-build-arch-initrd.py
 
       - name: Check Arch VM test scripts
         run: |

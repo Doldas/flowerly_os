@@ -70,6 +70,10 @@ image-inputs:
     cargo run -p distro-builder -- validate
 
 
+image-rootfs: image-inputs
+    bash ./scripts/build-arch-rootfs.sh
+
+
 image: image-inputs
     @echo "Arch image inputs are ready, but bootable image production is not implemented yet."
     @echo "See distro/base-image/README.md and web-docs/docs/image-model.md."

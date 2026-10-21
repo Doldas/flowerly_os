@@ -27,6 +27,7 @@ class ReleaseGateTests(unittest.TestCase):
             ".github/workflows/security.yml",
             ".github/workflows/codeql.yml",
             ".github/workflows/pr-validation.yml",
+            ".github/workflows/release-promotion-validation.yml",
             ".github/workflows/branch-forward.yml",
         )
         for filename in files:
@@ -70,9 +71,18 @@ class ReleaseGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._copy(root)
-            pr = root / ".github/workflows/pr-validation.yml"
+            pr = root / ".github/workflows/release-promotion-validation.yml"
             pr.write_text(pr.read_text().replace("verify-master", "verify-later"))
             with self.assertRaisesRegex(ValueError, "exact-SHA master evidence"):
+                gates.validate(root)
+
+    def test_pr_validation_on_master_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._copy(root)
+            pr = root / ".github/workflows/pr-validation.yml"
+            pr.write_text(pr.read_text().replace("branches: ['release/**']", "branches: [master, 'release/**']"))
+            with self.assertRaisesRegex(ValueError, "release-only"):
                 gates.validate(root)
 
     def test_bypass_actor_is_rejected(self):
