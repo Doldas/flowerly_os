@@ -65,6 +65,11 @@ observing systemd's multi-user target over serial console. It requires QEMU
 and actual `/boot` artifacts and is **not** a partitioned or standalone disk
 image; full service and isolation verification remains outstanding.
 
+The experimental `bash scripts/build-arch-initrd.sh` command builds a
+separate generic mkosi cpio initrd and stages it under
+`boot/initramfs-linux.img`. It must run before ext4 volume creation.
+Kernel-specific module inclusion and QEMU boot remain unverified.
+
 ## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
