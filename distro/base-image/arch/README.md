@@ -54,6 +54,11 @@ the staged supervisor, systemd and sysusers before enabling `flowerlyd`
 for a future boot test. It does not enable `evolutiond` or make the
 rootfs bootable.
 
+`bash scripts/build-arch-root-volume.sh` can turn the staged Arch directory
+into a populated ext4 root volume without requiring root privileges.
+It does not create a partition table or boot loader, and does not imply a
+successful virtual-machine boot.
+
 ## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
