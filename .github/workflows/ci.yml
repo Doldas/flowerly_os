@@ -202,6 +202,9 @@ jobs:
       - name: Verify Arch rootfs build contract offline
         run: python3 ./scripts/test-build-arch-rootfs.py
 
+      - name: Verify Flowerly rootfs installation offline
+        run: python3 ./scripts/test-install-flowerly-rootfs.py
+
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
