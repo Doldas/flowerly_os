@@ -4,5 +4,6 @@ iproute2
 linux
 linux-firmware
 openssh
+python-pefile
 systemd
 util-linux
