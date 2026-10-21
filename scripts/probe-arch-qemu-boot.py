@@ -36,11 +36,29 @@ def run(args):
     for name in ("usr/lib/systemd/systemd", "usr/bin/flowerlyd"):
         if not (rootfs / name).is_file():
             fail(f"missing OS component: {name}")
-    kernel = rootfs / "boot/vmlinuz-linux"
+    # mkosi/Arch can retain the packaged kernel beneath usr/lib/modules
+    # rather than copying it to /boot in a directory image. Never fall back
+    # to the host kernel: it must come from this exact built rootfs.
+    kernels = [rootfs / "boot/vmlinuz-linux"]
+    kernels.extend(sorted((rootfs / "usr/lib/modules").glob("*/vmlinuz")))
+    existing = [p for p in kernels if p.is_file() and not p.is_symlink() and p.stat().st_size]
+    if len(existing) != 1:
+        fail(
+            "expected exactly one kernel in this rootfs (/boot/vmlinuz-linux "
+            "or /usr/lib/modules/*/vmlinuz); found "
+            f"{len(existing)}. Inspect boot/ and usr/lib/modules/."
+        )
+    kernel = existing[0]
+    # mkosi's temporary module initrd is not necessarily a full userspace
+    # initramfs or retained in the directory rootfs. Do not guess or use
+    # one from the host; require an actual initramfs from this build.
     initramfs = rootfs / "boot/initramfs-linux.img"
-    for path in (kernel, initramfs):
-        if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
-            fail(f"missing real kernel/initramfs: {path}")
+    if not initramfs.is_file() or initramfs.is_symlink() or initramfs.stat().st_size == 0:
+        fail(
+            "missing rootfs boot/initramfs-linux.img; mkosi's temporary "
+            "kernel-modules initrd is not a verified full initramfs. "
+            "Build and stage an Arch initramfs for this exact rootfs first."
+        )
     if not (10 <= args.timeout <= 600):
         fail("timeout must be 10..600 seconds")
     qemu = shutil.which("qemu-system-x86_64")
