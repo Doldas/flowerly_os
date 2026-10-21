@@ -77,6 +77,11 @@ A real build observed `mkfs.ext4 -d` failing with `Permission denied` on
 Do not recursively change rootfs permissions or silently run all stages as
 root; an ownership-aware build fix and real acceptance are still needed.
 
+The experimental `bash scripts/build-arch-initrd.sh` command builds a
+separate generic mkosi cpio initrd and stages it under
+`boot/initramfs-linux.img`. It must run before ext4 volume creation.
+Kernel-specific module inclusion and QEMU boot remain unverified.
+
 ## Current scope
 
 The mkosi configuration produces an Arch package substrate. Flowerly

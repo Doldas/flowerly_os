@@ -214,6 +214,9 @@ jobs:
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 
+      - name: Verify mkosi initramfs staging offline
+        run: python3 ./scripts/test-build-arch-initrd.py
+
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh
