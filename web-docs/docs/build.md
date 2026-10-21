@@ -75,7 +75,7 @@ just image-inputs
 This checks that the selected Arch packages and expected Flowerly binaries are
 sorted, unique and consistent with the initial mkosi rootfs configuration.
 
-`just image` deliberately still fails after validation because a successful
+`just image-rootfs` invokes mkosi with Arch pacman to build and validate a\ndirectory rootfs at `target/flowerly-arch-rootfs/flowerly-rootfs`. It requires a\nprovisioned Linux host, package network access and disk space; it refuses to\noverwrite an existing artifact. The output is **not** bootable and does not yet\ninclude installed Flowerly services or generation provenance.\n\n`just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.
 
