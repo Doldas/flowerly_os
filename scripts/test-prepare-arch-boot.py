@@ -40,6 +40,7 @@ def main():
         witness = link.parent / "flowerly-boot-witness.service"
         assert witness.is_symlink()
         assert (rootfs / "usr/lib/systemd/system/flowerly-boot-witness.service").is_file()
+        assert (rootfs / "usr/lib/flowerly/boot-ipc-health.sh").is_file()
         assert invoke(rootfs).returncode != 0, "double enablement accepted"
     with tempfile.TemporaryDirectory() as tmp:
         rootfs = Path(tmp) / "arch"
