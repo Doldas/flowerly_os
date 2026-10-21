@@ -208,6 +208,9 @@ jobs:
       - name: Verify Arch boot preparation offline
         run: python3 ./scripts/test-prepare-arch-boot.py
 
+      - name: Verify populated ext4 image creation offline
+        run: python3 ./scripts/test-build-arch-root-volume.py
+
       - name: Check Arch VM test scripts
         run: |
           bash -n ./scripts/arch-kernel-vm-test.sh

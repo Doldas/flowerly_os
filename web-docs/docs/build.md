@@ -95,6 +95,15 @@ identity, the Flowerly binary and systemd-sysusers, then enables only
 its KVM and privilege boundaries are validated. This is **not** a bootable
 disk image; initramfs, bootloader and QEMU startup are not yet implemented.
 
+After installing the Flowerly services and preparing the Arch rootfs, run
+`bash scripts/build-arch-root-volume.sh` to build a populated, unpartitioned
+ext4 filesystem at `target/flowerly-arch-rootfs/flowerly-root.ext4`.
+Requires host e2fsprogs (`mkfs.ext4` and `dumpe2fs`), creates a sparse
+4 GiB volume by default, and refuses to overwrite existing output. Use
+`FLOWERLY_ROOT_SIZE_MB` to choose another size (512–65536 MiB).
+This is **not a bootable disk**: partitioning, bootloader, initramfs and
+QEMU acceptance still need implementation.
+
 `just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.
