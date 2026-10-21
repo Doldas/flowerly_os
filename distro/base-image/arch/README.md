@@ -65,6 +65,11 @@ observing systemd's multi-user target over serial console. It requires QEMU
 and actual `/boot` artifacts and is **not** a partitioned or standalone disk
 image; full service and isolation verification remains outstanding.
 
+The opt-in boot preparation also stages a Flowerly boot witness unit. The
+QEMU acceptance probe requires its `FLOWERLY_BOOT_SUPERVISOR_ACTIVE` serial
+marker as well as systemd's multi-user target. The marker demonstrates only
+that systemd observed `flowerlyd` active; it does not verify IPC health.
+
 ## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
