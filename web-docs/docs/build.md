@@ -113,6 +113,14 @@ The command requires QEMU and actual kernel/initramfs artifacts; it is not
 run as a heavyweight VM test in ordinary PR CI (offline protocol tests are).
 It does not establish a standalone bootloader or prove Flowerly service health.
 
+If the boot probe reports missing `/boot/vmlinuz-linux`, inspect
+`rootfs/usr/lib/modules/*/vmlinuz`: mkosi may retain its packaged kernel
+there instead. The probe accepts exactly one kernel from the built Arch
+rootfs and never substitutes the host's kernel. It still requires a real
+`rootfs/boot/initramfs-linux.img`; mkosi's temporary module initrd is not
+assumed to be a complete boot initramfs. Rebuild the ext4 volume if the
+rootfs contents are changed before boot testing.
+
 `just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.
