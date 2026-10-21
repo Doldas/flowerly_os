@@ -1,0 +1,12 @@
+[Unit]
+Description=Flowerly OS boot activation witness
+Requires=flowerlyd.service
+After=flowerlyd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl is-active --quiet flowerlyd.service
+ExecStart=/usr/bin/echo FLOWERLY_BOOT_SUPERVISOR_ACTIVE
+
+[Install]
+WantedBy=multi-user.target
