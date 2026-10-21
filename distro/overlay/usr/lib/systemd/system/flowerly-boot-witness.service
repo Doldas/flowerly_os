@@ -5,6 +5,8 @@ After=flowerlyd.service
 
 [Service]
 Type=oneshot
+StandardOutput=journal+console
+StandardError=journal+console
 ExecStart=/usr/bin/systemctl is-active --quiet flowerlyd.service
 ExecStart=/usr/bin/echo FLOWERLY_BOOT_SUPERVISOR_ACTIVE
 
