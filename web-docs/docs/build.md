@@ -121,6 +121,21 @@ rootfs and never substitutes the host's kernel. It still requires a real
 assumed to be a complete boot initramfs. Rebuild the ext4 volume if the
 rootfs contents are changed before boot testing.
 
+A separate experimental initramfs builder is now available:
+
+```sh
+bash scripts/build-arch-initrd.sh
+python3 scripts/test-build-arch-initrd.py
+```
+
+It uses `distro/base-image/arch-initrd/mkosi.conf` (`Format=cpio`,
+`MakeInitrd=yes`) and stages `boot/initramfs-linux.img` in the Arch
+rootfs. The initrd is generic; it does **not** yet guarantee that the
+exact Arch kernel's virtio/ext4 modules are present. Run this *before*
+creating `flowerly-root.ext4`. When a root volume already exists, build
+a new volume from the updated rootfs using a new output path. A successful
+initrd command is not evidence of a successful QEMU boot.
+
 `just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.
