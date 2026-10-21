@@ -88,6 +88,13 @@ and unprivileged systemd-sysusers declarations. It deliberately does **not**
 enable or start services; image boot testing and service readiness have not
 been verified.
 
+Once the rootfs includes staged Flowerly services, opt in to supervisor boot
+enablement with `bash scripts/prepare-arch-boot.sh`. This checks Arch
+identity, the Flowerly binary and systemd-sysusers, then enables only
+`flowerlyd` for `multi-user.target`. `evolutiond` remains disabled until
+its KVM and privilege boundaries are validated. This is **not** a bootable
+disk image; initramfs, bootloader and QEMU startup are not yet implemented.
+
 `just image` deliberately still fails after validation because a successful
 command named `image` must eventually produce a real image artifact. The
 project will not report the scaffold as a completed bootable image.

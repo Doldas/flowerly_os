@@ -49,6 +49,11 @@ building the Arch rootfs and release binaries. This stages the three Flowerly
 executables, existing systemd units, and sysusers declarations without enabling
 services; an installed runnable OS still needs boot and service validation.
 
+The next opt-in command, `bash scripts/prepare-arch-boot.sh`, validates
+the staged supervisor, systemd and sysusers before enabling `flowerlyd`
+for a future boot test. It does not enable `evolutiond` or make the
+rootfs bootable.
+
 ## Current scope
 
 The mkosi configuration intentionally builds only the Arch rootfs substrate.
