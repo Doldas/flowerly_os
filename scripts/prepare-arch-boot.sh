@@ -17,15 +17,22 @@ done
 [[ -x "$ROOTFS/usr/bin/systemd-sysusers" ||
    -x "$ROOTFS/usr/lib/systemd/systemd-sysusers" ]] ||
     fail "systemd-sysusers missing from rootfs"
+WITNESS="$ROOT/distro/overlay/usr/lib/systemd/system/flowerly-boot-witness.service"
+[[ -f "$WITNESS" ]] || fail "missing Flowerly boot witness unit"
+[[ ! -L "$ROOTFS/usr/lib/systemd/system" ]] || fail "systemd unit directory is symlinked"
 UNITDIR="$ROOTFS/etc/systemd/system/multi-user.target.wants"
 [[ ! -L "$ROOTFS/etc" && ! -L "$ROOTFS/etc/systemd" &&
    ! -L "$ROOTFS/etc/systemd/system" && ! -L "$UNITDIR" ]] ||
     fail "systemd unit destination contains a symlink"
 [[ ! -e "$UNITDIR/flowerlyd.service" && ! -L "$UNITDIR/flowerlyd.service" ]] ||
     fail "flowerlyd already enabled or path occupied"
+[[ ! -e "$UNITDIR/flowerly-boot-witness.service" && ! -L "$UNITDIR/flowerly-boot-witness.service" ]] ||
+    fail "boot witness already enabled or path occupied"
 [[ ! -e "$UNITDIR/evolutiond.service" && ! -L "$UNITDIR/evolutiond.service" ]] ||
     fail "evolutiond must stay disabled"
 install -d -m 0755 "$UNITDIR"
+install -m 0644 "$WITNESS" "$ROOTFS/usr/lib/systemd/system/flowerly-boot-witness.service"
 ln -s /usr/lib/systemd/system/flowerlyd.service "$UNITDIR/flowerlyd.service"
+ln -s /usr/lib/systemd/system/flowerly-boot-witness.service "$UNITDIR/flowerly-boot-witness.service"
 echo "Prepared systemd enablement of flowerlyd in Arch rootfs: $ROOTFS"
 echo "Not bootable: disk partitioning, initramfs, bootloader and VM boot still pending."
