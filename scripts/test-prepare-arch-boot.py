@@ -25,7 +25,7 @@ def populate(rootfs):
         dest = rootfs / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("ID=arch\n" if name.endswith("os-release") else "fixture\n")
-        if name in ("usr/lib/systemd/systemd", "usr/bin/flowerlyd", "usr/bin/systemd-sysusers"):
+        if name in ("usr/lib/systemd/systemd", "usr/bin/flowerlyd", "usr/bin/agenticctl", "usr/bin/systemd-sysusers"):
             dest.chmod(0o755)
 
 
@@ -40,6 +40,7 @@ def main():
         witness = link.parent / "flowerly-boot-witness.service"
         assert witness.is_symlink()
         assert (rootfs / "usr/lib/systemd/system/flowerly-boot-witness.service").is_file()
+        assert (rootfs / "usr/lib/flowerly/boot-ipc-health.sh").is_file()
         assert invoke(rootfs).returncode != 0, "double enablement accepted"
     with tempfile.TemporaryDirectory() as tmp:
         rootfs = Path(tmp) / "arch"
