@@ -31,7 +31,8 @@ truncate -s "${SIZE_MB}M" "$TEMP"
 mkfs.ext4 -q -F -L FLOWERLY_ROOT -d "$ROOTFS" "$TEMP"
 dumpe2fs -h "$TEMP" 2>/dev/null | grep -qE '^Filesystem volume name:[[:space:]]+FLOWERLY_ROOT$' ||
     fail "ext4 filesystem label verification failed"
-mv -n "$TEMP" "$IMAGE"
+ln "$TEMP" "$IMAGE" || fail "output appeared during build; refusing overwrite"
+rm -f "$TEMP"
 trap - EXIT
 echo "Verified populated ext4 root volume: $IMAGE"
 echo "Not bootable: no partition table, bootloader or VM boot acceptance."
