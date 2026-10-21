@@ -60,29 +60,122 @@ AGENTIC_DATABASE_PATH explicit database path for tests/recovery
 `target/flowerly-state` while its sockets/logs live in a separate runtime
 directory.
 
-## Arch image inputs
+## Arch rootfs and VM boot experiment
 
-The initial distribution substrate is Arch Linux. The current repository does
-not yet produce the 0.0.9 bootable image, but the image inputs are concrete
-under `distro/`.
+This is a Linux/x86_64 development workflow, not a production image release.
+The outputs are a directory rootfs and an unpartitioned ext4 volume; neither
+constitutes a standalone bootable ISO or disk.
 
-Validate them with:
+### Host prerequisites (Arch Linux)
 
-```text
-just image-inputs
-```
-
-This checks that the selected Arch packages and expected Flowerly binaries are
-sorted, unique and consistent with the initial mkosi rootfs configuration.
-
-`just image-rootfs` invokes mkosi with Arch pacman to build and validate a\ndirectory rootfs at `target/flowerly-arch-rootfs/flowerly-rootfs`. It requires a\nprovisioned Linux host, package network access and disk space; it refuses to\noverwrite an existing artifact. The output is **not** bootable and does not yet\ninclude installed Flowerly services or generation provenance.\n\nAfter a successful rootfs build and `just build`, stage release binaries and
-systemd unit files with:
+Install these tools on the **host** before starting:
 
 ```sh
-bash scripts/install-flowerly-rootfs.sh
-python3 scripts/test-install-flowerly-rootfs.py
+sudo pacman -S --needed base-devel rustup just git mkosi pacman \
+  arch-install-scripts python python-pefile e2fsprogs qemu-desktop
 ```
 
+Check the tools used by the build scripts:
+
+```sh
+rustc --version
+mkosi --version
+pacman --version
+python -c 'import pefile'
+command -v mkfs.ext4 dumpe2fs truncate qemu-system-x86_64
+```
+
+`rustup` selects the Rust compiler pinned in `rust-toolchain.toml`.
+Package downloads require network access, trusted Arch package keys, free
+disk space (the rootfs in the first real test was approximately 1.5 GiB)
+and working user namespaces or a supported mkosi privilege setup. The
+`systemd-nsresourced` fallback message is informational if mkosi proceeds
+successfully. Do not disable package signatures or run the entire build
+with `sudo` to work around an error. On other host distributions, package
+names and mkosi/pacman availability differ.
+
+### Run the stages separately
+
+From the repository root on `release/2` (or a feature branch containing
+the required fixes):
+
+```sh
+just build
+just image-rootfs
+bash scripts/install-flowerly-rootfs.sh
+bash scripts/prepare-arch-boot.sh
+bash scripts/build-arch-root-volume.sh
+python3 scripts/probe-arch-qemu-boot.py
+```
+
+**Stop at the first failing command.** Each later stage depends on artifacts
+produced by the previous one; copying and running all commands after an error
+only produces misleading downstream messages.
+
+- `just image-rootfs` uses mkosi and pacman to generate
+  `target/flowerly-arch-rootfs/flowerly-rootfs`; it does not install Flowerly.
+- `install-flowerly-rootfs.sh` copies release executables, systemd units and
+  service-user definitions. It does not enable services.
+- `prepare-arch-boot.sh` enables only `flowerlyd` for a future boot experiment.
+  `evolutiond` remains disabled until its isolation is verified.
+- `build-arch-root-volume.sh` requires e2fsprogs and produces
+  `target/flowerly-arch-rootfs/flowerly-root.ext4`, a sparse 4 GiB ext4
+  filesystem by default. Set `FLOWERLY_ROOT_SIZE_MB` to 512–65536 to change
+  the size. It refuses to overwrite existing output.
+- `probe-arch-qemu-boot.py` requires QEMU plus actual
+  `boot/vmlinuz-linux` and `boot/initramfs-linux.img` in the rootfs.
+  It boots with a nonpersistent disk snapshot, captures serial output and
+  checks for systemd's multi-user target. It has **not** established service
+  health, a bootable disk, or a successful hardware boot.
+
+Offline tests can be run separately without building the full image:
+
+```sh
+python3 scripts/test-build-arch-rootfs.py
+python3 scripts/test-install-flowerly-rootfs.py
+python3 scripts/test-prepare-arch-boot.py
+python3 scripts/test-build-arch-root-volume.py
+python3 scripts/test-probe-arch-qemu-boot.py
+```
+
+### Troubleshooting real builds
+
+**`ModuleNotFoundError: No module named 'pefile'`.** Install
+`python-pefile` on the mkosi host and check `python -c 'import pefile'`.
+The Arch image package manifest also includes `python-pefile` on the
+development fix branch. Determine whether the traceback refers to the host
+interpreter or the image environment; do not turn off verification.
+
+**`mkfs.ext4: Permission denied` when copying
+`dbus-daemon-launch-helper`.** This is a real permissions issue when
+`mkfs.ext4 -d` traverses a staged rootfs containing root-owned or
+otherwise unreadable files. Your log may show successful mkosi, binary
+installation and systemd preparation *before* this failure. The ext4 image
+was not created, and the subsequent QEMU “missing ext4 root volume” error
+is just a consequence. Inspect access without changing permissions:
+
+```sh
+find target/flowerly-arch-rootfs/flowerly-rootfs -name dbus-daemon-launch-helper -ls
+namei -l target/flowerly-arch-rootfs/flowerly-rootfs/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+```
+
+The second command assumes the usual Arch path; use the path printed by
+`find` if it differs. Fixing this requires a tested ownership-aware image
+staging/build approach. **Do not recursively `chmod` the rootfs or remove
+setuid/setgid bits**: that would change security-sensitive OS contents.
+Do not run all project build stages as root as a generic workaround.
+
+**Existing output.** The rootfs, ext4 builder and QEMU serial-log scripts
+refuse to overwrite existing files. Inspect the existing artifact and choose
+a fresh output path where the script supports one; never blindly delete
+unreviewed build data.
+
+**Missing initramfs.** The direct-kernel probe specifically expects
+`boot/initramfs-linux.img`; a successful mkosi rootfs does not automatically
+prove that path exists. Verify the actual `boot/` files before running QEMU.
+
+`just image` and `just vm` are still intentionally unimplemented and
+fail closed. See [image-model.md](image-model.md) for the architecture.
 The installation adds `flowerlyd`, `evolutiond` and `agenticctl`, service units
 and unprivileged systemd-sysusers declarations. It deliberately does **not**
 enable or start services; image boot testing and service readiness have not
