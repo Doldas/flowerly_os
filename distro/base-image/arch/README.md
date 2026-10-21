@@ -82,6 +82,11 @@ separate generic mkosi cpio initrd and stages it under
 `boot/initramfs-linux.img`. It must run before ext4 volume creation.
 Kernel-specific module inclusion and QEMU boot remain unverified.
 
+The opt-in boot preparation also stages a Flowerly boot witness unit. The
+QEMU acceptance probe requires its `FLOWERLY_BOOT_SUPERVISOR_ACTIVE` serial
+marker as well as systemd's multi-user target. The marker demonstrates only
+that systemd observed `flowerlyd` active; it does not verify IPC health.
+
 ## Current scope
 
 The mkosi configuration produces an Arch package substrate. Flowerly

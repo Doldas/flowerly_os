@@ -37,6 +37,9 @@ def main():
         assert invoke(rootfs).returncode == 0
         assert link.is_symlink() and link.readlink() == Path("/usr/lib/systemd/system/flowerlyd.service")
         assert not (link.parent / "evolutiond.service").exists()
+        witness = link.parent / "flowerly-boot-witness.service"
+        assert witness.is_symlink()
+        assert (rootfs / "usr/lib/systemd/system/flowerly-boot-witness.service").is_file()
         assert invoke(rootfs).returncode != 0, "double enablement accepted"
     with tempfile.TemporaryDirectory() as tmp:
         rootfs = Path(tmp) / "arch"

@@ -95,8 +95,10 @@ def run(args):
         fail("kernel panic or Flowerly supervisor failure detected; inspect serial log")
     if not re.search(r"Reached target .*Multi-User System", log):
         fail(f"systemd multi-user boot not observed within {args.timeout}s; inspect {args.log}")
-    print(f"Direct QEMU kernel boot reached systemd multi-user target; serial log: {args.log}")
-    print("NOT proof of complete Flowerly service health or bootable standalone disk.")
+    if "FLOWERLY_BOOT_SUPERVISOR_ACTIVE" not in log:
+        fail("Flowerly supervisor activation witness not observed; inspect serial log")
+    print(f"Direct QEMU boot reached multi-user target and Flowerly activation witness; serial log: {args.log}")
+    print("Witness means systemd reported flowerlyd active, NOT IPC health or a standalone bootable disk.")
 
 
 def main():
