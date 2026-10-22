@@ -16,6 +16,16 @@ This is not an implemented dependency firewall or accepted ADR.
 | `src/flowerlyd/src/{flow,goal,generation,provenance,agentic,compute}/` | Domain command handlers and durable store calls | **Policy target**: consume typed repository operations. Do not move raw SQLite driver handles into these modules |
 | `src/providerd/` | Optional synthetic local inference provider | **Process-level exception** under ADR-0021; not a trusted OS authority or a Layer 1.5 Linux driver |
 
+The first enforceable implementation gate is `scripts/test-layer-15-boundaries.py`,
+run by both required docs CI and the local pre-PR preflight. It rejects new
+raw `rusqlite` imports and explicit Unix/procfs/sysfs use in high-level
+Flowerly domains. The existing read-only telemetry reads of
+`/proc/meminfo` and `/proc/pressure/memory` in the compute module are
+narrowly grandfathered pending #92 migration; this exception does not
+authorize new paths, writes or privileged effects. The gate intentionally
+does not police trusted IPC/PTY modules yet: those need #95 threat and
+kernel-negative tests before mechanical relocation.
+
 This is a *targeted source inventory*, not a machine-generated exhaustive
 import graph. Re-run dependency discovery when a relevant source file changes.
 
