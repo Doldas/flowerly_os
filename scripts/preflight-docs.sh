@@ -6,6 +6,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 python3 scripts/test-release-gates.py
 python3 scripts/test-branch-forward.py
+python3 scripts/test-runtime-topology.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
