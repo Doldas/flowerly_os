@@ -59,5 +59,12 @@ mod tests {
         assert!(host.memory_info().is_err());
         assert!(host.memory_pressure().is_err());
         assert!(host.drm_cards().is_err());
+        let budget = super::DeviceBudget::measure_with(&host);
+        assert_eq!(budget.total_memory_bytes, None);
+        assert_eq!(budget.available_memory_bytes, None);
+        assert!(!budget.meminfo_source_available);
+        assert!(budget.gpu_detected.is_empty());
+        let pressure = super::admission::MemoryPressure::measure_with(&host);
+        assert_eq!(pressure.avg10_pct, None);
     }
 }
