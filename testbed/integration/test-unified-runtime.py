@@ -134,8 +134,13 @@ def main(bin_dir):
             assert (root / "state" / "state.db").is_file()
             print("Unified flowerlyd modules, bounded IPC and persistence: OK")
         finally:
-            shutdown(supervisor, sock)
-            shutdown(hypervisor, evosock)
+            errors = []
+            for process, path in ((supervisor, sock), (hypervisor, evosock)):
+                try:
+                    shutdown(process, path)
+                except AssertionError as error:
+                    errors.append(str(error))
+            assert not errors, "; ".join(errors)
         resumed, rsock = begin(flowerlyd, root / "runtime", root / "state")
         try:
             flow = good(rsock, "flow.list", {})
