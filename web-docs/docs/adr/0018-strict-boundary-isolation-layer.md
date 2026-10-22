@@ -88,6 +88,11 @@ operations solely to satisfy an aesthetic dependency rule. Crate import
 rules should describe narrow reviewed exceptions, with exact remediation
 plans, instead of claiming a presently nonexistent driver-free core.
 
+The current source-level dependency inventory, reviewed exceptions, proposed
+trait ownership and falsifiable migration checks are documented in the
+[Layer 1.5 implementation audit](../architecture-layer-15-audit.md).
+They are proposals, not proof that a facade has been deployed.
+
 ## Compatibility and acceptance
 
 - [#91](https://github.com/Doldas/flowerly_os/issues/91): decide boundary,
