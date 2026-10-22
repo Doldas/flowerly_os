@@ -9,6 +9,14 @@ This file provides **navigation and accuracy rules**, not authority to override 
 - Record material architecture decisions, failure findings, unclosed questions and reproducible acceptance tests in repository docs/issues. Next agent sessions must not depend on the previous chat's context.
 - For long-lived runtime and process behaviors, trust measured Linux process behavior over simulated state. Protect safety-critical invariants with failure-injection tests.
 
+## Mandatory pre-PR docs and CI preflight
+
+- **Before pushing a PR update**, run `bash scripts/preflight-docs.sh` from a clean checkout. This executes the offline Python/Bash tests that run inside the required GitHub Actions `docs` job, including the Arch rootfs/QEMU acceptance fixtures. Fix failures locally, rerun the full preflight, and only then push; never edit a production guard just to make a fixture pass.
+- When changing a serial-output fixture, use actual newline characters (`"\\n"` in Python string literals), not literal backslash+n (`"\\\\n"`). Check success and rejection cases. When a unit test calls the QEMU probe, mock `shutil.which("qemu-system-x86_64")` unless real QEMU is the test's purpose.
+- Inspect `.github/workflows/ci.yml` before altering scripts: `docs` includes offline boot, release gate, shell and documentation checks, not just Markdown. Run `bash scripts/check-docs.sh` and `bash scripts/build-docs-site.sh` when documentation/site generation changes, with the documented dependencies installed. CI remains the definitive cross-environment check.
+- Treat required `rust` and `docs` check failures as blockers. After pushing, read the **first failed step and its traceback** in GitHub Actions, fix the actual failure on the same feature branch, and wait for the new exact-head checks to finish before requesting merge.
+- Negative branch-protection tests must be isolated, marked **DO NOT MERGE**, and closed without merge after proving enforcement. PR #176 was such an intentional failed-`docs` test for #55; do not treat it as a regression or copy its forced failure into normal development.
+
 ## Consolidated architecture migration
 
 - Issue [#105](https://github.com/Doldas/flowerly_os/issues/105) tracks the distribution-first structural transition.
