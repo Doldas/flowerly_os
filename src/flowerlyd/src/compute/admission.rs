@@ -144,7 +144,7 @@ impl MemoryPressure {
         Self::measure_with(&super::host::LinuxHostTelemetry)
     }
 
-    fn measure_with(host: &impl HostTelemetry) -> Self {
+    pub(super) fn measure_with(host: &impl HostTelemetry) -> Self {
         host.memory_pressure()
             .ok()
             .and_then(|text| Self::from_text(&text))
