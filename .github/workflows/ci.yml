@@ -187,6 +187,9 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Verify runtime topology and provider separation (#105)
+        run: python3 scripts/test-runtime-topology.py
+
       - name: Test protected release forwarding (offline)
         run: python3 scripts/test-branch-forward.py
 
