@@ -24,6 +24,20 @@ The runtime is composed of **two daemon binaries**, not eight. Each
 aliases, but map to **one** `flowerlyd.sock`. Only `evolutiond` owns a
 separate privileged control-plane socket.
 
+## Executable classification and topology regression (#105)
+
+The two **OS supervisor daemons** are `flowerlyd` and `evolutiond`.
+The workspace also includes `providerd`, an **optional, synthetic local
+inference-provider plugin process**, not a third OS supervisor or a privileged
+kernel boundary. Its Unix socket is a provider interface, not an inter-module
+control socket. The distinction is enforced by
+`python3 scripts/test-runtime-topology.py` in CI and the local docs preflight.
+
+The topology regression rejects reintroduced legacy daemon packages and
+checks that the separate Evolution boundary remains explicitly unprovisioned.
+It does not replace the real two-daemon IPC black-box, privileged Arch guest,
+PTY/cgroup, or release acceptance checks.
+
 ## In-process coordination
 
 The `flow`, `generation` and `provenance` handlers receive commands via
