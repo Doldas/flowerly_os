@@ -38,7 +38,7 @@ class BootProbeTests(unittest.TestCase):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
         packaged.parent.mkdir(parents=True)
         (self.rootfs / "boot/vmlinuz-linux").rename(packaged)
-        self.simulate("[  OK  ] Reached target Multi-User System.\\nFLOWERLY_BOOT_IPC_HEALTHY\\n")
+        self.simulate("[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
 
     def test_ambiguous_kernels_rejected(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
