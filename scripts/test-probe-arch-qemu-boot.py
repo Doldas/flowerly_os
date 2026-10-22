@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline tests for direct QEMU boot preflight and serial acceptance."""
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -32,7 +34,7 @@ class BootProbeTests(unittest.TestCase):
         self.volume = self.base / "root.ext4"
         self.volume.write_bytes(b"ext4 fixture")
         self.args = mock.Mock(rootfs=self.rootfs, volume=self.volume,
-                              log=self.base / "serial.log", timeout=10)
+                              log=self.base / "serial.log", timeout=10, report=None)
 
     def test_packaged_kernel_path_accepted(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
@@ -102,6 +104,26 @@ class BootProbeTests(unittest.TestCase):
     def test_crlf_witness_accepted(self):
         self.simulate("[  OK  ] Reached target Multi-User System.\r\n"
                       "FLOWERLY_BOOT_IPC_HEALTHY\r\n")
+
+    def test_evidence_report_contains_artifact_hashes(self):
+        self.args.report = self.base / "evidence.json"
+        self.simulate("[  OK  ] Reached target Multi-User System.\\n"
+                      "FLOWERLY_BOOT_IPC_HEALTHY\\n")
+        evidence = json.loads(self.args.report.read_text())
+        self.assertTrue(evidence["accepted"])
+        self.assertEqual(evidence["schema"], 1)
+        self.assertEqual(evidence["artifacts"]["volume"]["sha256"],
+                         hashlib.sha256(self.volume.read_bytes()).hexdigest())
+        self.assertEqual(evidence["artifacts"]["serial_log"]["sha256"],
+                         hashlib.sha256(self.args.log.read_bytes()).hexdigest())
+        self.assertIn("elapsed_seconds", evidence)
+
+    def test_evidence_report_never_overwritten(self):
+        self.args.report = self.base / "evidence.json"
+        self.args.report.write_text("prior evidence")
+        with self.assertRaisesRegex(ValueError, "overwrite evidence report"):
+            boot.run(self.args)
+        self.assertEqual(self.args.report.read_text(), "prior evidence")
 
     def test_kernel_panic_rejected(self):
         with self.assertRaisesRegex(ValueError, "kernel panic"):
