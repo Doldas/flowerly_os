@@ -141,7 +141,11 @@ impl MemoryPressure {
     }
 
     pub(crate) fn measure() -> Self {
-        super::host::LinuxHostTelemetry.memory_pressure()
+        Self::measure_with(&super::host::LinuxHostTelemetry)
+    }
+
+    fn measure_with(host: &impl HostTelemetry) -> Self {
+        host.memory_pressure()
             .ok()
             .and_then(|text| Self::from_text(&text))
             .unwrap_or_default()
