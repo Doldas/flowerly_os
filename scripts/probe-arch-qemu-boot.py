@@ -95,7 +95,9 @@ def run(args):
         fail("kernel panic or Flowerly supervisor failure detected; inspect serial log")
     if not re.search(r"Reached target .*Multi-User System", log):
         fail(f"systemd multi-user boot not observed within {args.timeout}s; inspect {args.log}")
-    if "FLOWERLY_BOOT_IPC_HEALTHY" not in log:
+    # Require the witness emitted by boot-ipc-health.sh on its own line.
+    # A quoted command, diagnostic or partial token is not boot evidence.
+    if not re.search(r"(?m)^FLOWERLY_BOOT_IPC_HEALTHY\r?$", log):
         fail("Flowerly IPC health witness not observed; inspect serial log")
     print(f"Direct QEMU boot reached multi-user target and Flowerly IPC health witness; serial log: {args.log}")
     print("Witness means flowerlyd answered IPC Ping at boot, NOT sustained health or a standalone bootable disk.")
