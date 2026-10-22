@@ -38,7 +38,7 @@ class BootProbeTests(unittest.TestCase):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
         packaged.parent.mkdir(parents=True)
         (self.rootfs / "boot/vmlinuz-linux").rename(packaged)
-        self.simulate("[  OK  ] Reached target Multi-User System.\\nFLOWERLY_BOOT_IPC_HEALTHY\\n")
+        self.simulate("[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
 
     def test_ambiguous_kernels_rejected(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
@@ -88,6 +88,20 @@ class BootProbeTests(unittest.TestCase):
 
     def test_systemd_multi_user_accepted(self):
         self.simulate("[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
+
+    def test_witness_mentioned_in_diagnostic_rejected(self):
+        with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):
+            self.simulate("[  OK  ] Reached target Multi-User System.\n"
+                          "Boot witness expects FLOWERLY_BOOT_IPC_HEALTHY\n")
+
+    def test_partial_witness_rejected(self):
+        with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):
+            self.simulate("[  OK  ] Reached target Multi-User System.\n"
+                          "FLOWERLY_BOOT_IPC_HEALTHY_NOT_YET\n")
+
+    def test_crlf_witness_accepted(self):
+        self.simulate("[  OK  ] Reached target Multi-User System.\r\n"
+                      "FLOWERLY_BOOT_IPC_HEALTHY\r\n")
 
     def test_kernel_panic_rejected(self):
         with self.assertRaisesRegex(ValueError, "kernel panic"):
