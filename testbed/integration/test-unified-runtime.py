@@ -115,8 +115,12 @@ def main(bin_dir):
             assert status["data"]["service"] == "flowerlyd", status
             boundary = rpc(evosock, "status")
             assert boundary["data"]["details"]["provisioned"] is False, boundary
+            assert boundary["data"]["details"]["execution_enabled"] is False, boundary
+            assert boundary["data"]["details"]["isolation_verified"] is False, boundary
             experiment = good(evosock, "evolution.experiment-status", {})
             assert experiment["status"] == "unavailable" and experiment["provisioned"] is False
+            assert experiment["execution_enabled"] is False, experiment
+            assert experiment["isolation_verified"] is False, experiment
             denied = rpc(evosock, "command", name="evolution.run_experiment", args={})
             assert denied["type"] == "err" and denied["code"] == "unavailable", denied
             assert {p.name for p in (root / "runtime").glob("*.sock")} == {"flowerlyd.sock"}
@@ -130,7 +134,16 @@ def main(bin_dir):
             assert session["id"].startswith("session-")
             listed = good(sock, "flow.list", {})
             assert any(item["id"] == created["id"] for item in listed["flows"])
-            good(sock, "capability.list", {})
+            catalog = good(sock, "capability.list", {})
+            assert catalog["enforced"] is False, catalog
+            assert catalog["kind"] == "descriptive_catalog", catalog
+            assert catalog["authorization"] == "not_implemented", catalog
+            assert "evolution.run_experiment" in catalog["capabilities"], catalog
+            # Listing a descriptor must not authorize privileged execution.
+            unsupported = rpc(sock, "command",
+                              name="capability.grant", args={"capability": "evolution.run_experiment"})
+            assert unsupported["type"] == "err", unsupported
+            assert unsupported["code"] == "invalid_argument", unsupported
             assert (root / "state" / "state.db").is_file()
             print("Unified flowerlyd modules, bounded IPC and persistence: OK")
         finally:
