@@ -33,7 +33,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let extra =
-        serde_json::json!({ "world": "not-yet-provisioned", "provisioned": kvm::PROVISIONED });
+        serde_json::json!({
+            "world": "not-yet-provisioned",
+            "provisioned": kvm::PROVISIONED,
+            "execution_enabled": false,
+            "isolation_verified": false,
+            "reason": "No authorized KVM world or cross-account broker is provisioned"
+        });
     let handler = |request: &Envelope| -> Envelope {
         match &request.payload {
             Payload::Command { name, .. } if name == "evolution.experiment-status" => ok_envelope(
@@ -41,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::json!({
                     "status": "unavailable",
                     "provisioned": kvm::PROVISIONED,
+                    "execution_enabled": false,
+                    "isolation_verified": false,
                     "reason": "Evolution World KVM backend is not provisioned"
                 }),
             ),
