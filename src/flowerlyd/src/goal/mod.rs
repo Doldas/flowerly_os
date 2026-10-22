@@ -325,7 +325,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             }))
         }
         "goal.list" => {
-            let goals = store.list_goals().map_err(CommandFailure::storage)?;
+            let goals = CoreQueryRepository::goals(store).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = goals
                 .iter()
                 .map(|g| {
