@@ -1,5 +1,4 @@
 //! Local AI workload admission and usage accounting (RFC 0004 tranche 3).
-use super::host::HostTelemetry;
 //!
 //! Admission rules are fail-closed and honest:
 //! - The referenced catalog model must carry a **measured** memory footprint;
@@ -14,6 +13,7 @@ use super::host::HostTelemetry;
 //! - No execution happens here: admission is bookkeeping only; no process,
 //!   cgroup or network is touched. Ceilings are preference data, never OS
 //!   authority.
+use super::host::HostTelemetry;
 use std::str::FromStr;
 
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
