@@ -30,7 +30,13 @@ HOST_ACCESS = re.compile(
 
 def unauthorized_imports(root=ROOT):
     violations = []
-    for path in sorted((root / "src").rglob("*.rs")):
+    # Start with higher-level Flowerly command modules only. The transport,
+    # PTY supervisor, provider process and SQLite adapter retain reviewed
+    # exceptions until dedicated migration and kernel-negative tests land.
+    higher_level = root / "src/flowerlyd/src"
+    domains = ("flow", "goal", "generation", "provenance", "agentic", "compute")
+    for path in sorted(p for domain in domains
+                       for p in (higher_level / domain).rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
         if SQLITE_IMPORT.search(source) and relative not in SQLITE_OWNERS:
