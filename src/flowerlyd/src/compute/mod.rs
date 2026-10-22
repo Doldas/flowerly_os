@@ -409,7 +409,7 @@ fn model_detail(model: &ModelRecord) -> Value {
     detail
 }
 
-/// Measured device budget. `/proc/meminfo` is the only enforced numeric
+/// Measured device budget. `Linux memory-info adapter` is the only enforced numeric
 /// source; every other constraint is labeled honestly as unenforced or
 /// unknown instead of inventing numbers (RFC 0004 invariant: report
 /// feasibility honestly).
