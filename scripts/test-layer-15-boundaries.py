@@ -24,7 +24,7 @@ SQLITE_IMPORT = re.compile(r"(?m)^\s*(?:use\s+rusqlite(?:::|\s*;)|extern\s+crate
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
 HOST_ACCESS = re.compile(
     r'(?m)^\s*use\s+std::os::unix(?:::|\s*;)|'
-    r'(?m:\b(?:/proc/|/sys/fs/cgroup/))'
+    r'(?m:(?:/proc/|/sys/fs/cgroup/))'
 )
 
 
