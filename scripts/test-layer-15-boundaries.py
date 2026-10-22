@@ -19,6 +19,7 @@ LINUX_OWNERS = {
     "src/flowerlyd/src/session/pty.rs",
     "src/flowerlyd/src/session/runtime.rs",
     "src/evolutiond/src/kvm/mod.rs",
+    "src/flowerlyd/src/compute/host.rs",
 }
 SQLITE_IMPORT = re.compile(r"(?m)^\s*(?:use\s+rusqlite(?:::|\s*;)|extern\s+crate\s+rusqlite\b)")
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
@@ -39,14 +40,6 @@ def unauthorized_imports(root=ROOT):
                        for p in (higher_level / domain).rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
-        # Narrow existing telemetry exceptions. These are READ-ONLY probes,
-        # not generalized permission to access arbitrary procfs/sysfs paths.
-        legacy_telemetry = {
-            "src/flowerlyd/src/compute/mod.rs": ("/proc/meminfo",),
-            "src/flowerlyd/src/compute/admission.rs": ("/proc/pressure/memory",),
-        }
-        for allowed in legacy_telemetry.get(relative, ()):
-            source = source.replace(allowed, "")
         if SQLITE_IMPORT.search(source) and relative not in SQLITE_OWNERS:
             violations.append(f"{relative}: raw SQLite import outside storage adapter")
         if HOST_ACCESS.search(source) and relative not in LINUX_OWNERS:
