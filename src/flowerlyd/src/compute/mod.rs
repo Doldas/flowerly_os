@@ -447,7 +447,11 @@ impl DeviceBudget {
     }
 
     pub(crate) fn measure() -> Self {
-        match LinuxHostTelemetry.memory_info() {
+        Self::measure_with(&LinuxHostTelemetry)
+    }
+
+    fn measure_with(host: &impl HostTelemetry) -> Self {
+        match host.memory_info() {
             Ok(text) => Self::from_meminfo(&text),
             Err(_) => Self {
                 meminfo_source_available: false,
