@@ -140,7 +140,7 @@ impl MemoryPressure {
     }
 
     pub(crate) fn measure() -> Self {
-        std::fs::read_to_string("/proc/pressure/memory")
+        super::host::LinuxHostTelemetry.memory_pressure()
             .ok()
             .and_then(|text| Self::from_text(&text))
             .unwrap_or_default()
