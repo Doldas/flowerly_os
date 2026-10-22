@@ -29,6 +29,29 @@ kernel-negative tests before mechanical relocation.
 This is a *targeted source inventory*, not a machine-generated exhaustive
 import graph. Re-run dependency discovery when a relevant source file changes.
 
+## Implemented adapter migration (first tranche)
+
+The `flowerlyd::compute::host` module now owns the actual read-only Linux
+`/proc/meminfo`, memory PSI and DRM sysfs reads behind the typed
+`HostTelemetry` contract. Budget and admission callers no longer access
+these kernel files directly. Kernel absence or permission failure preserves
+unknown/unavailable measurement behavior, not fabricated zero readings.
+Regression tests exercise an unavailable adapter. The Layer 1.5 CI gate
+allows direct host access in this adapter only, not in higher-level domains.
+
+Session-to-Flow validation/lookup now calls `CoreQueryRepository::flow`
+rather than directly calling the concrete `Store::get_flow` method. This
+executes the same real SQLite transaction/query through the existing typed
+repository adapter. The accepted single-`state.db` ACID design remains
+unchanged; provenance, actor attestation, guardian ownership and systemd
+boundaries are unaffected.
+
+**Not migrated in this tranche:** privileged cgroup/PTY lifecycle and KVM
+operations remain under their reviewed, kernel-authoritative owners; broader
+storage query/command coverage and failure-injection parity remain tracked by
+#83, #92, #94 and #95. Do not interpret a typed interface as proof of
+privilege separation.
+
 ## Trait ownership and staged migration decision (proposed)
 
 1. Place **domain-typed storage interfaces** with domain types in
