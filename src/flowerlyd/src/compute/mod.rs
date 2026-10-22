@@ -762,10 +762,7 @@ mod tests {
         let store = store();
         let data = assert_ok(&call(&store, "device.budget", serde_json::json!({})));
         let meminfo_available = data["meminfo_source_available"].as_bool().expect("flag");
-        assert_eq!(
-            meminfo_available,
-            LinuxHostTelemetry.memory_info().is_ok()
-        );
+        assert_eq!(meminfo_available, LinuxHostTelemetry.memory_info().is_ok());
         assert_eq!(data["enforcement"]["gpu_vram"], "not-enforced");
         assert_eq!(data["enforcement"]["cpu_memory"], "advisory-measured");
     }
