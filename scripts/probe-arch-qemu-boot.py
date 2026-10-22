@@ -6,12 +6,15 @@ kernel and initramfs extracted from the associated rootfs. The disk is
 opened read-only from the host's perspective (QEMU snapshot mode).
 """
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = ROOT / "target/flowerly-arch-rootfs"
@@ -19,6 +22,15 @@ DEFAULT_DIR = ROOT / "target/flowerly-arch-rootfs"
 
 def fail(message):
     raise ValueError(message)
+
+
+def artifact_identity(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"path": str(path), "bytes": path.stat().st_size,
+            "sha256": digest.hexdigest()}
 
 
 def run(args):
@@ -66,6 +78,11 @@ def run(args):
         fail("qemu-system-x86_64 is required")
     if args.log.exists() or args.log.is_symlink():
         fail(f"refusing to overwrite serial log: {args.log}")
+    if args.report is not None:
+        if args.report.exists() or args.report.is_symlink():
+            fail(f"refusing to overwrite evidence report: {args.report}")
+        if args.report.resolve() == args.log.resolve():
+            fail("evidence report and serial log must differ")
     args.log.parent.mkdir(parents=True, exist_ok=True)
     command = [
         qemu, "-machine", "q35,accel=tcg", "-m", "2048",
@@ -77,6 +94,7 @@ def run(args):
         "-drive", f"file={volume},format=raw,if=virtio,snapshot=on",
         "-net", "none",
     ]
+    started = time.monotonic()
     with args.log.open("xb") as output:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                 stdout=output, stderr=subprocess.STDOUT)
@@ -99,6 +117,26 @@ def run(args):
     # A quoted command, diagnostic or partial token is not boot evidence.
     if not re.search(r"(?m)^FLOWERLY_BOOT_IPC_HEALTHY\r?$", log):
         fail("Flowerly IPC health witness not observed; inspect serial log")
+    if args.report is not None:
+        evidence = {
+            "schema": 1,
+            "probe": "direct-kernel-qemu-tcg",
+            "accepted": True,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "timeout_seconds": args.timeout,
+            "command": command,
+            "artifacts": {
+                "volume": artifact_identity(volume),
+                "kernel": artifact_identity(kernel),
+                "initramfs": artifact_identity(initramfs),
+                "serial_log": artifact_identity(args.log),
+            },
+            "limitations": "Boot and one IPC Ping only; not sustained health or a standalone disk",
+        }
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        with args.report.open("x", encoding="utf-8") as output:
+            json.dump(evidence, output, sort_keys=True, indent=2)
+            output.write("\n")
     print(f"Direct QEMU boot reached multi-user target and Flowerly IPC health witness; serial log: {args.log}")
     print("Witness means flowerlyd answered IPC Ping at boot, NOT sustained health or a standalone bootable disk.")
 
@@ -109,6 +147,7 @@ def main():
     parser.add_argument("--volume", type=Path, default=DEFAULT_DIR / "flowerly-root.ext4")
     parser.add_argument("--log", type=Path, default=DEFAULT_DIR / "qemu-serial.log")
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--report", type=Path, help="write JSON evidence; never overwrite")
     args = parser.parse_args()
     try:
         run(args)
