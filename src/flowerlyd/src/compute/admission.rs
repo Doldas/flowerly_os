@@ -5,7 +5,7 @@
 //!   missing evidence is a REFUSED decision with reasons, never a guess.
 //! - The resolved profile ceilings apply (memory, concurrency); a refused
 //!   decision is recorded with its reasons so accounting stays auditable.
-//! - Linux memory pressure (PSI, `/proc/pressure/memory`) above a fixed hold
+//! - Linux memory pressure (PSI, `Linux PSI adapter`) above a fixed hold
 //!   threshold refuses new admission; pressure values are captured in the
 //!   decision row.
 //! - GPU/accelerator backends are **refused** in this tranche because no
