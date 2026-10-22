@@ -107,8 +107,8 @@ class BootProbeTests(unittest.TestCase):
 
     def test_evidence_report_contains_artifact_hashes(self):
         self.args.report = self.base / "evidence.json"
-        self.simulate("[  OK  ] Reached target Multi-User System.\\n"
-                      "FLOWERLY_BOOT_IPC_HEALTHY\\n")
+        self.simulate("[  OK  ] Reached target Multi-User System.\n"
+                      "FLOWERLY_BOOT_IPC_HEALTHY\n")
         evidence = json.loads(self.args.report.read_text())
         self.assertTrue(evidence["accepted"])
         self.assertEqual(evidence["schema"], 1)
@@ -121,8 +121,9 @@ class BootProbeTests(unittest.TestCase):
     def test_evidence_report_never_overwritten(self):
         self.args.report = self.base / "evidence.json"
         self.args.report.write_text("prior evidence")
-        with self.assertRaisesRegex(ValueError, "overwrite evidence report"):
-            boot.run(self.args)
+        with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
+            with self.assertRaisesRegex(ValueError, "overwrite evidence report"):
+                boot.run(self.args)
         self.assertEqual(self.args.report.read_text(), "prior evidence")
 
     def test_kernel_panic_rejected(self):
