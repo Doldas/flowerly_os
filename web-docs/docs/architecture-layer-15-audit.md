@@ -40,9 +40,11 @@ Regression tests exercise an unavailable adapter. The Layer 1.5 CI gate
 allows direct host access in this adapter only, not in higher-level domains.
 
 Session-to-Flow validation/lookup now calls `CoreQueryRepository::flow`
-rather than directly calling the concrete `Store::get_flow` method. This
-executes the same real SQLite transaction/query through the existing typed
-repository adapter. The accepted single-`state.db` ACID design remains
+rather than directly calling the concrete `Store::get_flow` method.
+The same typed SQLite adapter now implements `flows()` and `goals()`;
+production Flow collection/name queries and Goal listings use those methods
+instead of calling `Store::list_flows` / `Store::list_goals` directly. These
+execute the same real SQLite queries through the typed repository boundary. The accepted single-`state.db` ACID design remains
 unchanged; provenance, actor attestation, guardian ownership and systemd
 boundaries are unaffected.
 
