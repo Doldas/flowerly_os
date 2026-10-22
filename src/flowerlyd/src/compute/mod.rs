@@ -7,6 +7,9 @@
 //! - A catalog entry, budget verdict or profile can never grant OS authority;
 //!   this module performs no process, filesystem or network actions.
 //! - No provider, credential, endpoint or egress configuration lives here.
+mod host;
+
+use host::{HostTelemetry, LinuxHostTelemetry};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -444,7 +447,7 @@ impl DeviceBudget {
     }
 
     pub(crate) fn measure() -> Self {
-        match std::fs::read_to_string("/proc/meminfo") {
+        match LinuxHostTelemetry.memory_info() {
             Ok(text) => Self::from_meminfo(&text),
             Err(_) => Self {
                 meminfo_source_available: false,
@@ -471,20 +474,7 @@ impl DeviceBudget {
 /// Detect DRM render-node presence without claiming any capability beyond
 /// observation. Card names are honest hardware observations only.
 fn detect_gpu_nodes() -> Vec<String> {
-    match std::fs::read_dir("/sys/class/drm") {
-        Ok(entries) => {
-            let mut nodes = Vec::new();
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("card") {
-                        nodes.push(name.to_owned());
-                    }
-                }
-            }
-            nodes
-        }
-        Err(_) => Vec::new(),
-    }
+    LinuxHostTelemetry.drm_cards().unwrap_or_default()
 }
 
 /// Compatibility verdict against the measured budget. Missing catalog
@@ -770,7 +760,7 @@ mod tests {
         let meminfo_available = data["meminfo_source_available"].as_bool().expect("flag");
         assert_eq!(
             meminfo_available,
-            std::fs::metadata("/proc/meminfo").is_ok()
+            LinuxHostTelemetry.memory_info().is_ok()
         );
         assert_eq!(data["enforcement"]["gpu_vram"], "not-enforced");
         assert_eq!(data["enforcement"]["cpu_memory"], "advisory-measured");
