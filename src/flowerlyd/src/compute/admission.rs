@@ -1,4 +1,5 @@
 //! Local AI workload admission and usage accounting (RFC 0004 tranche 3).
+use super::host::HostTelemetry;
 //!
 //! Admission rules are fail-closed and honest:
 //! - The referenced catalog model must carry a **measured** memory footprint;
