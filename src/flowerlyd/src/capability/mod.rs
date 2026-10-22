@@ -60,7 +60,7 @@ mod tests {
                 assert_eq!(data["enforced"], false);
                 assert_eq!(data["kind"], "descriptive_catalog");
                 assert_eq!(data["authorization"], "not_implemented");
-                assert!(data["capabilities"].as_array().unwrap().len() > 0);
+                assert!(!data["capabilities"].as_array().unwrap().is_empty());
             }
             other => panic!("unexpected reply: {other:?}"),
         }
