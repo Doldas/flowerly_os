@@ -18,7 +18,13 @@ pub(crate) fn handle_command(request: &Envelope) -> Envelope {
     match &request.payload {
         Payload::Command { name, .. } if name == "capability.list" => ok_envelope(
             request.id.clone(),
-            serde_json::json!({"capabilities": CAPABILITIES}),
+            serde_json::json!({
+                "capabilities": CAPABILITIES,
+                "enforced": false,
+                "kind": "descriptive_catalog",
+                "authorization": "not_implemented",
+                "warning": "Capability descriptors are not grants, permissions or policy enforcement"
+            }),
         ),
         Payload::Command { name, .. } => coded_error_envelope(
             request.id.clone(),
@@ -30,5 +36,33 @@ pub(crate) fn handle_command(request: &Envelope) -> Envelope {
             ErrorCode::InvalidArgument,
             "capabilityd: unexpected request type",
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flowerly_core::ipc::PROTOCOL_VERSION;
+
+    #[test]
+    fn catalog_never_claims_enforcement() {
+        let request = Envelope {
+            version: PROTOCOL_VERSION,
+            id: "catalog".into(),
+            payload: Payload::Command {
+                name: "capability.list".into(),
+                args: serde_json::json!({}),
+            },
+        };
+        let reply = handle_command(&request);
+        match reply.payload {
+            Payload::Ok { data } => {
+                assert_eq!(data["enforced"], false);
+                assert_eq!(data["kind"], "descriptive_catalog");
+                assert_eq!(data["authorization"], "not_implemented");
+                assert!(data["capabilities"].as_array().unwrap().len() > 0);
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
     }
 }
