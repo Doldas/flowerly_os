@@ -136,7 +136,7 @@ def run(args):
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with args.report.open("x", encoding="utf-8") as output:
             json.dump(evidence, output, sort_keys=True, indent=2)
-            output.write("\\n")
+            output.write("\n")
     print(f"Direct QEMU boot reached multi-user target and Flowerly IPC health witness; serial log: {args.log}")
     print("Witness means flowerlyd answered IPC Ping at boot, NOT sustained health or a standalone bootable disk.")
 
