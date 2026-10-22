@@ -77,8 +77,7 @@ fn validate_flow_command(
                 let name = value
                     .as_str()
                     .ok_or_else(|| invalid("arg `name` must be a string"))?;
-                let mut matches = store
-                    .list_flows()
+                let mut matches = CoreQueryRepository::flows(store)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .into_iter()
                     .filter(|flow| flow.name == name);
@@ -257,7 +256,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(response)
         }
         "flow.list" => {
-            let flows = store.list_flows().map_err(CommandFailure::storage)?;
+            let flows = CoreQueryRepository::flows(store).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = flows
                 .iter()
                 .map(|f| serde_json::json!({ "id": f.id, "name": f.name, "state": f.state }))
@@ -303,7 +302,7 @@ fn find_flow(
         return Err(format!("flow not found: {id}").into());
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
-        let flows = store.list_flows().map_err(CommandFailure::storage)?;
+        let flows = CoreQueryRepository::flows(store).map_err(CommandFailure::storage)?;
         let mut matches = flows.into_iter().filter(|f| f.name == by_name);
         if let Some(flow) = matches.next() {
             if matches.next().is_some() {
