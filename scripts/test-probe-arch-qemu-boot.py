@@ -134,6 +134,11 @@ class BootProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):
             self.simulate("[  OK  ] Reached target Multi-User System.\\n")
 
+    def test_required_docs_gate_negative_proof_issue_55(self):
+        # INTENTIONAL FAILURE: #55 verifies that required docs blocks a non-draft PR.
+        # Do not merge this test into release/2. Close the PR after capturing proof.
+        self.fail("EXPECTED_NEGATIVE_GATE_ISSUE_55_DO_NOT_MERGE")
+
     def test_no_boot_confirmation_rejected(self):
         with self.assertRaisesRegex(ValueError, "not observed"):
             self.simulate("Booting Linux...\n")
