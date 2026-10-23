@@ -50,7 +50,6 @@ def sample(pidfile, proc="/proc", cgroup="/sys/fs/cgroup"):
     alive = bool(pid and Path(f"{proc}/{pid}/stat").is_file())
     meminfo = fields(f"{proc}/meminfo", {"MemAvailable", "SwapFree"})
     events = fields(f"{cgroup}/memory.events", {"oom", "oom_kill"})
-    current = fields(f"{cgroup}/memory.current", {"current"})
     try:
         current_bytes = int(Path(f"{cgroup}/memory.current").read_text().strip())
     except (OSError, ValueError):
