@@ -39,6 +39,9 @@ jobs:
       - name: Fail-closed security alert triage regression
         run: python3 scripts/test-security-alert-triage.py
 
+      - name: Arch VM host resource monitor offline regression
+        run: python3 scripts/test-arch-vm-resource-monitor.py
+
       - name: Install just
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
