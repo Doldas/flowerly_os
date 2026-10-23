@@ -33,6 +33,9 @@ jobs:
       - name: Regression-test workflow action pin policy
         run: python3 scripts/test-workflow-action-pins-regression.py
 
+      - name: Security alert inventory redaction regression
+        run: python3 scripts/test-security-alert-inventory.py
+
       - name: Install just
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
