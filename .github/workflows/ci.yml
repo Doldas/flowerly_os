@@ -26,6 +26,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Ensure all workflow actions are immutable SHA-pinned
+        run: python3 scripts/test-workflow-action-pins.py
+
       - name: Install just
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
