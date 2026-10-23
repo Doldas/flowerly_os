@@ -26,7 +26,7 @@ use flowerly_core::types::{
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-use super::{actor_from, profiles, CommandFailure, CommandResult, SharedStore};
+use super::{actor_from, profiles, CommandFailure, CommandResult, DeviceBudget, SharedStore};
 
 /// Memory pressure (PSI `avg10`, percent) above which admission refuses.
 /// Deliberately high enough to only trigger under real pressure; the value
@@ -152,6 +152,18 @@ impl MemoryPressure {
     }
 }
 
+/// Advisory admission guard: refuse when measured free host RAM is below the
+/// catalog footprint. This is not reservation, cgroup enforcement or OOM
+/// recovery; unknown measurements remain unknown and are not zero.
+fn memory_headroom_reason(requested: Option<u64>, available: Option<u64>) -> Option<String> {
+    match (requested, available) {
+        (Some(required), Some(free)) if required > free => Some(format!(
+            "model measured memory {required} exceeds currently available host RAM {free}"
+        )),
+        _ => None,
+    }
+}
+
 fn accelerator_backend(backend: ModelBackend) -> bool {
     matches!(
         backend,
@@ -226,6 +238,15 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
     } else {
         reasons
             .push("model has no measured memory footprint; refusing without evidence".to_owned());
+    }
+    // The Linux telemetry facade observes MemAvailable, not a guaranteed
+    // reservation. Prevent an obviously over-budget admission while keeping
+    // the existing distinction between unknown evidence and measured zero.
+    let budget = DeviceBudget::measure();
+    if let Some(reason) =
+        memory_headroom_reason(model.measured_memory_bytes, budget.available_memory_bytes)
+    {
+        reasons.push(reason);
     }
     let pressure = MemoryPressure::measure();
     if let Some(avg10) = pressure.avg10_pct {
@@ -536,6 +557,17 @@ mod tests {
             MemoryPressure::from_text("full avg10=not-a-number avg60=0 avg300=0 total=5\n")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn headroom_guard_rejects_observed_shortfall_without_inventing_memory() {
+        assert!(memory_headroom_reason(Some(2_000), Some(1_000))
+            .unwrap()
+            .contains("available host RAM"));
+        assert_eq!(memory_headroom_reason(Some(1_000), Some(1_000)), None);
+        assert_eq!(memory_headroom_reason(Some(1_000), Some(2_000)), None);
+        assert_eq!(memory_headroom_reason(Some(1_000), None), None);
+        assert_eq!(memory_headroom_reason(None, Some(1_000)), None);
     }
 
     #[test]
