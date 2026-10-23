@@ -35,7 +35,7 @@ def sanitize(family, row):
         return {
             "number": row.get("number"), "url": row.get("html_url"),
             "severity": rule.get("security_severity_level") or rule.get("severity"),
-            "rule_id": rule.get("id"), "description": rule.get("description"),
+            "rule_id": rule.get("id"),
             "path": loc.get("path"), "line": loc.get("start_line"),
             "tool": (row.get("tool") or {}).get("name"),
         }
@@ -52,7 +52,7 @@ def sanitize(family, row):
     # Only metadata, never secret or validity check payloads.
     return {
         "number": row.get("number"), "url": row.get("html_url"),
-        "secret_type": row.get("secret_type"), "created_at": row.get("created_at"),
+        "created_at": row.get("created_at"),
     }
 
 def main():
