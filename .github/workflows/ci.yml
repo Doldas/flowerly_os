@@ -30,6 +30,9 @@ jobs:
       - name: Ensure all workflow actions are immutable SHA-pinned
         run: python3 scripts/test-workflow-action-pins.py
 
+      - name: Regression-test workflow action pin policy
+        run: python3 scripts/test-workflow-action-pins-regression.py
+
       - name: Install just
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:
