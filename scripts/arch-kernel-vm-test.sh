@@ -186,7 +186,13 @@ if ! launch_vm "$accel" "${accel_args[@]}"; then
     fi
 fi
 
+resource_monitor_pid=""
 cleanup() {
+    # Stop the background monitor before collecting final resource counters.
+    if [[ -n "$resource_monitor_pid" ]]; then
+        kill "$resource_monitor_pid" 2>/dev/null || true
+        wait "$resource_monitor_pid" 2>/dev/null || true
+    fi
     # Preserve non-secret host resource evidence even if guest SSH/report retrieval fails.
     # Do not read kernel journals or guest credentials into CI artifacts.
     local exit_status=$?
@@ -226,6 +232,14 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Capture resource pressure *before* any guest disconnection, not only at exit.
+# The collector is observational and never changes a release acceptance result.
+python3 "$ROOT/scripts/arch-vm-resource-monitor.py" \
+    --pidfile "$pidfile" \
+    --output "$REPORT_DIR/host-resource-timeline.csv" \
+    --interval 10 --max-samples 1000 >/dev/null 2>&1 &
+resource_monitor_pid=$!
 
 ssh_opts=(
     -i "$ssh_key"
