@@ -47,5 +47,19 @@ class ActionPinTests(unittest.TestCase):
         self.check_reference('actions/checkout@' + 'A' * 40, 1)
 
 
+    def test_reject_quoted_mutable_tag(self):
+        self.check_reference('"actions/checkout@v4"', 1)
+
+    def test_reject_single_quoted_mutable_branch(self):
+        self.check_reference("'actions/checkout@main'", 1)
+
+    def test_accept_quoted_immutable_sha(self):
+        self.check_reference('"actions/checkout@' + 'a' * 40 + '"', 0)
+
+    def test_accept_single_quoted_immutable_sha(self):
+        self.check_reference("'actions/checkout@" + 'a' * 40 + "'", 0)
+
+
+
 if __name__ == '__main__':
     unittest.main()
