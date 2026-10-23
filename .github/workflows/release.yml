@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -71,6 +71,8 @@ jobs:
 
   release:
     name: Release ${{ github.ref_name }}
+    permissions:
+      contents: write
     needs: arch-kernel
     runs-on: flowerly-runner
     steps:
