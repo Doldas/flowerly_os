@@ -6,13 +6,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  security-events: write
-  id-token: write
   contents: read
 
 jobs:
   analysis:
     name: Scorecard analysis
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
