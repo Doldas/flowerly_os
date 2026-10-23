@@ -24,6 +24,20 @@ The runtime is composed of **two daemon binaries**, not eight. Each
 aliases, but map to **one** `flowerlyd.sock`. Only `evolutiond` owns a
 separate privileged control-plane socket.
 
+## Executable classification and topology regression (#105)
+
+The two **OS supervisor daemons** are `flowerlyd` and `evolutiond`.
+The workspace also includes `providerd`, an **optional, synthetic local
+inference-provider plugin process**, not a third OS supervisor or a privileged
+kernel boundary. Its Unix socket is a provider interface, not an inter-module
+control socket. The distinction is enforced by
+`python3 scripts/test-runtime-topology.py` in CI and the local docs preflight.
+
+The topology regression rejects reintroduced legacy daemon packages and
+checks that the separate Evolution boundary remains explicitly unprovisioned.
+It does not replace the real two-daemon IPC black-box, privileged Arch guest,
+PTY/cgroup, or release acceptance checks.
+
 ## In-process coordination
 
 The `flow`, `generation` and `provenance` handlers receive commands via
@@ -54,6 +68,51 @@ yet**. Same-UID Unix IPC is retained for development only; a production
 cross-account request broker must be designed and independently authorized
 before `flowerlyd` can submit jobs to `evolutiond`. No unverified privileged
 execution path has been added.
+
+## ADR-0013 boundary audit — capability and Evolution stubs (#52)
+
+**Decision:** Keep capability descriptions inside the unprivileged `flowerlyd`
+process. Keep `evolutiond` as a separate, non-provisioned service boundary
+for future independently authorized KVM ownership. No additional standalone
+`capabilityd` process is justified. This is a *process-boundary decision*,
+not approval of a production privilege broker.
+
+| ADR-0013 criterion | Capability catalog (`flowerlyd`) | Evolution (`evolutiond`) |
+| --- | --- | --- |
+| Independent authority | None. Names are descriptions, never grants | Required eventually for KVM; not implemented today |
+| Failure isolation | No separate security domain or privileged resource | Separate account/socket design retains prospective isolation |
+| Resource ownership | No kernel authority or physical resources | Future `/dev/kvm`, VM lifecycle and isolated storage; currently unprovisioned |
+| Startup/deployment | In-process module, `flowerlyd.sock` only | Separate binary and runtime directory; disabled in boot image |
+| Decision | Keep in-process and explicitly non-enforcing | Keep as fail-closed, visibly unprovisioned stub |
+
+**Current enforcement facts:** `capability.list` returns a descriptive set of
+command names. It does **not** grant, check, delegate or revoke permissions,
+configure seccomp, authorize host operations or authorize an agent. A named
+capability must not be interpreted as a runnable command or a policy token.
+The reply explicitly sets `enforced=false`, `kind=descriptive_catalog`
+and `authorization=not_implemented`; legacy `capabilities` remains unchanged
+for IPC v1 readers. The kernel-attested peer UID, session control tokens,
+PTY guardian, cgroups and existing IPC rules remain independent of this catalog.
+No new policy bypass or capability-grant API is introduced.
+
+**Evolution World:** `evolution.experiment-status` reports `unavailable`,
+`provisioned=false`, `execution_enabled=false` and
+`isolation_verified=false`. The service's IPC Status details expose the same
+limitations. `evolution.run_experiment` continues to reject execution with
+typed `unavailable`. No KVM guest, cross-account authorization broker,
+trusted delegation or isolation has been established by these fields.
+Legacy status response members remain intact.
+
+**Migration and verification:** Old clients may continue using
+`capability.list` and `evolution.experiment-status`; additive fields retain
+IPC v1 framing and old command names. New clients must display the explicit
+unavailable/non-enforcement state rather than inferring permission from a
+descriptor. The real-process integration harness checks both daemon status
+and command responses, rejects a fake `capability.grant` invocation and
+verifies experiment execution refusal. The issue #31 privileged-kernel
+acceptance gate remains open; simulated success is not acceptable evidence.
+Revisit this decision only after independently reviewed authorization,
+failure-isolation, kernel/VM and account-boundary acceptance tests.
 
 ## Release-guest disk provisioning
 

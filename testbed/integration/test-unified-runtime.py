@@ -69,16 +69,32 @@ def begin(binary, runtime, state):
 
 
 def shutdown(proc, sock):
-    if proc.poll() is None:
+    """Require a clean IPC shutdown; force cleanup only after recording failure."""
+    failure = None
+    try:
+        assert proc.poll() is None, f"{sock.name} exited before shutdown"
+        reply = rpc(sock, "shutdown")
+        assert reply["type"] == "ok", (sock, reply)
         try:
-            result = rpc(sock, "shutdown")
-            assert result["type"] == "ok"
-            proc.wait(timeout=6)
-        except (OSError, subprocess.TimeoutExpired):
+            code = proc.wait(timeout=6)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(f"{sock.name} did not drain within 6 seconds") from error
+        assert code == 0, f"{sock.name} shutdown exit code {code}"
+        assert not sock.exists(), f"{sock.name} socket remained after shutdown"
+    except (OSError, AssertionError) as error:
+        failure = error
+    finally:
+        if proc.poll() is None:
             proc.terminate()
-            proc.wait(timeout=6)
-    if proc.stderr:
-        proc.stderr.close()
+            try:
+                proc.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=6)
+        if proc.stderr:
+            proc.stderr.close()
+    if failure is not None:
+        raise AssertionError(f"graceful IPC shutdown failed: {failure}") from failure
 
 
 def main(bin_dir):
@@ -89,13 +105,22 @@ def main(bin_dir):
         supervisor, sock = begin(flowerlyd, root / "runtime", root / "state")
         hypervisor, evosock = begin(evolutiond, root / "evolution-runtime", root / "evolution-state")
         try:
+            for service, path in (("flowerlyd", sock), ("evolutiond", evosock)):
+                ping = rpc(path, "ping")
+                assert ping["type"] == "ok", (service, ping)
+                status_reply = rpc(path, "status")
+                assert status_reply["type"] == "ok", (service, status_reply)
+                assert status_reply["data"]["service"] == service, status_reply
             status = rpc(sock, "status")
-            assert status["type"] == "ok", status
             assert status["data"]["service"] == "flowerlyd", status
             boundary = rpc(evosock, "status")
-            assert boundary["type"] == "ok" and boundary["data"]["details"]["provisioned"] is False, boundary
+            assert boundary["data"]["details"]["provisioned"] is False, boundary
+            assert boundary["data"]["details"]["execution_enabled"] is False, boundary
+            assert boundary["data"]["details"]["isolation_verified"] is False, boundary
             experiment = good(evosock, "evolution.experiment-status", {})
             assert experiment["status"] == "unavailable" and experiment["provisioned"] is False
+            assert experiment["execution_enabled"] is False, experiment
+            assert experiment["isolation_verified"] is False, experiment
             denied = rpc(evosock, "command", name="evolution.run_experiment", args={})
             assert denied["type"] == "err" and denied["code"] == "unavailable", denied
             assert {p.name for p in (root / "runtime").glob("*.sock")} == {"flowerlyd.sock"}
@@ -109,12 +134,26 @@ def main(bin_dir):
             assert session["id"].startswith("session-")
             listed = good(sock, "flow.list", {})
             assert any(item["id"] == created["id"] for item in listed["flows"])
-            good(sock, "capability.list", {})
+            catalog = good(sock, "capability.list", {})
+            assert catalog["enforced"] is False, catalog
+            assert catalog["kind"] == "descriptive_catalog", catalog
+            assert catalog["authorization"] == "not_implemented", catalog
+            assert "evolution.run_experiment" in catalog["capabilities"], catalog
+            # Listing a descriptor must not authorize privileged execution.
+            unsupported = rpc(sock, "command",
+                              name="capability.grant", args={"capability": "evolution.run_experiment"})
+            assert unsupported["type"] == "err", unsupported
+            assert unsupported["code"] == "invalid_argument", unsupported
             assert (root / "state" / "state.db").is_file()
             print("Unified flowerlyd modules, bounded IPC and persistence: OK")
         finally:
-            shutdown(supervisor, sock)
-            shutdown(hypervisor, evosock)
+            errors = []
+            for process, path in ((supervisor, sock), (hypervisor, evosock)):
+                try:
+                    shutdown(process, path)
+                except AssertionError as error:
+                    errors.append(str(error))
+            assert not errors, "; ".join(errors)
         resumed, rsock = begin(flowerlyd, root / "runtime", root / "state")
         try:
             flow = good(rsock, "flow.list", {})

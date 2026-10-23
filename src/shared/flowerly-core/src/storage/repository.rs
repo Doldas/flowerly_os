@@ -68,6 +68,8 @@ pub trait CoreCommandRepository {
 /// Read-only, typed queries. No raw SQL or underlying driver handles escape.
 pub trait CoreQueryRepository {
     fn flow(&self, id: &FlowId) -> Result<Option<Flow>>;
+    fn flows(&self) -> Result<Vec<Flow>>;
+    fn goals(&self) -> Result<Vec<Goal>>;
     fn goal(&self, id: &GoalId) -> Result<Option<Goal>>;
     fn session(&self, id: &SessionId) -> Result<Option<Session>>;
     fn sessions(&self) -> Result<Vec<Session>>;
@@ -125,6 +127,14 @@ impl CoreCommandRepository for Store {
 impl CoreQueryRepository for Store {
     fn flow(&self, id: &FlowId) -> Result<Option<Flow>> {
         self.get_flow(id)
+    }
+
+    fn flows(&self) -> Result<Vec<Flow>> {
+        self.list_flows()
+    }
+
+    fn goals(&self) -> Result<Vec<Goal>> {
+        self.list_goals()
     }
 
     fn goal(&self, id: &GoalId) -> Result<Option<Goal>> {

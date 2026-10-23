@@ -187,6 +187,12 @@ jobs:
       - name: Check required documentation
         run: ./scripts/check-docs.sh
 
+      - name: Verify runtime topology and provider separation (#105)
+        run: python3 scripts/test-runtime-topology.py
+
+      - name: Reject new raw Linux and SQLite imports in core domains (#91)
+        run: python3 scripts/test-layer-15-boundaries.py
+
       - name: Test protected release forwarding (offline)
         run: python3 scripts/test-branch-forward.py
 

@@ -139,8 +139,7 @@ fn validate_session_command(
                     .as_str()
                     .ok_or_else(|| invalid("arg `flow_id` must be a string or null"))?;
                 let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                if store
-                    .get_flow(&flow_id)
+                if CoreQueryRepository::flow(store, &flow_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
@@ -391,8 +390,7 @@ fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>,
         .as_str()
         .ok_or("arg `flow_id` must be a string or null")?;
     let flow_id = FlowId::from_str(raw).map_err(err_str)?;
-    if store
-        .get_flow(&flow_id)
+    if CoreQueryRepository::flow(store, &flow_id)
         .map_err(CommandFailure::storage)?
         .is_none()
     {
