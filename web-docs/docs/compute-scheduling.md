@@ -21,6 +21,7 @@ bookkeeping:
   measured footprint; `concurrency_max` per profile per submitting actor —
   exhausted ceilings **queue** the workload (`QUEUED`) unless the profile's
   fallback is explicitly `fail`, which refuses instead.
+- **Measured host memory headroom** (`MemAvailable`, via the typed Linux telemetry adapter): if an eligible model's measured memory footprint exceeds currently available host RAM, admission is `REFUSED` with a durable reason. This is a point-in-time advisory guard, **not** a memory reservation, OOM recovery, or a cgroup limit. Missing telemetry stays unknown rather than becoming a fabricated zero; profile and measured-model checks still apply.
 - Linux **memory pressure** (PSI `avg10` from `/proc/pressure/memory`) above
   a fixed hold threshold (50%) refuses admission; a missing PSI source is
   reported as unknown, never as 0.
