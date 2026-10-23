@@ -114,11 +114,17 @@ struct CommandFailure {
 
 impl CommandFailure {
     fn invalid(message: impl Into<String>) -> Self {
-        Self { code: ErrorCode::InvalidArgument, message: message.into() }
+        Self {
+            code: ErrorCode::InvalidArgument,
+            message: message.into(),
+        }
     }
 
     fn not_found(message: impl Into<String>) -> Self {
-        Self { code: ErrorCode::NotFound, message: message.into() }
+        Self {
+            code: ErrorCode::NotFound,
+            message: message.into(),
+        }
     }
 
     fn storage(error: StorageError) -> Self {
@@ -173,7 +179,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?
                     .is_none()
                 {
-                    return Err(CommandFailure::not_found(format!("generation not found: {parent}")));
+                    return Err(CommandFailure::not_found(format!(
+                        "generation not found: {parent}"
+                    )));
                 }
             }
 
@@ -184,7 +192,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                     .map_err(CommandFailure::storage)?
                     .is_none()
                 {
-                    return Err(CommandFailure::not_found(format!("goal not found: {goal_id}")));
+                    return Err(CommandFailure::not_found(format!(
+                        "goal not found: {goal_id}"
+                    )));
                 }
             }
 
@@ -268,7 +278,10 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or_else(|| CommandFailure::invalid("missing string arg `id`"))?;
             let generation = store
-                .get_generation(&GenerationId::from_str(id).map_err(|e| CommandFailure::invalid(e.to_string()))?)
+                .get_generation(
+                    &GenerationId::from_str(id)
+                        .map_err(|e| CommandFailure::invalid(e.to_string()))?,
+                )
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
             Ok(serde_json::to_value(&generation).map_err(err_str)?)
@@ -284,7 +297,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
         }
-        other => Err(CommandFailure::invalid(format!("generationd: unknown command `{other}`"))),
+        other => Err(CommandFailure::invalid(format!(
+            "generationd: unknown command `{other}`"
+        ))),
     }
 }
 
@@ -551,12 +566,36 @@ mod tests {
         let mut store = migrated_store();
         let missing = GenerationId::new();
         for (name, args, expected) in [
-            ("generation.create", serde_json::json!({"parent": missing}), ErrorCode::NotFound),
-            ("generation.inspect", serde_json::json!({"id": missing}), ErrorCode::NotFound),
-            ("generation.activate", serde_json::json!({"id": missing}), ErrorCode::NotFound),
-            ("generation.inspect", serde_json::json!({}), ErrorCode::InvalidArgument),
-            ("generation.activate", serde_json::json!({"id": 123}), ErrorCode::InvalidArgument),
-            ("generation.invalid", serde_json::json!({}), ErrorCode::InvalidArgument),
+            (
+                "generation.create",
+                serde_json::json!({"parent": missing}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.inspect",
+                serde_json::json!({"id": missing}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.activate",
+                serde_json::json!({"id": missing}),
+                ErrorCode::NotFound,
+            ),
+            (
+                "generation.inspect",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.activate",
+                serde_json::json!({"id": 123}),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.invalid",
+                serde_json::json!({}),
+                ErrorCode::InvalidArgument,
+            ),
         ] {
             let error = run_command(&mut store, name, &args).expect_err(name);
             assert_eq!(error.code, expected, "{name} {args}");
