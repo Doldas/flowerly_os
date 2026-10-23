@@ -30,14 +30,14 @@ jobs:
     steps:
       - name: Add opened issue or PR to Flowerly engineering roadmap
         if: github.event_name == 'issues' || github.event_name == 'pull_request'
-        uses: actions/add-to-project@v2.0.0
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
         with:
           project-url: https://github.com/users/Doldas/projects/7
           github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Checkout
         if: github.event_name == 'schedule'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Reconcile project fields
         if: github.event_name == 'schedule'

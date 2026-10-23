@@ -95,7 +95,7 @@ jobs:
 
     steps:
       - name: Checkout target
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ matrix.ref }}
           fetch-depth: 1
@@ -125,7 +125,7 @@ jobs:
 
       - name: Look up successful Arch-kernel validation
         id: previous
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .arch-kernel-nightly-marker
           key: arch-kernel-nightly-v1-${{ matrix.slug }}-${{ steps.fingerprint.outputs.value }}
@@ -170,14 +170,14 @@ jobs:
 
       - name: Save successful fingerprint
         if: ${{ steps.decision.outputs.run == 'true' && success() && steps.previous.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .arch-kernel-nightly-marker
           key: arch-kernel-nightly-v1-${{ matrix.slug }}-${{ steps.fingerprint.outputs.value }}
 
       - name: Upload Arch VM evidence
         if: ${{ always() && steps.decision.outputs.run == 'true' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: arch-kernel-${{ matrix.slug }}-${{ steps.fingerprint.outputs.commit }}
           path: target/arch-kernel/${{ matrix.slug }}/report/
