@@ -15,6 +15,25 @@ Use GitHub's private vulnerability reporting for this repository (the
 We will acknowledge the report, investigate, and coordinate disclosure. Please
 allow reasonable time before disclosing publicly.
 
+## Private disclosure and response process
+
+Use the repository's **Security → Report a vulnerability** entry point,
+which creates a private advisory when private vulnerability reporting is
+enabled. If that option is unavailable, contact a repository maintainer through
+an established private channel; do **not** include exploit details or secrets
+in a public issue, discussion, pull request or CI log.
+
+Provide affected versions/commits, expected security boundary, reproduction
+steps, impact, and a safe proof of concept where possible. Never submit live
+credentials or third-party personal data.
+
+Maintainers should acknowledge a report when able, assess exploitability,
+contain/rotate compromised secrets, coordinate a fix and affected-release
+verification, and agree on disclosure timing with the reporter. We do not
+promise an unstaffed 24-hour response SLA or publish an unverified fix.
+Security advisories and mitigations should link to validated fixes without
+revealing sensitive reproduction material prematurely.
+
 ## Scope
 
 In scope: the source code, configuration, and packaging in this repository, and
@@ -47,7 +66,9 @@ treat it as compromised, rotate it, and remove it from history.
 
 ## Supported versions
 
-Flowerly OS is pre-1.0. Security fixes target the latest release line only.
+Flowerly OS is pre-1.0. Security fixes target the actively maintained release
+line only. Older development commits and pre-release snapshots have no
+independent backport commitment.
 
 | Version | Supported |
 | ------- | --------- |
