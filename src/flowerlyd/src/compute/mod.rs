@@ -63,15 +63,8 @@ impl CommandFailure {
     }
 
     fn storage(error: StorageError) -> Self {
-        let code = match &error {
-            StorageError::NotFound(_) => ErrorCode::NotFound,
-            StorageError::InvalidOperation(_) => ErrorCode::InvalidArgument,
-            StorageError::OperationConflict(_) => ErrorCode::Conflict,
-            other if other.is_busy() => ErrorCode::Unavailable,
-            _ => ErrorCode::Internal,
-        };
         Self {
-            code,
+            code: error.ipc_error_code(),
             message: error.to_string(),
         }
     }
