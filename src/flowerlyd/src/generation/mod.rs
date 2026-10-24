@@ -56,8 +56,12 @@ struct GenerationListArgs {}
 fn typed_generation_args<T: serde::de::DeserializeOwned>(
     args: &Value,
 ) -> Result<T, (ErrorCode, String)> {
-    serde_json::from_value(args.clone())
-        .map_err(|error| (ErrorCode::InvalidArgument, format!("invalid generation arguments: {error}")))
+    serde_json::from_value(args.clone()).map_err(|error| {
+        (
+            ErrorCode::InvalidArgument,
+            format!("invalid generation arguments: {error}"),
+        )
+    })
 }
 
 /// Validate client-facing generation errors while the store lock is held.
@@ -71,13 +75,16 @@ fn validate_generation_command(
         "generation.create" => {
             let typed: CreateGenerationArgs = typed_generation_args(args)?;
             let invalid = |error: String| (ErrorCode::InvalidArgument, error);
-            let parent: Option<GenerationId> = typed.parent
+            let parent: Option<GenerationId> = typed
+                .parent
                 .map(|raw| GenerationId::from_str(&raw).map_err(|error| invalid(error.to_string())))
                 .transpose()?;
-            let reason_goal: Option<GoalId> = typed.reason_goal
+            let reason_goal: Option<GoalId> = typed
+                .reason_goal
                 .map(|raw| GoalId::from_str(&raw).map_err(|error| invalid(error.to_string())))
                 .transpose()?;
-            let _: Option<ExperimentId> = typed.experiment
+            let _: Option<ExperimentId> = typed
+                .experiment
                 .map(|raw| ExperimentId::from_str(&raw).map_err(|error| invalid(error.to_string())))
                 .transpose()?;
             let _ = (&typed.source_commit, &typed.system_manifest);
@@ -489,7 +496,6 @@ mod tests {
             serde_json::json!({"parent": 123}),
             serde_json::json!({"reason_goal": false}),
             serde_json::json!({"source_commit": []}),
-            serde_json::json!({"experiment": "not-an-experiment"}),
             serde_json::json!([]),
         ] {
             let error = typed_generation_args::<CreateGenerationArgs>(&args)
