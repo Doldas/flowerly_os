@@ -131,6 +131,48 @@ impl Router {
     }
 }
 
+const MODULES: [&str; 8] = [
+    "capability",
+    "compute",
+    "flow",
+    "goal",
+    "session",
+    "generation",
+    "provenance",
+    "execution",
+];
+
+/// Status reports ready only when the database answers a consistent count
+/// snapshot; a failed read is reported with its typed storage error code
+/// instead of `ready: true` with missing counts.
+fn status_details(db: &Store) -> serde_json::Value {
+    match db.status_counts() {
+        Ok(counts) => serde_json::json!({
+            "ready": true,
+            "modules": MODULES,
+            "default_flow": "General",
+            "flow_count": counts.flows,
+            "goal_count": counts.goals,
+            "session_count": counts.sessions,
+            "execution_count": counts.executions,
+            "generation_count": counts.generations,
+            "provenance_edge_count": counts.provenance_edges,
+            "model_count": counts.models,
+            "profile_count": counts.profiles,
+            "active_workload_count": counts.active_workloads,
+            "provider_count": counts.providers,
+            "database": "ready"
+        }),
+        Err(error) => serde_json::json!({
+            "ready": false,
+            "modules": MODULES,
+            "database": "error",
+            "error_code": error.ipc_error_code(),
+            "reason": error.to_string(),
+        }),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -174,32 +216,46 @@ async fn main() -> Result<()> {
     });
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.try_lock() {
-        Ok(db) => serde_json::json!({
-            "ready": true,
-            "modules": ["capability","compute","flow","goal","session","generation","provenance","execution"],
-            "flow_count": db.list_flows().map(|rows| rows.len()).ok(),
-            "default_flow": "General",
-            "goal_count": db.list_goals().map(|rows| rows.len()).ok(),
-            "session_count": db.list_sessions().map(|rows| rows.len()).ok(),
-            "execution_count": db.list_executions().map(|rows| rows.len()).ok(),
-            "generation_count": db.list_generations().map(|rows| rows.len()).ok(),
-            "model_count": db.list_models().map(|rows| rows.len()).ok(),
-            "profile_count": db.list_profiles().map(|rows| rows.len()).ok(),
-            "active_workload_count": db
-                .list_workloads(None)
-                .map(|rows| rows.iter().filter(|row| {
-                    row.state == flowerly_core::types::WorkloadState::Queued
-                        || row.state == flowerly_core::types::WorkloadState::Admitted
-                })
-                .count())
-                .ok(),
-            "provider_count": db.list_providers().map(|rows| rows.len()).ok(),
-            "database": "ready"
-        }),
+        Ok(db) => status_details(&db),
         Err(_) => serde_json::json!({"ready": false, "reason": "store busy"}),
     });
     let handler = Arc::new(move |request: &Envelope| router.handle(request));
     run_service_with_status(config, status, handler)
         .await
         .context("flowerlyd terminated")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_is_ready_with_live_counts() {
+        let mut store = Store::open_in_memory().expect("open store");
+        store.migrate().expect("migrate");
+        store.ensure_general_flow().expect("general flow");
+        let details = status_details(&store);
+        assert_eq!(details["ready"], true, "{details}");
+        assert_eq!(details["database"], "ready");
+        assert_eq!(details["flow_count"], 1);
+        // Bootstrapping General records its created-by provenance edge.
+        assert_eq!(details["provenance_edge_count"], 1);
+    }
+
+    #[test]
+    fn status_is_not_ready_when_the_database_cannot_answer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.db");
+        let mut store = Store::open(&path).expect("open store");
+        store.migrate().expect("migrate");
+        rusqlite::Connection::open(&path)
+            .expect("open second connection")
+            .execute_batch("DROP TABLE sessions;")
+            .expect("damage schema");
+        let details = status_details(&store);
+        assert_eq!(details["ready"], false, "{details}");
+        assert_eq!(details["database"], "error");
+        assert_eq!(details["error_code"], "internal");
+        assert!(details.get("flow_count").is_none(), "{details}");
+    }
 }

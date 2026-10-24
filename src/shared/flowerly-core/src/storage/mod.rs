@@ -361,6 +361,21 @@ pub const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// Live domain counts reported by service Status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatusCounts {
+    pub flows: u64,
+    pub goals: u64,
+    pub sessions: u64,
+    pub executions: u64,
+    pub generations: u64,
+    pub provenance_edges: u64,
+    pub models: u64,
+    pub profiles: u64,
+    pub providers: u64,
+    pub active_workloads: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
     pub version: i64,
@@ -484,6 +499,46 @@ impl Store {
             return Err(StorageError::NotFound("database health check".into()));
         }
         Ok(())
+    }
+
+    /// Live per-domain row counts read in one statement, so every count comes
+    /// from the same snapshot. Filters match the corresponding `list_*` calls.
+    pub fn status_counts(&self) -> Result<StatusCounts> {
+        let count = |row: &Row<'_>, index: usize| -> rusqlite::Result<u64> {
+            let value: i64 = row.get(index)?;
+            u64::try_from(value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(index, Type::Integer, Box::new(error))
+            })
+        };
+        let counts = self.conn.query_row(
+            "SELECT
+                 (SELECT COUNT(*) FROM flows),
+                 (SELECT COUNT(*) FROM goals),
+                 (SELECT COUNT(*) FROM sessions),
+                 (SELECT COUNT(*) FROM executions),
+                 (SELECT COUNT(*) FROM generations),
+                 (SELECT COUNT(*) FROM provenance_edges),
+                 (SELECT COUNT(*) FROM models WHERE retired_at IS NULL),
+                 (SELECT COUNT(*) FROM ai_profiles),
+                 (SELECT COUNT(*) FROM ai_providers WHERE retired_at IS NULL),
+                 (SELECT COUNT(*) FROM inference_workloads WHERE state IN ('QUEUED', 'ADMITTED'))",
+            [],
+            |row| {
+                Ok(StatusCounts {
+                    flows: count(row, 0)?,
+                    goals: count(row, 1)?,
+                    sessions: count(row, 2)?,
+                    executions: count(row, 3)?,
+                    generations: count(row, 4)?,
+                    provenance_edges: count(row, 5)?,
+                    models: count(row, 6)?,
+                    profiles: count(row, 7)?,
+                    providers: count(row, 8)?,
+                    active_workloads: count(row, 9)?,
+                })
+            },
+        )?;
+        Ok(counts)
     }
 
     /// Bootstrap or recover the unique General system Flow transactionally.
@@ -2420,6 +2475,59 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
         store
+    }
+
+    #[test]
+    fn status_counts_match_domain_listings() {
+        let mut store = migrated_store();
+        assert_eq!(
+            store.status_counts().expect("empty counts"),
+            StatusCounts::default()
+        );
+
+        store.ensure_general_flow().expect("general flow");
+        store
+            .insert_goal(&Goal::new("count me", "test"))
+            .expect("insert goal");
+        let kept = example_model();
+        let mut retired = example_model();
+        retired.name = "retired-model".into();
+        store
+            .insert_model_with_provenance(&kept, &[])
+            .expect("insert model");
+        store
+            .insert_model_with_provenance(&retired, &[])
+            .expect("insert retired model");
+        store
+            .retire_model(&retired.id, "uid:1000")
+            .expect("retire model");
+
+        let counts = store.status_counts().expect("counts");
+        assert_eq!(counts.flows, store.list_flows().unwrap().len() as u64);
+        assert_eq!(counts.goals, store.list_goals().unwrap().len() as u64);
+        assert_eq!(counts.models, store.list_models().unwrap().len() as u64);
+        assert_eq!(counts.models, 1, "retired models are not counted");
+        assert_eq!(counts.sessions, store.list_sessions().unwrap().len() as u64);
+        assert_eq!(counts.profiles, store.list_profiles().unwrap().len() as u64);
+        assert_eq!(
+            counts.providers,
+            store.list_providers().unwrap().len() as u64
+        );
+        assert_eq!(counts.flows, 1);
+        assert_eq!(counts.goals, 1);
+    }
+
+    #[test]
+    fn status_counts_fail_on_damaged_schema() {
+        let store = migrated_store();
+        store
+            .conn
+            .execute_batch("DROP TABLE provenance_edges;")
+            .expect("drop table");
+        let error = store
+            .status_counts()
+            .expect_err("missing table must not report counts");
+        assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
     }
 
     fn example_model() -> ModelRecord {
