@@ -52,7 +52,11 @@ impl StorageError {
         matches!(
             self,
             Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
-                if error.code == rusqlite::ErrorCode::ConstraintViolation
+                if matches!(
+                    error.extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                        | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                )
         ) || matches!(self, Self::UniqueViolation(_))
     }
 
@@ -76,8 +80,7 @@ impl StorageError {
         matches!(
             self,
             Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
-                if error.code == rusqlite::ErrorCode::ConstraintViolation
-                    && error.to_string().contains("FOREIGN KEY")
+                if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
         ) || matches!(self, Self::ForeignKeyViolation(_))
     }
 }
