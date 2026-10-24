@@ -507,8 +507,7 @@ mod tests {
             serde_json::json!({"id": 123}),
         ] {
             let error = typed_generation_args::<GenerationIdArgs>(&args)
-                .err()
-                .unwrap_or_else(|| panic!("invalid identity must fail"));
+                .expect_err("invalid identity must fail");
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
         let store = migrated_store();
