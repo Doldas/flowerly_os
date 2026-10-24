@@ -499,7 +499,7 @@ mod tests {
         ] {
             let error = typed_generation_args::<CreateGenerationArgs>(&args)
                 .err()
-                .expect("invalid arguments must fail");
+                .unwrap_or_else(|| panic!("invalid arguments must fail"));
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
         for args in [
@@ -509,7 +509,7 @@ mod tests {
         ] {
             let error = typed_generation_args::<GenerationIdArgs>(&args)
                 .err()
-                .expect("invalid identity must fail");
+                .unwrap_or_else(|| panic!("invalid identity must fail"));
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
         let store = migrated_store();
@@ -528,8 +528,7 @@ mod tests {
             ),
         ] {
             let error = validate_generation_command(&store, name, &args)
-                .err()
-                .expect("invalid typed identity must fail");
+                .expect_err("invalid typed identity must fail");
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
     }
