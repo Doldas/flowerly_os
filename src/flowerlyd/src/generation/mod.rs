@@ -34,11 +34,11 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
 #[derive(Deserialize)]
 struct CreateGenerationArgs {
     #[serde(default)]
-    parent: Option<GenerationId>,
+    parent: Option<String>,
     #[serde(default)]
-    reason_goal: Option<GoalId>,
+    reason_goal: Option<String>,
     #[serde(default)]
-    experiment: Option<ExperimentId>,
+    experiment: Option<String>,
     #[serde(default)]
     source_commit: Option<String>,
     #[serde(default)]
@@ -47,7 +47,7 @@ struct CreateGenerationArgs {
 
 #[derive(Deserialize)]
 struct GenerationIdArgs {
-    id: GenerationId,
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -70,9 +70,17 @@ fn validate_generation_command(
     match name {
         "generation.create" => {
             let typed: CreateGenerationArgs = typed_generation_args(args)?;
-            let parent = typed.parent;
-            let reason_goal = typed.reason_goal;
-            let _ = (&typed.experiment, &typed.source_commit, &typed.system_manifest);
+            let invalid = |error: String| (ErrorCode::InvalidArgument, error);
+            let parent: Option<GenerationId> = typed.parent
+                .map(|raw| GenerationId::from_str(&raw).map_err(|error| invalid(error.to_string())))
+                .transpose()?;
+            let reason_goal: Option<GoalId> = typed.reason_goal
+                .map(|raw| GoalId::from_str(&raw).map_err(|error| invalid(error.to_string())))
+                .transpose()?;
+            let _: Option<ExperimentId> = typed.experiment
+                .map(|raw| ExperimentId::from_str(&raw).map_err(|error| invalid(error.to_string())))
+                .transpose()?;
+            let _ = (&typed.source_commit, &typed.system_manifest);
             if let Some(parent) = &parent {
                 if store
                     .get_generation(parent)
@@ -100,7 +108,8 @@ fn validate_generation_command(
         }
         "generation.inspect" | "generation.activate" => {
             let typed: GenerationIdArgs = typed_generation_args(args)?;
-            let id = typed.id;
+            let id = GenerationId::from_str(&typed.id)
+                .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
             if store
                 .get_generation(&id)
                 .map_err(|e| (storage_error_code(&e), e.to_string()))?
@@ -492,11 +501,21 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({"id": null}),
             serde_json::json!({"id": 123}),
-            serde_json::json!({"id": "malformed-generation-id"}),
         ] {
             let error = typed_generation_args::<GenerationIdArgs>(&args)
                 .err()
                 .expect("invalid identity must fail");
+            assert_eq!(error.0, ErrorCode::InvalidArgument);
+        }
+        let store = migrated_store();
+        for (name, args) in [
+            ("generation.create", serde_json::json!({"parent": "malformed-id"})),
+            ("generation.create", serde_json::json!({"experiment": "invalid-id"})),
+            ("generation.activate", serde_json::json!({"id": "invalid-id"})),
+        ] {
+            let error = validate_generation_command(&store, name, &args)
+                .err()
+                .expect("invalid typed identity must fail");
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
     }
