@@ -46,6 +46,7 @@ nav:
       - Compute Profiles: compute-profiles.md
       - Compute Scheduling: compute-scheduling.md
       - Compute Inference: compute-inference.md
+      - IPC v1 Typed Arguments: ipc-v1-typed-arguments.md
       - User Model: user-model.md
       - Threat Model: threat-model.md
       - Language Policy: language-policy.md
