@@ -2199,6 +2199,26 @@ mod tests {
         assert!(!corruption.is_unique_violation());
         assert!(!corruption.is_foreign_key_violation());
         assert!(!corruption.is_busy());
+
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+        ] {
+            let busy = StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
+            ));
+            assert!(busy.is_busy());
+            assert!(!busy.is_unique_violation());
+            assert!(!busy.is_foreign_key_violation());
+        }
+
+        let generic_constraint = StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            None,
+        ));
+        assert!(!generic_constraint.is_unique_violation());
+        assert!(!generic_constraint.is_foreign_key_violation());
     }
 
     fn migrated_store() -> Store {
