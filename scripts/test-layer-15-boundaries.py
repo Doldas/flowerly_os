@@ -21,10 +21,13 @@ LINUX_OWNERS = {
     "src/evolutiond/src/kvm/mod.rs",
     "src/flowerlyd/src/compute/host.rs",
 }
-SQLITE_IMPORT = re.compile(r"(?m)^\s*(?:use\s+rusqlite(?:::|\s*;)|extern\s+crate\s+rusqlite\b)")
+SQLITE_IMPORT = re.compile(
+    r"(?m)^\s*(?:(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?rusqlite\b"
+    r"(?:::|\s*;|\s+as\b)|extern\s+crate\s+rusqlite\b)"
+)
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
 HOST_ACCESS = re.compile(
-    r'(?m)^\s*use\s+std::os::unix(?:::|\s*;)|'
+    r'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?std::os(?:::unix\b|::\{\s*unix\b)|'
     r'(?m:(?:/proc/|/sys/fs/cgroup/))'
 )
 
@@ -59,6 +62,43 @@ class DependencyBoundaryTests(unittest.TestCase):
             file.parent.mkdir(parents=True)
             file.write_text("use rusqlite::Connection;\n")
             self.assertIn("raw SQLite", unauthorized_imports(root)[0])
+
+    def test_sqlite_aliases_and_absolute_paths_cannot_bypass_boundary(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            file = root / "src/flowerlyd/src/goal/mod.rs"
+            file.parent.mkdir(parents=True)
+            for declaration in (
+                "use rusqlite as db;\n",
+                "use ::rusqlite::Connection;\n",
+                "pub use rusqlite::Connection;\n",
+                "pub(crate) use rusqlite as db;\n",
+                "extern crate rusqlite;\n",
+            ):
+                with self.subTest(declaration=declaration):
+                    file.write_text(declaration)
+                    self.assertTrue(
+                        any("raw SQLite" in entry for entry in unauthorized_imports(root))
+                    )
+
+    def test_unix_import_variants_cannot_bypass_boundary(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            file = root / "src/flowerlyd/src/flow/mod.rs"
+            file.parent.mkdir(parents=True)
+            for declaration in (
+                "use std::os::unix::fs::PermissionsExt;\n",
+                "pub use std::os::unix::net::UnixStream;\n",
+                "use ::std::os::unix::io::RawFd;\n",
+                "use std::os::{unix::fs::PermissionsExt};\n",
+            ):
+                with self.subTest(declaration=declaration):
+                    file.write_text(declaration)
+                    self.assertTrue(
+                        any("raw host access" in entry for entry in unauthorized_imports(root))
+                    )
 
     def test_new_unreviewed_kernel_access_is_rejected(self):
         from tempfile import TemporaryDirectory
