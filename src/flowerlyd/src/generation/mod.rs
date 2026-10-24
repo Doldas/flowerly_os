@@ -454,6 +454,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn typed_generation_v1_arguments_accept_legacy_unknown_fields() {
+        let args = serde_json::json!({
+            "parent": null,
+            "reason_goal": null,
+            "experiment": null,
+            "source_commit": "abc",
+            "system_manifest": null,
+            "future_optional_field": true
+        });
+        let parsed: CreateGenerationArgs =
+            typed_generation_args(&args).expect("legacy compatible fields");
+        assert!(parsed.parent.is_none());
+        assert!(parsed.reason_goal.is_none());
+        assert_eq!(parsed.source_commit.as_deref(), Some("abc"));
+        let _: GenerationListArgs =
+            typed_generation_args(&serde_json::json!({"future": 1}))
+                .expect("list ignores unknown fields");
+    }
+
+    #[test]
+    fn typed_generation_v1_arguments_reject_malformed_fields() {
+        for args in [
+            serde_json::json!({"parent": 123}),
+            serde_json::json!({"reason_goal": false}),
+            serde_json::json!({"source_commit": []}),
+            serde_json::json!({"experiment": "not-an-experiment"}),
+            serde_json::json!([]),
+        ] {
+            let error = typed_generation_args::<CreateGenerationArgs>(&args)
+                .err()
+                .expect("invalid arguments must fail");
+            assert_eq!(error.0, ErrorCode::InvalidArgument);
+        }
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"id": null}),
+            serde_json::json!({"id": 123}),
+            serde_json::json!({"id": "malformed-generation-id"}),
+        ] {
+            let error = typed_generation_args::<GenerationIdArgs>(&args)
+                .err()
+                .expect("invalid identity must fail");
+            assert_eq!(error.0, ErrorCode::InvalidArgument);
+        }
+    }
+
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
