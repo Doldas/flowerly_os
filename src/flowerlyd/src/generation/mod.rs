@@ -31,7 +31,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
 
 /// Typed IPC-v1 argument validation. Unknown fields are tolerated to preserve
 /// compatibility with older/newer clients; malformed known fields fail closed.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct CreateGenerationArgs {
     #[serde(default)]
     parent: Option<String>,
@@ -45,12 +45,12 @@ struct CreateGenerationArgs {
     system_manifest: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GenerationIdArgs {
     id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GenerationListArgs {}
 
 fn typed_generation_args<T: serde::de::DeserializeOwned>(
@@ -498,8 +498,7 @@ mod tests {
             serde_json::json!([]),
         ] {
             let error = typed_generation_args::<CreateGenerationArgs>(&args)
-                .err()
-                .unwrap_or_else(|| panic!("invalid arguments must fail"));
+                .expect_err("invalid arguments must fail");
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
         for args in [
