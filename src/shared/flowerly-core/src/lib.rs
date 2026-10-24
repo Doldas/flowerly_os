@@ -6,6 +6,7 @@ pub mod ipc;
 mod logging;
 pub mod profile;
 pub mod storage;
+pub mod storage_mode;
 pub mod types;
 pub use config::{default_runtime_dir, ConfigError, LogFormat, ServiceConfig};
 pub use daemon::{
