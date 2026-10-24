@@ -83,7 +83,7 @@ about adopting old file descriptors or replaying capabilities across crashes.
 
 ## Contention and liveness limits
 
-SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. This document does not guarantee distributed exactly-once execution.
+SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. When the Store is free, Status reads all domain counts (`flow_count`, `goal_count`, `session_count`, `execution_count`, `generation_count`, `provenance_edge_count`, `model_count`, `profile_count`, `provider_count`, `active_workload_count`) in one SQLite statement, so they come from one snapshot. If that read fails, Status reports `ready: false`, `database: "error"` and the typed `error_code`, and leaves out the counts; it never reports `ready: true` with missing counts. This document does not guarantee distributed exactly-once execution.
 
 ## Storage error classification
 

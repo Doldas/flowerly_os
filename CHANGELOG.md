@@ -13,6 +13,8 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 - Updated CLI socket routing, systemd unit scaffolds and input validation.
 - KVM execution and bootable images remain unimplemented.
 - Storage failures now map to IPC error codes through one shared classifier (#62). SQLite UNIQUE/PRIMARY KEY failures now return `conflict` and FOREIGN KEY failures `invalid_argument` in every service; they previously returned `internal` everywhere except Generation. Only BUSY/LOCKED returns `unavailable`.
+- `flowerlyd` Status reports `ready: true` only after the database answers one consistent count snapshot, which now includes `provenance_edge_count`. A failed read now reports `ready: false` with a typed `error_code` (#31).
+- IPC servers hold an exclusive per-socket instance lock (`<socket>.lock`) and automatically recover a socket left by a crashed instance only after verifying it is stale. A second live instance is refused (#31).
 - IPC deadline errors say whether the request was never executed (queued) or has an unknown outcome (handler running), with elapsed milliseconds. Every request logs a structured `ipc request` event with queue, handler and total time (#62).
 
 
