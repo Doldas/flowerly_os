@@ -391,7 +391,10 @@ mod tests {
         )
         .expect_err("malformed activation ID must be rejected");
         assert_eq!(error.code, ErrorCode::InvalidArgument);
-        assert!(store.list_generations().expect("list generations").is_empty());
+        assert!(store
+            .list_generations()
+            .expect("list generations")
+            .is_empty());
     }
 
     #[test]
