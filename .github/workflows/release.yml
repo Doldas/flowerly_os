@@ -96,7 +96,7 @@ jobs:
         run: |
           just build
           cd target/release
-          sha256sum agenticd flowd sessiond goald provenanced capabilityd generationd evolutiond agenticctl > SHA256SUMS
+          sha256sum flowerlyd evolutiond providerd agenticctl > SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
@@ -105,13 +105,8 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: CHANGELOG.md
           files: |
-            target/release/agenticd
-            target/release/flowd
-            target/release/sessiond
-            target/release/goald
-            target/release/provenanced
-            target/release/capabilityd
-            target/release/generationd
+            target/release/flowerlyd
             target/release/evolutiond
+            target/release/providerd
             target/release/agenticctl
             target/release/SHA256SUMS
