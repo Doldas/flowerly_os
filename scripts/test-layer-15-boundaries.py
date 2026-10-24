@@ -22,8 +22,8 @@ LINUX_OWNERS = {
     "src/flowerlyd/src/compute/host.rs",
 }
 SQLITE_IMPORT = re.compile(
-    r"(?m)^\\s*(?:(?:pub(?:\\([^)]*\\))?\\s+)?use\\s+(?:::)?rusqlite\\b"
-    r"(?:::|\\s*;|\\s+as\\b)|extern\\s+crate\\s+rusqlite\\b)"
+    r"(?m)^\s*(?:(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?rusqlite\b"
+    r"(?:::|\s*;|\s+as\b)|extern\s+crate\s+rusqlite\b)"
 )
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
 HOST_ACCESS = re.compile(
@@ -70,11 +70,11 @@ class DependencyBoundaryTests(unittest.TestCase):
             file = root / "src/flowerlyd/src/goal/mod.rs"
             file.parent.mkdir(parents=True)
             for declaration in (
-                "use rusqlite as db;\\n",
-                "use ::rusqlite::Connection;\\n",
-                "pub use rusqlite::Connection;\\n",
-                "pub(crate) use rusqlite as db;\\n",
-                "extern crate rusqlite;\\n",
+                "use rusqlite as db;\n",
+                "use ::rusqlite::Connection;\n",
+                "pub use rusqlite::Connection;\n",
+                "pub(crate) use rusqlite as db;\n",
+                "extern crate rusqlite;\n",
             ):
                 with self.subTest(declaration=declaration):
                     file.write_text(declaration)
@@ -89,10 +89,10 @@ class DependencyBoundaryTests(unittest.TestCase):
             file = root / "src/flowerlyd/src/flow/mod.rs"
             file.parent.mkdir(parents=True)
             for declaration in (
-                "use std::os::unix::fs::PermissionsExt;\\n",
-                "pub use std::os::unix::net::UnixStream;\\n",
-                "use ::std::os::unix::io::RawFd;\\n",
-                "use std::os::{unix::fs::PermissionsExt};\\n",
+                "use std::os::unix::fs::PermissionsExt;\n",
+                "pub use std::os::unix::net::UnixStream;\n",
+                "use ::std::os::unix::io::RawFd;\n",
+                "use std::os::{unix::fs::PermissionsExt};\n",
             ):
                 with self.subTest(declaration=declaration):
                     file.write_text(declaration)
