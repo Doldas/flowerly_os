@@ -102,6 +102,8 @@ fn storage_error_code(error: &StorageError) -> ErrorCode {
             ErrorCode::Conflict
         }
         _ if error.is_busy() => ErrorCode::Unavailable,
+        _ if error.is_unique_violation() => ErrorCode::Conflict,
+        _ if error.is_foreign_key_violation() => ErrorCode::InvalidArgument,
         _ => ErrorCode::Internal,
     }
 }
@@ -291,7 +293,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CommandFailure::invalid("missing string arg `id`"))?;
-            let generation_id = GenerationId::from_str(id).map_err(err_str)?;
+            let generation_id = GenerationId::from_str(id)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
             store
                 .activate_generation(&generation_id)
                 .map_err(CommandFailure::storage)?;
