@@ -2200,10 +2200,7 @@ mod tests {
         assert!(!corruption.is_foreign_key_violation());
         assert!(!corruption.is_busy());
 
-        for code in [
-            rusqlite::ffi::SQLITE_BUSY,
-            rusqlite::ffi::SQLITE_LOCKED,
-        ] {
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
             let busy = StorageError::Sqlite(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(code),
                 None,
