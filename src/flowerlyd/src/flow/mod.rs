@@ -9,6 +9,7 @@ use flowerly_core::types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
+use serde::Deserialize;
 use serde_json::Value;
 
 fn ensure_general_flow(store: &mut Store) -> anyhow::Result<()> {
@@ -39,6 +40,26 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     ok_envelope(request.id.clone(), data)
 }
 
+/// Typed IPC-v1 arguments (see `crate::args` for the shared contract).
+#[derive(Debug, Deserialize)]
+struct CreateFlowArgs {
+    name: String,
+    #[serde(default)]
+    operation_id: Option<String>,
+}
+
+/// Lookup by `id` (preferred) or `name`; `null` means absent.
+#[derive(Debug, Deserialize)]
+struct FlowRefArgs {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlowListArgs {}
+
 /// Classify user-facing Flow contract failures before mutation, while the
 /// storage lock is held. Database errors are never inferred from text.
 fn validate_flow_command(
@@ -49,10 +70,10 @@ fn validate_flow_command(
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match command {
         "flow.create" => {
-            let name = args
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("missing string arg `name`"))?;
+            let typed: CreateFlowArgs = crate::args::typed_args("flow", args)?;
+            // Type-checked here; replay semantics are applied by the handler.
+            let _ = &typed.operation_id;
+            let name = typed.name.as_str();
             if name.trim().is_empty() {
                 return Err(invalid("flow name must not be empty"));
             }
@@ -63,20 +84,17 @@ fn validate_flow_command(
                 ));
             }
         }
-        "flow.list" => {}
+        "flow.list" => {
+            let _: FlowListArgs = crate::args::typed_args("flow", args)?;
+        }
         "flow.activate" | "flow.archive" => {
-            let flow = if let Some(value) = args.get("id") {
-                let raw = value
-                    .as_str()
-                    .ok_or_else(|| invalid("arg `id` must be a string"))?;
+            let typed: FlowRefArgs = crate::args::typed_args("flow", args)?;
+            let flow = if let Some(raw) = typed.id.as_deref() {
                 let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 CoreQueryRepository::flow(store, &id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
-            } else if let Some(value) = args.get("name") {
-                let name = value
-                    .as_str()
-                    .ok_or_else(|| invalid("arg `name` must be a string"))?;
+            } else if let Some(name) = typed.name.as_deref() {
                 let mut matches = CoreQueryRepository::flows(store)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .into_iter()
@@ -281,7 +299,7 @@ fn find_flow(
     store: &Store,
     args: &Value,
 ) -> std::result::Result<flowerly_core::types::Flow, CommandFailure> {
-    if let Some(value) = args.get("id") {
+    if let Some(value) = args.get("id").filter(|value| !value.is_null()) {
         let raw = value.as_str().ok_or("arg `id` must be a string")?;
         let id = FlowId::from_str(raw).map_err(err_str)?;
         if let Some(flow) =
@@ -447,5 +465,62 @@ mod tests {
             .expect_err("non-string flow id must fail");
 
         assert_eq!(error, "arg `id` must be a string");
+    }
+
+    fn ipc(store: &Arc<Mutex<Store>>, command: &str, args: Value) -> Result<Value, ErrorCode> {
+        let request = Envelope::new(Payload::Command {
+            name: command.into(),
+            args,
+        });
+        match handle_command(store, &request).payload {
+            Payload::Ok { data } => Ok(data),
+            Payload::Err { code, .. } => Err(code.expect("typed error code")),
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_v1_arguments_contract() {
+        let mut db = migrated_store();
+        ensure_general_flow(&mut db).unwrap();
+        let store = Arc::new(Mutex::new(db));
+        // Unknown fields are ignored: older and newer clients keep working.
+        let created = ipc(
+            &store,
+            "flow.create",
+            serde_json::json!({"name": "Typed", "client_hint": {"v": 2}, "operation_id": null}),
+        )
+        .expect("create with unknown field");
+        // Explicit null means absent: `id: null` falls back to `name`.
+        ipc(
+            &store,
+            "flow.activate",
+            serde_json::json!({"id": null, "name": "Typed"}),
+        )
+        .expect("null id is absent");
+        ipc(&store, "flow.list", serde_json::json!({"extra": true})).expect("list");
+        // Malformed known fields and non-object arguments are invalid_argument.
+        for (command, args) in [
+            ("flow.create", serde_json::json!({"name": 7})),
+            (
+                "flow.create",
+                serde_json::json!({"name": "X", "operation_id": 5}),
+            ),
+            ("flow.activate", serde_json::json!({"name": 7})),
+            ("flow.activate", serde_json::json!({"id": ["flow"]})),
+            (
+                "flow.archive",
+                serde_json::json!({"id": "goal-00000000000000000000000000000000"}),
+            ),
+            ("flow.list", serde_json::json!([])),
+            ("flow.create", serde_json::json!("Typed")),
+        ] {
+            assert_eq!(
+                ipc(&store, command, args.clone()),
+                Err(ErrorCode::InvalidArgument),
+                "{command} {args}"
+            );
+        }
+        assert_eq!(created["name"], "Typed");
     }
 }

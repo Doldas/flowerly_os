@@ -16,6 +16,7 @@ use flowerly_core::types::{
     SessionPresentationState, SessionState, Timestamp,
 };
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
+use serde::Deserialize;
 use serde_json::Value;
 
 #[cfg(target_os = "linux")]
@@ -126,6 +127,30 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     }
 }
 
+/// Typed IPC-v1 arguments for the metadata Session commands (see
+/// `crate::args`). PTY commands keep their own token-checked validation.
+#[derive(Debug, Deserialize)]
+struct CreateSessionArgs {
+    #[serde(default)]
+    flow_id: Option<String>,
+    #[serde(default)]
+    pid: Option<i64>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    operation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionIdArgs {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionListArgs {}
+
 fn validate_session_command(
     store: &Store,
     name: &str,
@@ -134,10 +159,10 @@ fn validate_session_command(
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match name {
         "session.create" => {
-            if let Some(value) = args.get("flow_id").filter(|value| !value.is_null()) {
-                let raw = value
-                    .as_str()
-                    .ok_or_else(|| invalid("arg `flow_id` must be a string or null"))?;
+            let typed: CreateSessionArgs = crate::args::typed_args("session", args)?;
+            // Type-checked here; the handler applies them.
+            let _ = (&typed.kind, &typed.cwd, &typed.operation_id);
+            if let Some(raw) = typed.flow_id.as_deref() {
                 let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
                 if CoreQueryRepository::flow(store, &flow_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
@@ -146,19 +171,16 @@ fn validate_session_command(
                     return Err((ErrorCode::NotFound, format!("flow not found: {flow_id}")));
                 }
             }
-            if let Some(value) = args.get("pid").filter(|value| !value.is_null()) {
-                let raw = value
-                    .as_i64()
-                    .ok_or_else(|| invalid("arg `pid` must be an integer or null"))?;
+            if let Some(raw) = typed.pid {
                 i32::try_from(raw).map_err(|_| invalid("pid out of range for i32"))?;
             }
         }
-        "session.list" => {}
+        "session.list" => {
+            let _: SessionListArgs = crate::args::typed_args("session", args)?;
+        }
         "session.terminate" => {
-            let raw = args
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("missing string arg `id`"))?;
+            let typed: SessionIdArgs = crate::args::typed_args("session", args)?;
+            let raw = typed.id.as_str();
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
             let existing = CoreQueryRepository::session(store, &id)
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
@@ -582,6 +604,59 @@ mod tests {
         let sessions = store.list_sessions().expect("list sessions");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].flow_id.as_ref(), Some(&flow.id));
+    }
+
+    fn ipc(store: &Arc<Mutex<Store>>, command: &str, args: Value) -> Result<Value, ErrorCode> {
+        let request = Envelope::new(Payload::Command {
+            name: command.into(),
+            args,
+        });
+        match handle_command(store, &request).payload {
+            Payload::Ok { data } => Ok(data),
+            Payload::Err { code, .. } => Err(code.expect("typed error code")),
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_v1_arguments_contract() {
+        let store = Arc::new(Mutex::new(migrated_store()));
+        let created = ipc(
+            &store,
+            "session.create",
+            serde_json::json!({"kind": "metadata", "cwd": "/tmp", "flow_id": null,
+                               "pid": null, "operation_id": null, "future": [1]}),
+        )
+        .expect("create with nulls and unknown field");
+        ipc(&store, "session.list", serde_json::json!({"page": 1})).expect("list");
+        for (command, args) in [
+            // Previously `kind` silently became "local-pty" and `cwd` was dropped.
+            ("session.create", serde_json::json!({"kind": 42})),
+            ("session.create", serde_json::json!({"cwd": ["/tmp"]})),
+            ("session.create", serde_json::json!({"pid": "1"})),
+            (
+                "session.create",
+                serde_json::json!({"pid": 9_999_999_999_i64}),
+            ),
+            ("session.create", serde_json::json!({"flow_id": 3})),
+            ("session.create", serde_json::json!({"operation_id": 5})),
+            ("session.terminate", serde_json::json!({"id": 7})),
+            ("session.terminate", serde_json::json!({})),
+            ("session.list", serde_json::json!("all")),
+        ] {
+            assert_eq!(
+                ipc(&store, command, args.clone()),
+                Err(ErrorCode::InvalidArgument),
+                "{command} {args}"
+            );
+        }
+        let id = created["id"].as_str().expect("session id").to_owned();
+        assert!(ipc(
+            &store,
+            "session.terminate",
+            serde_json::json!({"id": id, "extra": 1})
+        )
+        .is_ok());
     }
 }
 
