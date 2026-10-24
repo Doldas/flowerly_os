@@ -42,6 +42,7 @@ nav:
       - Evolution: evolution.md
       - Provenance: provenance.md
       - Capabilities: capabilities.md
+      - Command Authorization: command-authorization.md
       - Compute Catalog: compute-catalog.md
       - Compute Profiles: compute-profiles.md
       - Compute Scheduling: compute-scheduling.md
