@@ -2121,6 +2121,86 @@ mod tests {
     use super::*;
     use crate::types::{ModelBackend, ProvenanceRelation};
 
+    #[test]
+    fn sqlite_extended_constraints_do_not_conflate_conflict_and_integrity() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER NOT NULL REFERENCES parent(id),
+                 value TEXT NOT NULL UNIQUE,
+                 score INTEGER NOT NULL CHECK(score > 0)
+             );
+             INSERT INTO parent (id) VALUES (1);
+             INSERT INTO child (id, parent_id, value, score) VALUES (1, 1, 'first', 1);",
+        )
+        .expect("create constrained tables");
+
+        let cases = [
+            (
+                "INSERT INTO child (id, parent_id, value, score) VALUES (2, 1, 'first', 1)",
+                rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE,
+                true,
+                false,
+            ),
+            (
+                "INSERT INTO child (id, parent_id, value, score) VALUES (1, 1, 'second', 1)",
+                rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY,
+                true,
+                false,
+            ),
+            (
+                "INSERT INTO child (id, parent_id, value, score) VALUES (3, 999, 'third', 1)",
+                rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY,
+                false,
+                true,
+            ),
+            (
+                "INSERT INTO child (id, parent_id, value, score) VALUES (4, 1, 'fourth', 0)",
+                rusqlite::ffi::SQLITE_CONSTRAINT_CHECK,
+                false,
+                false,
+            ),
+            (
+                "INSERT INTO child (id, parent_id, value, score) VALUES (5, 1, NULL, 1)",
+                rusqlite::ffi::SQLITE_CONSTRAINT_NOTNULL,
+                false,
+                false,
+            ),
+        ];
+        for (sql, expected_extended, unique, foreign_key) in cases {
+            let err = StorageError::from(conn.execute(sql, []).unwrap_err());
+            let StorageError::Sqlite(rusqlite::Error::SqliteFailure(sqlite, _)) = &err else {
+                panic!("expected SQLite constraint failure");
+            };
+            assert_eq!(sqlite.extended_code, expected_extended, "{sql}");
+            assert_eq!(err.is_unique_violation(), unique, "{sql}");
+            assert_eq!(err.is_foreign_key_violation(), foreign_key, "{sql}");
+            assert!(!err.is_busy(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn typed_storage_errors_are_not_inferred_from_error_messages() {
+        let unique = StorageError::UniqueViolation("duplicate name".into());
+        assert!(unique.is_unique_violation());
+        assert!(!unique.is_foreign_key_violation());
+
+        let foreign_key = StorageError::ForeignKeyViolation("missing parent".into());
+        assert!(foreign_key.is_foreign_key_violation());
+        assert!(!foreign_key.is_unique_violation());
+
+        let corruption = StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            Some("UNIQUE constraint failed: misleading diagnostic".into()),
+        ));
+        assert!(!corruption.is_unique_violation());
+        assert!(!corruption.is_foreign_key_violation());
+        assert!(!corruption.is_busy());
+    }
+
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
