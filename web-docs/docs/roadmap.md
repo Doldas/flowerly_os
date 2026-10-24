@@ -204,6 +204,7 @@ instead of an abstract future distribution.
   same process alive under the same Session id; foreground/runtime ownership
   invariants also hold.
 - **Detailed plan:** [Review-driven implementation plan](review-implementation-plan-2026-10-12.md).
+- **Current status and handoff:** [0.0.4 completion plan](release-0.0.4-completion-plan.md).
 
 ## 0.0.5 — Generations
 

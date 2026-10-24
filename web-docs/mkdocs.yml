@@ -57,6 +57,7 @@ nav:
       - Project Overview: project/index.md
       - Roadmap: roadmap.md
       - Review Implementation Plan: review-implementation-plan-2026-10-12.md
+      - 0.0.4 Completion Plan: release-0.0.4-completion-plan.md
       - Releases: releases.md
       - Build Guide: build.md
   - Contributing: contributing.md

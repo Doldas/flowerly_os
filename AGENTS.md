@@ -5,6 +5,8 @@ This file provides **navigation and accuracy rules**, not authority to override 
 ## Development workflow
 
 - Active 0.0.4 integration target: `release/2`. Fetch its **current** SHA, active issues, PR states and CI before implementing anything.
+- **Start here:** [0.0.4 completion plan and session handoff](web-docs/docs/release-0.0.4-completion-plan.md) lists every remaining workstream, its issue, state and next step. Update it in the PR that changes a workstream.
+- Merged `release/2` work accumulates in the standing `release/2` → `master` promotion PR; the owner merges it manually and `release/2` is kept for further development.
 - Do not merge implementation PRs unless the human explicitly authorizes it. Release-to-release forwarding may use GitHub's protected auto-merge **only after required checks** when explicitly configured. Master promotion is **never** auto-merged, even after tests pass. Use scoped feature/docs branches, draft PRs, CI and real black-box evidence.
 - Record material architecture decisions, failure findings, unclosed questions and reproducible acceptance tests in repository docs/issues. Next agent sessions must not depend on the previous chat's context.
 - For long-lived runtime and process behaviors, trust measured Linux process behavior over simulated state. Protect safety-critical invariants with failure-injection tests.
