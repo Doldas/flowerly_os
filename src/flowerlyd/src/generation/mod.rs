@@ -9,6 +9,7 @@ use flowerly_core::types::{
     ProvenanceRelation, Timestamp,
 };
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
+use serde::Deserialize;
 use serde_json::Value;
 
 pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
@@ -28,6 +29,37 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     }
 }
 
+/// Typed IPC-v1 argument validation. Unknown fields are tolerated to preserve
+/// compatibility with older/newer clients; malformed known fields fail closed.
+#[derive(Deserialize)]
+struct CreateGenerationArgs {
+    #[serde(default)]
+    parent: Option<GenerationId>,
+    #[serde(default)]
+    reason_goal: Option<GoalId>,
+    #[serde(default)]
+    experiment: Option<ExperimentId>,
+    #[serde(default)]
+    source_commit: Option<String>,
+    #[serde(default)]
+    system_manifest: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GenerationIdArgs {
+    id: GenerationId,
+}
+
+#[derive(Deserialize)]
+struct GenerationListArgs {}
+
+fn typed_generation_args<T: serde::de::DeserializeOwned>(
+    args: &Value,
+) -> Result<T, (ErrorCode, String)> {
+    serde_json::from_value(args.clone())
+        .map_err(|error| (ErrorCode::InvalidArgument, format!("invalid generation arguments: {error}")))
+}
+
 /// Validate client-facing generation errors while the store lock is held.
 /// SQLite errors remain internal instead of being inferred from error text.
 fn validate_generation_command(
@@ -35,11 +67,12 @@ fn validate_generation_command(
     name: &str,
     args: &Value,
 ) -> Result<(), (ErrorCode, String)> {
-    let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match name {
         "generation.create" => {
-            let parent: Option<GenerationId> =
-                parse_optional_typed(args, "parent").map_err(|e| invalid(&e))?;
+            let typed: CreateGenerationArgs = typed_generation_args(args)?;
+            let parent = typed.parent;
+            let reason_goal = typed.reason_goal;
+            let _ = (&typed.experiment, &typed.source_commit, &typed.system_manifest);
             if let Some(parent) = &parent {
                 if store
                     .get_generation(parent)
@@ -52,8 +85,6 @@ fn validate_generation_command(
                     ));
                 }
             }
-            let reason_goal: Option<GoalId> =
-                parse_optional_typed(args, "reason_goal").map_err(|e| invalid(&e))?;
             if let Some(goal_id) = &reason_goal {
                 if store
                     .get_goal(goal_id)
@@ -63,23 +94,19 @@ fn validate_generation_command(
                     return Err((ErrorCode::NotFound, format!("goal not found: {goal_id}")));
                 }
             }
-            parse_optional_typed::<ExperimentId>(args, "experiment").map_err(|e| invalid(&e))?;
-            parse_optional_string(args, "source_commit").map_err(|e| invalid(&e))?;
-            parse_optional_string(args, "system_manifest").map_err(|e| invalid(&e))?;
         }
-        "generation.list" => {}
+        "generation.list" => {
+            let _: GenerationListArgs = typed_generation_args(args)?;
+        }
         "generation.inspect" | "generation.activate" => {
-            let raw = args
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("missing string arg `id`"))?;
-            let id = GenerationId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+            let typed: GenerationIdArgs = typed_generation_args(args)?;
+            let id = typed.id;
             if store
                 .get_generation(&id)
                 .map_err(|e| (storage_error_code(&e), e.to_string()))?
                 .is_none()
             {
-                return Err((ErrorCode::NotFound, format!("generation not found: {raw}")));
+                return Err((ErrorCode::NotFound, format!("generation not found: {id}")));
             }
         }
         other => {
