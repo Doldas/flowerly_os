@@ -67,6 +67,8 @@ fn spawn_worker(store: &SharedStore, handler: fn(&SharedStore, &Envelope) -> Env
     tx
 }
 
+const MODULE_DEADLINE: Duration = Duration::from_secs(7);
+
 fn via_queue(tx: &Queue, request: &Envelope) -> Envelope {
     let (reply, received) = std::sync::mpsc::sync_channel(1);
     if tx
@@ -79,15 +81,19 @@ fn via_queue(tx: &Queue, request: &Envelope) -> Envelope {
         return coded_error_envelope(
             request.id.clone(),
             ErrorCode::Unavailable,
-            "module queue unavailable or full",
+            "module queue unavailable or full; the request was not executed",
         );
     }
-    match received.recv_timeout(Duration::from_secs(7)) {
+    match received.recv_timeout(MODULE_DEADLINE) {
         Ok(response) => response,
+        // The job may already be running and can still commit.
         Err(_) => coded_error_envelope(
             request.id.clone(),
             ErrorCode::Unavailable,
-            "module handler deadline exceeded",
+            format!(
+                "module handler deadline exceeded after {} ms; the outcome is unknown",
+                MODULE_DEADLINE.as_millis()
+            ),
         ),
     }
 }

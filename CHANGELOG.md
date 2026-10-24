@@ -13,6 +13,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 - Updated CLI socket routing, systemd unit scaffolds and input validation.
 - KVM execution and bootable images remain unimplemented.
 - Storage failures now map to IPC error codes through one shared classifier (#62). SQLite UNIQUE/PRIMARY KEY failures now return `conflict` and FOREIGN KEY failures `invalid_argument` in every service; they previously returned `internal` everywhere except Generation. Only BUSY/LOCKED returns `unavailable`.
+- IPC deadline errors say whether the request was never executed (queued) or has an unknown outcome (handler running), with elapsed milliseconds. Every request logs a structured `ipc request` event with queue, handler and total time (#62).
 
 
 ### Added
