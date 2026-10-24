@@ -32,7 +32,9 @@ impl fmt::Display for ModeError {
             Self::InvalidMode => formatter.write_str("invalid storage mode"),
             Self::InvalidEncoding => formatter.write_str("invalid mode file encoding"),
             Self::ReadFailed => formatter.write_str("failed to read mode file"),
-            Self::UnsupportedTransition => formatter.write_str("storage mode transition requires explicit migration"),
+            Self::UnsupportedTransition => {
+                formatter.write_str("storage mode transition requires explicit migration")
+            }
         }
     }
 }
@@ -132,19 +134,28 @@ mod tests {
 
     #[test]
     fn mode_changes_require_explicit_migration() {
-        for before in [StorageMode::Standalone, StorageMode::CoreOnly, StorageMode::Cluster] {
-            for after in [StorageMode::Standalone, StorageMode::CoreOnly, StorageMode::Cluster] {
-                assert_eq!(
-                    before.validate_transition(after).is_ok(),
-                    before == after
-                );
+        for before in [
+            StorageMode::Standalone,
+            StorageMode::CoreOnly,
+            StorageMode::Cluster,
+        ] {
+            for after in [
+                StorageMode::Standalone,
+                StorageMode::CoreOnly,
+                StorageMode::Cluster,
+            ] {
+                assert_eq!(before.validate_transition(after).is_ok(), before == after);
             }
         }
     }
 
     #[test]
     fn modes_cannot_enable_untested_replication_or_remote_ports() {
-        for mode in [StorageMode::Standalone, StorageMode::CoreOnly, StorageMode::Cluster] {
+        for mode in [
+            StorageMode::Standalone,
+            StorageMode::CoreOnly,
+            StorageMode::Cluster,
+        ] {
             assert!(!mode.allows_replication());
             assert!(!mode.opens_remote_listener());
         }
