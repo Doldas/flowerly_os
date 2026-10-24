@@ -867,7 +867,13 @@ fn exchange(socket: &Path, request: &Value) -> Result<Value, Failure> {
     let response: Value =
         serde_json::from_str(&line).map_err(|error| internal(error.to_string()))?;
     if let Some(reason) = response.get("error").and_then(Value::as_str) {
-        return Err((ErrorCode::Unavailable, reason.to_owned()));
+        // The guardian marks caller mistakes structurally; anything else
+        // (exited, backpressure, lost state) stays transient `unavailable`.
+        let code = match response.get("code").and_then(Value::as_str) {
+            Some("invalid_argument") => ErrorCode::InvalidArgument,
+            _ => ErrorCode::Unavailable,
+        };
+        return Err((code, reason.to_owned()));
     }
     Ok(response)
 }

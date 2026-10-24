@@ -206,6 +206,9 @@ def main():
                 raise AssertionError("PTY incremental follow did not deliver new output")
             invalid_wait = malformed_request(path, b'{"op":"follow","cursor":0,"wait_ms":999}')
             assert invalid_wait.get("error") == "invalid wait_ms", invalid_wait
+            assert invalid_wait.get("code") == "invalid_argument", invalid_wait
+            future = malformed_request(path, b'{"op":"read","cursor":999999999}')
+            assert future.get("code") == "invalid_argument", future
             assert exchange(path, {"op": "terminate"})["terminated"] is True
             assert supervisor.wait(timeout=5) == 0
             print("PTY guardian: same live PID, reconnect, bounded replay, I/O, resize, terminate")
