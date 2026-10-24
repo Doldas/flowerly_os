@@ -2,7 +2,7 @@
 
 Status: **0.0.4 OPEN, not release-certified.** Living document; update it in
 the same PR that changes a workstream's state. Last verified: 2026-10-24 on
-`release/2` at `9556763` (PR #207 merged).
+`release/2` after PRs #207–#210 merged.
 
 Authoritative trackers: roadmap [#8](https://github.com/Doldas/flowerly_os/issues/8),
 hardening gates [#31](https://github.com/Doldas/flowerly_os/issues/31).
@@ -30,13 +30,13 @@ before acting (see `AGENTS.md`).
 
 | # | Workstream | Issue(s) | State | Next concrete step |
 | --- | --- | --- | --- | --- |
-| 1 | Typed storage error provenance | #62, #56 | Classification audit merged (#207). | Stable per-request elapsed / lock-wait diagnostics. |
-| 2 | Security alert backlog | #187 | 9 open Scorecard alerts, 0 Dependabot, 0 secret scanning (2026-10-24). | Least-privilege `permissions:` in `release.yml`, `project-sync*.yml`; document repo-posture alerts (BranchProtection, CodeReview, Maintained, Fuzzing, CII, SecurityPolicy). |
-| 3 | Dynamic counts and readiness | #31 Gate B | Flow/Session/Goal live counts exist. | Remaining services report live counts and DB readiness. |
-| 4 | Verified stale-socket recovery | #31 Gate B | Fails closed, manual recovery. | Prove a socket is stale (no listener, owned inode) before removal; never remove an active socket. |
-| 5 | Machine-readable errors everywhere | #31, #53 | Flow, Goal, Session, Generation typed; storage unified. | Type argument errors in remaining legacy fallback handlers. |
-| 6 | CLI priority contract | #31 Gate A | Omitted / valid priority covered. | Real CLI test for invalid priority. |
-| 7 | Administrative authorization | #31 | Not started. | Design per-command admin authorization and audit semantics (needs owner decision). |
+| 1 | Typed storage error provenance | #62, #56 | Classifier merged (#207). Stage-aware deadline errors and per-request timing in PR #211. | Merge #211, then close #62 with the evidence. |
+| 2 | Security alert backlog | #187 | Per-alert triage and the release-artifact fix in PR #212. No code defects; 0 Dependabot, 0 secret scanning. | **Maintainer:** approve dismissals; decide on `project-sync*.yml` top-level permissions. |
+| 3 | Dynamic counts and readiness | #31 Gate B | **Done**: merged #209 (one-snapshot counts; `ready` only when the DB answers). | — |
+| 4 | Verified stale-socket recovery | #31 Gate B | **Done**: merged #210 (instance `flock` plus verified stale removal; PTY SIGKILL test requires it). | — |
+| 5 | Machine-readable errors everywhere | #31, #53 | A regression test sends malformed arguments to all 47 store-backed commands: none returns `internal` or an untyped error. | #53: typed argument DTOs for the remaining services (pattern from #205); PTY commands are covered by black-box suites. |
+| 6 | CLI priority contract | #31 Gate A | **Done**: `check-cli-contracts.sh` covers omitted, explicit and invalid priority (re-verified 2026-10-24). | — |
+| 7 | Administrative authorization | #31 | Not started. | **Owner decision needed**: which commands are administrative and who may call them beyond same-UID peers. |
 | 8 | PTY descendant containment | #72, #50 | Delegated-cgroup path merged; fail-closed without delegation. | Exact-SHA Arch VM positive test, adversarial migration/PID-reuse proof. |
 | 9 | PTY streaming / attachment | #73 | Owner tokens, bounded replay merged. | Decide subscriber transport; slow-reader backpressure and race tests. |
 | 10 | PTY crash/restart truth | #74, #63 | Fail-closed reconciliation merged. | sessiond SIGKILL / spawn-race matrix; spawn idempotency policy. |
