@@ -56,6 +56,12 @@ struct GenerationListArgs {}
 fn typed_generation_args<T: serde::de::DeserializeOwned>(
     args: &Value,
 ) -> Result<T, (ErrorCode, String)> {
+    if !args.is_object() {
+        return Err((
+            ErrorCode::InvalidArgument,
+            "generation arguments must be a JSON object".to_owned(),
+        ));
+    }
     serde_json::from_value(args.clone()).map_err(|error| {
         (
             ErrorCode::InvalidArgument,
