@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -157,6 +157,8 @@ struct SocketOwnership {
     path: PathBuf,
     device: u64,
     inode: u64,
+    // Released only after the socket is removed (fields drop after `drop`).
+    _instance: Option<InstanceLock>,
 }
 
 impl SocketOwnership {
@@ -166,8 +168,113 @@ impl SocketOwnership {
             path: path.to_path_buf(),
             device: meta.dev(),
             inode: meta.ino(),
+            _instance: None,
         })
     }
+}
+
+/// Exclusive per-socket instance lock (`<socket>.lock`, held for the
+/// server's lifetime). Every Flowerly IPC server takes it before binding, so
+/// while it is held no cooperating instance can bind, probe or unlink the
+/// same pathname. The lock file is never deleted: unlinking it would let two
+/// instances lock different inodes for the same socket.
+struct InstanceLock {
+    file: std::fs::File,
+}
+
+impl InstanceLock {
+    fn acquire(socket: &Path) -> std::io::Result<Self> {
+        let mut name = socket.as_os_str().to_owned();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if !meta.file_type().is_file() {
+                return Err(std::io::Error::other(format!(
+                    "instance lock {} is not a regular file",
+                    path.display()
+                )));
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)?;
+        let opened = file.metadata()?;
+        let linked = std::fs::symlink_metadata(&path)?;
+        if (opened.dev(), opened.ino()) != (linked.dev(), linked.ino())
+            || opened.mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::other(format!(
+                "instance lock {} was replaced or is accessible to other users",
+                path.display()
+            )));
+        }
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!(
+                    "another instance holds {}; refusing to bind {}",
+                    path.display(),
+                    socket.display()
+                ),
+            )),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    fn owner_uid(&self) -> std::io::Result<u32> {
+        Ok(self.file.metadata()?.uid())
+    }
+}
+
+/// Remove a leftover socket only when it is provably stale. The caller holds
+/// the instance lock, so no cooperating server can bind the path meanwhile.
+/// Anything that is not a same-owner socket whose listener refuses
+/// connections and whose inode is unchanged fails closed.
+fn remove_verified_stale_socket(path: &Path, owner_uid: u32) -> std::io::Result<()> {
+    let refuse = |reason: &str| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("refusing to replace {}: {reason}", path.display()),
+        ))
+    };
+    let before = std::fs::symlink_metadata(path)?;
+    if !before.file_type().is_socket() {
+        return refuse("path exists and is not a Unix socket");
+    }
+    if before.uid() != owner_uid {
+        return refuse("socket is owned by another user");
+    }
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => return refuse("a listener is accepting connections"),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+        Err(error) => return refuse(&format!("liveness probe was inconclusive: {error}")),
+    }
+    let after = std::fs::symlink_metadata(path)?;
+    if (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+        return refuse("socket was replaced during verification");
+    }
+    std::fs::remove_file(path)?;
+    tracing::warn!(socket = %path.display(), "removed verified stale IPC socket");
+    Ok(())
+}
+
+/// Bind under the instance lock, recovering only a verified stale socket.
+fn bind_owned(path: &Path) -> std::io::Result<(UnixListener, InstanceLock)> {
+    let lock = InstanceLock::acquire(path)?;
+    let listener = match UnixListener::bind(path) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            remove_verified_stale_socket(path, lock.owner_uid()?)?;
+            UnixListener::bind(path)?
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((listener, lock))
 }
 
 impl Drop for SocketOwnership {
@@ -224,11 +331,12 @@ pub async fn serve_with_shutdown_authenticated(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Bind without unlinking: an existing socket (active OR stale) must not be
-    // silently replaced. Stale sockets require explicit operator recovery.
-    let listener = UnixListener::bind(&path)?;
+    // Never blindly unlink: a live socket, foreign file or another instance's
+    // socket fails closed. Only a verified stale socket is recovered.
+    let (listener, instance) = bind_owned(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let ownership = SocketOwnership::new(&path)?;
+    let mut ownership = SocketOwnership::new(&path)?;
+    ownership._instance = Some(instance);
 
     // The socket owner is the daemon's effective filesystem identity.
     // Credentials come from the kernel, never request JSON.
@@ -531,6 +639,97 @@ mod tests {
         assert!(serve(&path, handler).await.is_err());
         assert!(path.exists());
         drop(listener);
+    }
+
+    fn ok_handler() -> Arc<Handler> {
+        Arc::new(|req: &Envelope| Envelope {
+            version: PROTOCOL_VERSION,
+            id: req.id.clone(),
+            payload: Payload::Ok { data: Value::Null },
+        })
+    }
+
+    async fn wait_for_ping(path: &Path) {
+        for _ in 0..100 {
+            if call(path, Payload::Ping).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("server never answered on {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn recovers_a_verified_stale_socket() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stale.sock");
+        // A crashed server leaves its pathname behind with no listener.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_socket());
+
+        let (shutdown, receiver) = watch::channel(false);
+        let server = tokio::spawn(serve_with_shutdown(path.clone(), ok_handler(), receiver));
+        wait_for_ping(&path).await;
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(!path.exists(), "owned socket is removed on shutdown");
+    }
+
+    #[tokio::test]
+    async fn second_instance_is_refused_while_the_first_holds_the_lock() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("single.sock");
+        let (shutdown, receiver) = watch::channel(false);
+        let first = tokio::spawn(serve_with_shutdown(path.clone(), ok_handler(), receiver));
+        wait_for_ping(&path).await;
+        let inode = std::fs::symlink_metadata(&path).unwrap().ino();
+
+        let error = serve(&path, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("another instance"), "{error}");
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().ino(), inode);
+        wait_for_ping(&path).await;
+
+        shutdown.send(true).unwrap();
+        first.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn never_follows_a_symlinked_socket_or_lock() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("elsewhere.sock");
+        drop(std::os::unix::net::UnixListener::bind(&target).unwrap());
+        let path = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(serve(&path, ok_handler()).await.is_err());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(target.exists(), "symlink target must not be removed");
+
+        let lock_target = dir.path().join("victim");
+        std::fs::write(&lock_target, "keep").unwrap();
+        let locked = dir.path().join("locked.sock");
+        std::os::unix::fs::symlink(&lock_target, dir.path().join("locked.sock.lock")).unwrap();
+        let error = serve(&locked, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        assert_eq!(std::fs::read_to_string(&lock_target).unwrap(), "keep");
+        assert!(!locked.exists());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_lock_file_other_users_can_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shared.sock");
+        let lock = dir.path().join("shared.sock.lock");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let error = serve(&path, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("other users"), "{error}");
+        assert!(!path.exists());
     }
 
     #[tokio::test]
