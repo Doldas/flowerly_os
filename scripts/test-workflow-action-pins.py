@@ -24,6 +24,9 @@ def main() -> int:
                 continue
             count += 1
             reference = found.group(1)
+            # YAML allows quoted scalars; validate the unquoted action reference.
+            if len(reference) >= 2 and reference[0] in ("'", '"') and reference[-1] == reference[0]:
+                reference = reference[1:-1]
             # Local actions cannot be replaced by an external immutable commit.
             if reference.startswith("./"):
                 continue

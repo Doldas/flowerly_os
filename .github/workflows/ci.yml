@@ -30,6 +30,18 @@ jobs:
       - name: Ensure all workflow actions are immutable SHA-pinned
         run: python3 scripts/test-workflow-action-pins.py
 
+      - name: Regression-test workflow action pin policy
+        run: python3 scripts/test-workflow-action-pins-regression.py
+
+      - name: Security alert inventory redaction regression
+        run: python3 scripts/test-security-alert-inventory.py
+
+      - name: Fail-closed security alert triage regression
+        run: python3 scripts/test-security-alert-triage.py
+
+      - name: Arch VM host resource monitor offline regression
+        run: python3 scripts/test-arch-vm-resource-monitor.py
+
       - name: Install just
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
         with:

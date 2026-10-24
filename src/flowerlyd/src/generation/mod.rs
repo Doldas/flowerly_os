@@ -102,6 +102,8 @@ fn storage_error_code(error: &StorageError) -> ErrorCode {
             ErrorCode::Conflict
         }
         _ if error.is_busy() => ErrorCode::Unavailable,
+        _ if error.is_unique_violation() => ErrorCode::Conflict,
+        _ if error.is_foreign_key_violation() => ErrorCode::InvalidArgument,
         _ => ErrorCode::Internal,
     }
 }
@@ -291,7 +293,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CommandFailure::invalid("missing string arg `id`"))?;
-            let generation_id = GenerationId::from_str(id).map_err(err_str)?;
+            let generation_id = GenerationId::from_str(id)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
             store
                 .activate_generation(&generation_id)
                 .map_err(CommandFailure::storage)?;
@@ -377,6 +380,52 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use flowerly_core::types::{Goal, ProvenanceRelation};
+
+    #[test]
+    fn activation_malformed_id_is_invalid_argument_not_internal() {
+        let mut store = migrated_store();
+        let error = run_command(
+            &mut store,
+            "generation.activate",
+            &serde_json::json!({ "id": "malformed-generation-id" }),
+        )
+        .expect_err("malformed activation ID must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(store
+            .list_generations()
+            .expect("list generations")
+            .is_empty());
+    }
+
+    #[test]
+    fn generation_storage_errors_preserve_extended_sqlite_codes() {
+        let constraint = |code| {
+            StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                None,
+            ))
+        };
+        assert_eq!(
+            storage_error_code(&constraint(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            storage_error_code(&constraint(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY)),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            storage_error_code(&constraint(rusqlite::ffi::SQLITE_CONSTRAINT_CHECK)),
+            ErrorCode::Internal
+        );
+        assert_eq!(
+            storage_error_code(&constraint(rusqlite::ffi::SQLITE_CORRUPT)),
+            ErrorCode::Internal
+        );
+        assert_eq!(
+            storage_error_code(&constraint(rusqlite::ffi::SQLITE_BUSY)),
+            ErrorCode::Unavailable
+        );
+    }
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");

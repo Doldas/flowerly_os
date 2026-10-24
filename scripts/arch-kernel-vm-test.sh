@@ -186,7 +186,39 @@ if ! launch_vm "$accel" "${accel_args[@]}"; then
     fi
 fi
 
+resource_monitor_pid=""
 cleanup() {
+    # Stop the background monitor before collecting final resource counters.
+    if [[ -n "$resource_monitor_pid" ]]; then
+        kill "$resource_monitor_pid" 2>/dev/null || true
+        wait "$resource_monitor_pid" 2>/dev/null || true
+    fi
+    # Preserve non-secret host resource evidence even if guest SSH/report retrieval fails.
+    # Do not read kernel journals or guest credentials into CI artifacts.
+    local exit_status=$?
+    {
+        printf 'test_sha=%s\n' "$TEST_SHA"
+        printf 'exit_status=%s\n' "$exit_status"
+        printf 'qemu_accelerator=%s\n' "$accel"
+        printf 'vm_memory_mb=%s\n' "$VM_MEMORY_MB"
+        if [[ -f "$pidfile" ]]; then
+            local qemu_pid
+            qemu_pid="$(cat "$pidfile" 2>/dev/null || true)"
+            if [[ "$qemu_pid" =~ ^[0-9]+$ ]] && kill -0 "$qemu_pid" 2>/dev/null; then
+                printf 'qemu_process=alive\n'
+                grep -E '^(State|VmRSS|VmPeak):' "/proc/$qemu_pid/status" 2>/dev/null || true
+            else
+                printf 'qemu_process=absent\n'
+            fi
+        else
+            printf 'qemu_process=no_pidfile\n'
+        fi
+        grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null || true
+        if [[ -r /sys/fs/cgroup/memory.events ]]; then
+            echo 'host_cgroup_memory_events:'
+            cat /sys/fs/cgroup/memory.events
+        fi
+    } > "$REPORT_DIR/host-resource-exit.txt" 2>/dev/null || true
     if [[ -f "$pidfile" ]]; then
         pid="$(cat "$pidfile" 2>/dev/null || true)"
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -200,6 +232,14 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Capture resource pressure *before* any guest disconnection, not only at exit.
+# The collector is observational and never changes a release acceptance result.
+python3 "$ROOT/scripts/arch-vm-resource-monitor.py" \
+    --pidfile "$pidfile" \
+    --output "$REPORT_DIR/host-resource-timeline.csv" \
+    --interval 10 --max-samples 1000 >/dev/null 2>&1 &
+resource_monitor_pid=$!
 
 ssh_opts=(
     -i "$ssh_key"
