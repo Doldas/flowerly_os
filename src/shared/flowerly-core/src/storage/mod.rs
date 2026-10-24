@@ -83,6 +83,28 @@ impl StorageError {
                 if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
         ) || matches!(self, Self::ForeignKeyViolation(_))
     }
+
+    /// The single IPC error classification for storage failures, shared by
+    /// every storage-backed command so the mapping cannot drift per daemon.
+    ///
+    /// Classification uses typed variants and SQLite result codes, never the
+    /// error text. Only BUSY/LOCKED contention is transient (`Unavailable`);
+    /// corruption, I/O, full disk, read-only databases, CHECK/NOT NULL
+    /// violations and decode failures stay `Internal` because retrying cannot
+    /// fix them and they usually indicate a defect or a damaged database.
+    #[must_use]
+    pub fn ipc_error_code(&self) -> crate::ipc::ErrorCode {
+        use crate::ipc::ErrorCode;
+        match self {
+            Self::NotFound(_) => ErrorCode::NotFound,
+            Self::InvalidOperation(_) | Self::ForeignKeyViolation(_) => ErrorCode::InvalidArgument,
+            Self::OperationConflict(_) | Self::UniqueViolation(_) => ErrorCode::Conflict,
+            Self::Sqlite(_) if self.is_busy() => ErrorCode::Unavailable,
+            Self::Sqlite(_) if self.is_unique_violation() => ErrorCode::Conflict,
+            Self::Sqlite(_) if self.is_foreign_key_violation() => ErrorCode::InvalidArgument,
+            Self::Sqlite(_) | Self::Serde(_) | Self::Io(_) => ErrorCode::Internal,
+        }
+    }
 }
 
 /// Retry configuration for operations that may encounter transient SQLite contention.
@@ -2216,6 +2238,182 @@ mod tests {
         ));
         assert!(!generic_constraint.is_unique_violation());
         assert!(!generic_constraint.is_foreign_key_violation());
+    }
+
+    fn sqlite_code_error(code: std::os::raw::c_int, message: Option<&str>) -> StorageError {
+        StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            message.map(str::to_owned),
+        ))
+    }
+
+    #[test]
+    fn ipc_classification_covers_every_storage_error_family() {
+        use crate::ipc::ErrorCode;
+        let cases = [
+            (StorageError::NotFound("x".into()), ErrorCode::NotFound),
+            (
+                StorageError::InvalidOperation("x".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                StorageError::ForeignKeyViolation("x".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                StorageError::OperationConflict("x".into()),
+                ErrorCode::Conflict,
+            ),
+            (
+                StorageError::UniqueViolation("x".into()),
+                ErrorCode::Conflict,
+            ),
+            (
+                StorageError::Serde(serde_json::from_str::<u8>("{").unwrap_err()),
+                ErrorCode::Internal,
+            ),
+            (
+                StorageError::Io(std::io::Error::other("disk")),
+                ErrorCode::Internal,
+            ),
+            (
+                StorageError::Sqlite(rusqlite::Error::QueryReturnedNoRows),
+                ErrorCode::Internal,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.ipc_error_code(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn ipc_classification_uses_sqlite_codes_not_message_text() {
+        use crate::ipc::ErrorCode;
+        let transient = [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_BUSY_SNAPSHOT,
+            rusqlite::ffi::SQLITE_BUSY_RECOVERY,
+            rusqlite::ffi::SQLITE_BUSY_TIMEOUT,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+        ];
+        for code in transient {
+            assert_eq!(
+                sqlite_code_error(code, None).ipc_error_code(),
+                ErrorCode::Unavailable,
+                "code {code}"
+            );
+        }
+
+        // Damage, defects and environment failures are never retryable,
+        // even when the diagnostic text mimics a transient or typed error.
+        let permanent = [
+            rusqlite::ffi::SQLITE_CORRUPT,
+            rusqlite::ffi::SQLITE_NOTADB,
+            rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+            rusqlite::ffi::SQLITE_MISMATCH,
+            rusqlite::ffi::SQLITE_CONSTRAINT,
+            rusqlite::ffi::SQLITE_CONSTRAINT_CHECK,
+            rusqlite::ffi::SQLITE_CONSTRAINT_NOTNULL,
+            rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER,
+        ];
+        for code in permanent {
+            assert_eq!(
+                sqlite_code_error(code, Some("database is locked; UNIQUE constraint failed"))
+                    .ipc_error_code(),
+                ErrorCode::Internal,
+                "code {code}"
+            );
+        }
+
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE, None).ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY, None).ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY, None).ipc_error_code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            StorageError::NotFound("database is locked".into()).ipc_error_code(),
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn ipc_classification_of_real_sqlite_failures() {
+        use crate::ipc::ErrorCode;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A second connection holding the writer lock yields a real BUSY.
+        let db = dir.path().join("contended.db");
+        let holder = Connection::open(&db).expect("open holder");
+        holder
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE t (id INTEGER PRIMARY KEY);
+                 BEGIN IMMEDIATE;
+                 INSERT INTO t (id) VALUES (1);",
+            )
+            .expect("hold writer lock");
+        let contender = Connection::open(&db).expect("open contender");
+        contender
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("zero busy timeout");
+        let busy = StorageError::from(
+            contender
+                .execute("INSERT INTO t (id) VALUES (2)", [])
+                .unwrap_err(),
+        );
+        assert_eq!(busy.ipc_error_code(), ErrorCode::Unavailable, "{busy}");
+        holder.execute_batch("COMMIT;").expect("release lock");
+        contender
+            .execute("INSERT INTO t (id) VALUES (2)", [])
+            .expect("write recovers after lock release");
+
+        // A file that is not a database must not look transient.
+        let garbage = dir.path().join("garbage.db");
+        std::fs::write(&garbage, vec![0x5a_u8; 8192]).expect("write garbage");
+        let error = Store::open(&garbage)
+            .and_then(|mut store| store.migrate().map(|_| ()))
+            .expect_err("garbage file must not open as a database");
+        assert_eq!(error.ipc_error_code(), ErrorCode::Internal, "{error}");
+
+        // Real constraint failures through a migrated-style connection.
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER NOT NULL REFERENCES parent(id),
+                 score INTEGER NOT NULL CHECK(score > 0)
+             );
+             INSERT INTO parent (id) VALUES (1);
+             INSERT INTO child (id, parent_id, score) VALUES (1, 1, 1);",
+        )
+        .expect("create tables");
+        let classify = |sql: &str| StorageError::from(conn.execute(sql, []).unwrap_err());
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (1, 1, 1)").ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (2, 999, 1)")
+                .ipc_error_code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (3, 1, 0)").ipc_error_code(),
+            ErrorCode::Internal
+        );
     }
 
     fn migrated_store() -> Store {

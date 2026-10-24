@@ -315,50 +315,43 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
         "executed": true,
         "result": generated,
     });
-    let response_value = if let Some(operation_id) =
-        args.get("operation_id").and_then(Value::as_str)
-    {
-        let request_json = serde_json::to_string(args)
-            .map_err(|error| CommandFailure::invalid(error.to_string()))?;
-        let response_json = serde_json::to_string(&intended)
-            .map_err(|error| CommandFailure::invalid(error.to_string()))?;
-        let operation = MutationOperation {
-            actor: &actor,
-            command: "inference.request",
-            operation_id,
-            request_payload: &request_json,
-            response_payload: &response_json,
-        };
-        let stored = store
-            .insert_usage_once(&usage, operation)
-            .map_err(|error| match &error {
-                flowerly_core::storage::StorageError::OperationConflict(_) => CommandFailure {
-                    code: flowerly_core::ipc::ErrorCode::Conflict,
-                    message: error.to_string(),
-                },
-                _ => CommandFailure::storage(error),
-            })?;
-        if stored.is_empty() {
-            intended
+    let response_value =
+        if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+            let request_json = serde_json::to_string(args)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let response_json = serde_json::to_string(&intended)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let operation = MutationOperation {
+                actor: &actor,
+                command: "inference.request",
+                operation_id,
+                request_payload: &request_json,
+                response_payload: &response_json,
+            };
+            let stored = store
+                .insert_usage_once(&usage, operation)
+                .map_err(CommandFailure::storage)?;
+            if stored.is_empty() {
+                intended
+            } else {
+                serde_json::from_str(&stored)
+                    .map_err(|error| CommandFailure::invalid(error.to_string()))?
+            }
         } else {
-            serde_json::from_str(&stored)
-                .map_err(|error| CommandFailure::invalid(error.to_string()))?
-        }
-    } else {
-        store
-            .insert_usage(&usage)
-            .map_err(CommandFailure::storage)?;
-        store
-            .insert_provenance(&ProvenanceEdge {
-                from: ObjectRef::from(&provider.id),
-                relation: ProvenanceRelation::Produced,
-                to: ObjectRef::from(&workload.id),
-                created_at: Timestamp::now(),
-                note: Some("reference provider usage ledger".to_owned()),
-            })
-            .map_err(CommandFailure::storage)?;
-        intended
-    };
+            store
+                .insert_usage(&usage)
+                .map_err(CommandFailure::storage)?;
+            store
+                .insert_provenance(&ProvenanceEdge {
+                    from: ObjectRef::from(&provider.id),
+                    relation: ProvenanceRelation::Produced,
+                    to: ObjectRef::from(&workload.id),
+                    created_at: Timestamp::now(),
+                    note: Some("reference provider usage ledger".to_owned()),
+                })
+                .map_err(CommandFailure::storage)?;
+            intended
+        };
     tracing::info!(
         workload = %workload.id,
         usage = %usage.id,

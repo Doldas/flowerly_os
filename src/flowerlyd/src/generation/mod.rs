@@ -142,19 +142,7 @@ fn validate_generation_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    match error {
-        StorageError::NotFound(_) => ErrorCode::NotFound,
-        StorageError::InvalidOperation(_) | StorageError::ForeignKeyViolation(_) => {
-            ErrorCode::InvalidArgument
-        }
-        StorageError::OperationConflict(_) | StorageError::UniqueViolation(_) => {
-            ErrorCode::Conflict
-        }
-        _ if error.is_busy() => ErrorCode::Unavailable,
-        _ if error.is_unique_violation() => ErrorCode::Conflict,
-        _ if error.is_foreign_key_violation() => ErrorCode::InvalidArgument,
-        _ => ErrorCode::Internal,
-    }
+    error.ipc_error_code()
 }
 
 #[derive(Debug)]

@@ -81,4 +81,34 @@ about adopting old file descriptors or replaying capabilities across crashes.
 
 ## Contention and liveness limits
 
-SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. Typed `unavailable` for BUSY/LOCKED is being extended to all domain operations under #62; this document does not certify other daemons or guarantee distributed exactly-once execution.
+SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. This document does not guarantee distributed exactly-once execution.
+
+## Storage error classification
+
+`StorageError::ipc_error_code()` in `flowerly-core` is the single mapping from storage failures to IPC error codes. Every storage-backed command uses it. It matches on typed variants and SQLite result codes only; it never interprets error message text, so a diagnostic such as "database is locked" on a corrupt-database error stays `internal`.
+
+| Storage failure | IPC code | Retry meaning |
+| --- | --- | --- |
+| SQLite `BUSY*` / `LOCKED*` (writer contention, snapshot, recovery, shared cache) | `unavailable` | Transient; the statement was rejected. Retry only per the client policy above. |
+| `UniqueViolation`, `OperationConflict`, SQLite `CONSTRAINT_UNIQUE` / `CONSTRAINT_PRIMARYKEY` | `conflict` | Not transient; the request collides with existing state. |
+| `ForeignKeyViolation`, `InvalidOperation`, SQLite `CONSTRAINT_FOREIGNKEY` | `invalid_argument` | Not transient; a referenced record is missing or the request is malformed. |
+| `NotFound` | `not_found` | Not transient. |
+| SQLite `CORRUPT`, `NOTADB`, `READONLY`, `FULL`, `IOERR`, `CANTOPEN`, `MISMATCH`, `CONSTRAINT_CHECK`, `CONSTRAINT_NOTNULL`, `CONSTRAINT_TRIGGER`, generic `CONSTRAINT`; row decode, serialization and I/O errors | `internal` | Never reported as transient; these indicate a defect, a damaged database or a host failure that retries cannot fix. |
+
+Audit of storage-backed commands on `release/2` (issue #62, 2026-10-24):
+
+| Service area | Commands | Storage error path |
+| --- | --- | --- |
+| Flow | `flow.create`, `flow.list`, `flow.activate`, `flow.archive` | Pre-validation and handlers use the shared mapping. |
+| Goal | `goal.create`, `goal.child`, `goal.show`, `goal.list`, `goal.complete`, `goal.abandon` | Pre-validation and handlers use the shared mapping. |
+| Session | `session.create`, `session.list`, `session.terminate`, PTY lifecycle persistence | Handlers and the PTY supervisor use the shared mapping. |
+| Execution | `execution.create`, `execution.show`, `execution.list` | Shared mapping. |
+| Generation | All Generation commands | Shared mapping; earlier generation-only extended-code handling now applies everywhere. |
+| Provenance | `provenance.add`, `provenance.from`, `provenance.to` | Shared mapping. |
+| Compute | Catalog, profiles, admission, inference ledger | Shared mapping. Before this audit, compute did not type `UniqueViolation` or `ForeignKeyViolation` and reported both as `internal`. |
+
+Before this audit, six of the seven per-service copies reported raw SQLite UNIQUE/PRIMARY KEY and FOREIGN KEY failures as `internal`. Only Generation typed them.
+
+Regression evidence is in the `flowerly-core` storage unit tests. They cover every error family, message-text spoofing, and real SQLite failures: a BUSY from a second connection holding `BEGIN IMMEDIATE` followed by recovery once the lock is released, a non-database file, and UNIQUE/FK/CHECK constraint failures. The six-service real-process writer-lock test from PRs #66–#67 still covers end-to-end `unavailable` and recovery.
+
+Remaining limits: per-request elapsed time and lock-wait measurements are not yet exported as stable diagnostics, and argument typing in the legacy fallback handlers is tracked under #53. Those fallback handlers can only be reached after the typed pre-validation that runs under the same Store lock.
