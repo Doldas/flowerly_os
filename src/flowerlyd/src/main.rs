@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 
 #[allow(dead_code)]
 mod agentic;
+
+mod authorization;
 #[allow(dead_code)]
 mod capability;
 #[allow(dead_code)]
@@ -116,6 +118,14 @@ impl Router {
                 "command required",
             );
         };
+        // Deny by default: only inventoried commands reach a handler.
+        if authorization::classify(name).is_none() {
+            return coded_error_envelope(
+                request.id.clone(),
+                ErrorCode::InvalidArgument,
+                format!("unknown command: {name}"),
+            );
+        }
         match name.split('.').next() {
             Some("flow") => via_queue(&self.flow, request),
             Some("generation") => via_queue(&self.generation, request),
@@ -167,6 +177,7 @@ fn status_details(db: &Store) -> serde_json::Value {
             "profile_count": counts.profiles,
             "active_workload_count": counts.active_workloads,
             "provider_count": counts.providers,
+            "admin_authorization": authorization::ADMIN_POLICY,
             "database": "ready"
         }),
         Err(error) => serde_json::json!({
@@ -263,5 +274,127 @@ mod tests {
         assert_eq!(details["database"], "error");
         assert_eq!(details["error_code"], "internal");
         assert!(details.get("flow_count").is_none(), "{details}");
+    }
+}
+
+#[cfg(test)]
+mod malformed_arguments {
+    use super::*;
+
+    /// Gate B (#31) / #53: client-caused failures must carry a typed code.
+    /// Every store-backed command is sent missing, wrongly typed, malformed
+    /// and well-formed-but-absent arguments; none may answer `internal` or
+    /// an untyped legacy error. PTY commands need a live session runtime
+    /// and are covered by the PTY black-box suites.
+    #[test]
+    fn client_errors_are_never_internal_or_untyped() {
+        let mut db = Store::open_in_memory().expect("open store");
+        db.migrate().expect("migrate");
+        db.ensure_general_flow().expect("general flow");
+        let store: SharedStore = Arc::new(Mutex::new(db));
+        let commands = [
+            "flow.create",
+            "flow.list",
+            "flow.activate",
+            "flow.archive",
+            "goal.create",
+            "goal.child",
+            "goal.show",
+            "goal.list",
+            "goal.complete",
+            "goal.abandon",
+            "session.create",
+            "session.list",
+            "session.terminate",
+            "execution.create",
+            "execution.show",
+            "execution.list",
+            "generation.create",
+            "generation.list",
+            "generation.inspect",
+            "generation.activate",
+            "provenance.add",
+            "provenance.from",
+            "provenance.to",
+            "model.register",
+            "model.list",
+            "model.show",
+            "model.retire",
+            "model.compatibility",
+            "device.budget",
+            "profile.clone",
+            "profile.edit",
+            "profile.export",
+            "profile.import",
+            "profile.list",
+            "profile.rename",
+            "profile.resolve",
+            "profile.show",
+            "profile.version_history",
+            "provider.list",
+            "provider.register",
+            "provider.show",
+            "workload.submit",
+            "workload.list",
+            "workload.show",
+            "workload.complete",
+            "workload.usage_brief",
+            "usage.record",
+        ];
+        let shapes = [
+            serde_json::json!({}),
+            serde_json::json!({
+                "id": 42, "name": 42, "objective": 7, "priority": "x", "from": 1, "to": true,
+                "ref": [], "flow_id": 3, "goal_id": 3, "agent_id": 3, "operation_id": 5,
+                "parent": 9, "model_id": 1, "profile_id": 1, "profile": 1, "source": 1,
+                "version": "x", "workload_id": 1
+            }),
+            serde_json::json!({
+                "id": "bogus", "name": "bogus", "objective": "o", "from": "bogus", "to": "bogus",
+                "ref": "bogus", "relation": "bogus", "flow_id": "bogus", "goal_id": "bogus",
+                "agent_id": "bogus", "parent": "bogus", "model_id": "bogus", "profile": "bogus",
+                "source": "bogus", "workload_id": "bogus"
+            }),
+            serde_json::json!({
+                "id": "flow-00000000000000000000000000000000",
+                "ref": "flow:flow-00000000000000000000000000000000",
+                "goal_id": "goal-00000000000000000000000000000000",
+                "model_id": "model-00000000000000000000000000000000",
+                "workload_id": "wl-00000000000000000000000000000000"
+            }),
+        ];
+        let mut answered = 0;
+        let mut leaks = Vec::new();
+        for command in commands {
+            for shape in &shapes {
+                let mut args = shape.clone();
+                args["created_by"] = serde_json::json!("uid:1000");
+                let request = Envelope::new(Payload::Command {
+                    name: command.into(),
+                    args: args.clone(),
+                });
+                let reply = match command.split('.').next() {
+                    Some("flow") => flow::handle_command(&store, &request),
+                    Some("goal") => goal::handle_command(&store, &request),
+                    Some("session") => session::handle_command(&store, &request),
+                    Some("execution") => agentic::handle_command(&store, &request),
+                    Some("generation") => generation::handle_command(&store, &request),
+                    Some("provenance") => provenance::handle_command(&store, &request),
+                    _ => compute::handle_command(&store, &request),
+                };
+                answered += 1;
+                if let Payload::Err { code, message } = &reply.payload {
+                    if matches!(code, None | Some(ErrorCode::Internal)) {
+                        leaks.push(format!("{command} {args} -> {code:?}: {message}"));
+                    }
+                }
+            }
+        }
+        assert_eq!(answered, commands.len() * shapes.len());
+        assert!(
+            leaks.is_empty(),
+            "untyped client errors:\n{}",
+            leaks.join("\n")
+        );
     }
 }
