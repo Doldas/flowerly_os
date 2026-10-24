@@ -14,6 +14,8 @@ use tokio::sync::mpsc;
 mod agentic;
 
 mod args;
+
+mod authorization;
 #[allow(dead_code)]
 mod capability;
 #[allow(dead_code)]
@@ -118,6 +120,14 @@ impl Router {
                 "command required",
             );
         };
+        // Deny by default: only inventoried commands reach a handler.
+        if authorization::classify(name).is_none() {
+            return coded_error_envelope(
+                request.id.clone(),
+                ErrorCode::InvalidArgument,
+                format!("unknown command: {name}"),
+            );
+        }
         match name.split('.').next() {
             Some("flow") => via_queue(&self.flow, request),
             Some("generation") => via_queue(&self.generation, request),
@@ -169,6 +179,7 @@ fn status_details(db: &Store) -> serde_json::Value {
             "profile_count": counts.profiles,
             "active_workload_count": counts.active_workloads,
             "provider_count": counts.providers,
+            "admin_authorization": authorization::ADMIN_POLICY,
             "database": "ready"
         }),
         Err(error) => serde_json::json!({

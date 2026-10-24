@@ -449,11 +449,11 @@ def supervise(path, shell, parent_pid):
             harvest()
             position = command.get("cursor", first)
             if type(position) is not int or not 0 <= position <= cursor:
-                return {"error": "invalid cursor"}
+                return {"error": "invalid cursor", "code": "invalid_argument"}
             if operation == "follow":
                 wait_ms = command.get("wait_ms", 100)
                 if type(wait_ms) is not int or not 0 <= wait_ms <= 250:
-                    return {"error": "invalid wait_ms"}
+                    return {"error": "invalid wait_ms", "code": "invalid_argument"}
                 if position == cursor and exit_code is None and wait_ms:
                     # A follower must not monopolize the single-threaded
                     # guardian while a writer/resize/terminate is queued.
@@ -474,13 +474,13 @@ def supervise(path, shell, parent_pid):
                 return {"error": "exited"}
             data = command.get("data_hex")
             if not isinstance(data, str):
-                return {"error": "data_hex required"}
+                return {"error": "data_hex required", "code": "invalid_argument"}
             try:
                 data = bytes.fromhex(data)
             except ValueError:
-                return {"error": "bad hex"}
+                return {"error": "bad hex", "code": "invalid_argument"}
             if len(data) > 4096:
-                return {"error": "write too large"}
+                return {"error": "write too large", "code": "invalid_argument"}
             try:
                 return {"written": os.write(fd, data)}
             except BlockingIOError:
@@ -488,7 +488,7 @@ def supervise(path, shell, parent_pid):
         if operation == "resize":
             rows, cols = command.get("rows"), command.get("cols")
             if type(rows) is not int or type(cols) is not int or not (1 <= rows <= 1000 and 1 <= cols <= 1000):
-                return {"error": "bad dimensions"}
+                return {"error": "bad dimensions", "code": "invalid_argument"}
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
             return {"rows": rows, "cols": cols}
         if operation == "terminate":

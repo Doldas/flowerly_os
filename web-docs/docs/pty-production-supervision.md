@@ -86,6 +86,23 @@ the daemon serializes mutations to the same Session. This is a bounded
 long-poll transport, **not a perpetual push socket** or a remote
 enterprise-delegation mechanism.
 
+Long-poll is the 0.0.4 subscriber transport (maintainer decision, #73). Its
+contract, enforced by `test_long_poll_contract` in `test-pty-adversarial.py`:
+
+- A follower that disconnects and resumes from its last cursor on a new
+  connection loses nothing still inside the replay window.
+- A cursor that fell out of the window returns `truncated: true` with at most
+  64 KiB, and the reader continues from the returned cursor.
+- A cursor past the end of output, or a negative one, is `invalid_argument`.
+  It is a caller error, never a retryable `unavailable`. The guardian marks
+  caller mistakes with a structured `code`; `exited`, `backpressure` and lost
+  supervision stay `unavailable`.
+- Clients that request a large read and never drain their socket do not
+  stall the writer, heartbeats or other followers.
+- Concurrent writes by the single lease owner are each accepted whole.
+- Terminating while followers are blocked returns every follower within its
+  bounded wait; later follows are `unavailable`.
+
 A periodic reconciliation task observes child exit through the guardian,
 persists an Exited/Detached Session even without client polling, and
 eventually reaps completed guardians. When the guardian itself dies,
