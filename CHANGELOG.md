@@ -12,6 +12,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 - Isolated `evolutiond` and distribution-oriented `distro/`, `tools/`, `testbed/`, `web-docs/` layouts.
 - Updated CLI socket routing, systemd unit scaffolds and input validation.
 - KVM execution and bootable images remain unimplemented.
+- Storage failures now map to IPC error codes through one shared classifier (#62). SQLite UNIQUE/PRIMARY KEY failures now return `conflict` and FOREIGN KEY failures `invalid_argument` in every service; they previously returned `internal` everywhere except Generation. Only BUSY/LOCKED returns `unavailable`.
 
 
 ### Added
