@@ -45,3 +45,22 @@ Missing API access is not evidence of zero alerts.
 5. Link findings and resolutions to #187, #31 and #8 without secrets.
 
 The scripts neither dismiss alerts nor bypass release protection.
+
+## Triage snapshot 2026-10-24 (`release/2`)
+
+Open alerts: **9 Code Scanning (all OpenSSF Scorecard), 0 Dependabot,
+0 Secret Scanning.** There are no open CodeQL, cargo-audit or cargo-deny
+findings. None of the nine alerts is a code defect. **Dismissal needs
+maintainer approval**; until a maintainer records it here and in #187,
+each alert stays open.
+
+| Alert | Rule | Location | Assessment | Proposed action |
+| --- | --- | --- | --- | --- |
+| 113 | TokenPermissions | `release.yml:75` | The `release` job needs `contents: write` to publish a GitHub release. The top-level default is `contents: read`. Only `v*` tag pushes run it, on the trusted runner. | Accept as required; dismiss as "used in tests / won't fix" with this rationale. |
+| 93, 92 | TokenPermissions | `project-sync.yml`, `project-sync-manual.yml` | No top-level `permissions:` block, deliberately: 2026-10-18 probes showed some permissions/trigger combinations create empty failed push-validation runs. These workflows only touch the GitHub Project board. | Maintainer decision: accept with that evidence, or re-probe whether a top-level block is safe now. |
+| 1 | BranchProtection | repository | Rulesets `MERGERULES` (24880732) and `FLOWERLY_RELEASE_REQUIRED_CHECKS` (25024564) are active (#55). Scorecard reads only the default-branch classic protection settings. | Verify ruleset coverage in settings, then dismiss with a link to #55. |
+| 33 | CodeReview | repository | Solo-maintainer history. PRs are reviewed by the owner and CI, not by a second human. | Accept for the current project stage. |
+| 34 | Maintained | repository | Scorecard heuristic based on project age and activity. | Re-evaluates on its own; no action. |
+| 32 | Fuzzing | repository | No fuzz targets yet. The IPC frame decoder and SQLite row parsing are the best candidates. | Track as future hardening; not a 0.0.4 gate. |
+| 35 | CIIBestPractices | repository | No OpenSSF Best Practices badge. | Optional; not a 0.0.4 gate. |
+| 2 | SecurityPolicy | repository | `SECURITY.md` exists; Scorecard warned "no linked content". Private vulnerability reporting is enabled. | `SECURITY.md` now links the private advisory URL (this PR). The alert should close on the next Scorecard run. |

@@ -34,6 +34,21 @@ class RuntimeTopology(unittest.TestCase):
         for name in LEGACY_DAEMONS:
             self.assertNotIn('run_service_with_status("' + name + '"', source)
 
+    def test_release_ships_the_consolidated_binaries(self):
+        # A tag release checksums and uploads exactly the built binaries;
+        # a legacy daemon name would make sha256sum fail the release job.
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        shipped = set()
+        for line in workflow.splitlines():
+            line = line.strip()
+            if line.startswith("target/release/"):
+                shipped.add(line.removeprefix("target/release/"))
+            if line.startswith("sha256sum "):
+                checksummed = set(line.split(">")[0].split()[1:])
+        self.assertEqual(shipped - {"SHA256SUMS"}, checksummed)
+        self.assertEqual(checksummed, CORE_DAEMONS | {"providerd", "agenticctl"})
+        self.assertFalse(checksummed & LEGACY_DAEMONS, checksummed)
+
     def test_unprovisioned_kvm_is_not_claimed_as_ready(self):
         source = (ROOT / "src/evolutiond/src/main.rs").read_text()
         self.assertIn('"execution_enabled": false', source)
