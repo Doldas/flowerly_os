@@ -485,9 +485,8 @@ mod tests {
         assert!(parsed.parent.is_none());
         assert!(parsed.reason_goal.is_none());
         assert_eq!(parsed.source_commit.as_deref(), Some("abc"));
-        let _: GenerationListArgs =
-            typed_generation_args(&serde_json::json!({"future": 1}))
-                .expect("list ignores unknown fields");
+        let _: GenerationListArgs = typed_generation_args(&serde_json::json!({"future": 1}))
+            .expect("list ignores unknown fields");
     }
 
     #[test]
@@ -515,9 +514,18 @@ mod tests {
         }
         let store = migrated_store();
         for (name, args) in [
-            ("generation.create", serde_json::json!({"parent": "malformed-id"})),
-            ("generation.create", serde_json::json!({"experiment": "invalid-id"})),
-            ("generation.activate", serde_json::json!({"id": "invalid-id"})),
+            (
+                "generation.create",
+                serde_json::json!({"parent": "malformed-id"}),
+            ),
+            (
+                "generation.create",
+                serde_json::json!({"experiment": "invalid-id"}),
+            ),
+            (
+                "generation.activate",
+                serde_json::json!({"id": "invalid-id"}),
+            ),
         ] {
             let error = validate_generation_command(&store, name, &args)
                 .err()
