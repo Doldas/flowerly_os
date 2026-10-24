@@ -103,6 +103,27 @@ contract, enforced by `test_long_poll_contract` in `test-pty-adversarial.py`:
 - Terminating while followers are blocked returns every follower within its
   bounded wait; later follows are `unavailable`.
 
+Writer lease rules (unit-tested with synthetic clocks in `session/pty.rs`):
+an attach is refused while a live lease exists. The lease lapses exactly
+`WRITER_LEASE` (60 s) after its last successful renewal. Every authorized
+write, resize, detach or heartbeat renews it; an expired, revoked or forged
+token never renews it. A new attach after expiry issues a new token, and
+the old one stays revoked.
+
+### Same-UID isolation limits
+
+Control and attachment tokens are ephemeral in-memory capabilities: they
+are returned once by `spawn`/`attach` and never persisted. Other IPC
+clients cannot read another Session's output or write to it without the
+token, even with the same UID. That is the boundary the adversarial tests
+prove. It is **not** a boundary against an arbitrary same-UID process: such a
+process can `ptrace` or signal the guardian and the shell, read the
+client's memory or environment, or talk to the guardian socket in the
+runtime directory, because Linux gives the same UID that authority. Real
+separation between principals needs distinct UIDs (see the authorization
+model on #31). Tokens prevent confused-deputy mistakes between cooperating
+clients; they do not contain a hostile same-UID process.
+
 A periodic reconciliation task observes child exit through the guardian,
 persists an Exited/Detached Session even without client polling, and
 eventually reaps completed guardians. When the guardian itself dies,
