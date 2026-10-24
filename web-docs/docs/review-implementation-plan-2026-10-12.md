@@ -70,7 +70,7 @@ already exists (including a stale socket). Operators must stop the process,
 verify the old instance is dead, and explicitly remove a stale socket before
 restarting. **Automatic stale socket recovery is not yet implemented** because
 a connectivity probe followed by unlink would race with a concurrent binder.
-This remains an open Gate B criterion. The server only unlinks its own socket
+This remains an open Gate B criterion. **Update 2026-10-24:** implemented via an exclusive per-socket instance lock plus verified stale-socket recovery; see `pty-production-supervision.md`. The server only unlinks its own socket
 inode; a replacement path is left alone.
 
 The dev script records per-runtime PID and Linux process start ticks and checks

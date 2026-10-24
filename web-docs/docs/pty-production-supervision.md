@@ -244,17 +244,18 @@ typed `unavailable` rather than succeed. The concurrent-client test
 requires either successful completion before termination or precisely
 `unavailable` afterward, with a bounded response time; unrelated errors
 are rejected.
-The shared IPC listener intentionally does not unlink any preexisting
-Unix socket when binding. An abrupt daemon SIGKILL leaves a stale pathname;
-a second daemon must fail closed with address-in-use rather than remove
-a potentially live or foreign socket. The black-box crash test now proves
-that refusal, performs a narrowly scoped simulated operator recovery
-only after verifying the old daemon is gone, the runtime directory is
-owner-only, the path is a same-owner socket, its listener rejects
-connections, and its inode is unchanged, and then retries the daemon.
-Normal production operators must coordinate daemon shutdown and socket
-ownership before any manual cleanup; this test-only recovery helper is
-not an automatic service-side unlink policy.
+The shared IPC listener never blindly unlinks a preexisting pathname.
+Every server first takes an exclusive `flock` on `<socket>.lock` and holds it
+for its lifetime; a second instance fails closed while the lock is held.
+An abrupt daemon SIGKILL releases the lock but leaves the socket pathname.
+The restarted daemon removes it only after verifying, under the lock, that
+the path is a same-owner Unix socket (not a symlink or regular file), that a
+connect is refused (no listener) and that its inode did not change during
+verification. A live listener, foreign owner, non-socket, symlinked socket
+or lock, or a lock file accessible to other users is refused. The black-box
+crash test now requires this automatic verified recovery. The lock does not
+protect against a non-cooperating process that binds the path without
+taking the lock.
 
 It verifies original kernel process identities cease, stale durable
 Session capabilities do not resurrect ownership, and a fresh Session
