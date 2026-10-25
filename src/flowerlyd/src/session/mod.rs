@@ -11,6 +11,7 @@ use flowerly_core::storage::repository::{
     CoreCommandRepository, CoreQueryRepository, CreateSession,
 };
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::{Caller, Owner};
 use flowerly_core::types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
@@ -110,7 +111,11 @@ fn terminate_stale_cgroup(
     anyhow::bail!("unrecovered PTY cgroup did not become empty")
 }
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -121,7 +126,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     if let Err((code, message)) = validate_session_command(&store, name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&mut store, name, args) {
+    match run_command(&mut store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
@@ -257,7 +262,12 @@ impl CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "session.create" => {
             if args
@@ -293,6 +303,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 },
                 created_by: created_by.to_owned(),
                 created_at: Timestamp::now(),
+                owner: caller.owner(),
             };
             let provenance = ProvenanceEdge {
                 from: ObjectRef::from(&session.id),
@@ -445,6 +456,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         presentation_state: SessionPresentationState::Attached,
         created_by: "self-test".to_owned(),
         created_at: Timestamp::now(),
+        owner: Owner::System,
     };
     store.insert_session(&session)?;
     store.update_session_state(&session.id, SessionState::Exited)?;
@@ -456,6 +468,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CALLER: Caller = Caller::new(1000);
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
@@ -471,8 +485,8 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-1"
         });
-        let first = run_command(&mut store, "session.create", &args).expect("first");
-        let replay = run_command(&mut store, "session.create", &args).expect("replay");
+        let first = run_command(&mut store, "session.create", &args, TEST_CALLER).expect("first");
+        let replay = run_command(&mut store, "session.create", &args, TEST_CALLER).expect("replay");
         assert_eq!(first, replay);
         assert_eq!(store.list_sessions().expect("sessions").len(), 1);
         let id = SessionId::from_str(first["id"].as_str().expect("id")).expect("typed id");
@@ -492,13 +506,13 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-conflict"
         });
-        run_command(&mut store, "session.create", &first).expect("create");
+        run_command(&mut store, "session.create", &first, TEST_CALLER).expect("create");
         let changed = serde_json::json!({
             "kind": "different-kind",
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-conflict"
         });
-        assert!(run_command(&mut store, "session.create", &changed).is_err());
+        assert!(run_command(&mut store, "session.create", &changed, TEST_CALLER).is_err());
         assert_eq!(store.list_sessions().expect("sessions").len(), 1);
     }
 
@@ -551,6 +565,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": "not-a-flow-id" }),
+            TEST_CALLER,
         )
         .expect_err("malformed flow id must fail");
 
@@ -566,6 +581,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": missing }),
+            TEST_CALLER,
         )
         .expect_err("missing flow must fail");
 
@@ -580,6 +596,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "pid": i64::from(i32::MAX) + 1 }),
+            TEST_CALLER,
         )
         .expect_err("out-of-range pid must fail");
 
@@ -597,6 +614,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": flow.id, "pid": 42 }),
+            TEST_CALLER,
         )
         .expect("create session");
 
@@ -611,7 +629,7 @@ mod tests {
             name: command.into(),
             args,
         });
-        match handle_command(store, &request).payload {
+        match handle_command(store, &request, TEST_CALLER).payload {
             Payload::Ok { data } => Ok(data),
             Payload::Err { code, .. } => Err(code.expect("typed error code")),
             other => panic!("unexpected reply {other:?}"),

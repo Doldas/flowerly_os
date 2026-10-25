@@ -64,7 +64,7 @@ pub struct Caller {
 
 impl Caller {
     #[must_use]
-    pub fn new(uid: u32) -> Self {
+    pub const fn new(uid: u32) -> Self {
         Self { uid }
     }
 

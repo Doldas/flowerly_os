@@ -309,6 +309,12 @@ pub struct PeerIdentity {
 }
 
 impl PeerIdentity {
+    /// The kernel-attested caller of requests on this connection (#225).
+    #[must_use]
+    pub fn caller(&self) -> crate::types::Caller {
+        crate::types::Caller::new(self.uid)
+    }
+
     /// Primary or supplementary membership of `gid`.
     #[must_use]
     pub fn in_group(&self, gid: u32) -> bool {

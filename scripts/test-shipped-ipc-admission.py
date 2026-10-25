@@ -54,6 +54,10 @@ def admission_problems(unit_text, sysusers_text, overlay_paths):
         problems.append("UMask must be 0077")
     if "AGENTIC_ADMIN_GROUP=flowerly-admin" not in environment:
         problems.append("unit must keep AGENTIC_ADMIN_GROUP=flowerly-admin (deny by default)")
+    unset = " ".join(values.get("UnsetEnvironment", [])).split()
+    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG"):
+        if name not in unset:
+            problems.append(f"unit must UnsetEnvironment={name} so the service manager cannot inject it")
     exec_start = " ".join(values.get("ExecStart", []))
     if "--config" in exec_start or "AGENTIC_CONFIG" in environment:
         problems.append("a config file could set users_group")
@@ -93,6 +97,10 @@ class ShippedAdmission(unittest.TestCase):
             "group-owned socket": unit.replace("Group=flowerly", "Group=flowerly-users"),
             "traversable runtime": unit.replace("RuntimeDirectoryMode=0700", "RuntimeDirectoryMode=0750"),
             "no admin group": unit.replace(env, ""),
+            "inherits manager env": unit.replace(
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG", "UnsetEnvironment=AGENTIC_CONFIG"),
+            "inherits manager config": unit.replace(
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG", "UnsetEnvironment=AGENTIC_USERS_GROUP"),
             "config file": unit.replace("ExecStart=/usr/bin/flowerlyd",
                                         "ExecStart=/usr/bin/flowerlyd --config /etc/f.toml"),
         }

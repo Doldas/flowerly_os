@@ -9,6 +9,7 @@ use flowerly_core::ipc::{
     AccessPolicy, AuthenticatedHandler, Envelope, ErrorCode, Payload, PeerIdentity,
 };
 use flowerly_core::storage::Store;
+use flowerly_core::types::Caller;
 use flowerly_core::{coded_error_envelope, init_tracing, run_authorized_service, ServiceConfig};
 use tokio::sync::mpsc;
 
@@ -50,18 +51,29 @@ struct Cli {
 
 struct Job {
     request: Envelope,
+    /// Kernel-attested caller, carried with the request so handlers never
+    /// re-derive identity from request JSON (#225).
+    caller: Caller,
     reply: std::sync::mpsc::SyncSender<Envelope>,
 }
 type Queue = mpsc::Sender<Job>;
 
-fn spawn_worker(store: &SharedStore, handler: fn(&SharedStore, &Envelope) -> Envelope) -> Queue {
+/// A domain handler: store, request and the kernel-attested caller.
+type Handler = fn(&SharedStore, &Envelope, Caller) -> Envelope;
+
+fn spawn_worker(store: &SharedStore, handler: Handler) -> Queue {
     let (tx, mut rx) = mpsc::channel::<Job>(64);
     let store = Arc::clone(store);
     tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
             let store = Arc::clone(&store);
-            let Job { request, reply } = job;
-            let result = tokio::task::spawn_blocking(move || handler(&store, &request)).await;
+            let Job {
+                request,
+                caller,
+                reply,
+            } = job;
+            let result =
+                tokio::task::spawn_blocking(move || handler(&store, &request, caller)).await;
             match result {
                 Ok(response) => {
                     let _ = reply.send(response);
@@ -75,11 +87,12 @@ fn spawn_worker(store: &SharedStore, handler: fn(&SharedStore, &Envelope) -> Env
 
 const MODULE_DEADLINE: Duration = Duration::from_secs(7);
 
-fn via_queue(tx: &Queue, request: &Envelope) -> Envelope {
+fn via_queue(tx: &Queue, request: &Envelope, caller: Caller) -> Envelope {
     let (reply, received) = std::sync::mpsc::sync_channel(1);
     if tx
         .try_send(Job {
             request: request.clone(),
+            caller,
             reply,
         })
         .is_err()
@@ -132,7 +145,7 @@ impl Router {
             }
             return coded_error_envelope(request.id.clone(), code, message);
         }
-        let response = self.dispatch(name, request);
+        let response = self.dispatch(name, request, peer.caller());
         if admin {
             let code = match &response.payload {
                 Payload::Err { code, .. } => Some(code.unwrap_or(ErrorCode::Internal)),
@@ -148,18 +161,20 @@ impl Router {
         response
     }
 
-    fn dispatch(&self, name: &str, request: &Envelope) -> Envelope {
+    fn dispatch(&self, name: &str, request: &Envelope, caller: Caller) -> Envelope {
         match name.split('.').next() {
-            Some("flow") => via_queue(&self.flow, request),
-            Some("generation") => via_queue(&self.generation, request),
-            Some("provenance") => via_queue(&self.provenance, request),
-            Some("goal") => goal::handle_command(&self.store, request),
-            Some("session") => self.session.handle(&self.store, request),
-            Some("execution") | Some("agent") => agentic::handle_command(&self.store, request),
+            Some("flow") => via_queue(&self.flow, request, caller),
+            Some("generation") => via_queue(&self.generation, request, caller),
+            Some("provenance") => via_queue(&self.provenance, request, caller),
+            Some("goal") => goal::handle_command(&self.store, request, caller),
+            Some("session") => self.session.handle(&self.store, request, caller),
+            Some("execution") | Some("agent") => {
+                agentic::handle_command(&self.store, request, caller)
+            }
             Some("capability") => capability::handle_command(request),
             Some("model") | Some("device") | Some("profile") | Some("provider")
             | Some("workload") | Some("usage") | Some("inference") => {
-                via_queue(&self.compute, request)
+                via_queue(&self.compute, request, caller)
             }
             _ => coded_error_envelope(
                 request.id.clone(),
@@ -438,13 +453,19 @@ mod malformed_arguments {
                     args: args.clone(),
                 });
                 let reply = match command.split('.').next() {
-                    Some("flow") => flow::handle_command(&store, &request),
-                    Some("goal") => goal::handle_command(&store, &request),
-                    Some("session") => session::handle_command(&store, &request),
-                    Some("execution") => agentic::handle_command(&store, &request),
-                    Some("generation") => generation::handle_command(&store, &request),
-                    Some("provenance") => provenance::handle_command(&store, &request),
-                    _ => compute::handle_command(&store, &request),
+                    Some("flow") => flow::handle_command(&store, &request, Caller::new(1000)),
+                    Some("goal") => goal::handle_command(&store, &request, Caller::new(1000)),
+                    Some("session") => session::handle_command(&store, &request, Caller::new(1000)),
+                    Some("execution") => {
+                        agentic::handle_command(&store, &request, Caller::new(1000))
+                    }
+                    Some("generation") => {
+                        generation::handle_command(&store, &request, Caller::new(1000))
+                    }
+                    Some("provenance") => {
+                        provenance::handle_command(&store, &request, Caller::new(1000))
+                    }
+                    _ => compute::handle_command(&store, &request, Caller::new(1000)),
                 };
                 answered += 1;
                 if let Payload::Err { code, message } = &reply.payload {
@@ -460,5 +481,234 @@ mod malformed_arguments {
             "untyped client errors:\n{}",
             leaks.join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod ownership_recording {
+    use super::*;
+
+    const ALICE: u32 = 1234;
+
+    fn ok(reply: Envelope, what: &str) -> serde_json::Value {
+        match reply.payload {
+            Payload::Ok { data } => data,
+            other => panic!("{what}: {other:?}"),
+        }
+    }
+
+    /// #225 PR 2 (recording only; reads are not yet filtered): every command
+    /// that persists a user object records the kernel-attested caller as its
+    /// owner, never the client-supplied `created_by`, and no table ends with
+    /// an unresolved row.
+    #[test]
+    fn every_create_path_records_an_explicit_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut db = Store::open(&path).unwrap();
+        db.migrate().unwrap();
+        db.ensure_general_flow().unwrap();
+        let store: SharedStore = Arc::new(Mutex::new(db));
+        let caller = Caller::new(ALICE);
+        let req = |name: &str, mut args: serde_json::Value| {
+            // The daemon overwrites created_by with the kernel uid; here it is
+            // deliberately forged to prove ownership does not come from JSON.
+            args["created_by"] = serde_json::json!("uid:7");
+            Envelope::new(Payload::Command {
+                name: name.into(),
+                args,
+            })
+        };
+
+        let flow = ok(
+            flow::handle_command(
+                &store,
+                &req("flow.create", serde_json::json!({"name": "f"})),
+                caller,
+            ),
+            "flow",
+        );
+        let flow_id = flow["id"].as_str().unwrap().to_owned();
+        let goal = ok(
+            goal::handle_command(
+                &store,
+                &req("goal.create", serde_json::json!({"objective": "o"})),
+                caller,
+            ),
+            "goal",
+        );
+        let goal_id = goal["id"].as_str().unwrap().to_owned();
+        ok(
+            goal::handle_command(
+                &store,
+                &req(
+                    "goal.child",
+                    serde_json::json!({"id": goal_id, "objective": "c"}),
+                ),
+                caller,
+            ),
+            "child",
+        );
+        ok(
+            session::handle_command(
+                &store,
+                &req("session.create", serde_json::json!({"flow_id": flow_id})),
+                caller,
+            ),
+            "session",
+        );
+        ok(
+            agentic::handle_command(
+                &store,
+                &req("execution.create", serde_json::json!({"goal_id": goal_id})),
+                caller,
+            ),
+            "execution",
+        );
+        ok(
+            generation::handle_command(
+                &store,
+                &req("generation.create", serde_json::json!({})),
+                caller,
+            ),
+            "generation",
+        );
+        let profile = ok(
+            compute::handle_command(
+                &store,
+                &req(
+                    "profile.create",
+                    serde_json::json!({"name": "p", "toml": "capability_tier = 'advanced'\n"}),
+                ),
+                caller,
+            ),
+            "profile",
+        );
+        let profile_id = profile["id"].as_str().unwrap().to_owned();
+        ok(
+            compute::handle_command(
+                &store,
+                &req(
+                    "profile.clone",
+                    serde_json::json!({"id": profile_id, "name": "p2"}),
+                ),
+                caller,
+            ),
+            "clone",
+        );
+        ok(
+            compute::handle_command(
+                &store,
+                &req(
+                    "provider.register",
+                    serde_json::json!({"name": "prov", "capabilities": ["text"]}),
+                ),
+                caller,
+            ),
+            "provider",
+        );
+        let model = ok(
+            compute::handle_command(
+                &store,
+                &req("model.register", serde_json::json!({"name": "m"})),
+                caller,
+            ),
+            "model",
+        );
+        let workload = ok(
+            compute::handle_command(
+                &store,
+                &req(
+                    "workload.submit",
+                    serde_json::json!({"profile_id": profile_id, "model_id": model["id"]}),
+                ),
+                caller,
+            ),
+            "workload",
+        );
+        ok(
+            compute::handle_command(
+                &store,
+                &req(
+                    "usage.record",
+                    serde_json::json!({
+                        "workload_id": workload["id"], "tokens_in": 1, "tokens_out": 1, "latency_ms": 1, "cost_micros": 0
+                    }),
+                ),
+                caller,
+            ),
+            "usage",
+        );
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let tables = [
+            "flows",
+            "goals",
+            "sessions",
+            "executions",
+            "generations",
+            "ai_profiles",
+            "ai_providers",
+            "inference_workloads",
+            "inference_usage",
+        ];
+        for table in tables {
+            let unresolved: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE owner_class = 'unresolved'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(unresolved, 0, "{table} has rows without an owner");
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert!(rows >= 1, "{table} was not exercised");
+            let foreign: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE owner_class = 'user' AND owner_uid != ?1"),
+                    [ALICE],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(foreign, 0, "{table} has a user row owned by another uid");
+        }
+        // Two Goals (create + child), two profiles (create + clone).
+        for (table, expected) in [("goals", 2), ("ai_profiles", 2)] {
+            let owned: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE owner_uid = ?1"),
+                    [ALICE],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(owned, expected, "{table}");
+        }
+        // General and providers are system; the forged created_by stayed audit text.
+        let general: String = conn
+            .query_row(
+                "SELECT owner_class FROM flows WHERE name = 'General'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general, "system");
+        let providers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ai_providers WHERE owner_class = 'system'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(providers, 1);
+        let created_by: String = conn
+            .query_row(
+                "SELECT created_by FROM goals WHERE id = ?1",
+                [&goal_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_by, "uid:7");
     }
 }

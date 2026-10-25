@@ -16,17 +16,17 @@
 use super::host::HostTelemetry;
 use std::str::FromStr;
 
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::ErrorCode;
 use flowerly_core::profile::BackgroundActivity;
 use flowerly_core::storage::{MutationOperation, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ModelBackend, ModelId, ObjectRef, ProfileId, ProvenanceEdge, ProvenanceRelation, Timestamp,
     UsageId, WorkloadId, WorkloadRecord, WorkloadState,
 };
-use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-use super::{actor_from, profiles, CommandFailure, CommandResult, DeviceBudget, SharedStore};
+use super::{actor_from, profiles, CommandFailure, CommandResult, DeviceBudget};
 
 /// Memory pressure (PSI `avg10`, percent) above which admission refuses.
 /// Deliberately high enough to only trigger under real pressure; the value
@@ -51,21 +51,7 @@ fn parse_operation_id(args: &Value) -> Result<Option<String>, CommandFailure> {
     }
 }
 
-pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelope {
-    let Payload::Command { name, args } = &request.payload else {
-        return error_envelope(request.id.clone(), "unexpected request type");
-    };
-    let mut store = match store.lock() {
-        Ok(store) => store,
-        Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
-    };
-    match run(&mut store, name, args) {
-        Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
-    }
-}
-
-pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+pub(crate) fn run(store: &mut Store, name: &str, args: &Value, caller: Caller) -> CommandResult {
     match name {
         "workload.submit"
         | "workload.list"
@@ -81,7 +67,7 @@ pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult 
         }
     }
     match name {
-        "workload.submit" => submit(store, args),
+        "workload.submit" => submit(store, args, caller),
         "workload.list" => list(store, args),
         "workload.show" => show(store, args),
         "workload.stop" | "workload.complete" => transition(store, name, args),
@@ -178,7 +164,7 @@ fn accelerator_backend(backend: ModelBackend) -> bool {
     )
 }
 
-fn submit(store: &mut Store, args: &Value) -> CommandResult {
+fn submit(store: &mut Store, args: &Value, caller: Caller) -> CommandResult {
     let actor = actor_from(args);
     let profile_raw = args
         .get("profile_id")
@@ -316,6 +302,7 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
         ceilings: ceilings.clone(),
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        owner: caller.owner(),
         admitted_at: if state == WorkloadState::Admitted {
             Some(Timestamp::now())
         } else {
@@ -495,6 +482,8 @@ fn record_usage(store: &mut Store, args: &Value) -> CommandResult {
         cost_micros: get_u64("cost_micros"),
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        // Usage belongs to the owner of the workload it accounts for.
+        owner: record.owner,
     };
     store
         .insert_usage(&usage)

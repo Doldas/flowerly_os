@@ -2844,6 +2844,282 @@ mod tests {
         assert_eq!(store.applied_migrations().unwrap().len(), MIGRATIONS.len());
     }
 
+    /// A database as installed before ownership: migrations 1..=8 applied.
+    fn pre_ownership_store() -> Store {
+        let store = Store::open_in_memory().expect("open store");
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        for migration in &MIGRATIONS[..8] {
+            store.conn.execute_batch(migration.sql).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO schema_migrations VALUES (?1, ?2, 1)",
+                    params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        store
+    }
+
+    fn owner_of(conn: &Connection, table: &str, id: &str) -> (String, Option<i64>) {
+        conn.query_row(
+            &format!("SELECT owner_class, owner_uid FROM {table} WHERE id = ?1"),
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// #225: the backfill keeps only well-formed `uid:<n>` creators, marks
+    /// General as system, and leaves every legacy or malformed label
+    /// unresolved. Nothing is reassigned to another uid.
+    #[test]
+    fn ownership_backfill_is_conservative() {
+        let mut store = pre_ownership_store();
+        let c = &store.conn;
+        let flow = |id: &str, name: &str, created_by: &str| {
+            c.execute(
+                "INSERT INTO flows (id, name, state, created_by, created_at)
+                 VALUES (?1, ?2, 'ACTIVE', ?3, 1)",
+                params![id, name, created_by],
+            )
+            .unwrap();
+        };
+        flow("flow-general", "General", "system");
+        flow("flow-alice", "alice", "uid:998");
+        flow("flow-root", "root", "uid:0");
+        flow("flow-legacy", "legacy", "user");
+        for (i, bad) in [
+            "uid:",
+            "uid:12abc",
+            "uid:-1",
+            "uid: 7",
+            "uid:99999999999",
+            "uid:4294967295",
+            "UID:5",
+            "uid:5\n",
+            "agent:planner",
+            "",
+        ]
+        .iter()
+        .enumerate()
+        {
+            flow(&format!("flow-bad{i}"), &format!("bad{i}"), bad);
+        }
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1), ('goal-l', 'o', 'ACTIVE', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO executions (id, goal_id, started_at) VALUES
+             ('exec-a', 'goal-a', 1), ('exec-l', 'goal-l', 1), ('exec-none', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sessions (id, kind, state, created_by, created_at)
+             VALUES ('session-a', 'k', 'RUNNING', 'uid:998', 1),
+                    ('session-l', 'k', 'RUNNING', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO generations (id, status, created_at) VALUES
+             ('gen-cand', 'CANDIDATE', 1), ('gen-test', 'TESTED', 1),
+             ('gen-rej', 'REJECTED', 1), ('gen-stable', 'STABLE', 1),
+             ('gen-old', 'SUPERSEDED', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_providers (id, name, kind, capabilities, created_by, created_at)
+             VALUES ('provider-1', 'p', 'local-unix', '[]', 'uid:998', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_profiles (id, name, created_by, created_at)
+             VALUES ('profile-a', 'a', 'uid:998', 1), ('profile-l', 'l', 'user', 1)",
+            [],
+        )
+        .unwrap();
+
+        let applied = store.migrate().unwrap();
+        assert_eq!(applied.last().map(|m| m.version), Some(9));
+        let c = &store.conn;
+        let user = |uid| ("user".to_owned(), Some(uid));
+        let unresolved = ("unresolved".to_owned(), None);
+        assert_eq!(
+            owner_of(c, "flows", "flow-general"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "flows", "flow-alice"), user(998));
+        assert_eq!(owner_of(c, "flows", "flow-root"), user(0));
+        assert_eq!(owner_of(c, "flows", "flow-legacy"), unresolved);
+        for i in 0..10 {
+            assert_eq!(
+                owner_of(c, "flows", &format!("flow-bad{i}")),
+                unresolved,
+                "bad{i}"
+            );
+        }
+        assert_eq!(owner_of(c, "goals", "goal-a"), user(998));
+        assert_eq!(owner_of(c, "goals", "goal-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-a"), user(998));
+        assert_eq!(owner_of(c, "executions", "exec-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-none"), unresolved);
+        assert_eq!(owner_of(c, "sessions", "session-a"), user(998));
+        assert_eq!(owner_of(c, "sessions", "session-l"), unresolved);
+        // Existing candidates are never silently published as system records.
+        for id in ["gen-cand", "gen-test", "gen-rej"] {
+            assert_eq!(owner_of(c, "generations", id), unresolved, "{id}");
+        }
+        for id in ["gen-stable", "gen-old"] {
+            assert_eq!(
+                owner_of(c, "generations", id),
+                ("system".to_owned(), None),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            owner_of(c, "ai_providers", "provider-1"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "ai_profiles", "profile-a"), user(998));
+        assert_eq!(owner_of(c, "ai_profiles", "profile-l"), unresolved);
+        // Creator audit text is untouched, and no row lost its identity.
+        let created_by: String = c
+            .query_row(
+                "SELECT created_by FROM flows WHERE id = 'flow-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_by, "user");
+        assert_eq!(count(c, "SELECT COUNT(*) FROM flows"), 14);
+    }
+
+    /// A write path that forgets the owner fails closed, and the owner
+    /// columns reject inconsistent combinations at the SQLite boundary.
+    #[test]
+    fn owner_columns_fail_closed_and_reject_inconsistent_values() {
+        let store = migrated_store();
+        let c = &store.conn;
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-x', 'o', 'ACTIVE', 'uid:5', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            owner_of(c, "goals", "goal-x"),
+            ("unresolved".to_owned(), None)
+        );
+        for (class, uid) in [
+            ("user", "NULL"),
+            ("system", "5"),
+            ("unresolved", "5"),
+            ("admin", "NULL"),
+            ("user", "-1"),
+            ("user", "4294967295"),
+        ] {
+            let result = c.execute(
+                &format!(
+                    "INSERT INTO goals (id, objective, status, created_by, created_at,
+                                        owner_class, owner_uid)
+                     VALUES ('goal-{class}{uid}', 'o', 'ACTIVE', 'x', 1, '{class}', {uid})"
+                ),
+                [],
+            );
+            assert!(result.is_err(), "{class} {uid} must be rejected");
+        }
+    }
+
+    /// An interrupted migration leaves no partial state: a failure in the
+    /// middle of 0009 rolls back every earlier ALTER and its version record.
+    #[test]
+    fn failed_ownership_migration_leaves_no_partial_state() {
+        let mut store = pre_ownership_store();
+        store
+            .conn
+            .execute(
+                "INSERT INTO goals (id, objective, status, created_by, created_at)
+                 VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1)",
+                [],
+            )
+            .unwrap();
+        // Sabotage the middle of the migration: `sessions` already has the
+        // column, so ALTER TABLE sessions ADD COLUMN owner_class fails after
+        // flows and goals were altered.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions ADD COLUMN owner_class TEXT;")
+            .unwrap();
+        assert!(store.migrate().is_err());
+        let c = &store.conn;
+        assert_eq!(
+            count(
+                c,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+            ),
+            0
+        );
+        for table in ["flows", "goals"] {
+            let columns = count(
+                c,
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name LIKE 'owner%'"
+                ),
+            );
+            assert_eq!(columns, 0, "{table} kept a partial ownership schema");
+        }
+        assert_eq!(count(c, "SELECT COUNT(*) FROM goals"), 1);
+        // Repairing the cause lets the same database migrate cleanly later.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions DROP COLUMN owner_class;")
+            .unwrap();
+        store.migrate().unwrap();
+        assert_eq!(
+            owner_of(&store.conn, "goals", "goal-a"),
+            ("user".to_owned(), Some(998))
+        );
+    }
+
+    /// Restart: ownership survives reopening the file, and re-running the
+    /// migrations neither duplicates nor changes it.
+    #[test]
+    fn ownership_survives_restart_and_repeated_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let goal = {
+            let mut store = Store::open(&path).unwrap();
+            store.migrate().unwrap();
+            store.ensure_general_flow().unwrap();
+            let mut goal = Goal::new("owned", "uid:998");
+            goal.owner = Owner::User(998);
+            store.insert_goal(&goal).unwrap();
+            goal
+        };
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.migrate().unwrap().is_empty());
+        assert_eq!(
+            store.get_goal(&goal.id).unwrap().unwrap().owner,
+            Owner::User(998)
+        );
+        let general_id = store.ensure_general_flow().unwrap();
+        let general = store.get_flow(&general_id).unwrap().unwrap();
+        assert_eq!(general.owner, Owner::System);
+    }
+
     #[test]
     fn migration_two_normalizes_legacy_session_and_actor_state() {
         let mut store = Store::open_in_memory().expect("open store");

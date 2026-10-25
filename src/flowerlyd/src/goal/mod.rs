@@ -5,6 +5,7 @@ use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateGoal};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     Goal, GoalId, GoalStatus, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -12,7 +13,11 @@ use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde::Deserialize;
 use serde_json::Value;
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -23,7 +28,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     if let Err((code, message)) = validate_goal_command(&store, name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&mut store, name, args) {
+    match run_command(&mut store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
@@ -164,7 +169,12 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "goal.create" => {
             if args
@@ -185,6 +195,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .unwrap_or("user");
             let mut goal = Goal::new(objective, created_by);
+            goal.owner = caller.owner();
             if let Some(value) = args.get("priority").filter(|value| !value.is_null()) {
                 let priority = value.as_i64().ok_or("arg `priority` must be an integer")?;
                 goal.priority = i32::try_from(priority)
@@ -273,6 +284,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .unwrap_or("agent");
             let mut child = Goal::new(objective, created_by);
+            child.owner = caller.owner();
             child.parent_goal = Some(parent.clone());
             let created_edge = ProvenanceEdge {
                 from: ObjectRef::from(&child.id),
@@ -400,6 +412,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    const TEST_CALLER: Caller = Caller::new(1000);
+
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
@@ -463,6 +477,7 @@ mod tests {
             &mut store,
             "goal.create",
             &serde_json::json!({ "objective": "default priority", "priority": null }),
+            TEST_CALLER,
         )
         .expect("null optional priority should use default");
 
@@ -485,6 +500,7 @@ mod tests {
             &mut store,
             "goal.create",
             &serde_json::json!({ "objective": "test", "priority": i64::from(i32::MAX) + 1 }),
+            TEST_CALLER,
         )
         .expect_err("out-of-range priority must fail");
 
@@ -499,6 +515,7 @@ mod tests {
             &mut store,
             "goal.create",
             &serde_json::json!({ "objective": "test", "priority": "high" }),
+            TEST_CALLER,
         )
         .expect_err("non-integer priority must fail");
 
@@ -514,8 +531,10 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-once-parent"
         });
-        let first = run_command(&mut store, "goal.create", &create).expect("first goal");
-        let replay = run_command(&mut store, "goal.create", &create).expect("goal replay");
+        let first =
+            run_command(&mut store, "goal.create", &create, TEST_CALLER).expect("first goal");
+        let replay =
+            run_command(&mut store, "goal.create", &create, TEST_CALLER).expect("goal replay");
         assert_eq!(first, replay);
 
         let child = serde_json::json!({
@@ -524,8 +543,10 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-once-child"
         });
-        let first_child = run_command(&mut store, "goal.child", &child).expect("first child");
-        let replay_child = run_command(&mut store, "goal.child", &child).expect("child replay");
+        let first_child =
+            run_command(&mut store, "goal.child", &child, TEST_CALLER).expect("first child");
+        let replay_child =
+            run_command(&mut store, "goal.child", &child, TEST_CALLER).expect("child replay");
         assert_eq!(first_child, replay_child);
         assert_eq!(store.list_goals().expect("goals").len(), 2);
 
@@ -545,13 +566,13 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "goal-key-reused"
         });
-        run_command(&mut store, "goal.create", &original).expect("original");
+        run_command(&mut store, "goal.create", &original, TEST_CALLER).expect("original");
         let changed = serde_json::json!({
             "objective": "changed",
             "created_by": "uid:1000",
             "operation_id": "goal-key-reused"
         });
-        assert!(run_command(&mut store, "goal.create", &changed).is_err());
+        assert!(run_command(&mut store, "goal.create", &changed, TEST_CALLER).is_err());
         assert_eq!(store.list_goals().expect("goals").len(), 1);
     }
 
@@ -563,6 +584,7 @@ mod tests {
             &mut store,
             "goal.child",
             &serde_json::json!({ "id": missing, "objective": "child" }),
+            TEST_CALLER,
         )
         .expect_err("missing parent must fail");
 
@@ -580,6 +602,7 @@ mod tests {
             &mut store,
             "goal.child",
             &serde_json::json!({ "id": parent.id, "objective": "child" }),
+            TEST_CALLER,
         )
         .expect("create child");
 
@@ -596,7 +619,7 @@ mod tests {
             name: command.into(),
             args,
         });
-        match handle_command(store, &request).payload {
+        match handle_command(store, &request, TEST_CALLER).payload {
             Payload::Ok { data } => Ok(data),
             Payload::Err { code, .. } => Err(code.expect("typed error code")),
             other => panic!("unexpected reply {other:?}"),

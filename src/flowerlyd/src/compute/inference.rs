@@ -311,6 +311,8 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
         cost_micros: 0, // reference provider is cost-free; accounting covers real providers later
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        // Usage belongs to the owner of the workload it accounts for.
+        owner: workload.owner,
     };
     let intended = serde_json::json!({
         "usage_id": usage_id.as_str(),

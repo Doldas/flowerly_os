@@ -1,6 +1,7 @@
 use super::*;
 use flowerly_core::ipc::{Envelope, Payload};
 use flowerly_core::storage::Store;
+use flowerly_core::types::Caller;
 use flowerly_core::ServiceConfig;
 use std::sync::{Arc, Mutex};
 
@@ -95,14 +96,19 @@ impl SessionRuntime {
         }
     }
 
-    pub(crate) fn handle(&self, store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+    pub(crate) fn handle(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        request: &Envelope,
+        caller: Caller,
+    ) -> Envelope {
         #[cfg(target_os = "linux")]
         if let Payload::Command { name, args } = &request.payload {
             if self.supervisor.routes(name, args) {
-                return self.supervisor.handle(store, request);
+                return self.supervisor.handle(store, request, caller);
             }
         }
-        super::handle_command(store, request)
+        super::handle_command(store, request, caller)
     }
 }
 impl Drop for SessionRuntime {

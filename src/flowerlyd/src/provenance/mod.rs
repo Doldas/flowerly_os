@@ -4,11 +4,18 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::{StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp};
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+/// `_caller` is accepted so the Router has one handler signature; provenance
+/// visibility filtering by both endpoints lands in #225 PR 4.
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    _caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };

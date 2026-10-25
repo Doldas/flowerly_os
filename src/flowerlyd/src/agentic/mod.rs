@@ -11,10 +11,15 @@ use flowerly_core::types::{
     AgentId, Execution, ExecutionId, GoalId, ObjectRef, ProvenanceEdge, ProvenanceRelation,
     Timestamp,
 };
+use flowerly_core::types::{Caller, Owner};
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -25,7 +30,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     if let Err((code, message)) = validate_execution_command(&store, name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&mut store, name, args) {
+    match run_command(&mut store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
@@ -135,7 +140,12 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "execution.create" => {
             let agent_id: Option<AgentId> = parse_optional_typed(args, "agent_id")?;
@@ -159,6 +169,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 exit_code: parse_optional_i32(args, "exit_code")?,
                 duration_ms: parse_optional_i64(args, "duration_ms")?,
                 started_at: Timestamp::now(),
+                owner: caller.owner(),
             };
 
             let mut edges = Vec::new();
@@ -294,6 +305,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         exit_code: Some(0),
         duration_ms: Some(1),
         started_at: Timestamp::now(),
+        owner: Owner::System,
     };
     store.insert_execution(&execution)?;
     let loaded = store
@@ -307,6 +319,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CALLER: Caller = Caller::new(1000);
     use flowerly_core::types::{Goal, ProvenanceRelation};
 
     fn migrated_store() -> Store {
@@ -322,6 +336,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "command": "true", "reason": "typed facade" }),
+            TEST_CALLER,
         )
         .expect("create");
         let id = ExecutionId::from_str(response["id"].as_str().expect("id")).expect("execution id");
@@ -333,6 +348,7 @@ mod tests {
             &mut store,
             "execution.show",
             &serde_json::json!({ "id": id }),
+            TEST_CALLER,
         )
         .expect("show");
         assert_eq!(shown["execution"]["id"], response["id"]);
@@ -346,6 +362,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "command": "true", "goal_id": "not-a-goal" }),
+            TEST_CALLER,
         )
         .expect_err("invalid goal id must fail");
         assert!(error.contains("goal"), "unexpected error: {error}");
@@ -354,6 +371,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "command": "true", "agent_id": "not-an-agent" }),
+            TEST_CALLER,
         )
         .expect_err("invalid agent id must fail");
         assert!(error.contains("agent"), "unexpected error: {error}");
@@ -370,6 +388,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "command": "true", "goal_id": missing }),
+            TEST_CALLER,
         )
         .expect_err("missing goal must fail");
 
@@ -385,6 +404,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "exit_code": i64::from(i32::MAX) + 1 }),
+            TEST_CALLER,
         )
         .expect_err("overflowing exit code must fail");
         assert!(error.contains("out of range"), "unexpected error: {error}");
@@ -393,6 +413,7 @@ mod tests {
             &mut store,
             "execution.create",
             &serde_json::json!({ "duration_ms": "fast" }),
+            TEST_CALLER,
         )
         .expect_err("non-integer duration must fail");
         assert_eq!(error, "arg `duration_ms` must be an integer or null");
@@ -469,6 +490,7 @@ mod tests {
                 "exit_code": 0,
                 "duration_ms": 42
             }),
+            TEST_CALLER,
         )
         .expect("create execution");
 

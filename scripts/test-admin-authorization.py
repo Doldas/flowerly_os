@@ -34,6 +34,7 @@ import re
 import shutil
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -405,6 +406,19 @@ def cross_uid(bin_dir):
         shown = reply_of(as_user(bob, script, sock, command("goal.show", {"id": created["data"]["id"]})), "show")
         # The kernel uid, not the spoofed "uid:0", is recorded as creator.
         assert shown["data"]["created_by"] == f"uid:{pwd.getpwnam(alice).pw_uid}", shown
+        # Ownership is recorded from the kernel uid (#225), independent of the
+        # spoofed JSON, and General is a system object. Read the database
+        # directly as root: the state directory is private to the service.
+        db = sqlite3.connect(f"file:{state / 'state.db'}?mode=ro", uri=True)
+        try:
+            owner = db.execute("SELECT owner_class, owner_uid FROM goals WHERE id = ?",
+                               (created["data"]["id"],)).fetchone()
+            assert owner == ("user", pwd.getpwnam(alice).pw_uid), owner
+            general = db.execute("SELECT owner_class, owner_uid FROM flows WHERE name = 'General'").fetchone()
+            assert general == ("system", None), general
+            assert db.execute("SELECT COUNT(*) FROM goals WHERE owner_class = 'unresolved'").fetchone()[0] == 0
+        finally:
+            db.close()
         for name in ADMIN_COMMANDS + ["session.spawn", "session.status"]:
             assert is_denied(reply_of(as_user(alice, script, sock, command(name)), name)), ("alice", name)
         assert is_denied(reply_of(as_user(alice, script, sock, {"type": "shutdown"}), "alice"))

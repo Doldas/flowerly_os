@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ModelBackend, ModelId, ModelRecord, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -23,7 +24,7 @@ use serde_json::Value;
 
 pub(crate) type SharedStore = Arc<std::sync::Mutex<Store>>;
 
-pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(store: &SharedStore, request: &Envelope, caller: Caller) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -33,7 +34,7 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelop
             return error_envelope(request.id.clone(), "storage lock poisoned");
         }
     };
-    let data = match run_command(&mut store, name, args) {
+    let data = match run_command(&mut store, name, args, caller) {
         Ok(data) => data,
         Err(error) => {
             return coded_error_envelope(request.id.clone(), error.code, error.message);
@@ -223,19 +224,19 @@ fn idempotency_key_valid(raw: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+fn run_command(store: &mut Store, name: &str, args: &Value, caller: Caller) -> CommandResult {
     match name {
         "model.register" => validate_registration(args)?,
         "model.list" | "model.show" | "model.retire" | "device.budget" | "model.compatibility" => {}
         _ => {
             if name.starts_with("profile.") {
-                return profiles::run_profile(store, name, args);
+                return profiles::run_profile(store, name, args, caller);
             }
             if name.starts_with("provider.") {
                 return profiles::run_provider(store, name, args);
             }
             if name.starts_with("workload.") || name.starts_with("usage.") {
-                return admission::run(store, name, args);
+                return admission::run(store, name, args, caller);
             }
             if name.starts_with("inference.") {
                 return inference::run_inference(store, name, args);
@@ -565,6 +566,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    const TEST_CALLER: Caller = Caller::new(1000);
+
     use flowerly_core::ipc::Envelope;
 
     fn payload(name: &str, args: Value) -> Envelope {
@@ -579,7 +582,7 @@ mod tests {
     }
 
     fn call(store: &SharedStore, name: &str, args: Value) -> Envelope {
-        handle_command(store, &payload(name, args))
+        handle_command(store, &payload(name, args), TEST_CALLER)
     }
 
     fn store() -> SharedStore {
