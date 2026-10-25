@@ -77,8 +77,9 @@ reproducible so a generation's manifest can be verified.
 Documented today and enforced in part: no-AI boot, the capability catalog, and
 provenance for durable objects. Local IPC administration is enforced by
 kernel-verified Linux group membership (`flowerly-admin`); PTY shells are
-limited to the service account, and users of the same Flowerly instance
-share one data namespace ([command authorization](command-authorization.md)).
+limited to the service account. Users of one Flowerly instance would share one
+data namespace, so the shipped configuration admits only the service account
+until per-user ownership lands (#225, [command authorization](command-authorization.md)).
 **Planned:** per-user data ownership, policy-based authorization, budgets,
 Flow credential scoping, dependency audits in CI, reproducible verified builds,
 and the Evolution World sandbox itself.

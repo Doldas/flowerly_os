@@ -330,14 +330,13 @@ pub struct AccessPolicy {
 }
 
 impl AccessPolicy {
-    /// The service account, and members of the users or admin group.
+    /// The service account and members of the users group. Admin group
+    /// membership alone never admits a peer: it authorizes Admin commands
+    /// for a peer that is already admitted, so without a users group the
+    /// socket is service-account-only at the kernel check too (#225).
     #[must_use]
     pub fn admits(&self, peer: &PeerIdentity) -> bool {
-        peer.service_account
-            || [self.users_gid, self.admin_gid]
-                .into_iter()
-                .flatten()
-                .any(|gid| peer.in_group(gid))
+        peer.service_account || self.users_gid.is_some_and(|gid| peer.in_group(gid))
     }
 
     /// Kernel-attested membership of the configured admin group.
@@ -1004,8 +1003,21 @@ mod tests {
         };
         assert!(groups.admits(&peer(11, 50, &[], false)), "primary gid");
         assert!(groups.admits(&peer(12, 12, &[50], false)), "supplementary");
-        assert!(groups.admits(&peer(13, 13, &[51], false)), "admin only");
+        assert!(!groups.admits(&peer(13, 13, &[51], false)), "admin only");
+        assert!(
+            groups.admits(&peer(16, 16, &[50, 51], false)),
+            "admin and users"
+        );
         assert!(!groups.admits(&peer(14, 14, &[49, 52], false)));
+        let admin_only = AccessPolicy {
+            users_gid: None,
+            admin_gid: Some(51),
+        };
+        assert!(admin_only.admits(&peer(10, 10, &[51], true)));
+        assert!(
+            !admin_only.admits(&peer(17, 51, &[51], false)),
+            "service account only"
+        );
         assert!(groups.is_admin(&peer(13, 13, &[51], false)));
         assert!(groups.is_admin(&peer(15, 51, &[], false)));
         assert!(!groups.is_admin(&peer(10, 10, &[50], true)));

@@ -38,9 +38,10 @@ pub(crate) fn admin_policy(policy: &AccessPolicy) -> &'static str {
     }
 }
 
-/// Who may connect, reported by Status.
+/// Who may connect, reported by Status. Only a users group admits peers
+/// other than the service account.
 pub(crate) fn client_policy(policy: &AccessPolicy) -> &'static str {
-    if policy.users_gid.is_some() || policy.admin_gid.is_some() {
+    if policy.users_gid.is_some() {
         "service_account_and_linux_groups"
     } else {
         "service_account_only"
@@ -375,6 +376,12 @@ mod tests {
         };
         assert_eq!(admin_policy(&groups), "linux_group");
         assert_eq!(client_policy(&groups), "service_account_and_linux_groups");
+        // An admin group alone admits no other UID (#225).
+        let admin_only = AccessPolicy {
+            users_gid: None,
+            admin_gid: Some(ADMIN),
+        };
+        assert_eq!(client_policy(&admin_only), "service_account_only");
     }
 
     /// Command names used as match-arm patterns in handler sources

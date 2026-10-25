@@ -2,7 +2,10 @@
 
 Status: **Linux group authorization enforced in `flowerlyd`** (#31). Not yet
 verified on a real Arch VM boot. Per-user data ownership between different
-users is **not** implemented (see [Limits](#limits)).
+users is **not** implemented, so the shipped configuration is temporarily
+**service-account-only** (see
+[Temporary restriction](#temporary-restriction-service-account-only-225)
+and [#225](https://github.com/Doldas/flowerly_os/issues/225)).
 
 Source of truth: `src/flowerlyd/src/authorization.rs`. Every IPC command that
 `flowerlyd` implements is classified there, and the router dispatches only
@@ -22,8 +25,15 @@ control access:
 | Service account, not in `flowerly-admin` | yes | yes | **no** | yes |
 | Service account in `flowerly-admin` | yes | yes | yes | yes |
 | `flowerly-users` member | yes | yes | no | **no** |
-| `flowerly-admin` member (other UID) | yes | yes | yes | **no** |
+| `flowerly-users` and `flowerly-admin` member (other UID) | yes | yes | yes | **no** |
+| `flowerly-admin` member only (other UID) | **no** | — | — | — |
 | Anyone else, including root | **no** | — | — | — |
+
+Admission is decided by the service account or users group alone. Admin
+group membership authorizes Admin commands for a peer that is already
+admitted; it never admits a peer by itself (#225). The rows for other UIDs
+apply only when a users group is configured, which the shipped unit
+currently does not do.
 
 - **Deny by default.** No admin group configured means every Admin command
   and IPC `shutdown` is refused for everyone, including the service account.
@@ -62,7 +72,7 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 
 | Setting | TOML | Environment | Effect |
 | --- | --- | --- | --- |
-| Users group | `users_group` | `AGENTIC_USERS_GROUP` | Socket is group-owned by it with mode 0660; members may connect. Unset: socket 0600, service account only. |
+| Users group | `users_group` | `AGENTIC_USERS_GROUP` | Socket is group-owned by it with mode 0660; members may connect. Unset: socket 0600 and service account only, at both the filesystem and the kernel check. **Leave unset until #225 is closed.** |
 | Admin group | `admin_group` | `AGENTIC_ADMIN_GROUP` | Members may run Admin commands and IPC `shutdown`. Unset: refused for everyone. |
 
 A value is a group name from `/etc/group` or a numeric gid. An unknown or
@@ -72,35 +82,71 @@ configured by numeric gid. Status reports `admin_authorization`
 (`linux_group` or `denied_unconfigured`) and `client_access`
 (`service_account_only` or `service_account_and_linux_groups`).
 
-A `flowerly-admin` member with a different UID also needs filesystem access
-to the socket, so add administrators to `flowerly-users` as well.
+A `flowerly-admin` member with a different UID must also be in the users
+group to connect.
 
 ## Installed system (systemd)
 
 `distro/overlay` ships:
 
-- `sysusers.d/flowerly.conf`: `g flowerly-users -` and `g flowerly-admin -`.
-- `flowerlyd.service`: `User=flowerly`, `Group=flowerly-users`,
-  `AGENTIC_USERS_GROUP=flowerly-users`, `AGENTIC_ADMIN_GROUP=flowerly-admin`,
-  `RuntimeDirectoryMode=0750` (traversable by `flowerly-users`) and
-  `StateDirectoryMode=0700` (state stays private to `flowerly`).
+- `sysusers.d/flowerly.conf`: `g flowerly-users -` and `g flowerly-admin -`,
+  with no membership lines. The `flowerly` service account is never a member
+  of `flowerly-admin`.
+- `flowerlyd.service`: `User=flowerly`, `Group=flowerly`,
+  `AGENTIC_ADMIN_GROUP=flowerly-admin`, **no** `AGENTIC_USERS_GROUP`,
+  `RuntimeDirectoryMode=0700`, `StateDirectoryMode=0700`, `UMask=0077`.
 
-Grant access with `usermod -aG flowerly-users <user>` and, for
-administrators, `usermod -aG flowerly-users,flowerly-admin <user>`. The
-change applies to the user's **next login session** and their next IPC
-connection.
+### Temporary restriction: service-account-only (#225)
+
+Different users admitted through `flowerly-users` could read and change each
+other's Flows, Goals, Sessions and profiles (reproduced with two real UIDs
+on #225). Until per-user ownership is enforced and verified, the shipped
+unit admits **only the `flowerly` service account**:
+
+- The socket is 0600 and `/run/flowerly` is 0700, both owned by `flowerly`.
+- The kernel check also refuses every other UID, including `flowerly-admin`
+  members, even if the modes were loosened.
+- No socket unit, drop-in, `EnvironmentFile`, config file or
+  `SupplementaryGroups` is shipped that could re-enable admission;
+  `scripts/test-shipped-ipc-admission.py` fails the build if one appears.
+- **Do not** re-enable `AGENTIC_USERS_GROUP` with a local drop-in before
+  #225 is closed.
+
+**Operational impact.** Ordinary users cannot use `agenticctl` against the
+system daemon. Admin commands are refused by default, because the service
+account is not an administrator. The group-based implementation stays in
+place and is restored after #225.
+
+**Out-of-band administration (root only).** To run one Admin command, root
+starts a single client process as the service account with the admin group
+added to **that process only**:
+
+```bash
+sudo runuser -u flowerly -g flowerly -G flowerly-admin -- \
+    agenticctl --runtime-dir /run/flowerly <admin command>
+```
+
+Limits of this procedure:
+- It needs root, which already has full authority over the host, so it
+  grants nothing new.
+- It never adds `flowerly-admin` to the daemon or to PTY shells; their
+  groups come from the unit.
+- It is per invocation and leaves no persistent membership.
+- Accepted and refused peers are logged by `flowerlyd` in the journal.
+
+The `--cross-uid` CI test exercises it.
 
 ### Upgrade
 
 1. Install the new binaries, unit and `sysusers.d` file, then run
    `systemd-sysusers` (creates the two groups).
-2. Add administrators to `flowerly-admin` (and `flowerly-users`).
-3. `systemctl daemon-reload && systemctl restart flowerlyd`.
-4. Check `agenticctl status flowerlyd`: `admin_authorization` must be
-   `linux_group`.
+2. `systemctl daemon-reload && systemctl restart flowerlyd`.
+3. Check status as the service account
+   (`sudo runuser -u flowerly -- agenticctl --runtime-dir /run/flowerly status flowerlyd`).
+   `admin_authorization` must be `linux_group` and `client_access` must be
+   `service_account_only`.
 
-Until step 2, Admin commands are refused. That is intended: nobody is an
-administrator by default.
+Admin commands are refused by default; use the out-of-band procedure above.
 
 ### Rollback
 
@@ -108,10 +154,12 @@ Reinstall the previous binaries and unit, then `daemon-reload` and restart.
 The database schema is unchanged by this feature, so no data migration is
 needed. The groups can stay; earlier releases ignore them.
 
-### Recovery when no administrator can connect
+### Recovery
 
-Stop the service with `systemctl stop flowerlyd` (SIGTERM is unaffected by
-IPC authorization), add a member to `flowerly-admin`, start it again.
+`systemctl stop flowerlyd` is unaffected by IPC authorization (SIGTERM). For
+Admin commands, use the out-of-band procedure. Never add `flowerly` to
+`flowerly-admin` to regain convenience: it runs PTY shells and owns
+`state.db`.
 
 ## Development mode
 
@@ -124,11 +172,11 @@ the test user's own gid.
 
 ## Limits
 
-- **No per-user data ownership.** All admitted peers share one Flowerly
-  namespace. A `flowerly-users` member can list, complete or archive Flows,
-  Goals and workloads created by another member. `created_by` records the
-  real uid but is not yet an authorization boundary. Only add trusted
-  users to `flowerly-users` until per-user ownership exists.
+- **No per-user data ownership** ([#225](https://github.com/Doldas/flowerly_os/issues/225),
+  0.0.4 P0 blocker). All admitted peers share one Flowerly namespace: a
+  `flowerly-users` member can list, complete or archive another member's
+  Flows, Goals and workloads. That is why the shipped unit is
+  service-account-only for now.
 - **Connect-time snapshot.** Removing a user from a group takes effect on
   their next connection. Connections are bounded by the 10 s idle deadline.
 - **Same-UID processes are trusted for signals.** Any process running as
@@ -156,7 +204,17 @@ the test user's own gid.
   limited to User commands. An admin member runs Admin commands and
   `shutdown` but cannot spawn a PTY. The service account is not an implicit
   admin. A non-member is refused by the kernel check even when the socket is
-  made world-writable.
+  made world-writable. It then starts `flowerlyd` exactly as the shipped
+  unit configures it. Under that configuration:
+  - a users member and an other-UID admin are refused at the filesystem
+    and, with the modes opened, by the kernel check;
+  - the service account is not an administrator;
+  - the out-of-band procedure admits Admin commands.
+- `scripts/test-shipped-ipc-admission.py` (offline, `docs` job and
+  preflight): the shipped unit, sysusers and overlay admit only the service
+  account. Each known bypass (users group, `EnvironmentFile`,
+  `SupplementaryGroups`, group-owned socket, traversable runtime directory,
+  config file, `m flowerly …`, a `.socket` unit or a drop-in) is rejected.
 
 ## Inventory
 
