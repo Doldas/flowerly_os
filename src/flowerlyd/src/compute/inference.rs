@@ -236,9 +236,10 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
             message: format!("provider not found: {provider_id}"),
         })?;
 
-    let fallback = profiles::resolve_effective(store, &workload.profile_id)
-        .map(|(_, spec)| spec.fallback)
-        .unwrap_or(FallbackBehavior::Ask);
+    // An unresolvable profile is an error, never a silently assumed policy.
+    let fallback = profiles::resolve_effective(store, &workload.profile_id)?
+        .1
+        .fallback;
 
     let runtime_dir = runtime_dir_snapshot()?;
     let socket = runtime_dir.join(
@@ -299,10 +300,14 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
                 code: flowerly_core::ipc::ErrorCode::Internal,
                 message: "provider result missing bounded token counts".to_owned(),
             })?,
+        // Unknown latency is never recorded as a measured zero.
         latency_ms: generated
             .get("latency_ms")
             .and_then(Value::as_u64)
-            .unwrap_or(0),
+            .ok_or_else(|| CommandFailure {
+                code: flowerly_core::ipc::ErrorCode::Internal,
+                message: "provider result missing measured latency".to_owned(),
+            })?,
         cost_micros: 0, // reference provider is cost-free; accounting covers real providers later
         created_by: actor.clone(),
         created_at: Timestamp::now(),
