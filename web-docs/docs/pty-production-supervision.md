@@ -120,9 +120,16 @@ prove. It is **not** a boundary against an arbitrary same-UID process: such a
 process can `ptrace` or signal the guardian and the shell, read the
 client's memory or environment, or talk to the guardian socket in the
 runtime directory, because Linux gives the same UID that authority. Real
-separation between principals needs distinct UIDs (see the authorization
-model on #31). Tokens prevent confused-deputy mistakes between cooperating
-clients; they do not contain a hostile same-UID process.
+separation between principals needs distinct UIDs. Tokens prevent
+confused-deputy mistakes between cooperating clients; they do not contain a
+hostile same-UID process.
+
+Since #222, every PTY command (`session.spawn`, `attach`, `read`, `follow`,
+`write`, `resize`, `status` and the rest) is limited to peers running as the
+service account, even for `flowerly-admin` members. A shell runs with the
+service account's authority over `state.db`, so other UIDs must not drive
+one until shells can be launched as the requesting user. See
+[command authorization](command-authorization.md).
 
 A periodic reconciliation task observes child exit through the guardian,
 persists an Exited/Detached Session even without client polling, and

@@ -22,11 +22,11 @@ and the reasoning behind them.
 15. [Arch Linux as the initial userspace substrate](0015-arch-linux-userspace-substrate.md)
 16. [AI compute layer is a flowerlyd module until enforcement evidence exists](0020-ai-compute-layer-is-a-module.md)
 17. [Reference inference provider runs as a fault-isolated process](0021-provider-fault-isolation.md)
+18. [Supervised Linux PTY Session ownership](0016-pty-session-supervision.md)
+    — accepted by the owner 2026-10-25 (#73); containment and Arch VM
+    verification remain release gates for #50, #72 and 0.0.4.
 
 ## Proposed decisions under review
-
-- [0016: Supervised Linux PTY Session ownership](0016-pty-session-supervision.md)
-  — pending issue #50 release and security acceptance; not yet an accepted ADR.
 
 - [0017: Unified and mode-driven storage subsystem](0017-unified-mode-driven-storage.md)
   — proposed dual-core storage and Standalone/Cluster/CoreOnly modes;
