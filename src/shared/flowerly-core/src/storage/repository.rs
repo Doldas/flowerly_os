@@ -319,6 +319,7 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open");
         store.migrate().expect("migrate");
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "metadata-only".to_owned(),
@@ -330,6 +331,7 @@ mod tests {
             created_at: Timestamp::now(),
         };
         let execution = Execution {
+            owner: crate::types::Owner::User(1000),
             id: ExecutionId::new(),
             agent_id: None,
             goal_id: None,
@@ -385,6 +387,7 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open");
         store.migrate().expect("migrate");
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "metadata-only".to_owned(),
