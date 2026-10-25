@@ -3023,7 +3023,7 @@ mod tests {
             owner_of(c, "goals", "goal-x"),
             ("unresolved".to_owned(), None)
         );
-        for (class, uid) in [
+        for (class, column_value) in [
             ("user", "NULL"),
             ("system", "5"),
             ("unresolved", "5"),
@@ -3035,11 +3035,11 @@ mod tests {
                 &format!(
                     "INSERT INTO goals (id, objective, status, created_by, created_at,
                                         owner_class, owner_uid)
-                     VALUES ('goal-{class}{uid}', 'o', 'ACTIVE', 'x', 1, '{class}', {uid})"
+                     VALUES ('goal-{class}{column_value}', 'o', 'ACTIVE', 'x', 1, '{class}', {column_value})"
                 ),
                 [],
             );
-            assert!(result.is_err(), "{class} {uid} must be rejected");
+            assert!(result.is_err(), "{class} {column_value} must be rejected");
         }
     }
 

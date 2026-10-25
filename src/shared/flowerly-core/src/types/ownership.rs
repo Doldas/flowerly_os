@@ -101,7 +101,7 @@ mod tests {
             let uid = owner.uid().map(i64::from);
             assert_eq!(Owner::from_columns(owner.class(), uid), owner);
         }
-        for (class, uid) in [
+        for (class, column) in [
             ("user", None),
             ("user", Some(-1)),
             ("user", Some(i64::from(u32::MAX))),
@@ -112,9 +112,9 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(
-                Owner::from_columns(class, uid),
+                Owner::from_columns(class, column),
                 Owner::Unresolved,
-                "{class} {uid:?}"
+                "{class} {column:?}"
             );
         }
         assert_eq!(Owner::default(), Owner::Unresolved);
