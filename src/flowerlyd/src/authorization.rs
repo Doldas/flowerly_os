@@ -48,6 +48,30 @@ pub(crate) fn client_policy(policy: &AccessPolicy) -> &'static str {
     }
 }
 
+/// Environment variable that, set to [`UNENFORCED_OWNERSHIP_ACK_VALUE`],
+/// lets a test harness start with a users group before ownership is enforced.
+pub(crate) const UNENFORCED_OWNERSHIP_ACK: &str = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP";
+pub(crate) const UNENFORCED_OWNERSHIP_ACK_VALUE: &str = "members-can-read-each-others-data";
+
+/// Refuse to admit other UIDs while per-user ownership is not enforced
+/// (#225): users group members could read and change each other's data.
+/// Only an exact, deliberately unwieldy acknowledgment (used by the
+/// cross-UID tests) starts anyway; the shipped unit unsets it.
+pub(crate) fn refuse_unenforced_multi_user(
+    policy: &AccessPolicy,
+    ack: Option<&str>,
+) -> Result<(), String> {
+    if policy.users_gid.is_none() || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE) {
+        return Ok(());
+    }
+    Err(format!(
+        "a users group is configured, but per-user data ownership is not enforced yet \
+         (#225): its members could read and change each other's data. Unset \
+         AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only until \
+         #225 is closed. Test harnesses only: {UNENFORCED_OWNERSHIP_ACK}={UNENFORCED_OWNERSHIP_ACK_VALUE}"
+    ))
+}
+
 /// Decide a command for a kernel-attested peer. Only inventoried commands
 /// can be authorized; request arguments play no part in the decision.
 pub(crate) fn authorize(
@@ -252,6 +276,33 @@ pub(crate) fn classify(name: &str) -> Option<CommandClass> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn a_users_group_refuses_to_start_without_the_exact_acknowledgment() {
+        let private = AccessPolicy {
+            users_gid: None,
+            admin_gid: Some(ADMIN),
+        };
+        let shared = AccessPolicy {
+            users_gid: Some(USERS),
+            admin_gid: Some(ADMIN),
+        };
+        assert!(refuse_unenforced_multi_user(&private, None).is_ok());
+        assert!(refuse_unenforced_multi_user(&private, Some("x")).is_ok());
+        for ack in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("true"),
+            Some("Members-can-read-each-others-data"),
+        ] {
+            let error = refuse_unenforced_multi_user(&shared, ack).unwrap_err();
+            assert!(error.contains("#225"), "{error}");
+        }
+        assert!(
+            refuse_unenforced_multi_user(&shared, Some(UNENFORCED_OWNERSHIP_ACK_VALUE)).is_ok()
+        );
+    }
 
     const SERVICE_UID: u32 = 961;
     const USERS: u32 = 2000;

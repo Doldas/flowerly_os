@@ -19,8 +19,9 @@ Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
 Environment=AGENTIC_ADMIN_GROUP=flowerly-admin
 # Never inherit these from the service manager's environment
 # (`systemctl set-environment`, DefaultEnvironment=): either could re-enable
-# multi-user admission without any change to this unit.
-UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG
+# multi-user admission without any change to this unit. flowerlyd itself also
+# refuses to start with a users group until #225 is closed.
+UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP
 ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
 RuntimeDirectory=flowerly
 RuntimeDirectoryMode=0700
