@@ -1,10 +1,11 @@
 # IPC v1 typed command arguments (#53)
 
-Status: **migrating service by service.** Generation (#205), Flow, Goal and
-Session metadata use typed arguments. Execution and Provenance validate each
-known field explicitly (null means absent). Compute still validates untyped
-JSON by hand. The malformed-argument regression from
-#213 nevertheless keeps all of them returning typed error codes.
+Status: **every service audited.** Generation (#205), Flow, Goal and
+Session metadata use typed arguments. Execution, Provenance and Compute
+validate each known field explicitly (null means absent); the Compute
+inventory is [below](#compute-commands-explicit-validation). The
+malformed-argument regression from #213 keeps all of them returning typed
+error codes.
 
 ## Contract for migrated commands
 
@@ -47,3 +48,62 @@ The envelope and `PROTOCOL_VERSION` are unchanged.
   Before, `kind` silently became `local-pty` and `cwd` was dropped.
 - `flow.activate` / `flow.archive` with `"id": null` now fall back to `name`.
   Before, this was refused with "arg `id` must be a string".
+
+## Compute commands (explicit validation)
+
+Compute validates each field by hand rather than through a typed struct,
+with the same contract: a wrong JSON type is `invalid_argument`, absent and
+`null` are the same, unknown fields are ignored. Audited 2026-10-25 (#53).
+"Default" means the value used when the field is absent or `null`; it is
+never applied to a wrongly typed value.
+
+| Command | Fields |
+| --- | --- |
+| `model.register` | `name` (string, 1..256, required); `backend` (known backend name; default `unknown`); `context_tokens`, `measured_memory_bytes` (positive integer, floats refused); `family`, `architecture`, `license` (≤ 256), `evidence` (≤ 512) (non-blank string); `modalities` (≤ 16 strings of 1..32 characters, lowercased and de-duplicated); `operation_id` |
+| `model.show`, `model.retire`, `model.compatibility` | `id` (Model ID) |
+| `model.list`, `device.budget`, `profile.list`, `provider.list`, `inference.capabilities` | none |
+| `profile.create`, `profile.import` | `name` (string, 1..128); `toml` (string ≤ 16 KiB, credential-free, validated); `operation_id` |
+| `profile.clone` | `id` (Profile ID); `name`; `operation_id` |
+| `profile.rename` | `id`; `name`; `operation_id` (validated; a rename is idempotent by itself, so the key is not recorded) |
+| `profile.edit` | `id`; `toml`; `operation_id` |
+| `profile.show`, `profile.export`, `profile.resolve` | `id`; `version` (integer 1..u32::MAX; default latest) |
+| `profile.version_history` | `id` |
+| `provider.register` | `name`; `kind` (string; default `local-unix`; any other kind is `permission_denied`); `endpoint` (bare filename); `capabilities` (1..16 strings); `operation_id` |
+| `provider.show` | `id` (Provider ID) |
+| `workload.submit` | `profile_id`, `model_id` (IDs, required); `background` (`quiet` / `normal` / `intensive`; default `normal`); `priority` (integer in i32 range; default 0); `operation_id` |
+| `workload.list` | `mine` (boolean; default `true`) |
+| `workload.show`, `workload.stop`, `workload.complete` | `id` (Workload ID) |
+| `workload.usage_brief` | `model_id` |
+| `usage.record` | `workload_id`; `tokens_in`, `tokens_out`, `latency_ms`, `cost_micros` (required integers ≤ 4 × u32::MAX); `operation_id` **refused** |
+| `inference.request` | `workload_id`, `provider_id` (IDs); `prompt` (string ≤ 16 KiB); `max_tokens` (1..4096; default 128); `request_id` (required idempotency key); `operation_id` |
+
+`operation_id` everywhere follows the idempotency key rules: 1..128 ASCII
+letters, digits, `.`, `_`, `:` or `-`. An exact retry replays the recorded
+response, and the same key with different arguments is `conflict`.
+
+### Defects fixed by the audit
+
+- `profile.clone` and `provider.register` recorded their operation with
+  empty request and response payloads. A retry with the same key skipped the
+  write but returned a **newly generated id that was never stored**, and a
+  reused key with different arguments replayed instead of returning
+  `conflict`. Both now record and replay the real request and response.
+- `profile.edit` validated `operation_id` and then discarded it, so a retry
+  appended a duplicate version. An exact retry now replays the recorded
+  version.
+- `profile.rename` accepted any `operation_id` without validation.
+- `usage.record` silently ignored `operation_id`, so a retried ledger write
+  counted twice. It now refuses the key with `invalid_argument` rather than
+  promise retry safety it does not provide.
+- `workload.list` refused `"mine": null`; it now means absent (`true`).
+- `inference.request` silently assumed the `ask` fallback when the
+  workload's profile could not be resolved. It now returns that error.
+- `inference.request` recorded a missing provider `latency_ms` as a measured
+  zero. A missing value is now an `internal` provider-contract error, like
+  missing token counts.
+
+### Known limits
+
+- `workload.stop` and `workload.complete` take no `operation_id`. A retry
+  after an unknown outcome gets `conflict` for the repeated transition
+  rather than the original success (#63).

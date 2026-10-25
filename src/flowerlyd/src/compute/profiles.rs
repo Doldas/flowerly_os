@@ -124,30 +124,6 @@ fn validate_toml(toml: &str) -> Result<ProfileSpec, super::CommandFailure> {
     ProfileSpec::parse_toml(toml).map_err(super::CommandFailure::invalid)
 }
 
-fn parse_operation<'a>(
-    args: &'a Value,
-    actor: &'a str,
-    command: &'a str,
-) -> Result<Option<MutationOperation<'a>>, String> {
-    match args.get("operation_id") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(raw))
-            if idempotency_key_valid(raw) && !raw.is_empty() && raw.len() <= 128 =>
-        {
-            Ok(Some(MutationOperation {
-                actor,
-                command,
-                operation_id: raw,
-                request_payload: "",
-                response_payload: "",
-            }))
-        }
-        other => Err(format!(
-            "operation_id must be a valid idempotency key: {other:?}"
-        )),
-    }
-}
-
 pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> CommandResult {
     match name {
         "profile.create" | "profile.import" => {
@@ -253,6 +229,7 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                 .and_then(Value::as_str)
                 .ok_or_else(|| super::CommandFailure::invalid("missing string arg `name`"))?;
             validate_profile_name(new_name)?;
+            validate_operation_id(args)?;
             let (_, toml, _) = store
                 .profile_latest(&source)
                 .map_err(profile_failure)?
@@ -264,9 +241,6 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
             let resolved = serde_json::to_string(&spec_summary(&spec))
                 .map_err(|error| super::CommandFailure::invalid(error.to_string()))?;
             let id = ProfileId::new();
-            let actor_clone = actor.clone();
-            let op = parse_operation(args, &actor_clone, "profile.clone")
-                .map_err(super::CommandFailure::invalid)?;
             let edges: Vec<ProvenanceEdge> = edge(
                 &id,
                 ProvenanceRelation::CausedBy,
@@ -275,16 +249,47 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
             )
             .into_iter()
             .collect();
+            let intended_response =
+                serde_json::json!({ "id": id.as_str(), "name": new_name, "version": 1 });
+            let clone_failure = |error: StorageError| match error {
+                ref other if other.is_unique_violation() => super::CommandFailure {
+                    code: ErrorCode::Conflict,
+                    message: "profile name already exists".to_owned(),
+                },
+                other => super::CommandFailure::storage(other),
+            };
+            // An exact retry replays the recorded response (the first
+            // clone's id); a reused key with other arguments is a conflict.
+            if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+                let request_json = serde_json::to_string(args)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()))?;
+                let response_json = serde_json::to_string(&intended_response)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()))?;
+                let operation = MutationOperation {
+                    actor: &actor,
+                    command: "profile.clone",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: &response_json,
+                };
+                let stored = store
+                    .create_profile(
+                        &id,
+                        new_name,
+                        &actor,
+                        &toml,
+                        &resolved,
+                        Some(operation),
+                        &edges,
+                    )
+                    .map_err(clone_failure)?;
+                return serde_json::from_str(&stored)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()));
+            }
             store
-                .create_profile(&id, new_name, &actor, &toml, &resolved, op, &edges)
-                .map_err(|error| match error {
-                    ref other if other.is_unique_violation() => super::CommandFailure {
-                        code: ErrorCode::Conflict,
-                        message: "profile name already exists".to_owned(),
-                    },
-                    other => super::CommandFailure::storage(other),
-                })?;
-            Ok(serde_json::json!({ "id": id.as_str(), "name": new_name, "version": 1 }))
+                .create_profile(&id, new_name, &actor, &toml, &resolved, None, &edges)
+                .map_err(clone_failure)?;
+            Ok(intended_response)
         }
         "profile.rename" => {
             let actor = actor_from(args);
@@ -300,6 +305,9 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                 .and_then(Value::as_str)
                 .ok_or_else(|| super::CommandFailure::invalid("missing string arg `name`"))?;
             validate_profile_name(new_name)?;
+            // Renaming to a given name is idempotent by itself, so the key is
+            // validated for a consistent contract but not recorded.
+            validate_operation_id(args)?;
             store
                 .rename_profile(&id, new_name, &actor)
                 .map_err(profile_failure)?;
@@ -319,6 +327,7 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                 .and_then(Value::as_str)
                 .ok_or_else(|| super::CommandFailure::invalid("missing string arg `toml`"))?;
             let spec = validate_toml(toml)?;
+            validate_operation_id(args)?;
             let (name, _, _) = store
                 .profile_row(&id)
                 .map_err(profile_failure)?
@@ -342,22 +351,49 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
             }
             let summary = serde_json::to_string(&spec_summary(&spec))
                 .map_err(|error| super::CommandFailure::invalid(error.to_string()))?;
-            let actor_edit = actor.clone();
-            let _op = parse_operation(args, &actor_edit, "profile.edit")
-                .map_err(super::CommandFailure::invalid)?;
             let edges: Vec<ProvenanceEdge> =
                 edge(&id, ProvenanceRelation::CausedBy, &actor, "profile edit")
                     .into_iter()
                     .collect();
+            let edit_failure = |error: StorageError| match error {
+                ref other if other.is_unique_violation() => super::CommandFailure {
+                    code: ErrorCode::Conflict,
+                    message: "profile version already exists".to_owned(),
+                },
+                other => super::CommandFailure::storage(other),
+            };
+            // An exact retry replays the recorded version instead of
+            // appending a duplicate; a reused key with other arguments is a
+            // conflict.
+            if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+                let request_json = serde_json::to_string(args)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()))?;
+                let operation = MutationOperation {
+                    actor: &actor,
+                    command: "profile.edit",
+                    operation_id,
+                    request_payload: &request_json,
+                    response_payload: "",
+                };
+                let stored = store
+                    .append_profile_version_once(
+                        &id,
+                        toml,
+                        &summary,
+                        &actor,
+                        &edges,
+                        &operation,
+                        |version| {
+                            serde_json::json!({ "id": id.as_str(), "version": version }).to_string()
+                        },
+                    )
+                    .map_err(edit_failure)?;
+                return serde_json::from_str(&stored)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()));
+            }
             let version = store
                 .append_profile_version(&id, toml, &summary, &actor, &edges)
-                .map_err(|error| match error {
-                    ref other if other.is_unique_violation() => super::CommandFailure {
-                        code: ErrorCode::Conflict,
-                        message: "profile version already exists".to_owned(),
-                    },
-                    other => super::CommandFailure::storage(other),
-                })?;
+                .map_err(edit_failure)?;
             Ok(serde_json::json!({ "id": id.as_str(), "version": version }))
         }
         "profile.list" => {
@@ -661,10 +697,8 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                 ));
             }
             let capability_set = ProviderCapabilitySet { modalities: caps };
+            validate_operation_id(args)?;
             let id = ProviderId::new();
-            let actor_register = actor.clone();
-            let op = parse_operation_primary(args, &actor_register, "provider.register")
-                .map_err(super::CommandFailure::invalid)?;
             let edges: Vec<ProvenanceEdge> = vec![ProvenanceEdge {
                 from: ObjectRef::from(&id),
                 relation: ProvenanceRelation::CreatedBy,
@@ -673,7 +707,32 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                 created_at: Timestamp::now(),
                 note: Some("registered local inference provider".to_owned()),
             }];
-            store
+            let intended_response = serde_json::json!({ "id": id.as_str(), "kind": kind });
+            // An exact retry replays the recorded response (the first
+            // registration's id); a reused key with other arguments is a
+            // conflict.
+            let payloads = match args.get("operation_id").and_then(Value::as_str) {
+                Some(operation_id) => Some((
+                    operation_id,
+                    serde_json::to_string(args)
+                        .map_err(|error| super::CommandFailure::invalid(error.to_string()))?,
+                    serde_json::to_string(&intended_response)
+                        .map_err(|error| super::CommandFailure::invalid(error.to_string()))?,
+                )),
+                None => None,
+            };
+            let operation =
+                payloads
+                    .as_ref()
+                    .map(|(operation_id, request, response)| MutationOperation {
+                        actor: &actor,
+                        command: "provider.register",
+                        operation_id,
+                        request_payload: request,
+                        response_payload: response,
+                    });
+            let recorded = operation.is_some();
+            let stored = store
                 .register_provider(
                     &id,
                     name_arg,
@@ -681,7 +740,7 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                     endpoint.as_deref(),
                     &capability_set.modalities,
                     &actor,
-                    op,
+                    operation,
                     &edges,
                 )
                 .map_err(|error| match error {
@@ -691,7 +750,11 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                     },
                     other => super::CommandFailure::storage(other),
                 })?;
-            Ok(serde_json::json!({ "id": id.as_str(), "kind": kind }))
+            if recorded {
+                return serde_json::from_str(&stored)
+                    .map_err(|error| super::CommandFailure::invalid(error.to_string()));
+            }
+            Ok(intended_response)
         }
         "provider.list" => {
             let rows = store.list_providers().map_err(profile_failure)?;
@@ -738,18 +801,4 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
             "compute: unknown command `{other}`"
         ))),
     }
-}
-
-fn parse_operation_primary<'a>(
-    args: &'a Value,
-    actor: &'a str,
-    command: &'a str,
-) -> Result<Option<MutationOperation<'a>>, String> {
-    if let Some(operation) = parse_operation(args, actor, command)? {
-        if operation.operation_id.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(operation));
-    }
-    Ok(None)
 }

@@ -94,6 +94,13 @@ pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult 
 }
 
 fn validate_usage(args: &Value) -> Result<(), CommandFailure> {
+    // Ledger rows are not deduplicated, so a key would promise retry safety
+    // that does not exist. Refuse it instead of silently ignoring it.
+    if !args.get("operation_id").is_none_or(Value::is_null) {
+        return Err(CommandFailure::invalid(
+            "usage.record does not support `operation_id`: ledger writes are not deduplicated",
+        ));
+    }
     for field in ["tokens_in", "tokens_out", "latency_ms", "cost_micros"] {
         match args.get(field) {
             None | Some(Value::Null) => {
@@ -382,7 +389,7 @@ fn workload_summary(record: &WorkloadRecord) -> Value {
 
 fn list(store: &Store, args: &Value) -> CommandResult {
     let scope = match args.get("mine") {
-        Some(Value::Bool(true)) | None => Some(actor_from(args)),
+        None | Some(Value::Null) | Some(Value::Bool(true)) => Some(actor_from(args)),
         Some(Value::Bool(false)) => None,
         Some(other) => {
             return Err(CommandFailure::invalid(format!(
