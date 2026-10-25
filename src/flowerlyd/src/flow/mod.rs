@@ -5,6 +5,7 @@ use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateFlow};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -18,7 +19,11 @@ fn ensure_general_flow(store: &mut Store) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -31,7 +36,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     if let Err((code, message)) = validate_flow_command(&store, name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    let data = match run_command(&mut store, name, args) {
+    let data = match run_command(&mut store, name, args, caller) {
         Ok(data) => data,
         Err(error) => {
             return coded_error_envelope(request.id.clone(), error.code, error.message);
@@ -191,7 +196,12 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "flow.create" => {
             if args
@@ -217,7 +227,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             if name == "General" {
                 return Err("General is reserved for the system Flow".into());
             }
-            let flow = Flow::new(name, created_by);
+            let mut flow = Flow::new(name, created_by);
+            flow.owner = caller.owner();
             let provenance = ProvenanceEdge {
                 from: ObjectRef::from(&flow.id),
                 relation: ProvenanceRelation::CreatedBy,
@@ -351,6 +362,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    const TEST_CALLER: Caller = Caller::new(1000);
+
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate store");
@@ -408,7 +421,8 @@ mod tests {
         assert!(run_command(
             &mut store,
             "flow.archive",
-            &serde_json::json!({"name":"General"})
+            &serde_json::json!({"name":"General"}),
+            TEST_CALLER
         )
         .unwrap_err()
         .message
@@ -472,7 +486,7 @@ mod tests {
             name: command.into(),
             args,
         });
-        match handle_command(store, &request).payload {
+        match handle_command(store, &request, TEST_CALLER).payload {
             Payload::Ok { data } => Ok(data),
             Payload::Err { code, .. } => Err(code.expect("typed error code")),
             other => panic!("unexpected reply {other:?}"),

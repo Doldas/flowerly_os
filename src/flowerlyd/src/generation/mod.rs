@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::{StorageError, Store};
+use flowerly_core::types::{Caller, Owner};
 use flowerly_core::types::{
     ExperimentId, Generation, GenerationId, GenerationStatus, GoalId, ObjectRef, ProvenanceEdge,
     ProvenanceRelation, Timestamp,
@@ -12,7 +13,11 @@ use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde::Deserialize;
 use serde_json::Value;
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -23,7 +28,7 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
     if let Err((code, message)) = validate_generation_command(&store, name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&mut store, name, args) {
+    match run_command(&mut store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
@@ -197,7 +202,12 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "generation.create" => {
             let parent: Option<GenerationId> = parse_optional_typed(args, "parent")?;
@@ -236,6 +246,9 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 experiment,
                 status: GenerationStatus::Candidate,
                 created_at: Timestamp::now(),
+                // Candidates are private to their creator (#225); only an
+                // audited Admin promotion makes a shared system record.
+                owner: caller.owner(),
             };
 
             let mut edges = Vec::new();
@@ -382,6 +395,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         experiment: None,
         status: GenerationStatus::Candidate,
         created_at: Timestamp::now(),
+        owner: Owner::System,
     };
     store.insert_generation(&first)?;
     let second = Generation {
@@ -393,6 +407,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         experiment: None,
         status: GenerationStatus::Candidate,
         created_at: Timestamp::now(),
+        owner: Owner::System,
     };
     store.insert_generation(&second)?;
     store.set_generation_status(&first.id, GenerationStatus::Stable)?;
@@ -405,6 +420,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CALLER: Caller = Caller::new(1000);
     use flowerly_core::types::{Goal, ProvenanceRelation};
 
     #[test]
@@ -414,6 +431,7 @@ mod tests {
             &mut store,
             "generation.activate",
             &serde_json::json!({ "id": "malformed-generation-id" }),
+            TEST_CALLER,
         )
         .expect_err("malformed activation ID must be rejected");
         assert_eq!(error.code, ErrorCode::InvalidArgument);
@@ -530,6 +548,7 @@ mod tests {
             experiment: None,
             status: GenerationStatus::Candidate,
             created_at: Timestamp::now(),
+            owner: Owner::User(1000),
         }
     }
 
@@ -541,6 +560,7 @@ mod tests {
             &mut store,
             "generation.create",
             &serde_json::json!({ "parent": "not-a-generation" }),
+            TEST_CALLER,
         )
         .expect_err("invalid parent must fail");
         assert!(error.contains("generation"), "unexpected error: {error}");
@@ -549,6 +569,7 @@ mod tests {
             &mut store,
             "generation.create",
             &serde_json::json!({ "experiment": "not-an-experiment" }),
+            TEST_CALLER,
         )
         .expect_err("invalid experiment must fail");
         assert!(error.contains("experiment"), "unexpected error: {error}");
@@ -568,6 +589,7 @@ mod tests {
             &mut store,
             "generation.create",
             &serde_json::json!({ "parent": missing_parent }),
+            TEST_CALLER,
         )
         .expect_err("missing parent must fail");
         assert_eq!(error, format!("generation not found: {missing_parent}"));
@@ -577,6 +599,7 @@ mod tests {
             &mut store,
             "generation.create",
             &serde_json::json!({ "reason_goal": missing_goal }),
+            TEST_CALLER,
         )
         .expect_err("missing reason goal must fail");
         assert_eq!(error, format!("goal not found: {missing_goal}"));
@@ -606,6 +629,7 @@ mod tests {
                 "source_commit": "abc123",
                 "system_manifest": "sha256:manifest"
             }),
+            TEST_CALLER,
         )
         .expect("create generation");
 
@@ -733,7 +757,7 @@ mod tests {
                 ErrorCode::InvalidArgument,
             ),
         ] {
-            let error = run_command(&mut store, name, &args).expect_err(name);
+            let error = run_command(&mut store, name, &args, TEST_CALLER).expect_err(name);
             assert_eq!(error.code, expected, "{name} {args}");
         }
     }
@@ -751,6 +775,7 @@ mod tests {
             &mut store,
             "generation.activate",
             &serde_json::json!({ "id": second.id }),
+            TEST_CALLER,
         )
         .expect("activate second");
 

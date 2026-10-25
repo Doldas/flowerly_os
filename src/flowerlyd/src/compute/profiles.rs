@@ -13,46 +13,18 @@
 //!   exists; refusing fail-closed is the honest default.
 //! - Endpoints must stay inside the daemon runtime directory (ADR-0010).
 
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::ErrorCode;
 use flowerly_core::profile::{ProfileSpec, ProviderCapabilitySet};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ObjectRef, ProfileId, ProvenanceEdge, ProvenanceRelation, ProviderId, Timestamp,
 };
-use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-use super::{actor_from, CommandResult, SharedStore};
+use super::{actor_from, CommandResult};
 
 const MAX_INHERITANCE_DEPTH: usize = 8;
-
-pub(crate) fn handle_profile_command(store: &SharedStore, request: &Envelope) -> Envelope {
-    let Payload::Command { name, args } = &request.payload else {
-        return error_envelope(request.id.clone(), "unexpected request type");
-    };
-    let mut store = match store.lock() {
-        Ok(store) => store,
-        Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
-    };
-    match run_profile(&mut store, name, args) {
-        Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
-    }
-}
-
-pub(crate) fn handle_provider_command(store: &SharedStore, request: &Envelope) -> Envelope {
-    let Payload::Command { name, args } = &request.payload else {
-        return error_envelope(request.id.clone(), "unexpected request type");
-    };
-    let mut store = match store.lock() {
-        Ok(store) => store,
-        Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
-    };
-    match run_provider(&mut store, name, args) {
-        Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
-    }
-}
 
 fn spec_summary(spec: &ProfileSpec) -> Value {
     serde_json::json!({
@@ -124,7 +96,12 @@ fn validate_toml(toml: &str) -> Result<ProfileSpec, super::CommandFailure> {
     ProfileSpec::parse_toml(toml).map_err(super::CommandFailure::invalid)
 }
 
-pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+pub(crate) fn run_profile(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> CommandResult {
     match name {
         "profile.create" | "profile.import" => {
             let actor = actor_from(args);
@@ -184,6 +161,7 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                             &actor,
                             toml,
                             &summary_json,
+                            caller.owner(),
                             Some(operation),
                             &edges,
                         )
@@ -202,7 +180,16 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                     }
                 } else {
                     store
-                        .create_profile(&id, given_name, &actor, toml, &summary_json, None, &edges)
+                        .create_profile(
+                            &id,
+                            given_name,
+                            &actor,
+                            toml,
+                            &summary_json,
+                            caller.owner(),
+                            None,
+                            &edges,
+                        )
                         .map_err(|error| match error {
                             ref other if other.is_unique_violation() => super::CommandFailure {
                                 code: ErrorCode::Conflict,
@@ -279,6 +266,7 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                         &actor,
                         &toml,
                         &resolved,
+                        caller.owner(),
                         Some(operation),
                         &edges,
                     )
@@ -287,7 +275,16 @@ pub(crate) fn run_profile(store: &mut Store, name: &str, args: &Value) -> Comman
                     .map_err(|error| super::CommandFailure::invalid(error.to_string()));
             }
             store
-                .create_profile(&id, new_name, &actor, &toml, &resolved, None, &edges)
+                .create_profile(
+                    &id,
+                    new_name,
+                    &actor,
+                    &toml,
+                    &resolved,
+                    caller.owner(),
+                    None,
+                    &edges,
+                )
                 .map_err(clone_failure)?;
             Ok(intended_response)
         }

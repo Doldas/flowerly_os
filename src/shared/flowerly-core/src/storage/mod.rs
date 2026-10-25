@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use crate::types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProfileId,
+    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId,
     ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
     SessionState, Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
 };
@@ -359,6 +359,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "workloads_usage",
         sql: include_str!("../../migrations/0008_workloads_usage.sql"),
     },
+    Migration {
+        version: 9,
+        name: "object_ownership",
+        sql: include_str!("../../migrations/0009_object_ownership.sql"),
+    },
 ];
 
 /// Live domain counts reported by service Status.
@@ -561,6 +566,7 @@ impl Store {
             })?
         } else {
             let mut general = Flow::new("General", "system");
+            general.owner = Owner::System;
             general.id = FlowId::from_raw("flow-general");
             general.purpose = Some("The universal default context".to_owned());
             insert_flow_row(&tx, &general)?;
@@ -906,15 +912,23 @@ impl Store {
         created_by: &str,
         toml: &str,
         summary: &str,
+        owner: Owner,
         operation: Option<MutationOperation<'_>>,
         edges: &[ProvenanceEdge],
     ) -> Result<String> {
         let now = Timestamp::now();
         let write = |conn: &Connection| -> Result<()> {
             conn.execute(
-                "INSERT INTO ai_profiles (id, name, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id.as_str(), name, created_by, now.as_millis()],
+                "INSERT INTO ai_profiles (id, name, created_by, created_at, owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id.as_str(),
+                    name,
+                    created_by,
+                    now.as_millis(),
+                    owner.class(),
+                    owner.uid()
+                ],
             )?;
             conn.execute(
                 "INSERT INTO ai_profile_versions
@@ -1102,9 +1116,11 @@ impl Store {
         let now = Timestamp::now();
         let write = |conn: &Connection| -> Result<()> {
             conn.execute(
+                // Providers are registered only through the Admin-classified
+                // provider.register, so they are system definitions (#225).
                 "INSERT INTO ai_providers
-                     (id, name, kind, endpoint, capabilities, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (id, name, kind, endpoint, capabilities, created_by, created_at, owner_class)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'system')",
                 params![
                     id.as_str(),
                     name,
@@ -1167,8 +1183,10 @@ impl Store {
                 "INSERT INTO inference_workloads
                      (id, profile_id, profile_name, model_id, background, priority,
                       state, reason, ceilings, created_by, created_at,
-                      admitted_at, stopped_at, completed_at, operation_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                      admitted_at, stopped_at, completed_at, operation_id,
+                      owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17)",
                 params![
                     workload.id.as_str(),
                     workload.profile_id.as_str(),
@@ -1185,6 +1203,8 @@ impl Store {
                     workload.stopped_at.map(|t| t.as_millis()),
                     workload.completed_at.map(|t| t.as_millis()),
                     workload.operation_id,
+                    workload.owner.class(),
+                    workload.owner.uid(),
                 ],
             )?;
             for edge in edges {
@@ -1230,7 +1250,7 @@ impl Store {
             .query_row(
                 "SELECT id, profile_id, profile_name, model_id, background, priority,
                         state, reason, ceilings, created_by, created_at,
-                        admitted_at, stopped_at, completed_at, operation_id
+                        admitted_at, stopped_at, completed_at, operation_id, owner_class, owner_uid
                  FROM inference_workloads WHERE id = ?1",
                 params![id.as_str()],
                 map_workload,
@@ -1243,7 +1263,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, profile_id, profile_name, model_id, background, priority,
                     state, reason, ceilings, created_by, created_at,
-                    admitted_at, stopped_at, completed_at, operation_id
+                    admitted_at, stopped_at, completed_at, operation_id, owner_class, owner_uid
              FROM inference_workloads
              WHERE (?1 IS NULL OR created_by = ?1)
              ORDER BY priority DESC, created_at",
@@ -1318,8 +1338,8 @@ impl Store {
         tx.execute(
             "INSERT INTO inference_usage
                  (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
-                  cost_micros, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  cost_micros, created_by, created_at, owner_class, owner_uid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 usage.id.as_str(),
                 usage.workload_id.as_str(),
@@ -1330,6 +1350,8 @@ impl Store {
                 usage.cost_micros as i64,
                 usage.created_by,
                 usage.created_at.as_millis(),
+                usage.owner.class(),
+                usage.owner.uid(),
             ],
         )?;
         tx.commit()?;
@@ -1353,8 +1375,8 @@ impl Store {
             conn.execute(
                 "INSERT INTO inference_usage
                      (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
-                      cost_micros, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      cost_micros, created_by, created_at, owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     usage.id.as_str(),
                     usage.workload_id.as_str(),
@@ -1365,6 +1387,8 @@ impl Store {
                     usage.cost_micros as i64,
                     usage.created_by,
                     usage.created_at.as_millis(),
+                    usage.owner.class(),
+                    usage.owner.uid(),
                 ],
             )?;
             Ok(())
@@ -1484,7 +1508,7 @@ impl Store {
     pub fn get_flow(&self, id: &FlowId) -> Result<Option<Flow>> {
         self.conn
             .query_row(
-                "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision
+                "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid
                  FROM flows WHERE id = ?1",
                 params![id.as_str()],
                 map_flow,
@@ -1495,7 +1519,7 @@ impl Store {
 
     pub fn list_flows(&self) -> Result<Vec<Flow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision
+            "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid
              FROM flows ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_flow)?;
@@ -1575,7 +1599,7 @@ impl Store {
     pub fn get_goal(&self, id: &GoalId) -> Result<Option<Goal>> {
         self.conn
             .query_row(
-                "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at
+                "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid
                  FROM goals WHERE id = ?1",
                 params![id.as_str()],
                 map_goal,
@@ -1586,7 +1610,7 @@ impl Store {
 
     pub fn list_goals(&self) -> Result<Vec<Goal>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at
+            "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid
              FROM goals ORDER BY priority DESC, created_at",
         )?;
         let rows = stmt.query_map([], map_goal)?;
@@ -1633,7 +1657,7 @@ impl Store {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
+                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid
                  FROM sessions WHERE id = ?1",
                 params![id.as_str()],
                 map_session,
@@ -1644,7 +1668,7 @@ impl Store {
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
+            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid
              FROM sessions ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_session)?;
@@ -1706,7 +1730,7 @@ impl Store {
     pub fn get_execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
         self.conn
             .query_row(
-                "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at
+                "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid
                  FROM executions WHERE id = ?1",
                 params![id.as_str()],
                 map_execution,
@@ -1717,7 +1741,7 @@ impl Store {
 
     pub fn list_executions(&self) -> Result<Vec<Execution>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at
+            "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid
              FROM executions ORDER BY started_at",
         )?;
         let rows = stmt.query_map([], map_execution)?;
@@ -1751,7 +1775,7 @@ impl Store {
     pub fn get_generation(&self, id: &GenerationId) -> Result<Option<Generation>> {
         self.conn
             .query_row(
-                "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at
+                "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid
                  FROM generations WHERE id = ?1",
                 params![id.as_str()],
                 map_generation,
@@ -1762,7 +1786,7 @@ impl Store {
 
     pub fn list_generations(&self) -> Result<Vec<Generation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at
+            "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid
              FROM generations ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_generation)?;
@@ -1846,8 +1870,8 @@ impl Store {
 
 fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
     conn.execute(
-        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             flow.id.as_str(),
             flow.name,
@@ -1858,6 +1882,8 @@ fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
             flow.created_at.as_millis(),
             flow.last_active.map(|t| t.as_millis()),
             flow.revision,
+            flow.owner.class(),
+            flow.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1865,8 +1891,8 @@ fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
 
 fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
     conn.execute(
-        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             goal.id.as_str(),
             goal.parent_goal.as_ref().map(GoalId::as_str),
@@ -1878,6 +1904,8 @@ fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
             goal.status.to_string(),
             goal.created_by,
             goal.created_at.as_millis(),
+            goal.owner.class(),
+            goal.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1885,8 +1913,8 @@ fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
 
 fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
     conn.execute(
-        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             session.id.as_str(),
             session.flow_id.as_ref().map(FlowId::as_str),
@@ -1897,6 +1925,8 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
             session.presentation_state.to_string(),
             session.created_by,
             session.created_at.as_millis(),
+            session.owner.class(),
+            session.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1904,8 +1934,8 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
 
 fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
     conn.execute(
-        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             exec.id.as_str(),
             exec.agent_id.as_ref().map(AgentId::as_str),
@@ -1915,6 +1945,8 @@ fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
             exec.exit_code,
             exec.duration_ms,
             exec.started_at.as_millis(),
+            exec.owner.class(),
+            exec.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1922,8 +1954,8 @@ fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
 
 fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<()> {
     conn.execute(
-        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             generation.id.as_str(),
             generation.parent.as_ref().map(GenerationId::as_str),
@@ -1933,6 +1965,8 @@ fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<(
             generation.experiment.as_ref().map(|e| e.to_string()),
             generation.status.to_string(),
             generation.created_at.as_millis(),
+            generation.owner.class(),
+            generation.owner.uid(),
         ],
     )?;
     Ok(())
@@ -2085,6 +2119,7 @@ fn map_workload(row: &Row<'_>) -> rusqlite::Result<WorkloadRecord> {
         stopped_at: stopped_at.map(Timestamp::from_millis),
         completed_at: completed_at.map(Timestamp::from_millis),
         operation_id: row.get(14)?,
+        owner: map_owner(row)?,
     })
 }
 
@@ -2142,6 +2177,13 @@ fn map_provider(row: &Row<'_>) -> rusqlite::Result<ProviderRecord> {
     })
 }
 
+/// Owner columns, read by name so positional mappers stay unchanged.
+fn map_owner(row: &Row<'_>) -> rusqlite::Result<Owner> {
+    let class: String = row.get("owner_class")?;
+    let uid: Option<i64> = row.get("owner_uid")?;
+    Ok(Owner::from_columns(&class, uid))
+}
+
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
     let parent: Option<String> = row.get(3)?;
     let last_active: Option<i64> = row.get(7)?;
@@ -2156,6 +2198,7 @@ fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
         created_at: Timestamp::from_millis(row.get(6)?),
         last_active: last_active.map(Timestamp::from_millis),
         revision: row.get(8)?,
+        owner: map_owner(row)?,
     })
 }
 
@@ -2179,6 +2222,7 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
         status: parse_text(status, 7)?,
         created_by: row.get(8)?,
         created_at: Timestamp::from_millis(row.get(9)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2196,6 +2240,7 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
         presentation_state: parse_text(presentation_state, 6)?,
         created_by: row.get(7)?,
         created_at: Timestamp::from_millis(row.get(8)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2211,6 +2256,7 @@ fn map_execution(row: &Row<'_>) -> rusqlite::Result<Execution> {
         exit_code: row.get(5)?,
         duration_ms: row.get(6)?,
         started_at: Timestamp::from_millis(row.get(7)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2228,6 +2274,7 @@ fn map_generation(row: &Row<'_>) -> rusqlite::Result<Generation> {
         experiment: experiment.map(|raw| parse_text(raw, 5)).transpose()?,
         status: parse_text(status, 6)?,
         created_at: Timestamp::from_millis(row.get(7)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2246,6 +2293,20 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 
 #[cfg(test)]
 mod tests {
+    /// A Flow row as written before migration 0009 (no owner columns).
+    fn insert_legacy_flow(conn: &Connection, name: &str, state: &str, created_by: &str) {
+        conn.execute(
+            "INSERT INTO flows (id, name, state, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![FlowId::new().as_str(), name, state, created_by],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
     use super::*;
     use crate::types::{ModelBackend, ProvenanceRelation};
 
@@ -2675,6 +2736,7 @@ mod tests {
                 "uid:1000",
                 "capability_tier = 'advanced'\n",
                 "{}",
+                Owner::User(1000),
                 Some(MutationOperation {
                     actor: "uid:1000",
                     command: "profile.create",
@@ -2692,6 +2754,7 @@ mod tests {
                 "uid:1000",
                 "capability_tier = 'advanced'\n",
                 "{}",
+                Owner::User(1000),
                 Some(MutationOperation {
                     actor: "uid:1000",
                     command: "profile.create",
@@ -2710,6 +2773,7 @@ mod tests {
             "uid:1000",
             "fallback = 'queue'\n",
             "{}",
+            Owner::User(1000),
             None,
             &[],
         );
@@ -2727,6 +2791,7 @@ mod tests {
                 "uid:1000",
                 "fallback = 'ask'\n",
                 "{}",
+                Owner::User(1000),
                 None,
                 &[],
             )
@@ -2777,6 +2842,282 @@ mod tests {
         let second = store.migrate().expect("second migrate");
         assert!(second.is_empty(), "second migrate should be a no-op");
         assert_eq!(store.applied_migrations().unwrap().len(), MIGRATIONS.len());
+    }
+
+    /// A database as installed before ownership: migrations 1..=8 applied.
+    fn pre_ownership_store() -> Store {
+        let store = Store::open_in_memory().expect("open store");
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        for migration in &MIGRATIONS[..8] {
+            store.conn.execute_batch(migration.sql).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO schema_migrations VALUES (?1, ?2, 1)",
+                    params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        store
+    }
+
+    fn owner_of(conn: &Connection, table: &str, id: &str) -> (String, Option<i64>) {
+        conn.query_row(
+            &format!("SELECT owner_class, owner_uid FROM {table} WHERE id = ?1"),
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// #225: the backfill keeps only well-formed `uid:<n>` creators, marks
+    /// General as system, and leaves every legacy or malformed label
+    /// unresolved. Nothing is reassigned to another uid.
+    #[test]
+    fn ownership_backfill_is_conservative() {
+        let mut store = pre_ownership_store();
+        let c = &store.conn;
+        let flow = |id: &str, name: &str, created_by: &str| {
+            c.execute(
+                "INSERT INTO flows (id, name, state, created_by, created_at)
+                 VALUES (?1, ?2, 'ACTIVE', ?3, 1)",
+                params![id, name, created_by],
+            )
+            .unwrap();
+        };
+        flow("flow-general", "General", "system");
+        flow("flow-alice", "alice", "uid:998");
+        flow("flow-root", "root", "uid:0");
+        flow("flow-legacy", "legacy", "user");
+        for (i, bad) in [
+            "uid:",
+            "uid:12abc",
+            "uid:-1",
+            "uid: 7",
+            "uid:99999999999",
+            "uid:4294967295",
+            "UID:5",
+            "uid:5\n",
+            "agent:planner",
+            "",
+        ]
+        .iter()
+        .enumerate()
+        {
+            flow(&format!("flow-bad{i}"), &format!("bad{i}"), bad);
+        }
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1), ('goal-l', 'o', 'ACTIVE', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO executions (id, goal_id, started_at) VALUES
+             ('exec-a', 'goal-a', 1), ('exec-l', 'goal-l', 1), ('exec-none', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sessions (id, kind, state, created_by, created_at)
+             VALUES ('session-a', 'k', 'RUNNING', 'uid:998', 1),
+                    ('session-l', 'k', 'RUNNING', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO generations (id, status, created_at) VALUES
+             ('gen-cand', 'CANDIDATE', 1), ('gen-test', 'TESTED', 1),
+             ('gen-rej', 'REJECTED', 1), ('gen-stable', 'STABLE', 1),
+             ('gen-old', 'SUPERSEDED', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_providers (id, name, kind, capabilities, created_by, created_at)
+             VALUES ('provider-1', 'p', 'local-unix', '[]', 'uid:998', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_profiles (id, name, created_by, created_at)
+             VALUES ('profile-a', 'a', 'uid:998', 1), ('profile-l', 'l', 'user', 1)",
+            [],
+        )
+        .unwrap();
+
+        let applied = store.migrate().unwrap();
+        assert_eq!(applied.last().map(|m| m.version), Some(9));
+        let c = &store.conn;
+        let user = |uid| ("user".to_owned(), Some(uid));
+        let unresolved = ("unresolved".to_owned(), None);
+        assert_eq!(
+            owner_of(c, "flows", "flow-general"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "flows", "flow-alice"), user(998));
+        assert_eq!(owner_of(c, "flows", "flow-root"), user(0));
+        assert_eq!(owner_of(c, "flows", "flow-legacy"), unresolved);
+        for i in 0..10 {
+            assert_eq!(
+                owner_of(c, "flows", &format!("flow-bad{i}")),
+                unresolved,
+                "bad{i}"
+            );
+        }
+        assert_eq!(owner_of(c, "goals", "goal-a"), user(998));
+        assert_eq!(owner_of(c, "goals", "goal-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-a"), user(998));
+        assert_eq!(owner_of(c, "executions", "exec-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-none"), unresolved);
+        assert_eq!(owner_of(c, "sessions", "session-a"), user(998));
+        assert_eq!(owner_of(c, "sessions", "session-l"), unresolved);
+        // Existing candidates are never silently published as system records.
+        for id in ["gen-cand", "gen-test", "gen-rej"] {
+            assert_eq!(owner_of(c, "generations", id), unresolved, "{id}");
+        }
+        for id in ["gen-stable", "gen-old"] {
+            assert_eq!(
+                owner_of(c, "generations", id),
+                ("system".to_owned(), None),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            owner_of(c, "ai_providers", "provider-1"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "ai_profiles", "profile-a"), user(998));
+        assert_eq!(owner_of(c, "ai_profiles", "profile-l"), unresolved);
+        // Creator audit text is untouched, and no row lost its identity.
+        let created_by: String = c
+            .query_row(
+                "SELECT created_by FROM flows WHERE id = 'flow-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_by, "user");
+        assert_eq!(count(c, "SELECT COUNT(*) FROM flows"), 14);
+    }
+
+    /// A write path that forgets the owner fails closed, and the owner
+    /// columns reject inconsistent combinations at the SQLite boundary.
+    #[test]
+    fn owner_columns_fail_closed_and_reject_inconsistent_values() {
+        let store = migrated_store();
+        let c = &store.conn;
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-x', 'o', 'ACTIVE', 'uid:5', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            owner_of(c, "goals", "goal-x"),
+            ("unresolved".to_owned(), None)
+        );
+        for (class, column_value) in [
+            ("user", "NULL"),
+            ("system", "5"),
+            ("unresolved", "5"),
+            ("admin", "NULL"),
+            ("user", "-1"),
+            ("user", "4294967295"),
+        ] {
+            let result = c.execute(
+                &format!(
+                    "INSERT INTO goals (id, objective, status, created_by, created_at,
+                                        owner_class, owner_uid)
+                     VALUES ('goal-{class}{column_value}', 'o', 'ACTIVE', 'x', 1, '{class}', {column_value})"
+                ),
+                [],
+            );
+            assert!(result.is_err(), "{class} {column_value} must be rejected");
+        }
+    }
+
+    /// An interrupted migration leaves no partial state: a failure in the
+    /// middle of 0009 rolls back every earlier ALTER and its version record.
+    #[test]
+    fn failed_ownership_migration_leaves_no_partial_state() {
+        let mut store = pre_ownership_store();
+        store
+            .conn
+            .execute(
+                "INSERT INTO goals (id, objective, status, created_by, created_at)
+                 VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1)",
+                [],
+            )
+            .unwrap();
+        // Sabotage the middle of the migration: `sessions` already has the
+        // column, so ALTER TABLE sessions ADD COLUMN owner_class fails after
+        // flows and goals were altered.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions ADD COLUMN owner_class TEXT;")
+            .unwrap();
+        assert!(store.migrate().is_err());
+        let c = &store.conn;
+        assert_eq!(
+            count(
+                c,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+            ),
+            0
+        );
+        for table in ["flows", "goals"] {
+            let columns = count(
+                c,
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name LIKE 'owner%'"
+                ),
+            );
+            assert_eq!(columns, 0, "{table} kept a partial ownership schema");
+        }
+        assert_eq!(count(c, "SELECT COUNT(*) FROM goals"), 1);
+        // Repairing the cause lets the same database migrate cleanly later.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions DROP COLUMN owner_class;")
+            .unwrap();
+        store.migrate().unwrap();
+        assert_eq!(
+            owner_of(&store.conn, "goals", "goal-a"),
+            ("user".to_owned(), Some(998))
+        );
+    }
+
+    /// Restart: ownership survives reopening the file, and re-running the
+    /// migrations neither duplicates nor changes it.
+    #[test]
+    fn ownership_survives_restart_and_repeated_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let goal = {
+            let mut store = Store::open(&path).unwrap();
+            store.migrate().unwrap();
+            store.ensure_general_flow().unwrap();
+            let mut goal = Goal::new("owned", "uid:998");
+            goal.owner = Owner::User(998);
+            store.insert_goal(&goal).unwrap();
+            goal
+        };
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.migrate().unwrap().is_empty());
+        assert_eq!(
+            store.get_goal(&goal.id).unwrap().unwrap().owner,
+            Owner::User(998)
+        );
+        let general_id = store.ensure_general_flow().unwrap();
+        let general = store.get_flow(&general_id).unwrap().unwrap();
+        assert_eq!(general.owner, Owner::System);
     }
 
     #[test]
@@ -2837,7 +3178,7 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 7);
+        assert_eq!(applied.len(), MIGRATIONS.len() - 1);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
@@ -2997,20 +3338,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
-        let mut a = Flow::new("A", "test");
-        let mut b = Flow::new("B", "test");
-        a.state = FlowState::Foreground;
-        b.state = FlowState::Foreground;
-        store.insert_flow(&a).unwrap();
-        store.insert_flow(&b).unwrap();
+        // Pre-0009 rows have no owner columns.
+        for name in ["A", "B"] {
+            insert_legacy_flow(&store.conn, name, "FOREGROUND", "test");
+        }
         assert!(store.conn.execute_batch(MIGRATIONS[2].sql).is_err());
         assert_eq!(
-            store
-                .list_flows()
-                .unwrap()
-                .iter()
-                .filter(|flow| flow.state == FlowState::Foreground)
-                .count(),
+            count(
+                &store.conn,
+                "SELECT COUNT(*) FROM flows WHERE state = 'FOREGROUND'"
+            ),
             2,
             "failed index migration must not silently change legacy Flow state"
         );
@@ -3092,10 +3429,10 @@ mod tests {
         store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[2].sql).unwrap();
-        store.insert_flow(&Flow::new("General", "system")).unwrap();
-        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        insert_legacy_flow(&store.conn, "General", "ACTIVE", "system");
+        insert_legacy_flow(&store.conn, "General", "ACTIVE", "system");
         assert!(store.conn.execute_batch(MIGRATIONS[3].sql).is_err());
-        assert_eq!(store.list_flows().unwrap().len(), 2);
+        assert_eq!(count(&store.conn, "SELECT COUNT(*) FROM flows"), 2);
     }
 
     #[test]
@@ -3165,6 +3502,7 @@ mod tests {
     fn session_runtime_and_presentation_round_trip_independently() {
         let store = migrated_store();
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "local-pty".to_owned(),
@@ -3230,6 +3568,7 @@ mod tests {
     fn invalid_persisted_session_state_is_not_silently_accepted() {
         let store = migrated_store();
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "local-pty".to_owned(),
@@ -3279,6 +3618,7 @@ mod tests {
         let flow = Flow::new("Persistent", "test");
         let goal = Goal::new("Persist the domain graph", "test");
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: Some(flow.id.clone()),
             kind: "local-pty".to_owned(),
@@ -3290,6 +3630,7 @@ mod tests {
             created_at: Timestamp::now(),
         };
         let execution = Execution {
+            owner: crate::types::Owner::User(1000),
             id: ExecutionId::new(),
             agent_id: None,
             goal_id: Some(goal.id.clone()),
@@ -3300,6 +3641,7 @@ mod tests {
             started_at: Timestamp::now(),
         };
         let generation = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("deadbeef".to_owned()),
@@ -3389,6 +3731,7 @@ mod tests {
     fn generation_activation_keeps_exactly_one_stable_generation() {
         let mut store = migrated_store();
         let first = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("first".to_owned()),
@@ -3399,6 +3742,7 @@ mod tests {
             created_at: Timestamp::now(),
         };
         let second = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: Some(first.id.clone()),
             source_commit: Some("second".to_owned()),
@@ -3441,6 +3785,7 @@ mod tests {
     fn missing_generation_activation_does_not_supersede_current_stable() {
         let mut store = migrated_store();
         let stable = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("stable".to_owned()),
@@ -3469,6 +3814,7 @@ mod tests {
     fn invalid_persisted_generation_reference_is_not_silently_accepted() {
         let store = migrated_store();
         let generation = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: None,
@@ -3496,6 +3842,7 @@ mod tests {
     fn invalid_persisted_execution_reference_is_not_silently_accepted() {
         let store = migrated_store();
         let execution = Execution {
+            owner: crate::types::Owner::User(1000),
             id: ExecutionId::new(),
             agent_id: None,
             goal_id: None,

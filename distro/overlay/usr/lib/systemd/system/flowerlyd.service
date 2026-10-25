@@ -17,6 +17,10 @@ Group=flowerly
 Environment=AGENTIC_RUNTIME_DIR=/run/flowerly
 Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
 Environment=AGENTIC_ADMIN_GROUP=flowerly-admin
+# Never inherit these from the service manager's environment
+# (`systemctl set-environment`, DefaultEnvironment=): either could re-enable
+# multi-user admission without any change to this unit.
+UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG
 ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
 RuntimeDirectory=flowerly
 RuntimeDirectoryMode=0700

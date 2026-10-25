@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::Store;
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId, SessionPresentationState,
     SessionState, Timestamp,
@@ -205,7 +206,12 @@ impl Supervisor {
             })
     }
 
-    pub fn handle(&self, store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+    pub fn handle(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        request: &Envelope,
+        caller: Caller,
+    ) -> Envelope {
         let Payload::Command { name, args } = &request.payload else {
             return coded_error_envelope(
                 request.id.clone(),
@@ -214,7 +220,7 @@ impl Supervisor {
             );
         };
         let result = if name == "session.spawn" {
-            self.spawn(store, args)
+            self.spawn(store, args, caller)
         } else if name == "session.spawn.lookup" {
             self.lookup_spawn(store, args)
         } else {
@@ -308,7 +314,12 @@ impl Supervisor {
         Ok(())
     }
 
-    fn spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+    fn spawn(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        args: &Value,
+        caller: Caller,
+    ) -> Result<Value, Failure> {
         let _serial = self
             .launch
             .lock()
@@ -478,6 +489,9 @@ impl Supervisor {
             presentation_state: SessionPresentationState::Detached,
             created_by: actor.to_owned(),
             created_at: Timestamp::now(),
+            // PTY commands are service-account-only (#222), so this is the
+            // kernel-attested service account, never a request field.
+            owner: caller.owner(),
         };
         let provenance = ProvenanceEdge {
             from: ObjectRef::from(&session_id),

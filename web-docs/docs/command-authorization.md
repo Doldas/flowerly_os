@@ -55,6 +55,48 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 `src/shared/flowerly-peercred` crate, the only workspace code with `unsafe`
 (documented safety contract). `flowerly-core` keeps `#![forbid(unsafe_code)]`.
 
+## Object ownership (#225): recorded, not yet enforced
+
+> **The ownership boundary is NOT implemented.** Migration 0009 and the
+> explicit `Caller` only *record* who owns each new object. Reads, listings
+> and mutations still do not filter by owner, so two `flowerly-users`
+> members could still see and change each other's data. That is why the
+> shipped configuration admits only the service account (see
+> [the temporary restriction](#temporary-restriction-service-account-only-225)).
+> Do not re-enable `AGENTIC_USERS_GROUP` until #225 is closed.
+
+What is recorded now:
+
+- Every owner-scoped table (`flows`, `goals`, `sessions`, `executions`,
+  `generations`, `ai_profiles`, `ai_providers`, `inference_workloads`,
+  `inference_usage`) has `owner_class` (`user`, `system` or `unresolved`)
+  and `owner_uid`. `created_by` stays the immutable creator **audit text**
+  and is never used to decide access.
+- The Router passes the kernel-attested `Caller` (the connection's uid,
+  never request JSON) through the worker queues to every handler. Each
+  create path sets `owner = caller.owner()`:
+  `flow.create`, `goal.create`/`goal.child`, `session.create`,
+  `execution.create`, `generation.create` (candidates are owned by their
+  creator), `profile.create`/`import`/`clone`, `workload.submit`.
+  `usage.record` and `inference.request` copy the owner of the workload they
+  account for. Providers and the General Flow are `system`; PTY Sessions are
+  owned by the service account that spawned them.
+- **Fail closed.** The column default is `unresolved`, so a write path that
+  forgets an owner produces a row visible to nobody. A `CHECK` rejects
+  inconsistent pairs (`user` without a uid, a uid without `user`, a uid
+  outside `0..=4294967294`).
+- **Backfill (migration 0009, one transaction).** Only a well-formed
+  `uid:<decimal>` creator becomes a `user` owner. General is `system`;
+  providers are `system`; `STABLE`/`SUPERSEDED` Generations are `system`.
+  Everything else, including the legacy `user` label, malformed `uid:`
+  values, existing Generation candidates and Executions without a resolvable
+  Goal owner, is `unresolved` and stays protected. Nothing is reassigned to
+  another uid. An admin claim procedure is a later #225 step.
+- **Rollback.** There is no down-migration. Back up `state.db` before the
+  upgrade and restore it together with the previous binaries. A restore is
+  not an ownership operation: it discards everything written after the
+  backup.
+
 ## Classes
 
 - **User**: Flow, Goal, Session metadata, execution and provenance reads,
@@ -167,12 +209,29 @@ journaled.
 1. Install the new binaries, unit and `sysusers.d` file, then run
    `systemd-sysusers` (creates the two groups).
 2. `systemctl daemon-reload && systemctl restart flowerlyd`.
-3. Check status as the service account
+3. Verify nothing re-enables multi-user admission (see below), then check
+   status as the service account
    (`sudo runuser -u flowerly -- agenticctl --runtime-dir /run/flowerly status flowerlyd`).
    `admin_authorization` must be `linux_group` and `client_access` must be
    `service_account_only`.
 
 Admin commands are refused by default; use the out-of-band procedure above.
+
+**Upgrade check: no leftover multi-user admission.** An installation upgraded
+from an earlier `release/2` may still carry a local override. Before and
+after restarting, confirm:
+
+```bash
+systemctl cat flowerlyd            # no drop-in sets AGENTIC_USERS_GROUP / AGENTIC_CONFIG
+systemctl show flowerlyd -p Environment -p UnsetEnvironment
+ls -l /run/flowerly/flowerlyd.sock # srw------- flowerly flowerly
+```
+
+`client_access` in Status must read `service_account_only`. The shipped unit
+also sets `UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG`, so neither
+can be injected through the service manager's environment
+(`systemctl set-environment`, `DefaultEnvironment=`); only a root-written
+drop-in could still re-enable it, which this document forbids.
 
 ### Rollback
 
