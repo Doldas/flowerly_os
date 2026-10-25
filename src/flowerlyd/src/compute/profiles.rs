@@ -600,10 +600,17 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                 .and_then(Value::as_str)
                 .ok_or_else(|| super::CommandFailure::invalid("missing string arg `name`"))?;
             validate_profile_name(name_arg)?;
-            let kind = args
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or(LOCAL_PROVIDER_KIND);
+            // Absent or null defaults to local; any other non-string is a
+            // caller error, never silently coerced to the local kind.
+            let kind = match args.get("kind") {
+                None | Some(Value::Null) => LOCAL_PROVIDER_KIND,
+                Some(Value::String(kind)) => kind.as_str(),
+                Some(other) => {
+                    return Err(super::CommandFailure::invalid(format!(
+                        "`kind` must be a string or null: {other:?}"
+                    )));
+                }
+            };
             if kind != LOCAL_PROVIDER_KIND {
                 return Err(super::CommandFailure {
                     code: ErrorCode::PermissionDenied,
@@ -637,12 +644,13 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
             let caps = args
                 .get("capabilities")
                 .and_then(Value::as_array)
-                .map(|items| {
+                .and_then(|items| {
+                    // A non-string entry rejects the request instead of
+                    // being silently filtered out of the stored set.
                     items
                         .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
+                        .map(|item| item.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
                 })
                 .ok_or_else(|| {
                     super::CommandFailure::invalid("missing string array arg `capabilities`")
