@@ -25,8 +25,9 @@ def main(binary_directory):
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
         log_file = root / "flowerlyd.log"
+        # model register/retire need an explicit admin group grant (#31).
         env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime),
-                   AGENTIC_STATE_DIR=str(state))
+                   AGENTIC_STATE_DIR=str(state), AGENTIC_ADMIN_GROUP=str(os.getgid()))
         processes = []
 
         def invoke(*arguments, ok=True):

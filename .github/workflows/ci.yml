@@ -119,6 +119,12 @@ jobs:
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-error-codes.py target/release
 
 
+      - name: Admin commands and IPC shutdown require an explicit admin group
+        run: python3 ./scripts/test-admin-authorization.py target/release
+
+      - name: Cross-UID Linux group authorization with real users and groups
+        run: sudo -n python3 ./scripts/test-admin-authorization.py --cross-uid target/release
+
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
 

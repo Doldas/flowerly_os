@@ -1,0 +1,11 @@
+[package]
+name = "flowerly-peercred"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kernel-attested supplementary groups of a Unix socket peer (SO_PEERGROUPS)"
+
+[dependencies]
+libc.workspace = true

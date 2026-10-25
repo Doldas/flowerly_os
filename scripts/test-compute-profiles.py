@@ -101,7 +101,9 @@ def main(bin_dir):
         state = root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
+        # Admin commands and IPC shutdown need an explicit admin group (#31).
+        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
+                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
         log_path = root / "flowerlyd.log"
 
         def start():
