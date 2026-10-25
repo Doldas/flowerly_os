@@ -224,13 +224,18 @@ const MODULES: [&str; 8] = [
 
 /// Status reports ready only when the database answers a consistent count
 /// snapshot; a failed read is reported with its typed storage error code
-/// instead of `ready: true` with missing counts.
-fn status_details(db: &Store, policy: &AccessPolicy) -> serde_json::Value {
-    match db.status_counts() {
-        Ok(counts) => serde_json::json!({
+/// instead of `ready: true` with missing counts. Flow, Goal, Session and
+/// Execution counts and the foreground are those of the calling peer (#225).
+fn status_details(db: &Store, policy: &AccessPolicy, caller: Caller) -> serde_json::Value {
+    let snapshot = db
+        .status_counts_for(caller)
+        .and_then(|counts| Ok((counts, db.foreground_flow_for(caller)?)));
+    match snapshot {
+        Ok((counts, foreground)) => serde_json::json!({
             "ready": true,
             "modules": MODULES,
             "default_flow": "General",
+            "foreground_flow": {"id": foreground.flow.id, "name": foreground.flow.name},
             "flow_count": counts.flows,
             "goal_count": counts.goals,
             "session_count": counts.sessions,
@@ -243,6 +248,7 @@ fn status_details(db: &Store, policy: &AccessPolicy) -> serde_json::Value {
             "provider_count": counts.providers,
             "admin_authorization": authorization::admin_policy(policy),
             "client_access": authorization::client_policy(policy),
+            "ownership_pending_commands": authorization::pending_scopes().count(),
             "database": "ready"
         }),
         Err(error) => serde_json::json!({
@@ -316,8 +322,8 @@ async fn main() -> Result<()> {
         session,
     });
     let status_store = Arc::clone(&store);
-    let status = Arc::new(move || match status_store.try_lock() {
-        Ok(db) => status_details(&db, &policy),
+    let status = Arc::new(move |peer: &PeerIdentity| match status_store.try_lock() {
+        Ok(db) => status_details(&db, &policy, peer.caller()),
         Err(_) => serde_json::json!({"ready": false, "reason": "store busy"}),
     });
     let handler: Arc<AuthenticatedHandler> =
@@ -336,7 +342,7 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
         store.ensure_general_flow().expect("general flow");
-        let details = status_details(&store, &AccessPolicy::default());
+        let details = status_details(&store, &AccessPolicy::default(), Caller::new(1000));
         assert_eq!(details["ready"], true, "{details}");
         assert_eq!(details["admin_authorization"], "denied_unconfigured");
         assert_eq!(details["client_access"], "service_account_only");
@@ -356,7 +362,7 @@ mod tests {
             .expect("open second connection")
             .execute_batch("DROP TABLE sessions;")
             .expect("damage schema");
-        let details = status_details(&store, &AccessPolicy::default());
+        let details = status_details(&store, &AccessPolicy::default(), Caller::new(1000));
         assert_eq!(details["ready"], false, "{details}");
         assert_eq!(details["database"], "error");
         assert_eq!(details["error_code"], "internal");
@@ -718,5 +724,70 @@ mod ownership_recording {
             )
             .unwrap();
         assert_eq!(created_by, "uid:7");
+    }
+}
+
+/// #225 PR 3: Flow, Goal, Session and Execution handlers reach storage only
+/// through the owner-scoped API. The unscoped helpers remain for bootstrap,
+/// offline self-tests and unit tests, so production handler code is scanned.
+#[cfg(test)]
+mod owner_scoped_storage {
+    const HANDLERS: [(&str, &str); 6] = [
+        ("flow", include_str!("flow/mod.rs")),
+        ("goal", include_str!("goal/mod.rs")),
+        ("session", include_str!("session/mod.rs")),
+        ("session/pty", include_str!("session/pty.rs")),
+        ("execution", include_str!("agentic/mod.rs")),
+        ("main", include_str!("main.rs")),
+    ];
+
+    /// Reads and mutations that ignore the caller.
+    const UNSCOPED: [&str; 11] = [
+        ".get_flow(",
+        ".list_flows(",
+        ".get_goal(",
+        ".list_goals(",
+        ".get_session(",
+        ".list_sessions(",
+        ".get_execution(",
+        ".list_executions(",
+        ".set_flow_state(",
+        ".set_goal_status(",
+        ".status_counts(",
+    ];
+
+    /// Production code: everything before the offline self-test and tests.
+    fn production(source: &str) -> &str {
+        let end = ["pub(crate) async fn self_test", "#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| source.find(marker))
+            .min()
+            .unwrap_or(source.len());
+        &source[..end]
+    }
+
+    #[test]
+    fn handlers_use_only_owner_scoped_storage() {
+        for (name, source) in HANDLERS {
+            let code = production(source);
+            for call in UNSCOPED {
+                assert!(!code.contains(call), "{name} calls unscoped `{call}`");
+            }
+        }
+    }
+
+    /// The PTY supervisor (service-account-only commands, authorized by the
+    /// guardian's control token) updates the state of Sessions it launched
+    /// and reconciles them after restart; nothing else may write a Session
+    /// state without the caller.
+    #[test]
+    fn unscoped_session_state_writes_are_confined_to_pty_reconciliation() {
+        for (name, source) in HANDLERS {
+            let code = production(source);
+            let writes = code.matches(".update_session_state(").count()
+                + code.matches(".update_session_presentation_state(").count();
+            let allowed = if name == "session/pty" { 6 } else { 0 };
+            assert_eq!(writes, allowed, "{name}");
+        }
     }
 }

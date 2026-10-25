@@ -6,11 +6,11 @@
 //! creates a second backend nor changes existing service behavior.
 
 use crate::types::{
-    Execution, ExecutionId, Flow, FlowId, Goal, GoalId, ObjectRef, ProvenanceEdge, Session,
-    SessionId,
+    Caller, Execution, ExecutionId, Flow, FlowId, Goal, GoalId, GoalStatus, ObjectRef,
+    ProvenanceEdge, Session, SessionId,
 };
 
-use super::{MutationOperation, Result, Store};
+use super::{FlowView, MutationOperation, Result, Store};
 
 /// A domain command, not a generic transaction or SQL request.
 /// Provenance edges are part of the same durable SQLite transaction.
@@ -40,6 +40,11 @@ pub struct CreateExecution<'a> {
 
 /// Minimal core command capability. Extend command-by-command after each
 /// transaction and authorization invariant has been reviewed.
+///
+/// Every operation on an existing object takes the kernel-attested caller
+/// and is owner-scoped inside its transaction (#225); creates record the
+/// owner carried by the new object and check its references in the same
+/// transaction.
 pub trait CoreCommandRepository {
     fn create_flow(&mut self, command: CreateFlow<'_>) -> Result<()>;
     /// A replay response and its durable mutation are one SQLite transaction.
@@ -55,7 +60,11 @@ pub trait CoreCommandRepository {
         command: CreateGoal<'_>,
         operation: &MutationOperation<'_>,
     ) -> Result<String>;
-    fn activate_flow(&mut self, id: &FlowId) -> Result<()>;
+    fn activate_flow(&mut self, caller: Caller, id: &FlowId) -> Result<FlowView>;
+    fn archive_flow(&mut self, caller: Caller, id: &FlowId) -> Result<FlowView>;
+    fn set_goal_status(&mut self, caller: Caller, id: &GoalId, status: GoalStatus) -> Result<()>;
+    /// Returns the Session as it was before termination.
+    fn terminate_session(&mut self, caller: Caller, id: &SessionId) -> Result<Session>;
     fn create_session(&mut self, command: CreateSession<'_>) -> Result<()>;
     fn create_session_once(
         &mut self,
@@ -66,15 +75,17 @@ pub trait CoreCommandRepository {
 }
 
 /// Read-only, typed queries. No raw SQL or underlying driver handles escape.
+/// Every read is owner-scoped to the kernel-attested caller (#225).
 pub trait CoreQueryRepository {
-    fn flow(&self, id: &FlowId) -> Result<Option<Flow>>;
-    fn flows(&self) -> Result<Vec<Flow>>;
-    fn goals(&self) -> Result<Vec<Goal>>;
-    fn goal(&self, id: &GoalId) -> Result<Option<Goal>>;
-    fn session(&self, id: &SessionId) -> Result<Option<Session>>;
-    fn sessions(&self) -> Result<Vec<Session>>;
-    fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>>;
-    fn executions(&self) -> Result<Vec<Execution>>;
+    fn flow(&self, caller: Caller, id: &FlowId) -> Result<Option<FlowView>>;
+    fn flows(&self, caller: Caller) -> Result<Vec<FlowView>>;
+    fn foreground_flow(&self, caller: Caller) -> Result<FlowView>;
+    fn goals(&self, caller: Caller) -> Result<Vec<Goal>>;
+    fn goal(&self, caller: Caller, id: &GoalId) -> Result<Option<Goal>>;
+    fn session(&self, caller: Caller, id: &SessionId) -> Result<Option<Session>>;
+    fn sessions(&self, caller: Caller) -> Result<Vec<Session>>;
+    fn execution(&self, caller: Caller, id: &ExecutionId) -> Result<Option<Execution>>;
+    fn executions(&self, caller: Caller) -> Result<Vec<Execution>>;
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>>;
 }
 
@@ -103,8 +114,20 @@ impl CoreCommandRepository for Store {
         self.insert_goal_with_provenance_once(command.goal, command.provenance, operation)
     }
 
-    fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
-        Store::activate_flow(self, id)
+    fn activate_flow(&mut self, caller: Caller, id: &FlowId) -> Result<FlowView> {
+        self.activate_flow_for(caller, id)
+    }
+
+    fn archive_flow(&mut self, caller: Caller, id: &FlowId) -> Result<FlowView> {
+        self.archive_flow_for(caller, id)
+    }
+
+    fn set_goal_status(&mut self, caller: Caller, id: &GoalId, status: GoalStatus) -> Result<()> {
+        self.set_goal_status_for(caller, id, status)
+    }
+
+    fn terminate_session(&mut self, caller: Caller, id: &SessionId) -> Result<Session> {
+        self.terminate_session_for(caller, id)
     }
 
     fn create_session(&mut self, command: CreateSession<'_>) -> Result<()> {
@@ -125,36 +148,40 @@ impl CoreCommandRepository for Store {
 }
 
 impl CoreQueryRepository for Store {
-    fn flow(&self, id: &FlowId) -> Result<Option<Flow>> {
-        self.get_flow(id)
+    fn flow(&self, caller: Caller, id: &FlowId) -> Result<Option<FlowView>> {
+        self.flow_for(caller, id)
     }
 
-    fn flows(&self) -> Result<Vec<Flow>> {
-        self.list_flows()
+    fn flows(&self, caller: Caller) -> Result<Vec<FlowView>> {
+        self.flows_for(caller)
     }
 
-    fn goals(&self) -> Result<Vec<Goal>> {
-        self.list_goals()
+    fn foreground_flow(&self, caller: Caller) -> Result<FlowView> {
+        self.foreground_flow_for(caller)
     }
 
-    fn goal(&self, id: &GoalId) -> Result<Option<Goal>> {
-        self.get_goal(id)
+    fn goals(&self, caller: Caller) -> Result<Vec<Goal>> {
+        self.goals_for(caller)
     }
 
-    fn session(&self, id: &SessionId) -> Result<Option<Session>> {
-        self.get_session(id)
+    fn goal(&self, caller: Caller, id: &GoalId) -> Result<Option<Goal>> {
+        self.goal_for(caller, id)
     }
 
-    fn sessions(&self) -> Result<Vec<Session>> {
-        self.list_sessions()
+    fn session(&self, caller: Caller, id: &SessionId) -> Result<Option<Session>> {
+        self.session_for(caller, id)
     }
 
-    fn execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
-        self.get_execution(id)
+    fn sessions(&self, caller: Caller) -> Result<Vec<Session>> {
+        self.sessions_for(caller)
     }
 
-    fn executions(&self) -> Result<Vec<Execution>> {
-        self.list_executions()
+    fn execution(&self, caller: Caller, id: &ExecutionId) -> Result<Option<Execution>> {
+        self.execution_for(caller, id)
+    }
+
+    fn executions(&self, caller: Caller) -> Result<Vec<Execution>> {
+        self.executions_for(caller)
     }
 
     fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
@@ -195,7 +222,7 @@ mod tests {
         create_through_trait(&mut store, &flow, &edge);
 
         let reader: &dyn CoreQueryRepository = &store;
-        assert_eq!(reader.flow(&flow.id).expect("query"), Some(flow.clone()));
+        assert_eq!(store.get_flow(&flow.id).expect("query"), Some(flow.clone()));
         let edges = reader
             .provenance_from(&ObjectRef::from(&flow.id))
             .expect("edge");
@@ -270,12 +297,8 @@ mod tests {
         )
         .expect("replay");
         assert_eq!(replay, response);
-        assert!(CoreQueryRepository::flow(&store, &first.id)
-            .unwrap()
-            .is_some());
-        assert!(CoreQueryRepository::flow(&store, &second.id)
-            .unwrap()
-            .is_none());
+        assert!(store.get_flow(&first.id).unwrap().is_some());
+        assert!(store.get_flow(&second.id).unwrap().is_none());
         assert_eq!(
             CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&first.id))
                 .unwrap()
@@ -305,9 +328,7 @@ mod tests {
             &operation,
         )
         .is_err());
-        assert!(CoreQueryRepository::flow(&store, &flow.id)
-            .unwrap()
-            .is_none());
+        assert!(unscoped_flow(&store, &flow.id).unwrap().is_none());
     }
 
     #[test]
@@ -365,11 +386,11 @@ mod tests {
         )
         .expect("create execution");
         assert_eq!(
-            CoreQueryRepository::session(&store, &session.id).unwrap(),
+            unscoped_session(&store, &session.id).unwrap(),
             Some(session.clone())
         );
         assert_eq!(
-            CoreQueryRepository::execution(&store, &execution.id).unwrap(),
+            unscoped_execution(&store, &execution.id).unwrap(),
             Some(execution)
         );
         assert_eq!(
@@ -428,12 +449,20 @@ mod tests {
         )
         .expect("replay session");
         assert_eq!(first, replay);
-        assert!(CoreQueryRepository::session(&store, &session.id)
-            .unwrap()
-            .is_some());
-        assert!(CoreQueryRepository::session(&store, &retry.id)
-            .unwrap()
-            .is_none());
+        assert!(unscoped_session(&store, &session.id).unwrap().is_some());
+        assert!(unscoped_session(&store, &retry.id).unwrap().is_none());
+    }
+
+    fn unscoped_flow(store: &Store, id: &FlowId) -> Result<Option<Flow>> {
+        store.get_flow(id)
+    }
+
+    fn unscoped_session(store: &Store, id: &SessionId) -> Result<Option<Session>> {
+        store.get_session(id)
+    }
+
+    fn unscoped_execution(store: &Store, id: &ExecutionId) -> Result<Option<Execution>> {
+        store.get_execution(id)
     }
 
     struct RecordingRepository {
@@ -468,8 +497,25 @@ mod tests {
             Ok(())
         }
 
-        fn activate_flow(&mut self, _id: &FlowId) -> Result<()> {
+        fn activate_flow(&mut self, _caller: Caller, id: &FlowId) -> Result<FlowView> {
+            Err(super::super::StorageError::NotFound(id.to_string()))
+        }
+
+        fn archive_flow(&mut self, _caller: Caller, id: &FlowId) -> Result<FlowView> {
+            Err(super::super::StorageError::NotFound(id.to_string()))
+        }
+
+        fn set_goal_status(
+            &mut self,
+            _caller: Caller,
+            _id: &GoalId,
+            _status: GoalStatus,
+        ) -> Result<()> {
             Ok(())
+        }
+
+        fn terminate_session(&mut self, _caller: Caller, id: &SessionId) -> Result<Session> {
+            Err(super::super::StorageError::NotFound(id.to_string()))
         }
 
         fn create_session(&mut self, _command: CreateSession<'_>) -> Result<()> {

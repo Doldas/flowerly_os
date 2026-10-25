@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
 pub mod repository;
+pub mod scoped;
+
+pub use scoped::FlowView;
 
 use std::fmt;
 use std::path::Path;
@@ -42,6 +45,11 @@ pub enum StorageError {
 
     #[error("invalid operation request: {0}")]
     InvalidOperation(String),
+
+    /// Refused for a reason that reveals nothing the caller cannot already
+    /// see (for example archiving the shared General Flow).
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 impl StorageError {
@@ -97,6 +105,7 @@ impl StorageError {
         use crate::ipc::ErrorCode;
         match self {
             Self::NotFound(_) => ErrorCode::NotFound,
+            Self::PermissionDenied(_) => ErrorCode::PermissionDenied,
             Self::InvalidOperation(_) | Self::ForeignKeyViolation(_) => ErrorCode::InvalidArgument,
             Self::OperationConflict(_) | Self::UniqueViolation(_) => ErrorCode::Conflict,
             Self::Sqlite(_) if self.is_busy() => ErrorCode::Unavailable,
@@ -364,6 +373,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "object_ownership",
         sql: include_str!("../../migrations/0009_object_ownership.sql"),
     },
+    Migration {
+        version: 10,
+        name: "per_owner_foreground",
+        sql: include_str!("../../migrations/0010_per_owner_foreground.sql"),
+    },
 ];
 
 /// Live domain counts reported by service Status.
@@ -548,9 +562,9 @@ impl Store {
 
     /// Bootstrap or recover the unique General system Flow transactionally.
     /// A pre-existing General keeps its durable ID, including legacy IDs.
-    /// For a fresh database General has a deterministic ID. If no Flow is
-    /// foreground, General becomes the default; otherwise preserve the
-    /// user's active Flow and only repair an archived General.
+    /// For a fresh database General has a deterministic ID. An archived
+    /// General is repaired. Foregrounds are per owner (`flow_foreground`)
+    /// and are never touched here: a uid without a row sees General.
     pub fn ensure_general_flow(&mut self) -> Result<FlowId> {
         let tx = self
             .conn
@@ -591,18 +605,12 @@ impl Store {
              WHERE id = ?1 AND state = 'ARCHIVED'",
             params![id.as_str()],
         )?;
-        let active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM flows WHERE state = 'FOREGROUND')",
-            [],
-            |row| row.get(0),
+        // General is the shared system Flow by definition (#225).
+        tx.execute(
+            "UPDATE flows SET owner_class = 'system', owner_uid = NULL
+             WHERE id = ?1 AND owner_class != 'system'",
+            params![id.as_str()],
         )?;
-        if !active {
-            tx.execute(
-                "UPDATE flows SET state = 'FOREGROUND',
-                 last_active = ?2, revision = revision + 1 WHERE id = ?1",
-                params![id.as_str(), Timestamp::now().as_millis()],
-            )?;
-        }
         tx.commit()?;
         Ok(id)
     }
@@ -835,6 +843,7 @@ impl Store {
             ));
         }
         self.insert_once(operation, |conn| {
+            check_goal_references(conn, goal)?;
             insert_goal_row(conn, goal)?;
             for edge in edges {
                 insert_provenance_row(conn, edge)?;
@@ -855,6 +864,7 @@ impl Store {
             ));
         }
         self.insert_once(operation, |conn| {
+            check_session_references(conn, session)?;
             insert_session_row(conn, session)?;
             for edge in edges {
                 insert_provenance_row(conn, edge)?;
@@ -1526,42 +1536,9 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Atomically move the foreground to one Flow in the shared state scope.
-    /// Missing or archived targets leave the current foreground unchanged.
-    pub fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let target: Option<String> = tx
-            .query_row(
-                "SELECT state FROM flows WHERE id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let target = target.ok_or_else(|| StorageError::NotFound(id.to_string()))?;
-        if target == "ARCHIVED" {
-            return Err(StorageError::NotFound(format!("archived flow: {id}")));
-        }
-        tx.execute(
-            "UPDATE flows SET state = 'ACTIVE', revision = revision + 1 WHERE state = 'FOREGROUND' AND id != ?1",
-            params![id.as_str()],
-        )?;
-        tx.execute(
-            "UPDATE flows SET state = 'FOREGROUND', last_active = ?2, revision = revision + 1 WHERE id = ?1",
-            params![id.as_str(), Timestamp::now().as_millis()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
+    /// Unscoped lifecycle change for internal and test use only; IPC handlers
+    /// use the owner-scoped [`Store::archive_flow_for`].
     pub fn set_flow_state(&self, id: &FlowId, state: FlowState) -> Result<()> {
-        if state == FlowState::Foreground {
-            return Err(StorageError::NotFound(
-                "use activate_flow for foreground transitions".to_owned(),
-            ));
-        }
-
         retry_on_busy(RetryConfig::default(), || {
             let changed = self.conn.execute(
                 "UPDATE flows SET state = ?2 WHERE id = ?1",
@@ -1587,6 +1564,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_goal_references(&tx, goal)?;
             insert_goal_row(&tx, goal)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1645,6 +1623,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_session_references(&tx, session)?;
             insert_session_row(&tx, session)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1718,6 +1697,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_execution_references(&tx, exec)?;
             insert_execution_row(&tx, exec)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1865,6 +1845,28 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![to.as_str()], map_provenance)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+/// Same-owner references, checked in the inserting transaction (#225).
+fn check_goal_references(conn: &Connection, goal: &Goal) -> Result<()> {
+    match &goal.parent_goal {
+        Some(parent) => scoped::require_same_owner_goal(conn, goal.owner, parent),
+        None => Ok(()),
+    }
+}
+
+fn check_session_references(conn: &Connection, session: &Session) -> Result<()> {
+    match &session.flow_id {
+        Some(flow) => scoped::require_usable_flow(conn, session.owner, flow),
+        None => Ok(()),
+    }
+}
+
+fn check_execution_references(conn: &Connection, exec: &Execution) -> Result<()> {
+    match &exec.goal_id {
+        Some(goal) => scoped::require_same_owner_goal(conn, exec.owner, goal),
+        None => Ok(()),
     }
 }
 
@@ -2420,6 +2422,10 @@ mod tests {
         let cases = [
             (StorageError::NotFound("x".into()), ErrorCode::NotFound),
             (
+                StorageError::PermissionDenied("x".into()),
+                ErrorCode::PermissionDenied,
+            ),
+            (
                 StorageError::InvalidOperation("x".into()),
                 ErrorCode::InvalidArgument,
             ),
@@ -2953,7 +2959,10 @@ mod tests {
         .unwrap();
 
         let applied = store.migrate().unwrap();
-        assert_eq!(applied.last().map(|m| m.version), Some(9));
+        assert_eq!(
+            applied.last().map(|m| m.version),
+            MIGRATIONS.last().map(|m| m.version)
+        );
         let c = &store.conn;
         let user = |uid| ("user".to_owned(), Some(uid));
         let unresolved = ("unresolved".to_owned(), None);
@@ -3252,85 +3261,33 @@ mod tests {
     }
 
     #[test]
-    fn database_rejects_second_foreground_from_separate_connection() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("state.db");
-        let mut first = Store::open(&path).expect("open first");
-        first.migrate().expect("migrate");
-        let second = Store::open(&path).expect("open second");
-        let a = Flow::new("A", "test");
-        let b = Flow::new("B", "test");
-        first.insert_flow(&a).expect("insert A");
-        first.insert_flow(&b).expect("insert B");
-
-        first.activate_flow(&a.id).expect("activate A");
-        let rejected = second.conn.execute(
-            "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
-            params![b.id.as_str()],
-        );
-        assert!(
-            rejected.is_err(),
-            "unique index must reject second foreground"
-        );
+    fn foreground_is_not_a_flow_state_after_0010() {
+        let store = migrated_store();
+        let mut flow = Flow::new("A", "uid:1000");
+        flow.owner = Owner::User(1000);
+        store.insert_flow(&flow).unwrap();
+        assert!(store
+            .conn
+            .execute(
+                "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
+                params![flow.id.as_str()],
+            )
+            .is_err());
+        assert!(store
+            .conn
+            .execute(
+                "INSERT INTO flows (id, name, state, created_by, created_at)
+                 VALUES ('flow-x', 'X', 'FOREGROUND', 'x', 1)",
+                [],
+            )
+            .is_err());
         assert_eq!(
-            first.get_flow(&a.id).unwrap().unwrap().state,
-            FlowState::Foreground
+            count(
+                &store.conn,
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_flows_single_foreground'"
+            ),
+            0
         );
-        assert_ne!(
-            first.get_flow(&b.id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
-
-        let mut second = second;
-        second.activate_flow(&b.id).expect("atomic switch to B");
-        assert_eq!(
-            first.get_flow(&b.id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
-        assert_eq!(
-            first.get_flow(&a.id).unwrap().unwrap().state,
-            FlowState::Active
-        );
-    }
-
-    #[test]
-    fn concurrent_connections_serialize_flow_activation() {
-        use std::sync::{Arc, Barrier};
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("state.db");
-        let mut setup = Store::open(&path).unwrap();
-        setup.migrate().unwrap();
-        let first = Flow::new("First", "test");
-        let second = Flow::new("Second", "test");
-        setup.insert_flow(&first).unwrap();
-        setup.insert_flow(&second).unwrap();
-        let barrier = Arc::new(Barrier::new(2));
-        let handles: Vec<_> = [first.id.clone(), second.id.clone()]
-            .into_iter()
-            .map(|id| {
-                let path = path.clone();
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    let mut store = Store::open(path).expect("open concurrent writer");
-                    barrier.wait();
-                    store.activate_flow(&id).expect("serialized activation");
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("activation thread");
-        }
-        let reloaded = Store::open(&path).unwrap();
-        let flows = reloaded.list_flows().unwrap();
-        assert_eq!(
-            flows
-                .iter()
-                .filter(|flow| flow.state == FlowState::Foreground)
-                .count(),
-            1
-        );
-        assert_eq!(flows.iter().filter(|flow| flow.revision > 1).count(), 2);
     }
 
     #[test]
@@ -3357,15 +3314,16 @@ mod tests {
     fn general_bootstrap_is_stable_across_restart_and_connections() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
+        let caller = crate::types::Caller::new(1000);
         let original = {
             let mut store = Store::open(&path).unwrap();
             store.migrate().unwrap();
             let id = store.ensure_general_flow().unwrap();
             assert_eq!(id.as_str(), "flow-general");
-            assert_eq!(
-                store.get_flow(&id).unwrap().unwrap().state,
-                FlowState::Foreground
-            );
+            let general = store.get_flow(&id).unwrap().unwrap();
+            assert_eq!(general.state, FlowState::Active);
+            assert_eq!(general.owner, Owner::System);
+            assert_eq!(store.foreground_flow_for(caller).unwrap().flow.id, id);
             id
         };
         let mut second = Store::open(&path).unwrap();
@@ -3380,13 +3338,15 @@ mod tests {
                 .count(),
             1
         );
-        let other = Flow::new("Other", "test");
+        let mut other = Flow::new("Other", "uid:1000");
+        other.owner = Owner::User(1000);
         second.insert_flow(&other).unwrap();
-        second.activate_flow(&other.id).unwrap();
+        second.activate_flow_for(caller, &other.id).unwrap();
+        // Restart bootstrap never resets anyone's foreground.
         assert_eq!(second.ensure_general_flow().unwrap(), original);
         assert_eq!(
-            second.get_flow(&other.id).unwrap().unwrap().state,
-            FlowState::Foreground
+            second.foreground_flow_for(caller).unwrap().flow.id,
+            other.id
         );
     }
 
@@ -3398,10 +3358,10 @@ mod tests {
         let legacy_id = general.id.clone();
         store.insert_flow(&general).unwrap();
         assert_eq!(store.ensure_general_flow().unwrap(), legacy_id);
-        assert_eq!(
-            store.get_flow(&legacy_id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
+        let recovered = store.get_flow(&legacy_id).unwrap().unwrap();
+        assert_eq!(recovered.state, FlowState::Active);
+        // The canonical General is always the shared system Flow.
+        assert_eq!(recovered.owner, Owner::System);
     }
 
     #[test]
@@ -3615,8 +3575,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("state.db");
 
-        let flow = Flow::new("Persistent", "test");
-        let goal = Goal::new("Persist the domain graph", "test");
+        let mut flow = Flow::new("Persistent", "test");
+        flow.owner = crate::types::Owner::User(1000);
+        let mut goal = Goal::new("Persist the domain graph", "test");
+        goal.owner = crate::types::Owner::User(1000);
         let session = Session {
             owner: crate::types::Owner::User(1000),
             id: SessionId::new(),

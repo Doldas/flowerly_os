@@ -426,7 +426,10 @@ def cross_uid(bin_dir):
         assert reply_of(as_user(alice, script, sock, command("flow.list")), "alice")["type"] == "ok"
         created = reply_of(as_user(alice, script, sock, command("goal.create", {"objective": "x"})), "alice")
         assert created["type"] == "ok", created
-        shown = reply_of(as_user(bob, script, sock, command("goal.show", {"id": created["data"]["id"]})), "show")
+        # The owner reads it back; bob (another uid, even as an admin) cannot (#225).
+        shown = reply_of(as_user(alice, script, sock, command("goal.show", {"id": created["data"]["id"]})), "show")
+        hidden = reply_of(as_user(bob, script, sock, command("goal.show", {"id": created["data"]["id"]})), "bob show")
+        assert hidden["type"] == "err" and hidden["code"] == "not_found", hidden
         # The kernel uid, not the spoofed "uid:0", is recorded as creator.
         assert shown["data"]["created_by"] == f"uid:{pwd.getpwnam(alice).pw_uid}", shown
         # Ownership is recorded from the kernel uid (#225), independent of the

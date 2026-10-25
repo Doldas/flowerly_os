@@ -53,7 +53,15 @@ pub(crate) fn client_policy(policy: &AccessPolicy) -> &'static str {
 pub(crate) const UNENFORCED_OWNERSHIP_ACK: &str = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP";
 pub(crate) const UNENFORCED_OWNERSHIP_ACK_VALUE: &str = "members-can-read-each-others-data";
 
-/// Refuse to admit other UIDs while per-user ownership is not enforced
+/// User commands whose data is not yet owner-scoped (#225).
+pub(crate) fn pending_scopes() -> impl Iterator<Item = (&'static str, &'static str)> {
+    DATA_SCOPES.iter().filter_map(|(name, scope)| match scope {
+        DataScope::Pending(pr) => Some((*name, *pr)),
+        _ => None,
+    })
+}
+
+/// Refuse to admit other UIDs while any User command is not owner-scoped
 /// (#225): users group members could read and change each other's data.
 /// Only an exact, deliberately unwieldy acknowledgment (used by the
 /// cross-UID tests) starts anyway; the shipped unit unsets it.
@@ -61,16 +69,143 @@ pub(crate) fn refuse_unenforced_multi_user(
     policy: &AccessPolicy,
     ack: Option<&str>,
 ) -> Result<(), String> {
-    if policy.users_gid.is_none() || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE) {
+    let pending = pending_scopes().count();
+    if policy.users_gid.is_none() || pending == 0 || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE) {
         return Ok(());
     }
     Err(format!(
         "a users group is configured, but per-user data ownership is not enforced yet \
-         (#225): its members could read and change each other's data. Unset \
-         AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only until \
-         #225 is closed. Test harnesses only: {UNENFORCED_OWNERSHIP_ACK}={UNENFORCED_OWNERSHIP_ACK_VALUE}"
+         (#225; {pending} User commands pending): users could read and change each other's \
+         data. Unset AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only \
+         until #225 is closed. Test harnesses only: \
+         {UNENFORCED_OWNERSHIP_ACK}={UNENFORCED_OWNERSHIP_ACK_VALUE}"
     ))
 }
+
+/// How a User command's stored data is separated between uids (#225).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataScope {
+    /// Only the caller's own objects, plus the shared General Flow for Flow
+    /// commands. Enforced in the owner-scoped storage API, inside the same
+    /// SQLite statement or transaction as any mutation; other uids' objects
+    /// are `not_found`.
+    OwnerScoped,
+    /// Shared system catalog data, read-only for User commands.
+    SharedSystem,
+    /// Reads no stored data.
+    Stateless,
+    /// Not yet owner-scoped; the named #225 PR scopes it. While any command is
+    /// pending, multi-user admission stays disabled (startup refusal).
+    Pending(&'static str),
+}
+
+/// The data scope of every User command. A unit test keeps this in step with
+/// [`COMMANDS`].
+pub(crate) const DATA_SCOPES: &[(&str, DataScope)] = &[
+    ("flow.create", DataScope::OwnerScoped),
+    ("flow.list", DataScope::OwnerScoped),
+    ("flow.activate", DataScope::OwnerScoped),
+    ("flow.archive", DataScope::OwnerScoped),
+    ("goal.create", DataScope::OwnerScoped),
+    ("goal.child", DataScope::OwnerScoped),
+    ("goal.show", DataScope::OwnerScoped),
+    ("goal.list", DataScope::OwnerScoped),
+    ("goal.complete", DataScope::OwnerScoped),
+    ("goal.abandon", DataScope::OwnerScoped),
+    ("session.create", DataScope::OwnerScoped),
+    ("session.list", DataScope::OwnerScoped),
+    ("session.terminate", DataScope::OwnerScoped),
+    ("execution.create", DataScope::OwnerScoped),
+    ("execution.show", DataScope::OwnerScoped),
+    ("execution.list", DataScope::OwnerScoped),
+    (
+        "provenance.from",
+        DataScope::Pending("PR 4: both endpoints visible"),
+    ),
+    (
+        "provenance.to",
+        DataScope::Pending("PR 4: both endpoints visible"),
+    ),
+    (
+        "generation.create",
+        DataScope::Pending("PR 6: private candidates"),
+    ),
+    (
+        "generation.list",
+        DataScope::Pending("PR 6: private candidates"),
+    ),
+    (
+        "generation.inspect",
+        DataScope::Pending("PR 6: private candidates"),
+    ),
+    ("capability.list", DataScope::Stateless),
+    ("model.list", DataScope::SharedSystem),
+    ("model.show", DataScope::SharedSystem),
+    ("model.compatibility", DataScope::SharedSystem),
+    ("device.budget", DataScope::SharedSystem),
+    ("provider.list", DataScope::SharedSystem),
+    ("provider.show", DataScope::SharedSystem),
+    (
+        "profile.create",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    (
+        "profile.clone",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    (
+        "profile.rename",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    ("profile.edit", DataScope::Pending("PR 5: private profiles")),
+    (
+        "profile.import",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    (
+        "profile.export",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    ("profile.list", DataScope::Pending("PR 5: private profiles")),
+    ("profile.show", DataScope::Pending("PR 5: private profiles")),
+    (
+        "profile.version_history",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    (
+        "profile.resolve",
+        DataScope::Pending("PR 5: private profiles"),
+    ),
+    (
+        "workload.submit",
+        DataScope::Pending("PR 5: private workloads"),
+    ),
+    (
+        "workload.list",
+        DataScope::Pending("PR 5: private workloads"),
+    ),
+    (
+        "workload.show",
+        DataScope::Pending("PR 5: private workloads"),
+    ),
+    (
+        "workload.stop",
+        DataScope::Pending("PR 5: private workloads"),
+    ),
+    (
+        "workload.complete",
+        DataScope::Pending("PR 5: private workloads"),
+    ),
+    (
+        "workload.usage_brief",
+        DataScope::Pending("PR 5: private usage"),
+    ),
+    ("inference.capabilities", DataScope::SharedSystem),
+    (
+        "inference.request",
+        DataScope::Pending("PR 5: private workloads and usage"),
+    ),
+];
 
 /// Decide a command for a kernel-attested peer. Only inventoried commands
 /// can be authorized; request arguments play no part in the decision.
@@ -276,6 +411,15 @@ pub(crate) fn classify(name: &str) -> Option<CommandClass> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn every_user_command_has_exactly_one_data_scope() {
+        let users: BTreeSet<_> = with_class(CommandClass::User).into_iter().collect();
+        let scoped: Vec<_> = DATA_SCOPES.iter().map(|(name, _)| *name).collect();
+        let unique: BTreeSet<_> = scoped.iter().copied().collect();
+        assert_eq!(unique.len(), scoped.len(), "duplicate data scope");
+        assert_eq!(unique, users, "User commands and data scopes differ");
+    }
 
     #[test]
     fn a_users_group_refuses_to_start_without_the_exact_acknowledgment() {

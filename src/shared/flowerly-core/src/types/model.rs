@@ -7,11 +7,11 @@ use super::{
     ObjectRef, ProfileId, ProviderId, SessionId, Timestamp, UsageId, WorkloadId,
 };
 
+/// Lifecycle of a Flow row. Which Flow is a caller's foreground is not a
+/// lifecycle state: it is per owner (`flow_foreground`, #225).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FlowState {
-    Foreground,
-
     Active,
 
     Quiescent,
@@ -22,8 +22,7 @@ pub enum FlowState {
 }
 
 impl FlowState {
-    pub const ALL: [FlowState; 5] = [
-        FlowState::Foreground,
+    pub const ALL: [FlowState; 4] = [
         FlowState::Active,
         FlowState::Quiescent,
         FlowState::Hibernated,
@@ -39,7 +38,6 @@ impl FlowState {
 impl fmt::Display for FlowState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            FlowState::Foreground => "FOREGROUND",
             FlowState::Active => "ACTIVE",
             FlowState::Quiescent => "QUIESCENT",
             FlowState::Hibernated => "HIBERNATED",
@@ -54,7 +52,6 @@ impl FromStr for FlowState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().as_str() {
-            "FOREGROUND" => Ok(FlowState::Foreground),
             "ACTIVE" => Ok(FlowState::Active),
             "QUIESCENT" => Ok(FlowState::Quiescent),
             "HIBERNATED" => Ok(FlowState::Hibernated),

@@ -222,7 +222,7 @@ impl Supervisor {
         let result = if name == "session.spawn" {
             self.spawn(store, args, caller)
         } else if name == "session.spawn.lookup" {
-            self.lookup_spawn(store, args)
+            self.lookup_spawn(store, args, caller)
         } else {
             self.control(store, name, args)
         };
@@ -391,7 +391,8 @@ impl Supervisor {
             .unwrap_or("user");
         let flow_id = {
             let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
-            super::parse_optional_flow_id(&db, args).map_err(|error| (error.code, error.message))?
+            super::parse_optional_flow_id(&db, args, caller)
+                .map_err(|error| (error.code, error.message))?
         };
         let session_id = SessionId::new();
         if let Some(operation_id) = operation_id {
@@ -534,7 +535,12 @@ impl Supervisor {
     /// A lookup never adopts a PID, grants a control token or starts a shell.
     /// It only identifies the reserved Session and whether its guardian is
     /// currently supervised by this daemon instance.
-    fn lookup_spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+    fn lookup_spawn(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        args: &Value,
+        caller: Caller,
+    ) -> Result<Value, Failure> {
         let key = args
             .get("operation_id")
             .and_then(Value::as_str)
@@ -564,7 +570,7 @@ impl Supervisor {
         let durable = store
             .lock()
             .map_err(|_| internal("store lock poisoned"))?
-            .get_session(&id)
+            .session_for(caller, &id)
             .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
             .is_some();
         Ok(json!({

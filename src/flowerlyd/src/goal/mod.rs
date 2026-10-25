@@ -25,7 +25,7 @@ pub(crate) fn handle_command(
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    if let Err((code, message)) = validate_goal_command(&store, name, args) {
+    if let Err((code, message)) = validate_goal_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
     match run_command(&mut store, name, args, caller) {
@@ -68,6 +68,7 @@ fn validate_goal_command(
     store: &Store,
     name: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     let raw = match name {
@@ -101,7 +102,8 @@ fn validate_goal_command(
         }
     };
     let id = GoalId::from_str(&raw).map_err(|error| invalid(&error.to_string()))?;
-    if CoreQueryRepository::goal(store, &id)
+    // Another owner's Goal is reported exactly like a missing one (#225).
+    if CoreQueryRepository::goal(store, caller, &id)
         .map_err(|error| (storage_error_code(&error), error.to_string()))?
         .is_none()
     {
@@ -269,11 +271,15 @@ fn run_command(
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let parent = GoalId::from_str(parent_id).map_err(err_str)?;
-            if CoreQueryRepository::goal(store, &parent)
+            // Rechecked in the inserting transaction (same owner only).
+            if CoreQueryRepository::goal(store, caller, &parent)
                 .map_err(CommandFailure::storage)?
                 .is_none()
             {
-                return Err(format!("goal not found: {parent}").into());
+                return Err(CommandFailure {
+                    code: ErrorCode::NotFound,
+                    message: format!("goal not found: {parent}"),
+                });
             }
             let objective = args
                 .get("objective")
@@ -341,9 +347,13 @@ fn run_command(
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
-            let goal = CoreQueryRepository::goal(store, &GoalId::from_str(id).map_err(err_str)?)
-                .map_err(CommandFailure::storage)?
-                .ok_or_else(|| format!("goal not found: {id}"))?;
+            let goal =
+                CoreQueryRepository::goal(store, caller, &GoalId::from_str(id).map_err(err_str)?)
+                    .map_err(CommandFailure::storage)?
+                    .ok_or_else(|| CommandFailure {
+                        code: ErrorCode::NotFound,
+                        message: format!("goal not found: {id}"),
+                    })?;
             Ok(serde_json::json!({
                 "id": goal.id,
                 "parent_goal": goal.parent_goal,
@@ -354,7 +364,8 @@ fn run_command(
             }))
         }
         "goal.list" => {
-            let goals = CoreQueryRepository::goals(store).map_err(CommandFailure::storage)?;
+            let goals =
+                CoreQueryRepository::goals(store, caller).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = goals
                 .iter()
                 .map(|g| {
@@ -379,8 +390,7 @@ fn run_command(
             } else {
                 GoalStatus::Abandoned
             };
-            store
-                .set_goal_status(&goal_id, status)
+            CoreCommandRepository::set_goal_status(store, caller, &goal_id, status)
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": goal_id, "status": status }))
         }
@@ -458,7 +468,9 @@ mod tests {
         ];
         for (command, args, expected) in cases {
             assert_eq!(
-                validate_goal_command(&store, command, &args).unwrap_err().0,
+                validate_goal_command(&store, command, &args, TEST_CALLER)
+                    .unwrap_err()
+                    .0,
                 expected
             );
         }
@@ -466,6 +478,7 @@ mod tests {
             &store,
             "goal.create",
             &serde_json::json!({"objective": "valid", "priority": null}),
+            TEST_CALLER
         )
         .is_ok());
     }
@@ -593,9 +606,45 @@ mod tests {
     }
 
     #[test]
+    fn another_owners_goal_is_indistinguishable_from_a_missing_one() {
+        let mut store = migrated_store();
+        let mut theirs = Goal::new("theirs", "uid:2000");
+        theirs.owner = Caller::new(2000).owner();
+        store.insert_goal(&theirs).expect("insert goal");
+        let missing = GoalId::new();
+        for id in [theirs.id.clone(), missing] {
+            for (command, args) in [
+                ("goal.show", serde_json::json!({ "id": id })),
+                ("goal.complete", serde_json::json!({ "id": id })),
+                ("goal.abandon", serde_json::json!({ "id": id })),
+                (
+                    "goal.child",
+                    serde_json::json!({ "id": id, "objective": "x" }),
+                ),
+            ] {
+                let (code, message) =
+                    validate_goal_command(&store, command, &args, TEST_CALLER).unwrap_err();
+                assert_eq!(code, ErrorCode::NotFound, "{command}");
+                assert_eq!(message, format!("goal not found: {id}"));
+                let failure = run_command(&mut store, command, &args, TEST_CALLER).unwrap_err();
+                assert_eq!(failure.code, ErrorCode::NotFound, "{command}");
+            }
+        }
+        let listed =
+            run_command(&mut store, "goal.list", &serde_json::json!({}), TEST_CALLER).unwrap();
+        assert_eq!(listed["count"], 0);
+        assert_eq!(
+            store.get_goal(&theirs.id).unwrap().unwrap().status,
+            theirs.status
+        );
+        assert_eq!(store.list_goals().unwrap().len(), 1, "no child was created");
+    }
+
+    #[test]
     fn child_of_existing_parent_is_created() {
         let mut store = migrated_store();
-        let parent = Goal::new("parent", "test");
+        let mut parent = Goal::new("parent", "test");
+        parent.owner = TEST_CALLER.owner();
         store.insert_goal(&parent).expect("insert parent");
 
         let response = run_command(
