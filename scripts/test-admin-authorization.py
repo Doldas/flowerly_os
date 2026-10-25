@@ -30,6 +30,7 @@ import json
 import os
 import pathlib
 import pwd
+import re
 import shutil
 import signal
 import socket
@@ -88,6 +89,22 @@ def client_main(socket_path, payload):
         print(json.dumps({"outcome": "eacces"}))
     except (ConnectionResetError, BrokenPipeError):
         print(json.dumps({"outcome": "closed"}))
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def audit_records(log_text):
+    """(command, outcome, service_account) of each `admin command` journal record."""
+    records = []
+    for line in ANSI.sub("", log_text).splitlines():
+        if "admin command" not in line:
+            continue
+        fields = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', line))
+        records.append((fields.get("command", "").strip('"'),
+                        fields.get("outcome", "").strip('"'),
+                        fields.get("service_account")))
+    return records
 
 
 def is_denied(reply):
@@ -161,6 +178,10 @@ def same_uid(bin_dir):
             finally:
                 stop(process)
             assert process.returncode == 0, (label, log.read_text())
+            # Every Admin decision is journaled, refusals included (#225).
+            records = audit_records(log.read_text())
+            for name in ADMIN_COMMANDS + ["shutdown"]:
+                assert (name, "denied", "true") in records, (label, name, records)
 
         process, sock, log = start(bin_dir, root, "granted",
                                    {"AGENTIC_ADMIN_GROUP": str(os.getgid())})
@@ -175,6 +196,12 @@ def same_uid(bin_dir):
         finally:
             stop(process)
         assert process.returncode == 0, log.read_text()
+        records = audit_records(log.read_text())
+        for name in ADMIN_COMMANDS:
+            assert any(c == name and o in ("succeeded", "failed") for c, o, _ in records), (name, records)
+        assert ("shutdown", "accepted", "true") in records, records
+        # Arguments, including forged identity values, are never journaled.
+        assert '"role"' not in log.read_text() and "uid:0" not in log.read_text()
 
         process, sock, log = start(bin_dir, root, "unknown",
                                    {"AGENTIC_ADMIN_GROUP": "flowerly-no-such-group"})
@@ -287,6 +314,13 @@ def shipped_unit(root, local_bin, script, service, users, admin, users_group, ad
         assert reply["type"] == "ok", reply
         process.wait(timeout=15)
         assert process.returncode == 0, log_path.read_text()
+        # The journal shows the service account, not the human operator: the
+        # operator must be identified from the sudo record (documented).
+        records = audit_records(log_path.read_text())
+        assert ("shutdown", "accepted", "true") in records, records
+        for name in ADMIN_COMMANDS:
+            assert (name, "denied", "true") in records, (name, records)
+            assert any(c == name and o in ("succeeded", "failed") for c, o, _ in records), name
     finally:
         if process.poll() is None:
             process.kill()
