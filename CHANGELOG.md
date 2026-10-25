@@ -13,6 +13,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 - Updated CLI socket routing, systemd unit scaffolds and input validation.
 - KVM execution and bootable images remain unimplemented.
 - Storage failures now map to IPC error codes through one shared classifier (#62). SQLite UNIQUE/PRIMARY KEY failures now return `conflict` and FOREIGN KEY failures `invalid_argument` in every service; they previously returned `internal` everywhere except Generation. Only BUSY/LOCKED returns `unavailable`.
+- `provider.register` refuses a non-string `kind` (it was silently registered as `local-unix`) and non-string `capabilities` entries (they were silently dropped) (#53).
 - PTY writer-lease rules (exclusivity, 60 s expiry, renewal, revoked and forged tokens) are factored into pure functions with deterministic expiry tests; the same-UID isolation limits are documented (#73).
 - Every `flowerlyd` command is classified User or Admin in one inventory, and the router dispatches only classified commands. Status reports the transitional `admin_authorization` policy (#31).
 - PTY caller mistakes (cursor past the end or negative, malformed `wait_ms`, write data or dimensions) now return `invalid_argument` instead of retryable `unavailable`. The long-poll contract is covered by a new adversarial test (#73).

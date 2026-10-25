@@ -235,6 +235,17 @@ def main(bin_dir):
                          "capabilities": ["text"]}),
                 "permission_denied", "no egress policy authorization",
             )
+            # Wrongly typed fields are refused, never coerced or filtered (#53).
+            err_args(
+                request(sock, "provider.register",
+                        {"name": "typed-kind", "kind": 42, "capabilities": ["text"]}),
+                "invalid_argument", "`kind` must be a string",
+            )
+            err_args(
+                request(sock, "provider.register",
+                        {"name": "typed-caps", "capabilities": [1, "text"]}),
+                "invalid_argument", "capabilities",
+            )
             listed = request(sock, "provider.list", {})["data"]
             kinds = [row["kind"] for row in listed["providers"]]
             assert kinds == ["local-unix"], kinds
