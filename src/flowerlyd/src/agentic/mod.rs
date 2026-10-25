@@ -27,7 +27,7 @@ pub(crate) fn handle_command(
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    if let Err((code, message)) = validate_execution_command(&store, name, args) {
+    if let Err((code, message)) = validate_execution_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
     match run_command(&mut store, name, args, caller) {
@@ -42,6 +42,7 @@ fn validate_execution_command(
     store: &Store,
     name: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match name {
@@ -50,8 +51,7 @@ fn validate_execution_command(
             let goal_id: Option<GoalId> =
                 parse_optional_typed(args, "goal_id").map_err(|e| invalid(&e))?;
             if let Some(goal_id) = &goal_id {
-                if store
-                    .get_goal(goal_id)
+                if CoreQueryRepository::goal(store, caller, goal_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
@@ -150,13 +150,17 @@ fn run_command(
         "execution.create" => {
             let agent_id: Option<AgentId> = parse_optional_typed(args, "agent_id")?;
             let goal_id: Option<GoalId> = parse_optional_typed(args, "goal_id")?;
+            // Only the caller's own Goal; rechecked in the inserting
+            // transaction (#225).
             if let Some(goal_id) = &goal_id {
-                if store
-                    .get_goal(goal_id)
+                if CoreQueryRepository::goal(store, caller, goal_id)
                     .map_err(CommandFailure::storage)?
                     .is_none()
                 {
-                    return Err(format!("goal not found: {goal_id}").into());
+                    return Err(CommandFailure {
+                        code: ErrorCode::NotFound,
+                        message: format!("goal not found: {goal_id}"),
+                    });
                 }
             }
 
@@ -215,8 +219,8 @@ fn run_command(
                 .and_then(Value::as_str)
                 .ok_or("missing `id`")?;
             let exec_id = ExecutionId::from_str(raw).map_err(err_str)?;
-            let record =
-                CoreQueryRepository::execution(store, &exec_id).map_err(CommandFailure::storage)?;
+            let record = CoreQueryRepository::execution(store, caller, &exec_id)
+                .map_err(CommandFailure::storage)?;
             let data = match record {
                 Some(record) => serde_json::to_value(&record).map_err(err_str)?,
                 None => serde_json::json!(null),
@@ -225,7 +229,7 @@ fn run_command(
         }
         "execution.list" => {
             let records =
-                CoreQueryRepository::executions(store).map_err(CommandFailure::storage)?;
+                CoreQueryRepository::executions(store, caller).map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "executions": records, "count": records.len() }))
         }
         other => Err(format!("agenticd: unknown command `{other}`").into()),
@@ -340,7 +344,7 @@ mod tests {
         )
         .expect("create");
         let id = ExecutionId::from_str(response["id"].as_str().expect("id")).expect("execution id");
-        let record = CoreQueryRepository::execution(&store, &id)
+        let record = CoreQueryRepository::execution(&store, TEST_CALLER, &id)
             .expect("query")
             .expect("exists");
         assert_eq!(record.command.as_deref(), Some("true"));
@@ -462,7 +466,7 @@ mod tests {
             ),
         ];
         for (command, args, expected) in cases {
-            let error = validate_execution_command(&store, command, &args)
+            let error = validate_execution_command(&store, command, &args, TEST_CALLER)
                 .unwrap_err()
                 .0;
             assert_eq!(error, expected, "{command} {args}");
@@ -471,14 +475,51 @@ mod tests {
             &store,
             "execution.create",
             &serde_json::json!({"command": "true"}),
+            TEST_CALLER
         )
         .is_ok());
     }
 
     #[test]
+    fn another_owners_goal_and_executions_are_invisible() {
+        let mut store = migrated_store();
+        let other = Caller::new(2000);
+        let mut theirs = Goal::new("theirs", "uid:2000");
+        theirs.owner = other.owner();
+        store.insert_goal(&theirs).expect("insert goal");
+        let args = serde_json::json!({ "goal_id": theirs.id });
+        let (code, message) =
+            validate_execution_command(&store, "execution.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        assert_eq!(message, format!("goal not found: {}", theirs.id));
+        let failure = run_command(&mut store, "execution.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::NotFound);
+        assert!(store.list_executions().unwrap().is_empty());
+
+        let created = run_command(&mut store, "execution.create", &args, other).unwrap();
+        let shown = run_command(
+            &mut store,
+            "execution.show",
+            &serde_json::json!({ "id": created["id"] }),
+            TEST_CALLER,
+        )
+        .unwrap();
+        assert_eq!(shown["execution"], serde_json::Value::Null);
+        let listed = run_command(
+            &mut store,
+            "execution.list",
+            &serde_json::json!({}),
+            TEST_CALLER,
+        )
+        .unwrap();
+        assert_eq!(listed["count"], 0);
+    }
+
+    #[test]
     fn execution_and_goal_provenance_commit_together() {
         let mut store = migrated_store();
-        let goal = Goal::new("Run the test", "test");
+        let mut goal = Goal::new("Run the test", "test");
+        goal.owner = TEST_CALLER.owner();
         store.insert_goal(&goal).expect("insert goal");
 
         let response = run_command(

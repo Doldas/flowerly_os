@@ -125,6 +125,9 @@ jobs:
       - name: Cross-UID Linux group authorization with real users and groups
         run: sudo -n python3 ./scripts/test-admin-authorization.py --cross-uid target/release
 
+      - name: Cross-UID per-user ownership of Flows, Goals, Sessions and Executions (#225)
+        run: sudo -n python3 ./scripts/test-user-ownership.py --cross-uid target/release
+
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
 

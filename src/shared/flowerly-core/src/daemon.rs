@@ -81,6 +81,9 @@ pub async fn run_service(
     run_service_with_status(config, Arc::new(move || extra_status.clone()), handler).await
 }
 
+/// Status details for one kernel-attested peer, recomputed per request.
+pub type StatusProvider = dyn Fn(&PeerIdentity) -> Value + Send + Sync;
+
 /// Status details are recomputed for each request by the bounded IPC handler,
 /// rather than reporting counts captured at service startup.
 pub async fn run_service_with_status(
@@ -93,19 +96,20 @@ pub async fn run_service_with_status(
         config,
         AccessPolicy::default(),
         ShutdownAuthority::ServiceAccount,
-        status_details,
+        Arc::new(move |_peer: &PeerIdentity| status_details()),
         handler,
     )
     .await
 }
 
 /// Like [`run_service_with_status`], but admits peers by `policy`, hands
-/// the kernel-attested peer to `handler` for per-command authorization, and
-/// refuses IPC `shutdown` to anyone outside the admin group.
+/// the kernel-attested peer to `handler` for per-command authorization and
+/// to `status_details` so Status can be scoped to it, and refuses IPC
+/// `shutdown` to anyone outside the admin group.
 pub async fn run_authorized_service(
     config: ServiceConfig,
     policy: AccessPolicy,
-    status_details: Arc<dyn Fn() -> Value + Send + Sync>,
+    status_details: Arc<StatusProvider>,
     handler: Arc<AuthenticatedHandler>,
 ) -> anyhow::Result<()> {
     serve(
@@ -145,7 +149,7 @@ async fn serve(
     config: ServiceConfig,
     policy: AccessPolicy,
     shutdown_authority: ShutdownAuthority,
-    status_details: Arc<dyn Fn() -> Value + Send + Sync>,
+    status_details: Arc<StatusProvider>,
     handler: Arc<AuthenticatedHandler>,
 ) -> anyhow::Result<()> {
     let context = ServiceContext::for_current_process(&config.name);
@@ -171,7 +175,7 @@ async fn serve(
                 version: crate::ipc::PROTOCOL_VERSION,
                 id: request.id.clone(),
                 payload: Payload::Ok {
-                    data: status_context.status(status_details()),
+                    data: status_context.status(status_details(peer)),
                 },
             },
             Payload::Shutdown
@@ -352,7 +356,7 @@ mod tests {
                 users_gid: None,
                 admin_gid: Some(foreign_gid),
             },
-            Arc::new(|| serde_json::json!({})),
+            Arc::new(|_: &PeerIdentity| serde_json::json!({})),
             Arc::new(|request: &Envelope, peer: &PeerIdentity| {
                 ok_envelope(
                     request.id.clone(),
@@ -413,7 +417,7 @@ mod tests {
                 users_gid: None,
                 admin_gid: Some(gid),
             },
-            Arc::new(|| serde_json::json!({})),
+            Arc::new(|_: &PeerIdentity| serde_json::json!({})),
             Arc::new(|request: &Envelope, _peer: &PeerIdentity| {
                 ok_envelope(request.id.clone(), serde_json::json!({}))
             }),

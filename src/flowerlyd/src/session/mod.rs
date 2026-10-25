@@ -123,7 +123,7 @@ pub(crate) fn handle_command(
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    if let Err((code, message)) = validate_session_command(&store, name, args) {
+    if let Err((code, message)) = validate_session_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
     match run_command(&mut store, name, args, caller) {
@@ -160,6 +160,7 @@ fn validate_session_command(
     store: &Store,
     name: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match name {
@@ -169,7 +170,8 @@ fn validate_session_command(
             let _ = (&typed.kind, &typed.cwd, &typed.operation_id);
             if let Some(raw) = typed.flow_id.as_deref() {
                 let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                if CoreQueryRepository::flow(store, &flow_id)
+                // Own Flow or General only; rechecked when inserting (#225).
+                if CoreQueryRepository::flow(store, caller, &flow_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
@@ -187,7 +189,7 @@ fn validate_session_command(
             let typed: SessionIdArgs = crate::args::typed_args("session", args)?;
             let raw = typed.id.as_str();
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            let existing = CoreQueryRepository::session(store, &id)
+            let existing = CoreQueryRepository::session(store, caller, &id)
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
             let session = existing
                 .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
@@ -287,7 +289,7 @@ fn run_command(
                 .get("created_by")
                 .and_then(Value::as_str)
                 .unwrap_or("user");
-            let flow_id = parse_optional_flow_id(store, args)?;
+            let flow_id = parse_optional_flow_id(store, args, caller)?;
             let pid = parse_optional_pid(args)?;
             let session = Session {
                 id: SessionId::new(),
@@ -356,7 +358,8 @@ fn run_command(
             Ok(response)
         }
         "session.list" => {
-            let sessions = CoreQueryRepository::sessions(store).map_err(CommandFailure::storage)?;
+            let sessions =
+                CoreQueryRepository::sessions(store, caller).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = sessions
                 .iter()
                 .map(|s| {
@@ -379,15 +382,7 @@ fn run_command(
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let session_id = SessionId::from_str(id).map_err(err_str)?;
-            let session = CoreQueryRepository::session(store, &session_id)
-                .map_err(CommandFailure::storage)?
-                .ok_or_else(|| format!("session not found: {id}"))?;
-
-            store
-                .update_session_state(&session_id, SessionState::Exited)
-                .map_err(CommandFailure::storage)?;
-            store
-                .update_session_presentation_state(&session_id, SessionPresentationState::Detached)
+            let session = CoreCommandRepository::terminate_session(store, caller, &session_id)
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({
                 "id": session_id,
@@ -401,7 +396,12 @@ fn run_command(
     }
 }
 
-fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>, CommandFailure> {
+/// A Flow the caller may attach a Session to: its own or General.
+fn parse_optional_flow_id(
+    store: &Store,
+    args: &Value,
+    caller: Caller,
+) -> Result<Option<FlowId>, CommandFailure> {
     let Some(value) = args.get("flow_id") else {
         return Ok(None);
     };
@@ -413,11 +413,14 @@ fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>,
         .as_str()
         .ok_or("arg `flow_id` must be a string or null")?;
     let flow_id = FlowId::from_str(raw).map_err(err_str)?;
-    if CoreQueryRepository::flow(store, &flow_id)
+    if CoreQueryRepository::flow(store, caller, &flow_id)
         .map_err(CommandFailure::storage)?
         .is_none()
     {
-        return Err(format!("flow not found: {flow_id}").into());
+        return Err(CommandFailure {
+            code: ErrorCode::NotFound,
+            message: format!("flow not found: {flow_id}"),
+        });
     }
     Ok(Some(flow_id))
 }
@@ -550,7 +553,7 @@ mod tests {
         ];
         for (command, args, expected) in cases {
             assert_eq!(
-                validate_session_command(&store, command, &args)
+                validate_session_command(&store, command, &args, TEST_CALLER)
                     .unwrap_err()
                     .0,
                 expected
@@ -605,9 +608,49 @@ mod tests {
     }
 
     #[test]
+    fn sessions_attach_only_to_own_flows_or_general_and_stay_private() {
+        let mut store = migrated_store();
+        let general = store.ensure_general_flow().unwrap();
+        let other = Caller::new(2000);
+        let mut theirs = flowerly_core::types::Flow::new("Theirs", "uid:2000");
+        theirs.owner = other.owner();
+        store.insert_flow(&theirs).expect("insert flow");
+        let args = serde_json::json!({ "flow_id": theirs.id, "kind": "metadata" });
+        let (code, _) =
+            validate_session_command(&store, "session.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        let failure = run_command(&mut store, "session.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::NotFound);
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        let in_general = serde_json::json!({ "flow_id": general, "kind": "metadata" });
+        let created = run_command(&mut store, "session.create", &in_general, other).unwrap();
+        let id = serde_json::json!({ "id": created["id"] });
+        let (code, _) =
+            validate_session_command(&store, "session.terminate", &id, TEST_CALLER).unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        assert_eq!(
+            run_command(&mut store, "session.terminate", &id, TEST_CALLER)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+        let listed = run_command(
+            &mut store,
+            "session.list",
+            &serde_json::json!({}),
+            TEST_CALLER,
+        )
+        .unwrap();
+        assert_eq!(listed["count"], 0);
+        run_command(&mut store, "session.terminate", &id, other).expect("owner may terminate");
+    }
+
+    #[test]
     fn valid_existing_flow_is_preserved_on_session() {
         let mut store = migrated_store();
-        let flow = flowerly_core::types::Flow::new("Development", "test");
+        let mut flow = flowerly_core::types::Flow::new("Development", "test");
+        flow.owner = TEST_CALLER.owner();
         store.insert_flow(&flow).expect("insert flow");
 
         let response = run_command(

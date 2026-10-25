@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::repository::{CoreCommandRepository, CoreQueryRepository, CreateFlow};
-use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::storage::{FlowView, MutationOperation, StorageError, Store};
 use flowerly_core::types::Caller;
 use flowerly_core::types::{
     Flow, FlowId, FlowState, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
@@ -33,7 +33,7 @@ pub(crate) fn handle_command(
             return error_envelope(request.id.clone(), "storage lock poisoned");
         }
     };
-    if let Err((code, message)) = validate_flow_command(&store, name, args) {
+    if let Err((code, message)) = validate_flow_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
     let data = match run_command(&mut store, name, args, caller) {
@@ -71,6 +71,7 @@ fn validate_flow_command(
     store: &Store,
     command: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match command {
@@ -94,37 +95,26 @@ fn validate_flow_command(
         }
         "flow.activate" | "flow.archive" => {
             let typed: FlowRefArgs = crate::args::typed_args("flow", args)?;
-            let flow = if let Some(raw) = typed.id.as_deref() {
-                let id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                CoreQueryRepository::flow(store, &id)
-                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
-                    .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {id}")))?
-            } else if let Some(name) = typed.name.as_deref() {
-                let mut matches = CoreQueryRepository::flows(store)
-                    .map_err(|e| (storage_error_code(&e), e.to_string()))?
-                    .into_iter()
-                    .filter(|flow| flow.name == name);
-                let found = matches
-                    .next()
-                    .ok_or_else(|| (ErrorCode::NotFound, format!("flow not found: {name}")))?;
-                if matches.next().is_some() {
-                    return Err((
-                        ErrorCode::Conflict,
-                        format!("ambiguous flow name: {name}; use id"),
-                    ));
-                }
-                found
-            } else {
+            if typed.id.is_none() && typed.name.is_none() {
                 return Err(invalid("provide either `id` or `name`"));
-            };
-            if command == "flow.archive" && flow.name == "General" {
+            }
+            if let Some(raw) = typed.id.as_deref() {
+                FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
+            }
+            // Visibility, General and archived checks use the caller's view
+            // and are repeated inside the mutating transaction.
+            let view = find_flow(store, args, caller).map_err(|e| (e.code, e.message))?;
+            if command == "flow.archive" && view.is_general() {
                 return Err((
                     ErrorCode::PermissionDenied,
                     "General cannot be archived".to_owned(),
                 ));
             }
-            if command == "flow.activate" && flow.state == FlowState::Archived {
-                return Err((ErrorCode::Conflict, format!("archived flow: {}", flow.id)));
+            if command == "flow.activate" && view.flow.state == FlowState::Archived {
+                return Err((
+                    ErrorCode::Conflict,
+                    format!("archived flow: {}", view.flow.id),
+                ));
             }
         }
         other => {
@@ -275,63 +265,72 @@ fn run_command(
             Ok(response)
         }
         "flow.list" => {
-            let flows = CoreQueryRepository::flows(store).map_err(CommandFailure::storage)?;
-            let items: Vec<Value> = flows
-                .iter()
-                .map(|f| serde_json::json!({ "id": f.id, "name": f.name, "state": f.state }))
-                .collect();
+            let flows =
+                CoreQueryRepository::flows(store, caller).map_err(CommandFailure::storage)?;
+            let items: Vec<Value> = flows.iter().map(flow_json).collect();
             Ok(serde_json::json!({ "flows": items, "count": items.len() }))
         }
         "flow.activate" | "flow.archive" => {
-            let flow = find_flow(store, args)?;
-            let state = if name == "flow.activate" {
-                FlowState::Foreground
+            let target = find_flow(store, args, caller)?;
+            let view = if name == "flow.activate" {
+                CoreCommandRepository::activate_flow(store, caller, &target.flow.id)
             } else {
-                FlowState::Archived
-            };
-            if state == FlowState::Archived && flow.name == "General" {
-                return Err("General cannot be archived".into());
+                CoreCommandRepository::archive_flow(store, caller, &target.flow.id)
             }
-            if state == FlowState::Foreground {
-                CoreCommandRepository::activate_flow(store, &flow.id)
-                    .map_err(CommandFailure::storage)?;
-            } else {
-                store
-                    .set_flow_state(&flow.id, state)
-                    .map_err(CommandFailure::storage)?;
-            }
-            Ok(serde_json::json!({ "id": flow.id, "name": flow.name, "state": state }))
+            .map_err(CommandFailure::storage)?;
+            Ok(flow_json(&view))
         }
         other => Err(format!("flowd: unknown command `{other}`").into()),
     }
 }
 
-fn find_flow(
-    store: &Store,
-    args: &Value,
-) -> std::result::Result<flowerly_core::types::Flow, CommandFailure> {
+/// A Flow as the caller sees it: lifecycle `state` and, separately, whether
+/// it is the caller's own effective `foreground` (#225).
+fn flow_json(view: &FlowView) -> Value {
+    serde_json::json!({
+        "id": view.flow.id,
+        "name": view.flow.name,
+        "state": view.flow.state,
+        "foreground": view.foreground,
+    })
+}
+
+/// Resolve `id` (preferred) or `name` among the Flows visible to `caller`.
+/// Another owner's Flow is reported exactly like a missing one.
+fn find_flow(store: &Store, args: &Value, caller: Caller) -> Result<FlowView, CommandFailure> {
+    let not_found = |what: &str| CommandFailure {
+        code: ErrorCode::NotFound,
+        message: format!("flow not found: {what}"),
+    };
     if let Some(value) = args.get("id").filter(|value| !value.is_null()) {
-        let raw = value.as_str().ok_or("arg `id` must be a string")?;
-        let id = FlowId::from_str(raw).map_err(err_str)?;
-        if let Some(flow) =
-            CoreQueryRepository::flow(store, &id).map_err(CommandFailure::storage)?
-        {
-            return Ok(flow);
-        }
-        return Err(format!("flow not found: {id}").into());
+        let raw = value.as_str().ok_or(CommandFailure {
+            code: ErrorCode::InvalidArgument,
+            message: "arg `id` must be a string".to_owned(),
+        })?;
+        let id = FlowId::from_str(raw).map_err(|error| CommandFailure {
+            code: ErrorCode::InvalidArgument,
+            message: error.to_string(),
+        })?;
+        return CoreQueryRepository::flow(store, caller, &id)
+            .map_err(CommandFailure::storage)?
+            .ok_or_else(|| not_found(id.as_str()));
     }
     if let Some(by_name) = args.get("name").and_then(Value::as_str) {
-        let flows = CoreQueryRepository::flows(store).map_err(CommandFailure::storage)?;
-        let mut matches = flows.into_iter().filter(|f| f.name == by_name);
-        if let Some(flow) = matches.next() {
-            if matches.next().is_some() {
-                return Err(format!("ambiguous flow name: {by_name}; use id").into());
-            }
-            return Ok(flow);
+        let flows = CoreQueryRepository::flows(store, caller).map_err(CommandFailure::storage)?;
+        let mut matches = flows.into_iter().filter(|view| view.flow.name == by_name);
+        let found = matches.next().ok_or_else(|| not_found(by_name))?;
+        if matches.next().is_some() {
+            return Err(CommandFailure {
+                code: ErrorCode::Conflict,
+                message: format!("ambiguous flow name: {by_name}; use id"),
+            });
         }
-        return Err(format!("flow not found: {by_name}").into());
+        return Ok(found);
     }
-    Err("provide either `id` or `name`".into())
+    Err(CommandFailure {
+        code: ErrorCode::InvalidArgument,
+        message: "provide either `id` or `name`".to_owned(),
+    })
 }
 
 fn err_str(error: impl std::fmt::Display) -> String {
@@ -370,11 +369,21 @@ mod tests {
         store
     }
 
+    fn owned(name: &str, caller: Caller) -> Flow {
+        let mut flow = Flow::new(name, caller.actor());
+        flow.owner = caller.owner();
+        flow
+    }
+
     #[test]
     fn malformed_flow_id_is_rejected_instead_of_falling_back() {
         let store = migrated_store();
-        let error = find_flow(&store, &serde_json::json!({ "id": "not-a-flow-id" }))
-            .expect_err("invalid flow id must fail");
+        let error = find_flow(
+            &store,
+            &serde_json::json!({ "id": "not-a-flow-id" }),
+            TEST_CALLER,
+        )
+        .expect_err("invalid flow id must fail");
 
         assert!(
             error.contains("flow"),
@@ -383,28 +392,71 @@ mod tests {
     }
 
     #[test]
-    fn activation_demotes_previous_and_records_activity() {
+    fn activation_is_per_owner_and_records_activity() {
         let mut store = migrated_store();
-        let a = Flow::new("Alpha", "user");
-        let b = Flow::new("Beta", "user");
+        ensure_general_flow(&mut store).unwrap();
+        let other = Caller::new(2000);
+        let a = owned("Alpha", TEST_CALLER);
+        let b = owned("Beta", TEST_CALLER);
         store.insert_flow(&a).unwrap();
         store.insert_flow(&b).unwrap();
-        store.activate_flow(&a.id).unwrap();
-        store.activate_flow(&b.id).unwrap();
-        let old = store.get_flow(&a.id).unwrap().unwrap();
+        let activate = |store: &mut Store, id: &FlowId| {
+            run_command(
+                store,
+                "flow.activate",
+                &serde_json::json!({ "id": id }),
+                TEST_CALLER,
+            )
+            .unwrap()
+        };
+        activate(&mut store, &a.id);
+        let reply = activate(&mut store, &b.id);
+        assert_eq!(reply["foreground"], true);
+        assert_eq!(reply["state"], "ACTIVE", "lifecycle state is separate");
         let current = store.get_flow(&b.id).unwrap().unwrap();
-        assert_eq!(old.state, FlowState::Active);
-        assert_eq!(current.state, FlowState::Foreground);
         assert!(current.last_active.is_some());
         assert!(current.revision > b.revision);
+        let list =
+            run_command(&mut store, "flow.list", &serde_json::json!({}), TEST_CALLER).unwrap();
+        let foreground: Vec<_> = list["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|flow| flow["foreground"] == true)
+            .map(|flow| flow["name"].clone())
+            .collect();
+        assert_eq!(foreground, ["Beta"]);
+        // Another uid still has General and cannot see either Flow.
+        let theirs = run_command(&mut store, "flow.list", &serde_json::json!({}), other).unwrap();
         assert_eq!(
-            store
-                .list_flows()
-                .unwrap()
-                .iter()
-                .filter(|f| f.state == FlowState::Foreground)
-                .count(),
-            1
+            theirs["flows"],
+            serde_json::json!([{"id": "flow-general", "name": "General",
+                                "state": "ACTIVE", "foreground": true}])
+        );
+    }
+
+    #[test]
+    fn another_owners_flow_is_not_found_by_id_or_name() {
+        let mut store = migrated_store();
+        ensure_general_flow(&mut store).unwrap();
+        let theirs = owned("Private", Caller::new(2000));
+        store.insert_flow(&theirs).unwrap();
+        for args in [
+            serde_json::json!({ "id": theirs.id }),
+            serde_json::json!({ "name": "Private" }),
+        ] {
+            for command in ["flow.activate", "flow.archive"] {
+                let (code, message) =
+                    validate_flow_command(&store, command, &args, TEST_CALLER).unwrap_err();
+                assert_eq!(code, ErrorCode::NotFound, "{command} {args}");
+                assert!(message.starts_with("flow not found: "), "{message}");
+                let failure = run_command(&mut store, command, &args, TEST_CALLER).unwrap_err();
+                assert_eq!(failure.code, ErrorCode::NotFound);
+            }
+        }
+        assert_eq!(
+            store.get_flow(&theirs.id).unwrap().unwrap().state,
+            FlowState::Active
         );
     }
 
@@ -413,11 +465,21 @@ mod tests {
         let mut store = migrated_store();
         ensure_general_flow(&mut store).unwrap();
         for _ in 0..2 {
-            store.insert_flow(&Flow::new("Duplicate", "user")).unwrap();
+            store.insert_flow(&owned("Duplicate", TEST_CALLER)).unwrap();
         }
-        assert!(find_flow(&store, &serde_json::json!({"name":"Duplicate"}))
-            .unwrap_err()
-            .contains("ambiguous"));
+        // Another owner's same-named Flow is invisible, not ambiguous.
+        store
+            .insert_flow(&owned("Mine", Caller::new(2000)))
+            .unwrap();
+        store.insert_flow(&owned("Mine", TEST_CALLER)).unwrap();
+        assert!(find_flow(&store, &serde_json::json!({"name":"Mine"}), TEST_CALLER).is_ok());
+        assert!(find_flow(
+            &store,
+            &serde_json::json!({"name":"Duplicate"}),
+            TEST_CALLER
+        )
+        .unwrap_err()
+        .contains("ambiguous"));
         assert!(run_command(
             &mut store,
             "flow.archive",
@@ -457,17 +519,20 @@ mod tests {
         ];
         for (command, args, expected) in cases {
             assert_eq!(
-                validate_flow_command(&store, command, &args).unwrap_err().0,
+                validate_flow_command(&store, command, &args, TEST_CALLER)
+                    .unwrap_err()
+                    .0,
                 expected
             );
         }
         for _ in 0..2 {
-            store.insert_flow(&Flow::new("Collision", "user")).unwrap();
+            store.insert_flow(&owned("Collision", TEST_CALLER)).unwrap();
         }
         let ambiguous = validate_flow_command(
             &store,
             "flow.activate",
             &serde_json::json!({"name": "Collision"}),
+            TEST_CALLER,
         );
         assert_eq!(ambiguous.unwrap_err().0, ErrorCode::Conflict);
     }
@@ -475,7 +540,7 @@ mod tests {
     #[test]
     fn non_string_flow_id_is_rejected() {
         let store = migrated_store();
-        let error = find_flow(&store, &serde_json::json!({ "id": 42 }))
+        let error = find_flow(&store, &serde_json::json!({ "id": 42 }), TEST_CALLER)
             .expect_err("non-string flow id must fail");
 
         assert_eq!(error, "arg `id` must be a string");
