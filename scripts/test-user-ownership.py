@@ -20,6 +20,10 @@ assertions:
     help.
   * Activating any Flow, including General, never changes another uid's
     foreground. The foreground-mutation bug is fixed.
+  * Provenance edges are shown only when both endpoints are visible, and
+    another uid's object answers like a missing reference. A Generation
+    may name only its creator's own Goal, and inspect never reveals another
+    uid's Goal. No Status count changes for bob when alice adds data.
   * Foregrounds survive a daemon restart, and the database holds one
     flow_foreground row per uid that chose a non-General Flow.
 
@@ -236,6 +240,30 @@ def ownership_scenario(alice, bob, alice_uid, bob_uid, db_path, restart):
     assert alice.ok("session.list")["sessions"][0]["state"] == "RUNNING"
     assert alice.ok("execution.list")["count"] == 1
 
+    # Provenance is filtered by both endpoints (PR 4), like a missing ref.
+    for name, ref in [("provenance.from", exec_a), ("provenance.to", goal_a),
+                      ("provenance.to", f"actor:uid:{alice_uid}"),
+                      ("provenance.from", MISSING_GOAL)]:
+        assert bob.ok(name, ref=ref)["count"] == 0, (name, ref)
+    assert alice.ok("provenance.to", ref=goal_a)["count"] >= 1
+    assert alice.ok("provenance.to", ref=f"actor:uid:{alice_uid}")["count"] >= 1
+
+    # Generation reason Goals: only one's own, and never revealed to others.
+    code, _ = error_of(bob.call("generation.create", reason_goal=goal_a))
+    assert code == "not_found", code
+    bob_view = bob.status()
+    generation = alice.ok("generation.create", reason_goal=goal_a)["id"]
+    assert alice.ok("generation.inspect", id=generation)["reason_goal"] == goal_a
+    assert bob.ok("generation.inspect", id=generation)["reason_goal"] is None
+
+    # Nothing alice did changes any count bob sees.
+    alice.ok("goal.create", objective="more private work")
+    after = bob.status()
+    for key in ("flow_count", "goal_count", "session_count", "execution_count",
+                "generation_count", "provenance_edge_count", "profile_count",
+                "active_workload_count"):
+        assert after[key] == bob_view[key], (key, bob_view[key], after[key])
+
     # Restart: each uid keeps its own foreground.
     restart()
     assert alice.status()["foreground_flow"]["id"] == flow_a
@@ -306,8 +334,10 @@ def cross_uid(bin_dir):
         assert process.poll() is None, log_path.read_text()
         print("cross-UID ownership (#225): status counts and foreground are per caller; "
               "other users' Flows, Goals, Sessions and Executions are not_found like missing "
-              "ones, including cross-object references; General is shared and protected; "
-              "no activation changes another user's foreground; foregrounds survive restart: OK")
+              "ones, including cross-object references; provenance needs both endpoints "
+              "visible; Generation reason Goals stay private; General is shared and "
+              "protected; no activation changes another user's foreground; foregrounds "
+              "survive restart: OK")
     finally:
         if process is not None:
             stop_daemon(process)

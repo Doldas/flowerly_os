@@ -565,8 +565,9 @@ mod tests {
 
         for id in [&first["id"], &first_child["id"]] {
             let id = GoalId::from_str(id.as_str().expect("id")).expect("goal id");
-            let edges = CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
-                .expect("provenance");
+            let edges =
+                CoreQueryRepository::provenance_from(&store, TEST_CALLER, &ObjectRef::from(&id))
+                    .expect("provenance");
             assert!(!edges.is_empty(), "created object needs provenance");
         }
     }

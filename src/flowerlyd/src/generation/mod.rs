@@ -25,7 +25,7 @@ pub(crate) fn handle_command(
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    if let Err((code, message)) = validate_generation_command(&store, name, args) {
+    if let Err((code, message)) = validate_generation_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
     match run_command(&mut store, name, args, caller) {
@@ -70,6 +70,7 @@ fn validate_generation_command(
     store: &Store,
     name: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     match name {
         "generation.create" => {
@@ -100,9 +101,10 @@ fn validate_generation_command(
                     ));
                 }
             }
+            // Only the caller's own Goal; another uid's is `not_found` (#225).
             if let Some(goal_id) = &reason_goal {
                 if store
-                    .get_goal(goal_id)
+                    .goal_for(caller, goal_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
@@ -224,9 +226,10 @@ fn run_command(
             }
 
             let reason_goal: Option<GoalId> = parse_optional_typed(args, "reason_goal")?;
+            // Rechecked in the inserting transaction and by a 0011 trigger.
             if let Some(goal_id) = &reason_goal {
                 if store
-                    .get_goal(goal_id)
+                    .goal_for(caller, goal_id)
                     .map_err(CommandFailure::storage)?
                     .is_none()
                 {
@@ -318,13 +321,24 @@ fn run_command(
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CommandFailure::invalid("missing string arg `id`"))?;
-            let generation = store
+            let mut generation = store
                 .get_generation(
                     &GenerationId::from_str(id)
                         .map_err(|e| CommandFailure::invalid(e.to_string()))?,
                 )
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
+            // A reason Goal the caller cannot see is not revealed (#225 PR 4).
+            // Generation visibility itself is #225 PR 6.
+            if let Some(goal) = &generation.reason_goal {
+                if store
+                    .goal_for(caller, goal)
+                    .map_err(CommandFailure::storage)?
+                    .is_none()
+                {
+                    generation.reason_goal = None;
+                }
+            }
             Ok(serde_json::to_value(&generation).map_err(err_str)?)
         }
         "generation.activate" => {
@@ -526,7 +540,7 @@ mod tests {
                 serde_json::json!({"id": "invalid-id"}),
             ),
         ] {
-            let error = validate_generation_command(&store, name, &args)
+            let error = validate_generation_command(&store, name, &args, TEST_CALLER)
                 .expect_err("invalid typed identity must fail");
             assert_eq!(error.0, ErrorCode::InvalidArgument);
         }
@@ -611,11 +625,53 @@ mod tests {
     }
 
     #[test]
+    fn reason_goal_must_be_the_callers_own_and_is_not_revealed_otherwise() {
+        let mut store = migrated_store();
+        let mut theirs = Goal::new("theirs", "uid:2000");
+        theirs.owner = Caller::new(2000).owner();
+        store.insert_goal(&theirs).expect("insert goal");
+        let args = serde_json::json!({ "reason_goal": theirs.id });
+        let (code, message) =
+            validate_generation_command(&store, "generation.create", &args, TEST_CALLER)
+                .unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        assert_eq!(message, format!("goal not found: {}", theirs.id));
+        let failure = run_command(&mut store, "generation.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::NotFound);
+        assert!(store.list_generations().unwrap().is_empty());
+
+        // A Generation that names another uid's Goal (as legacy data could)
+        // does not reveal it on inspect.
+        let mut legacy = candidate(None);
+        legacy.reason_goal = Some(theirs.id.clone());
+        legacy.owner = theirs.owner;
+        store.insert_generation(&legacy).expect("insert generation");
+        let shown = run_command(
+            &mut store,
+            "generation.inspect",
+            &serde_json::json!({ "id": legacy.id }),
+            TEST_CALLER,
+        )
+        .unwrap();
+        assert_eq!(shown["reason_goal"], Value::Null);
+        let owner = Caller::new(2000);
+        let shown = run_command(
+            &mut store,
+            "generation.inspect",
+            &serde_json::json!({ "id": legacy.id }),
+            owner,
+        )
+        .unwrap();
+        assert_eq!(shown["reason_goal"], serde_json::json!(theirs.id));
+    }
+
+    #[test]
     fn generation_creation_records_causal_provenance() {
         let mut store = migrated_store();
         let parent = candidate(None);
         store.insert_generation(&parent).expect("insert parent");
-        let goal = Goal::new("Improve the system", "test");
+        let mut goal = Goal::new("Improve the system", "test");
+        goal.owner = TEST_CALLER.owner();
         store.insert_goal(&goal).expect("insert goal");
         let experiment = ExperimentId::new();
 
@@ -707,7 +763,7 @@ mod tests {
             ),
         ];
         for (command, args, expected) in cases {
-            let error = validate_generation_command(&store, command, &args)
+            let error = validate_generation_command(&store, command, &args, TEST_CALLER)
                 .unwrap_err()
                 .0;
             assert_eq!(error, expected, "{command} {args}");
@@ -715,10 +771,13 @@ mod tests {
         store
             .insert_generation(&candidate(None))
             .expect("insert generation");
-        assert!(
-            validate_generation_command(&store, "generation.create", &serde_json::json!({}),)
-                .is_ok()
-        );
+        assert!(validate_generation_command(
+            &store,
+            "generation.create",
+            &serde_json::json!({}),
+            TEST_CALLER
+        )
+        .is_ok());
     }
 
     #[test]

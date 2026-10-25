@@ -86,7 +86,8 @@ pub trait CoreQueryRepository {
     fn sessions(&self, caller: Caller) -> Result<Vec<Session>>;
     fn execution(&self, caller: Caller, id: &ExecutionId) -> Result<Option<Execution>>;
     fn executions(&self, caller: Caller) -> Result<Vec<Execution>>;
-    fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>>;
+    /// Edges from `from` whose both endpoints are visible to the caller.
+    fn provenance_from(&self, caller: Caller, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>>;
 }
 
 impl CoreCommandRepository for Store {
@@ -184,8 +185,8 @@ impl CoreQueryRepository for Store {
         self.executions_for(caller)
     }
 
-    fn provenance_from(&self, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
-        Store::provenance_from(self, from)
+    fn provenance_from(&self, caller: Caller, from: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
+        self.provenance_from_for(caller, from)
     }
 }
 
@@ -221,9 +222,8 @@ mod tests {
 
         create_through_trait(&mut store, &flow, &edge);
 
-        let reader: &dyn CoreQueryRepository = &store;
         assert_eq!(store.get_flow(&flow.id).expect("query"), Some(flow.clone()));
-        let edges = reader
+        let edges = store
             .provenance_from(&ObjectRef::from(&flow.id))
             .expect("edge");
         assert_eq!(edges.len(), 1);
@@ -250,7 +250,8 @@ mod tests {
             })
             .is_err());
         assert_eq!(
-            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&flow.id))
+            store
+                .provenance_from(&ObjectRef::from(&flow.id))
                 .expect("provenance")
                 .len(),
             1
@@ -300,7 +301,8 @@ mod tests {
         assert!(store.get_flow(&first.id).unwrap().is_some());
         assert!(store.get_flow(&second.id).unwrap().is_none());
         assert_eq!(
-            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&first.id))
+            store
+                .provenance_from(&ObjectRef::from(&first.id))
                 .unwrap()
                 .len(),
             1
@@ -394,7 +396,8 @@ mod tests {
             Some(execution)
         );
         assert_eq!(
-            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&session.id))
+            store
+                .provenance_from(&ObjectRef::from(&session.id))
                 .unwrap()
                 .len(),
             1

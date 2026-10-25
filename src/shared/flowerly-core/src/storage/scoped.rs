@@ -13,14 +13,20 @@
 //!
 //! The foreground is per owner (`flow_foreground`, migration 0010). No row
 //! means General; activating General deletes only the caller's row.
+//!
+//! Provenance (PR 4) is filtered by the visibility of **both** endpoints; see
+//! [`ref_visibility`].
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
 use super::Store;
-use super::{map_execution, map_flow, map_goal, map_session, Result, StatusCounts, StorageError};
+use super::{
+    map_execution, map_flow, map_goal, map_provenance, map_session, Result, StatusCounts,
+    StorageError,
+};
 use crate::types::{
-    Caller, Execution, ExecutionId, Flow, FlowId, Goal, GoalId, GoalStatus, Owner, Session,
-    SessionId, SessionPresentationState, SessionState, Timestamp,
+    Caller, Execution, ExecutionId, Flow, FlowId, Goal, GoalId, GoalStatus, ObjectRef, Owner,
+    ProvenanceEdge, Session, SessionId, SessionPresentationState, SessionState, Timestamp,
 };
 
 /// SQL predicate for the canonical General Flow (unique by 0004).
@@ -83,6 +89,65 @@ const SESSION_COLUMNS: &str = "id, flow_id, kind, pid, cwd, state, presentation_
 const EXECUTION_COLUMNS: &str = "id, agent_id, goal_id, reason, command, exit_code, duration_ms, \
      started_at, owner_class, owner_uid";
 const OWNED: &str = "owner_class = 'user' AND owner_uid = ?1";
+const OWN_OR_SYSTEM: &str = "((owner_class = 'user' AND owner_uid = ?1) OR owner_class = 'system')";
+
+/// SQL expression for how a provenance endpoint stored in `column` appears to
+/// the caller bound to `?1`:
+///
+/// - `1` (visible): the caller's own Flow, Goal, Session, Execution,
+///   Generation, profile or workload; General; a `system` Generation,
+///   profile or workload; a shared catalog model or provider; the caller's
+///   own `actor:uid:<n>` label.
+/// - `0` (hidden): any other row of those kinds, a missing one, or
+///   `actor:uid:<n>` of another uid.
+/// - `NULL` (neutral): kinds with no owner yet (agents, experiments,
+///   findings, …) and other actor labels.
+///
+/// An edge is visible only when no endpoint is hidden and at least one is
+/// visible, so neutral-to-neutral edges are never shown to ordinary users.
+fn ref_visibility(column: &str) -> String {
+    let own_or_system = |table: &str| {
+        format!(
+            "EXISTS(SELECT 1 FROM {table} AS o WHERE o.id = {column} AND \
+             ((o.owner_class = 'user' AND o.owner_uid = ?1) OR o.owner_class = 'system'))"
+        )
+    };
+    let own = |table: &str| {
+        format!(
+            "EXISTS(SELECT 1 FROM {table} AS o WHERE o.id = {column} AND \
+             o.owner_class = 'user' AND o.owner_uid = ?1)"
+        )
+    };
+    format!(
+        "(CASE
+            WHEN {column} GLOB 'flow-*' THEN EXISTS(SELECT 1 FROM flows AS f
+                WHERE f.id = {column} AND ((f.owner_class = 'user' AND f.owner_uid = ?1)
+                                           OR ({GENERAL})))
+            WHEN {column} GLOB 'goal-*' THEN {goals}
+            WHEN {column} GLOB 'session-*' THEN {sessions}
+            WHEN {column} GLOB 'exec-*' THEN {executions}
+            WHEN {column} GLOB 'gen-*' THEN {generations}
+            WHEN {column} GLOB 'profile-*' THEN {profiles}
+            WHEN {column} GLOB 'workload-*' THEN {workloads}
+            WHEN {column} GLOB 'model-*' OR {column} GLOB 'provider-*' THEN 1
+            WHEN {column} GLOB 'actor:uid:*' THEN {column} = 'actor:uid:' || ?1
+            ELSE NULL
+         END)",
+        goals = own("goals"),
+        sessions = own("sessions"),
+        executions = own("executions"),
+        generations = own_or_system("generations"),
+        profiles = own_or_system("ai_profiles"),
+        workloads = own_or_system("inference_workloads"),
+    )
+}
+
+/// Predicate on `provenance_edges AS e` for edges visible to `?1`.
+fn visible_edge() -> String {
+    let from = ref_visibility("e.from_ref");
+    let to = ref_visibility("e.to_ref");
+    format!("({from} IS NOT 0 AND {to} IS NOT 0 AND ({from} IS 1 OR {to} IS 1))")
+}
 
 /// A new row may reference only a Goal with the same owner. Checked inside
 /// the inserting transaction; the 0010 triggers back it up.
@@ -304,10 +369,42 @@ impl Store {
             .map_err(StorageError::from)
     }
 
-    /// Status counts as `caller` may see them, from one snapshot. Flows,
-    /// Goals, Sessions and Executions are owner-scoped like their listings.
-    /// Generations, provenance and compute are still global counts until
-    /// #225 PRs 4–5 scope those families.
+    /// Provenance edges leaving `from` that the caller may see. An invisible
+    /// or missing `from` yields no edges, so the answer is the same.
+    pub fn provenance_from_for(
+        &self,
+        caller: Caller,
+        from: &ObjectRef,
+    ) -> Result<Vec<ProvenanceEdge>> {
+        self.visible_edges(caller, "e.from_ref", from)
+    }
+
+    /// Provenance edges arriving at `to` that the caller may see.
+    pub fn provenance_to_for(&self, caller: Caller, to: &ObjectRef) -> Result<Vec<ProvenanceEdge>> {
+        self.visible_edges(caller, "e.to_ref", to)
+    }
+
+    fn visible_edges(
+        &self,
+        caller: Caller,
+        column: &str,
+        endpoint: &ObjectRef,
+    ) -> Result<Vec<ProvenanceEdge>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT e.from_ref, e.relation, e.to_ref, e.created_at, e.note
+             FROM provenance_edges AS e
+             WHERE {column} = ?2 AND {visible}
+             ORDER BY e.id",
+            visible = visible_edge()
+        ))?;
+        let rows = stmt.query_map(params![caller.uid(), endpoint.as_str()], map_provenance)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Status counts as `caller` may see them, from one snapshot. Every count
+    /// is caller-scoped except the shared model and provider catalogs.
+    /// Generations, profiles and workloads count the caller's own and
+    /// `system` rows; provenance counts edges visible by both endpoints.
     pub fn status_counts_for(&self, caller: Caller) -> Result<StatusCounts> {
         let count = |row: &Row<'_>, index: usize| -> rusqlite::Result<u64> {
             let value: i64 = row.get(index)?;
@@ -327,13 +424,14 @@ impl Store {
                      (SELECT COUNT(*) FROM goals WHERE {OWNED}),
                      (SELECT COUNT(*) FROM sessions WHERE {OWNED}),
                      (SELECT COUNT(*) FROM executions WHERE {OWNED}),
-                     (SELECT COUNT(*) FROM generations),
-                     (SELECT COUNT(*) FROM provenance_edges),
+                     (SELECT COUNT(*) FROM generations WHERE {OWN_OR_SYSTEM}),
+                     (SELECT COUNT(*) FROM provenance_edges AS e WHERE {visible}),
                      (SELECT COUNT(*) FROM models WHERE retired_at IS NULL),
-                     (SELECT COUNT(*) FROM ai_profiles),
+                     (SELECT COUNT(*) FROM ai_profiles WHERE {OWN_OR_SYSTEM}),
                      (SELECT COUNT(*) FROM ai_providers WHERE retired_at IS NULL),
                      (SELECT COUNT(*) FROM inference_workloads
-                      WHERE state IN ('QUEUED', 'ADMITTED'))"
+                      WHERE state IN ('QUEUED', 'ADMITTED') AND {OWN_OR_SYSTEM})",
+                visible = visible_edge()
             ),
             params![caller.uid()],
             |row| {
@@ -842,6 +940,120 @@ mod tests {
         );
     }
 
+    fn edge(store: &Store, from: ObjectRef, to: ObjectRef) {
+        store
+            .insert_provenance(&ProvenanceEdge {
+                from,
+                relation: crate::types::ProvenanceRelation::BelongsTo,
+                to,
+                created_at: Timestamp::now(),
+                note: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn provenance_requires_both_endpoints_visible() {
+        let (_dir, _path, store) = file_store();
+        let general = general_id(&store);
+        let mine = goal_of(&store, ALICE, "mine");
+        let theirs = goal_of(&store, BOB, "theirs");
+        let legacy = Goal::new("legacy", "user");
+        store.insert_goal(&legacy).unwrap();
+        let agent = ObjectRef::from(&crate::types::AgentId::new());
+        let model = ObjectRef::from(&crate::types::ModelId::from_raw("model-shared"));
+        let g = |id: &GoalId| ObjectRef::from(id);
+        edge(&store, g(&mine.id), ObjectRef::from(&general));
+        edge(&store, g(&mine.id), g(&theirs.id));
+        edge(&store, g(&mine.id), g(&legacy.id));
+        edge(&store, g(&mine.id), agent.clone());
+        edge(&store, g(&mine.id), model.clone());
+        edge(&store, g(&mine.id), ObjectRef::actor("uid:1001").unwrap());
+        edge(&store, g(&theirs.id), ObjectRef::actor("uid:1002").unwrap());
+        edge(&store, agent.clone(), ObjectRef::actor("planner").unwrap());
+
+        let targets = |caller, from: &ObjectRef| -> Vec<String> {
+            store
+                .provenance_from_for(caller, from)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.to.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            targets(ALICE, &g(&mine.id)),
+            [
+                general.to_string(),
+                agent.as_str().to_owned(),
+                model.as_str().to_owned(),
+                "actor:uid:1001".to_owned()
+            ]
+        );
+        // Bob sees nothing of alice's Goal, and not the edge into his own.
+        assert!(targets(BOB, &g(&mine.id)).is_empty());
+        assert!(store
+            .provenance_to_for(BOB, &g(&theirs.id))
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .provenance_to_for(ALICE, &ObjectRef::actor("uid:1002").unwrap())
+            .unwrap()
+            .is_empty());
+        // Neutral to neutral is never shown.
+        assert!(targets(ALICE, &agent).is_empty());
+        // Status counts the same edges the queries show, plus the shared
+        // General bootstrap edge (General -> actor:system) everyone sees.
+        assert_eq!(store.status_counts_for(ALICE).unwrap().provenance_edges, 5);
+        assert_eq!(store.status_counts_for(BOB).unwrap().provenance_edges, 2);
+    }
+
+    #[test]
+    fn status_counts_every_owned_family_per_caller() {
+        let (_dir, _path, store) = file_store();
+        let insert = |sql: &str| store.conn.execute_batch(sql).unwrap();
+        insert(
+            "INSERT INTO generations (id, status, created_at, owner_class, owner_uid) VALUES
+               ('gen-a', 'CANDIDATE', 1, 'user', 1001),
+               ('gen-b', 'CANDIDATE', 1, 'user', 1002),
+               ('gen-s', 'STABLE', 1, 'system', NULL),
+               ('gen-u', 'CANDIDATE', 1, 'unresolved', NULL);
+             INSERT INTO ai_profiles (id, name, created_by, created_at, owner_class, owner_uid)
+             VALUES ('profile-a', 'a', 'uid:1001', 1, 'user', 1001),
+                    ('profile-b', 'b', 'uid:1002', 1, 'user', 1002);",
+        );
+        let alice = store.status_counts_for(ALICE).unwrap();
+        let bob = store.status_counts_for(BOB).unwrap();
+        assert_eq!((alice.generations, alice.profiles), (2, 1));
+        assert_eq!((bob.generations, bob.profiles), (2, 1));
+        assert_eq!(store.status_counts().unwrap().generations, 4);
+    }
+
+    #[test]
+    fn generation_reason_goal_must_have_the_same_owner() {
+        let (_dir, _path, mut store) = file_store();
+        let theirs = goal_of(&store, BOB, "theirs");
+        let mine = goal_of(&store, ALICE, "mine");
+        let generation = |goal: &GoalId| crate::types::Generation {
+            id: crate::types::GenerationId::new(),
+            parent: None,
+            source_commit: None,
+            system_manifest: None,
+            reason_goal: Some(goal.clone()),
+            experiment: None,
+            status: crate::types::GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+            owner: ALICE.owner(),
+        };
+        not_found_text(store.insert_generation_with_provenance(&generation(&theirs.id), &[]));
+        assert!(
+            store.insert_generation(&generation(&theirs.id)).is_err(),
+            "trigger"
+        );
+        store
+            .insert_generation_with_provenance(&generation(&mine.id), &[])
+            .expect("own Goal");
+    }
+
     /// A database at schema 9 (before per-owner foreground), as an upgraded
     /// installation has it.
     fn schema_nine(path: &Path) -> Store {
@@ -901,7 +1113,7 @@ mod tests {
         legacy_flow(&store, "flow-general", "General", "ACTIVE", "system", None);
         legacy_flow(&store, "flow-a", "A", "FOREGROUND", "user", Some(1001));
         store.migrate().unwrap();
-        assert_eq!(version(&store), 10);
+        assert_eq!(Some(version(&store)), MIGRATIONS.last().map(|m| m.version));
         assert_eq!(rows(&store), [(1001, "flow-a".to_owned())]);
         assert_eq!(foreground(&store, ALICE).flow.id.as_str(), "flow-a");
         assert!(foreground(&store, BOB).is_general());
