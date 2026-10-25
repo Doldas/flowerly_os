@@ -48,3 +48,22 @@ merge a stale snapshot.
 PR #193 stays draft until its own protection, promotion policy, source-head
 evidence and human review are satisfied. **Never auto-merge into master.**
 Neither creating this commit nor merging this PR is approval to promote.
+
+## Repeat reconciliation — 2026-10-25
+
+Promotion PR #206 became conflicted after `master` received the squashed
+promotion `c7d6ef903a5f02e60342fef94530002627a3c198` (#193). That squash
+commit is not an ancestor of `release/2`.
+
+- Verified: the tree of `c7d6ef9` is **identical** to the `release/2` tree at
+  `a1aeabc` (#203), so `master` holds no content that `release/2` lacks.
+- The reconciliation commit is a `-s ours` merge. Its first parent is the
+  current `release/2` and its second parent is `master` `c7d6ef9`. It keeps
+  the complete `release/2` tree and adds only this note.
+- The same rules apply: merge the reconciliation PR into `release/2` with
+  **"Create a merge commit"** (never squash or rebase), then verify
+  `git merge-base --is-ancestor origin/master origin/release/2`.
+
+To avoid repeating this, the future promotion of #206 into `master` should
+also use a merge commit, not a squash, so `release/2` stays a descendant of
+`master`. That choice belongs to the maintainer.
