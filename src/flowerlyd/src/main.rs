@@ -284,6 +284,14 @@ async fn main() -> Result<()> {
     let policy = config
         .access_policy()
         .context("resolving IPC access groups")?;
+    let ack = std::env::var(authorization::UNENFORCED_OWNERSHIP_ACK).ok();
+    authorization::refuse_unenforced_multi_user(&policy, ack.as_deref())
+        .map_err(anyhow::Error::msg)?;
+    if policy.users_gid.is_some() {
+        tracing::warn!(
+            "TEST ONLY: users group admitted while per-user ownership is not enforced (#225)"
+        );
+    }
     tracing::info!(
         admin_authorization = authorization::admin_policy(&policy),
         client_access = authorization::client_policy(&policy),

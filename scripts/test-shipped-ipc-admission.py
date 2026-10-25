@@ -39,6 +39,8 @@ def admission_problems(unit_text, sysusers_text, overlay_paths):
     environment = " ".join(values.get("Environment", []))
     if "AGENTIC_USERS_GROUP" in environment:
         problems.append("unit sets AGENTIC_USERS_GROUP")
+    if "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP" in environment:
+        problems.append("unit sets the test-only unenforced-ownership acknowledgment")
     for key in ("EnvironmentFile", "PassEnvironment", "SupplementaryGroups", "DynamicUser"):
         if key in values:
             problems.append(f"unit sets {key}, which could widen admission or groups")
@@ -55,7 +57,7 @@ def admission_problems(unit_text, sysusers_text, overlay_paths):
     if "AGENTIC_ADMIN_GROUP=flowerly-admin" not in environment:
         problems.append("unit must keep AGENTIC_ADMIN_GROUP=flowerly-admin (deny by default)")
     unset = " ".join(values.get("UnsetEnvironment", [])).split()
-    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG"):
+    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG", "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"):
         if name not in unset:
             problems.append(f"unit must UnsetEnvironment={name} so the service manager cannot inject it")
     exec_start = " ".join(values.get("ExecStart", []))
@@ -72,7 +74,8 @@ def admission_problems(unit_text, sysusers_text, overlay_paths):
         if name.endswith((".toml", ".conf", ".env")) and path.is_file():
             text = path.read_text(errors="replace")
             active = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-            if "users_group" in active or "AGENTIC_USERS_GROUP" in active:
+            if any(k in active for k in ("users_group", "AGENTIC_USERS_GROUP",
+                                         "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP")):
                 problems.append(f"{name} configures the users group")
     return problems
 
@@ -98,9 +101,15 @@ class ShippedAdmission(unittest.TestCase):
             "traversable runtime": unit.replace("RuntimeDirectoryMode=0700", "RuntimeDirectoryMode=0750"),
             "no admin group": unit.replace(env, ""),
             "inherits manager env": unit.replace(
-                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG", "UnsetEnvironment=AGENTIC_CONFIG"),
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP",
+                "UnsetEnvironment=AGENTIC_CONFIG AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"),
             "inherits manager config": unit.replace(
-                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG", "UnsetEnvironment=AGENTIC_USERS_GROUP"),
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP",
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"),
+            "inherits manager ack": unit.replace(
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP",
+                "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG"),
+            "sets ack": unit.replace(env, env + "\nEnvironment=AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=x"),
             "config file": unit.replace("ExecStart=/usr/bin/flowerlyd",
                                         "ExecStart=/usr/bin/flowerlyd --config /etc/f.toml"),
         }

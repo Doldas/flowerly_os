@@ -54,6 +54,12 @@ ADMIN_COMMANDS = [
 SPOOFED = {"admin": True, "created_by": "uid:0", "uid": 0, "groups": [0], "role": "admin"}
 
 
+# Test-only acknowledgment that lets flowerlyd admit a users group before
+# per-user ownership is enforced (#225); the shipped unit unsets it.
+UNENFORCED_ACK = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"
+UNENFORCED_ACK_VALUE = "members-can-read-each-others-data"
+
+
 def recv_exact(conn, count):
     data = bytearray()
     while len(data) < count:
@@ -135,6 +141,7 @@ def start(bin_dir, root, label, extra_env):
     env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
     env.pop("AGENTIC_USERS_GROUP", None)
     env.pop("AGENTIC_ADMIN_GROUP", None)
+    env.pop(UNENFORCED_ACK, None)
     env.update(extra_env)
     with log_path.open("wb") as log:
         process = subprocess.Popen([str(bin_dir / "flowerlyd")], env=env,
@@ -212,6 +219,21 @@ def same_uid(bin_dir):
             stop(process)
         assert process.returncode != 0, "unknown admin group must refuse to start"
         assert "flowerly-no-such-group" in log.read_text(), log.read_text()
+
+        # Until #225 enforces ownership, a users group refuses to start unless
+        # the exact test-only acknowledgment is given.
+        for label, extra in [
+            ("users-no-ack", {}),
+            ("users-wrong-ack", {UNENFORCED_ACK: "1"}),
+        ]:
+            process, sock, log = start(bin_dir, root, label,
+                                       {"AGENTIC_USERS_GROUP": str(os.getgid()), **extra})
+            try:
+                process.wait(timeout=15)
+            finally:
+                stop(process)
+            assert process.returncode != 0, f"{label}: a users group must refuse to start"
+            assert "#225" in log.read_text() and not sock.exists(), log.read_text()
         print("same-UID admin authorization: Admin commands and shutdown refused without an "
               "explicit admin group; spoofed JSON ignored; explicit grant admitted; "
               "unknown group refused at startup: OK")
@@ -383,6 +405,7 @@ def cross_uid(bin_dir):
                  "env", "-i", "PATH=/usr/bin:/bin", f"HOME={state}",
                  f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
                  f"AGENTIC_USERS_GROUP={users_group}", f"AGENTIC_ADMIN_GROUP={admin_group}",
+                 f"{UNENFORCED_ACK}={UNENFORCED_ACK_VALUE}",
                  str(local_bin / "flowerlyd")],
                 stdout=log, stderr=subprocess.STDOUT)
         for _ in range(200):

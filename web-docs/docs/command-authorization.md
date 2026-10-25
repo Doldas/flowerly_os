@@ -114,7 +114,7 @@ What is recorded now:
 
 | Setting | TOML | Environment | Effect |
 | --- | --- | --- | --- |
-| Users group | `users_group` | `AGENTIC_USERS_GROUP` | Socket is group-owned by it with mode 0660; members may connect. Unset: socket 0600 and service account only, at both the filesystem and the kernel check. **Leave unset until #225 is closed.** |
+| Users group | `users_group` | `AGENTIC_USERS_GROUP` | Socket is group-owned by it with mode 0660; members may connect. Unset: socket 0600 and service account only, at both the filesystem and the kernel check. **Until #225 is closed, `flowerlyd` refuses to start when it is set** (see below). |
 | Admin group | `admin_group` | `AGENTIC_ADMIN_GROUP` | Members may run Admin commands and IPC `shutdown`. Unset: refused for everyone. |
 
 A value is a group name from `/etc/group` or a numeric gid. An unknown or
@@ -153,6 +153,14 @@ unit admits **only the `flowerly` service account**:
   `scripts/test-shipped-ipc-admission.py` fails the build if one appears.
 - **Do not** re-enable `AGENTIC_USERS_GROUP` with a local drop-in before
   #225 is closed.
+- `flowerlyd` itself **refuses to start** when a users group is configured,
+  whether by environment, drop-in or config file, and names #225 in the
+  error. This also stops a stale local drop-in on an upgraded system. The
+  only exception is the exact test-only acknowledgment
+  `AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=members-can-read-each-others-data`,
+  which the cross-UID tests use. It logs a `TEST ONLY` warning. The shipped
+  unit unsets it, and the offline admission check fails if any shipped file
+  sets it. Never set it on a real system. It is removed when #225 closes.
 
 **Operational impact.** Ordinary users cannot use `agenticctl` against the
 system daemon. Admin commands are refused by default, because the service
@@ -228,10 +236,12 @@ ls -l /run/flowerly/flowerlyd.sock # srw------- flowerly flowerly
 ```
 
 `client_access` in Status must read `service_account_only`. The shipped unit
-also sets `UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG`, so neither
-can be injected through the service manager's environment
-(`systemctl set-environment`, `DefaultEnvironment=`); only a root-written
-drop-in could still re-enable it, which this document forbids.
+also sets `UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG
+AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP`, so none of them can be injected
+through the service manager's environment (`systemctl set-environment`,
+`DefaultEnvironment=`). If a leftover drop-in still configures a users
+group, `flowerlyd` fails to start with a #225 error. Remove the drop-in;
+do not add the acknowledgment.
 
 ### Rollback
 
