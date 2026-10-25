@@ -6,16 +6,20 @@ Wants=local-fs.target
 [Service]
 Type=simple
 User=flowerly
-# Primary group: the socket is group-owned by flowerly-users (mode 0660) and
-# /run/flowerly is group-traversable. State stays private to flowerly (#31).
-Group=flowerly-users
+# Temporary fail-closed default (#225): service-account-only IPC admission.
+# Ordinary flowerly-users members must not connect until per-user data
+# ownership is enforced, so AGENTIC_USERS_GROUP is deliberately unset, the
+# socket stays 0600 and /run/flowerly stays 0700. Do not re-enable it with a
+# drop-in before #225 is closed: members could read and change each other's
+# data. Admin commands still require explicit flowerly-admin membership of
+# the calling process; the flowerly account itself is never a member.
+Group=flowerly
 Environment=AGENTIC_RUNTIME_DIR=/run/flowerly
 Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
-Environment=AGENTIC_USERS_GROUP=flowerly-users
 Environment=AGENTIC_ADMIN_GROUP=flowerly-admin
 ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
 RuntimeDirectory=flowerly
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0700
 StateDirectory=flowerly
 StateDirectoryMode=0700
 UMask=0077

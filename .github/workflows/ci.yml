@@ -213,6 +213,9 @@ jobs:
       - name: Verify runtime topology and provider separation (#105)
         run: python3 scripts/test-runtime-topology.py
 
+      - name: Shipped IPC admission is service-account-only until per-user ownership (#225)
+        run: python3 scripts/test-shipped-ipc-admission.py
+
       - name: Reject new raw Linux and SQLite imports in core domains (#91)
         run: python3 scripts/test-layer-15-boundaries.py
 

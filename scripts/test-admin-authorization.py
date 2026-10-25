@@ -19,6 +19,10 @@ account and connects as each identity:
   * the service account is never implicitly admin;
   * a non-member is refused by the kernel credential check even when the
     socket file is made world-accessible.
+It then starts flowerlyd exactly as the shipped systemd unit configures it
+(#225 temporary default) and proves service-account-only admission at both
+the filesystem and the kernel check, no implicit admin for the service
+account, and the documented root-only out-of-band maintenance procedure.
 """
 import argparse
 import grp
@@ -150,8 +154,8 @@ def same_uid(bin_dir):
                 wait_ready(sock, process, log)
                 status = rpc(sock, {"type": "status"})["data"]["details"]
                 assert status["admin_authorization"] == policy, status
-                assert status["client_access"] == ("service_account_only" if not extra
-                                                   else "service_account_and_linux_groups"), status
+                # An admin group alone never admits other UIDs (#225).
+                assert status["client_access"] == "service_account_only", status
                 assert os.stat(sock).st_mode & 0o777 == 0o600, oct(os.stat(sock).st_mode)
                 assert_all_admin_refused(sock, label)
             finally:
@@ -189,12 +193,107 @@ def run(*argv):
     subprocess.run(argv, check=True, stdout=subprocess.DEVNULL)
 
 
-def as_user(user, script, sock, payload):
+def as_user(user, script, sock, payload, groups=()):
     result = subprocess.run(
-        ["runuser", "-u", user, "--", "env", "-i", "PATH=/usr/bin:/bin",
+        ["runuser", "-u", user, *groups, "--", "env", "-i", "PATH=/usr/bin:/bin",
          sys.executable, "-I", str(script), "--client", str(sock), json.dumps(payload)],
         check=True, capture_output=True, text=True, timeout=30)
     return json.loads(result.stdout)
+
+
+UNIT = pathlib.Path(__file__).resolve().parents[1] / "distro/overlay/usr/lib/systemd/system/flowerlyd.service"
+
+
+def unit_settings(path):
+    """Active Environment= variables and other directives of a unit."""
+    environment, values = {}, {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";", "[")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "Environment":
+            name, setting = value.split("=", 1)
+            environment[name] = setting
+        else:
+            values[key] = value
+    return environment, values
+
+
+def shipped_unit(root, local_bin, script, service, users, admin, users_group, admin_group):
+    """#225: run flowerlyd exactly as the shipped unit configures it, with the
+    unit's group names mapped to this run's test groups, and prove that only
+    the service account is admitted, at the filesystem and the kernel check."""
+    environment, values = unit_settings(UNIT)
+    names = {"flowerly-users": users_group, "flowerly-admin": admin_group, "flowerly": service}
+    service_pw = pwd.getpwnam(service)
+    group = names[values["Group"]]
+    gid = grp.getgrnam(group).gr_gid
+    runtime, state = root / "shipped-runtime", root / "shipped-state"
+    runtime.mkdir()
+    state.mkdir()
+    os.chown(runtime, service_pw.pw_uid, gid)
+    os.chown(state, service_pw.pw_uid, gid)
+    runtime.chmod(int(values["RuntimeDirectoryMode"], 8))
+    state.chmod(int(values["StateDirectoryMode"], 8))
+    settings = [f"{name}={names.get(value, value)}" for name, value in environment.items()
+                if name not in ("AGENTIC_RUNTIME_DIR", "AGENTIC_STATE_DIR")]
+    sock = runtime / "flowerlyd.sock"
+    log_path = root / "shipped.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(
+            ["runuser", "-u", service, "-g", group, "--", "env", "-i", "PATH=/usr/bin:/bin",
+             f"HOME={state}", f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
+             *settings, str(local_bin / "flowerlyd")],
+            stdout=log, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(200):
+            if process.poll() is not None:
+                raise AssertionError(f"flowerlyd exited early: {log_path.read_text()}")
+            if sock.exists() and as_user(service, script, sock, {"type": "ping"})["outcome"] == "reply":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"flowerlyd not ready: {log_path.read_text()}")
+        assert os.stat(sock).st_mode & 0o777 == 0o600, oct(os.stat(sock).st_mode)
+        assert os.stat(runtime).st_mode & 0o777 == 0o700, oct(os.stat(runtime).st_mode)
+        status = reply_of(as_user(service, script, sock, {"type": "status"}), "status")["data"]["details"]
+        assert status["client_access"] == "service_account_only", status
+        assert status["admin_authorization"] == "linux_group", status
+
+        # A users member and a different-UID admin cannot reach the socket...
+        for user in (users, admin):
+            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "eacces", user
+        # ...and the kernel check refuses them even when the modes are opened.
+        runtime.chmod(0o755)
+        os.chmod(sock, 0o666)
+        for user in (users, admin):
+            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "closed", user
+        os.chmod(sock, 0o600)
+        runtime.chmod(0o700)
+
+        # The service account is not an administrator by default.
+        for name in ADMIN_COMMANDS:
+            assert is_denied(reply_of(as_user(service, script, sock, command(name)), name)), name
+        assert is_denied(reply_of(as_user(service, script, sock, {"type": "shutdown"}), "svc"))
+
+        # Documented out-of-band maintenance: root runs ONE client process as
+        # the service account with the admin group added to that process only.
+        maintenance = ("-g", group, "-G", admin_group)
+        for name in ADMIN_COMMANDS:
+            reply = reply_of(as_user(service, script, sock, command(name), maintenance), name)
+            assert not is_denied(reply), (name, reply)
+        reply = reply_of(as_user(service, script, sock, {"type": "shutdown"}, maintenance), "stop")
+        assert reply["type"] == "ok", reply
+        process.wait(timeout=15)
+        assert process.returncode == 0, log_path.read_text()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    print("shipped unit (#225): service-account-only at filesystem and kernel check; "
+          "users members and other-UID admins refused; service account not admin; "
+          "root-only out-of-band admin maintenance works: OK")
 
 
 def reply_of(outcome, label):
@@ -304,6 +403,8 @@ def cross_uid(bin_dir):
         print("cross-UID admin authorization: users member limited to User commands, admin "
               "member admitted for Admin and shutdown, service account never implicit admin, "
               "PTY limited to the service account, non-member refused by kernel credentials: OK")
+        process = None
+        shipped_unit(root, local_bin, script, service, alice, bob, users_group, admin_group)
     finally:
         if process is not None and process.poll() is None:
             process.kill()

@@ -42,6 +42,7 @@ before acting (see `AGENTS.md`).
 | 10 | PTY crash/restart truth | #74, #63 | Fail-closed reconciliation merged. | sessiond SIGKILL / spawn-race matrix; spawn idempotency policy. |
 | 11 | Arch release VM stability | #184 | OOM / disconnect under investigation. | Capture OOM evidence as artifacts; size runner. Never weaken acceptance. |
 | 12 | Release evidence | #8, #31, #55 | Branch rules active. | Exact-SHA full Arch VM run on the promotion candidate; final owner review. |
+| 13 | Per-user data ownership | #225 (P0) | Cross-user read and mutation reproduced with two real UIDs. Mitigation: the shipped unit is service-account-only (#225 PR 1). Design and plan approved on #225. | PRs 2–7: ownership migration, per-owner foreground, enforcement per family, private Generation candidates, audited Admin ownership commands, then restore multi-user admission. **0.0.4 is not release-ready while multi-user access is exposed.** |
 
 Items 8–12 need the self-hosted Arch VM runner and owner review; do not mark
 them done from unit tests or hosted CI alone.
