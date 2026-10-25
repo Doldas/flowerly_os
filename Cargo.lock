@@ -222,6 +222,7 @@ name = "flowerly-core"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "flowerly-peercred",
  "rusqlite",
  "serde",
  "serde_json",
@@ -239,12 +240,20 @@ name = "flowerly-integration"
 version = "0.0.1"
 
 [[package]]
+name = "flowerly-peercred"
+version = "0.0.1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "flowerlyd"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
  "flowerly-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

@@ -293,13 +293,58 @@ impl Drop for SocketOwnership {
 
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
-/// Kernel-attested identity of the Unix socket peer. Never populated from
-/// JSON command arguments or client-supplied identity claims.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Kernel-attested identity of the Unix socket peer, captured once at
+/// `connect()` (`SO_PEERCRED` plus `SO_PEERGROUPS`) and reused for every
+/// request on that connection. Never populated from JSON command arguments
+/// or client-supplied identity claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerIdentity {
     pub uid: u32,
     pub gid: u32,
     pub pid: Option<u32>,
+    /// Supplementary groups; the primary `gid` is not repeated here.
+    pub groups: Arc<[u32]>,
+    /// The peer runs as the service account that owns the socket.
+    pub service_account: bool,
+}
+
+impl PeerIdentity {
+    /// Primary or supplementary membership of `gid`.
+    #[must_use]
+    pub fn in_group(&self, gid: u32) -> bool {
+        self.gid == gid || self.groups.contains(&gid)
+    }
+}
+
+/// Who may connect and who may administer, as resolved Linux gids.
+///
+/// The default policy admits only the service account and grants no
+/// administrative authority to anyone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AccessPolicy {
+    /// Members may connect and run User commands.
+    pub users_gid: Option<u32>,
+    /// Members may run Admin commands. The service account is not
+    /// implicitly a member.
+    pub admin_gid: Option<u32>,
+}
+
+impl AccessPolicy {
+    /// The service account, and members of the users or admin group.
+    #[must_use]
+    pub fn admits(&self, peer: &PeerIdentity) -> bool {
+        peer.service_account
+            || [self.users_gid, self.admin_gid]
+                .into_iter()
+                .flatten()
+                .any(|gid| peer.in_group(gid))
+    }
+
+    /// Kernel-attested membership of the configured admin group.
+    #[must_use]
+    pub fn is_admin(&self, peer: &PeerIdentity) -> bool {
+        self.admin_gid.is_some_and(|gid| peer.in_group(gid))
+    }
 }
 
 pub type AuthenticatedHandler = dyn Fn(&Envelope, &PeerIdentity) -> Envelope + Send + Sync;
@@ -325,6 +370,26 @@ pub async fn serve_with_shutdown(
 pub async fn serve_with_shutdown_authenticated(
     socket_path: impl AsRef<Path>,
     handler: Arc<AuthenticatedHandler>,
+    shutdown_requested: watch::Receiver<bool>,
+) -> Result<()> {
+    serve_with_policy(
+        socket_path,
+        AccessPolicy::default(),
+        handler,
+        shutdown_requested,
+    )
+    .await
+}
+
+/// Accept the service account and members of the policy's groups. With a
+/// users group the socket is group-owned by it with mode 0660; otherwise it
+/// stays 0600. The kernel identity of each peer, including supplementary
+/// groups, is checked again at accept time, so filesystem access alone is
+/// never sufficient.
+pub async fn serve_with_policy(
+    socket_path: impl AsRef<Path>,
+    policy: AccessPolicy,
+    handler: Arc<AuthenticatedHandler>,
     mut shutdown_requested: watch::Receiver<bool>,
 ) -> Result<()> {
     let path = socket_path.as_ref().to_path_buf();
@@ -336,6 +401,12 @@ pub async fn serve_with_shutdown_authenticated(
     let (listener, instance) = bind_owned(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let mut ownership = SocketOwnership::new(&path)?;
+    if let Some(gid) = policy.users_gid {
+        // Change the group while the mode is still 0600, then grant group
+        // access, so no other group can ever reach the socket.
+        std::os::unix::fs::lchown(&path, None, Some(gid))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+    }
     ownership._instance = Some(instance);
 
     // The socket owner is the daemon's effective filesystem identity.
@@ -368,20 +439,16 @@ pub async fn serve_with_shutdown_authenticated(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        // Fail closed if the kernel cannot identify the peer or
-                        // its UID differs from the socket owner's UID.
-                        // This is an explicitly single-user IPC boundary.
-                        let peer = match stream.peer_cred() {
-                            Ok(peer) if peer.uid() == server_uid => {
-                                tracing::trace!(peer_uid = peer.uid(), peer_pid = ?peer.pid(), "authorized local IPC peer");
-                                PeerIdentity {
-                                    uid: peer.uid(),
-                                    gid: peer.gid(),
-                                    pid: peer.pid().and_then(|pid| u32::try_from(pid).ok()),
-                                }
+                        // Fail closed if the kernel cannot identify the peer,
+                        // its groups cannot be read, or the policy does not
+                        // admit it. Credentials are the connect-time snapshot.
+                        let peer = match peer_identity(&stream, server_uid) {
+                            Ok(peer) if policy.admits(&peer) => {
+                                tracing::trace!(peer_uid = peer.uid, peer_pid = ?peer.pid, "authorized local IPC peer");
+                                peer
                             }
                             Ok(peer) => {
-                                tracing::warn!(peer_uid = peer.uid(), server_uid, "rejecting IPC peer from another UID");
+                                tracing::warn!(peer_uid = peer.uid, server_uid, "rejecting IPC peer outside the access policy");
                                 continue;
                             }
                             Err(error) => {
@@ -431,6 +498,20 @@ pub async fn serve_with_shutdown_authenticated(
     }
     drop(ownership);
     Ok(())
+}
+
+/// Kernel credentials of an accepted peer. Any failure, including an
+/// unreadable supplementary group list, refuses the connection.
+fn peer_identity(stream: &UnixStream, server_uid: u32) -> std::io::Result<PeerIdentity> {
+    let credentials = stream.peer_cred()?;
+    let groups = flowerly_peercred::peer_groups(stream)?;
+    Ok(PeerIdentity {
+        uid: credentials.uid(),
+        gid: credentials.gid(),
+        pid: credentials.pid().and_then(|pid| u32::try_from(pid).ok()),
+        groups: groups.into(),
+        service_account: credentials.uid() == server_uid,
+    })
 }
 
 /// Where a request's deadline expired. The distinction matters to callers:
@@ -555,6 +636,7 @@ async fn handle_connection(
                     // expires; do not count a still-running SQLite write as free.
                     let handler_ref = Arc::clone(&handler);
                     let request_for_handler = request.clone();
+                    let peer = peer.clone();
                     let task = tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         handler_ref(&request_for_handler, &peer)
@@ -864,6 +946,8 @@ mod tests {
                         "uid": peer.uid,
                         "gid": peer.gid,
                         "pid": peer.pid,
+                        "groups": peer.groups.to_vec(),
+                        "service_account": peer.service_account,
                     }),
                 },
             });
@@ -884,11 +968,96 @@ mod tests {
             Payload::Ok { data } => {
                 assert_eq!(data["uid"], expected_uid);
                 assert_eq!(data["pid"], std::process::id());
+                assert_eq!(data["service_account"], true);
+                let own_groups = flowerly_peercred::peer_groups(
+                    &std::os::unix::net::UnixStream::pair().unwrap().0,
+                )
+                .unwrap();
+                assert_eq!(data["groups"], serde_json::json!(own_groups));
             }
             _ => panic!("expected authenticated IPC response"),
         }
         shutdown.send(true).unwrap();
         server.await.unwrap().unwrap();
+    }
+
+    fn peer(uid: u32, gid: u32, groups: &[u32], service_account: bool) -> PeerIdentity {
+        PeerIdentity {
+            uid,
+            gid,
+            pid: None,
+            groups: groups.into(),
+            service_account,
+        }
+    }
+
+    #[test]
+    fn access_policy_admits_only_the_service_account_and_group_members() {
+        let default = AccessPolicy::default();
+        assert!(default.admits(&peer(10, 10, &[], true)));
+        assert!(!default.admits(&peer(11, 50, &[51], false)));
+        assert!(!default.is_admin(&peer(10, 10, &[], true)));
+
+        let groups = AccessPolicy {
+            users_gid: Some(50),
+            admin_gid: Some(51),
+        };
+        assert!(groups.admits(&peer(11, 50, &[], false)), "primary gid");
+        assert!(groups.admits(&peer(12, 12, &[50], false)), "supplementary");
+        assert!(groups.admits(&peer(13, 13, &[51], false)), "admin only");
+        assert!(!groups.admits(&peer(14, 14, &[49, 52], false)));
+        assert!(groups.is_admin(&peer(13, 13, &[51], false)));
+        assert!(groups.is_admin(&peer(15, 51, &[], false)));
+        assert!(!groups.is_admin(&peer(10, 10, &[50], true)));
+    }
+
+    async fn wait_for_socket(path: &Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("socket {} never appeared", path.display());
+    }
+
+    #[tokio::test]
+    async fn socket_is_private_without_a_users_group_and_group_owned_with_one() {
+        let dir = tempdir().unwrap();
+        let probe = dir.path().join("gid-probe");
+        std::fs::write(&probe, "").unwrap();
+        let own_gid = std::fs::metadata(&probe).unwrap().gid();
+        for (name, policy, mode) in [
+            ("private.sock", AccessPolicy::default(), 0o600),
+            (
+                "shared.sock",
+                AccessPolicy {
+                    users_gid: Some(own_gid),
+                    admin_gid: None,
+                },
+                0o660,
+            ),
+        ] {
+            let path = dir.path().join(name);
+            let (shutdown, receiver) = watch::channel(false);
+            let handler: Arc<AuthenticatedHandler> =
+                Arc::new(|request: &Envelope, _peer: &PeerIdentity| Envelope {
+                    version: PROTOCOL_VERSION,
+                    id: request.id.clone(),
+                    payload: Payload::Ok { data: Value::Null },
+                });
+            let server = tokio::spawn(serve_with_policy(path.clone(), policy, handler, receiver));
+            wait_for_socket(&path).await;
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.mode() & 0o777, mode, "{name}");
+            assert_eq!(meta.gid(), own_gid, "{name}");
+            assert!(matches!(
+                call(&path, Payload::Ping).await.unwrap().payload,
+                Payload::Ok { .. }
+            ));
+            shutdown.send(true).unwrap();
+            server.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]

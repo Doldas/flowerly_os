@@ -6,21 +6,76 @@
 //! scans the handler sources so a new command cannot ship unclassified.
 //!
 //! `Admin` commands change system configuration, security-relevant records
-//! or shared resources. Until an explicit administrative capability exists
-//! they are still authorized by the same-UID peer check alone; Status
-//! reports this transitional policy so it is never mistaken for enforcement.
+//! or shared resources. They require kernel-attested membership of the
+//! configured admin group (`AGENTIC_ADMIN_GROUP`); the service account is
+//! not implicitly an administrator, and with no admin group configured every
+//! Admin command is refused.
+//!
+//! `ServiceAccount` commands drive PTY shells, which run as the service
+//! account and therefore hold full authority over its state database. Until
+//! shells can be launched as the requesting user they are limited to peers
+//! running as the service account itself, even for admin group members.
+
+use flowerly_core::ipc::{AccessPolicy, ErrorCode, PeerIdentity};
 
 /// Who may invoke a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandClass {
-    /// Ordinary user-scoped operation governed by its domain ownership rules.
+    /// Any admitted peer: the service account or a users/admin group member.
     User,
-    /// Requires an explicitly authorized administrative capability.
+    /// Requires membership of the configured admin group.
     Admin,
+    /// Requires the peer to run as the service account.
+    ServiceAccount,
 }
 
-/// Administrative policy currently in force, reported by Status.
-pub(crate) const ADMIN_POLICY: &str = "same_uid_transitional";
+/// Administrative policy in force, reported by Status.
+pub(crate) fn admin_policy(policy: &AccessPolicy) -> &'static str {
+    if policy.admin_gid.is_some() {
+        "linux_group"
+    } else {
+        "denied_unconfigured"
+    }
+}
+
+/// Who may connect, reported by Status.
+pub(crate) fn client_policy(policy: &AccessPolicy) -> &'static str {
+    if policy.users_gid.is_some() || policy.admin_gid.is_some() {
+        "service_account_and_linux_groups"
+    } else {
+        "service_account_only"
+    }
+}
+
+/// Decide a command for a kernel-attested peer. Only inventoried commands
+/// can be authorized; request arguments play no part in the decision.
+pub(crate) fn authorize(
+    name: &str,
+    peer: &PeerIdentity,
+    policy: &AccessPolicy,
+) -> Result<(), (ErrorCode, String)> {
+    match classify(name) {
+        None => Err((
+            ErrorCode::InvalidArgument,
+            format!("unknown command: {name}"),
+        )),
+        Some(CommandClass::User) => Ok(()),
+        Some(CommandClass::Admin) if policy.is_admin(peer) => Ok(()),
+        Some(CommandClass::Admin) => Err((
+            ErrorCode::PermissionDenied,
+            if policy.admin_gid.is_some() {
+                format!("{name} requires membership of the configured admin group")
+            } else {
+                format!("{name} is refused: no admin group is configured")
+            },
+        )),
+        Some(CommandClass::ServiceAccount) if peer.service_account => Ok(()),
+        Some(CommandClass::ServiceAccount) => Err((
+            ErrorCode::PermissionDenied,
+            format!("{name} is limited to the service account: PTY shells run with its authority"),
+        )),
+    }
+}
 
 /// The complete command inventory: name, class and the reason for the class.
 pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
@@ -52,26 +107,54 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
     ),
     (
         "session.spawn",
-        CommandClass::User,
-        "own PTY; guardian and cgroup checks",
+        CommandClass::ServiceAccount,
+        "own PTY; guardian and cgroup checks; shell runs as the service account",
     ),
     (
         "session.spawn.lookup",
-        CommandClass::User,
-        "own PTY reservation",
+        CommandClass::ServiceAccount,
+        "own PTY reservation; shell runs as the service account",
     ),
-    ("session.attach", CommandClass::User, "PTY control token"),
-    ("session.detach", CommandClass::User, "PTY attachment token"),
+    (
+        "session.attach",
+        CommandClass::ServiceAccount,
+        "PTY control token; shell runs as the service account",
+    ),
+    (
+        "session.detach",
+        CommandClass::ServiceAccount,
+        "PTY attachment token; shell runs as the service account",
+    ),
     (
         "session.heartbeat",
-        CommandClass::User,
-        "PTY attachment token",
+        CommandClass::ServiceAccount,
+        "PTY attachment token; shell runs as the service account",
     ),
-    ("session.read", CommandClass::User, "PTY control token"),
-    ("session.follow", CommandClass::User, "PTY control token"),
-    ("session.write", CommandClass::User, "PTY attachment token"),
-    ("session.resize", CommandClass::User, "PTY attachment token"),
-    ("session.status", CommandClass::User, "PTY control token"),
+    (
+        "session.read",
+        CommandClass::ServiceAccount,
+        "PTY control token; shell runs as the service account",
+    ),
+    (
+        "session.follow",
+        CommandClass::ServiceAccount,
+        "PTY control token; shell runs as the service account",
+    ),
+    (
+        "session.write",
+        CommandClass::ServiceAccount,
+        "PTY attachment token; shell runs as the service account",
+    ),
+    (
+        "session.resize",
+        CommandClass::ServiceAccount,
+        "PTY attachment token; shell runs as the service account",
+    ),
+    (
+        "session.status",
+        CommandClass::ServiceAccount,
+        "PTY control token; shell runs as the service account",
+    ),
     // Executions and provenance queries record or read the user's own work.
     (
         "execution.create",
@@ -168,6 +251,131 @@ pub(crate) fn classify(name: &str) -> Option<CommandClass> {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    const SERVICE_UID: u32 = 961;
+    const USERS: u32 = 2000;
+    const ADMIN: u32 = 2001;
+
+    fn peer(uid: u32, gid: u32, groups: &[u32]) -> PeerIdentity {
+        PeerIdentity {
+            uid,
+            gid,
+            pid: Some(1),
+            groups: groups.into(),
+            service_account: uid == SERVICE_UID,
+        }
+    }
+
+    fn with_class(class: CommandClass) -> Vec<&'static str> {
+        COMMANDS
+            .iter()
+            .filter(|(_, c, _)| *c == class)
+            .map(|(name, _, _)| *name)
+            .collect()
+    }
+
+    fn denied(name: &str, peer: &PeerIdentity, policy: &AccessPolicy) -> bool {
+        matches!(
+            authorize(name, peer, policy),
+            Err((ErrorCode::PermissionDenied, _))
+        )
+    }
+
+    #[test]
+    fn admin_commands_require_admin_group_membership() {
+        let admin = with_class(CommandClass::Admin);
+        assert_eq!(admin.len(), 6, "{admin:?}");
+        let configured = AccessPolicy {
+            users_gid: Some(USERS),
+            admin_gid: Some(ADMIN),
+        };
+        let service = peer(SERVICE_UID, SERVICE_UID, &[]);
+        let user = peer(1000, 1000, &[USERS]);
+        let admin_supplementary = peer(1001, 1001, &[USERS, ADMIN]);
+        let admin_primary = peer(1002, ADMIN, &[]);
+        let service_admin = peer(SERVICE_UID, SERVICE_UID, &[ADMIN]);
+        for name in &admin {
+            // The service account is never implicitly an administrator.
+            assert!(denied(name, &service, &configured), "{name}");
+            assert!(denied(name, &user, &configured), "{name}");
+            for granted in [&admin_supplementary, &admin_primary, &service_admin] {
+                assert_eq!(authorize(name, granted, &configured), Ok(()), "{name}");
+            }
+            // No admin group configured: refused for everyone.
+            for policy in [
+                AccessPolicy::default(),
+                AccessPolicy {
+                    users_gid: Some(ADMIN),
+                    admin_gid: None,
+                },
+            ] {
+                for anyone in [&service, &admin_supplementary, &admin_primary] {
+                    let (code, message) = authorize(name, anyone, &policy).unwrap_err();
+                    assert_eq!(code, ErrorCode::PermissionDenied, "{name}");
+                    assert!(message.contains("no admin group"), "{message}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pty_commands_are_limited_to_the_service_account() {
+        let pty = with_class(CommandClass::ServiceAccount);
+        assert_eq!(pty.len(), 10, "{pty:?}");
+        assert!(pty.iter().all(|name| name.starts_with("session.")));
+        let policy = AccessPolicy {
+            users_gid: Some(USERS),
+            admin_gid: Some(ADMIN),
+        };
+        for name in &pty {
+            assert_eq!(
+                authorize(name, &peer(SERVICE_UID, SERVICE_UID, &[]), &policy),
+                Ok(()),
+                "{name}"
+            );
+            // Admin group membership does not grant a service-account shell.
+            for other in [peer(1000, 1000, &[USERS]), peer(1001, ADMIN, &[USERS])] {
+                assert!(denied(name, &other, &policy), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn user_commands_are_open_to_admitted_peers_and_unknown_commands_never_are() {
+        let policy = AccessPolicy {
+            users_gid: Some(USERS),
+            admin_gid: Some(ADMIN),
+        };
+        let user = peer(1000, 1000, &[USERS]);
+        for name in with_class(CommandClass::User) {
+            assert_eq!(authorize(name, &user, &policy), Ok(()), "{name}");
+        }
+        let admin = peer(1001, ADMIN, &[]);
+        for name in ["", "admin", "model.register.force", "Model.register"] {
+            assert!(matches!(
+                authorize(name, &admin, &policy),
+                Err((ErrorCode::InvalidArgument, _))
+            ));
+        }
+    }
+
+    #[test]
+    fn status_labels_describe_the_policy() {
+        assert_eq!(
+            admin_policy(&AccessPolicy::default()),
+            "denied_unconfigured"
+        );
+        assert_eq!(
+            client_policy(&AccessPolicy::default()),
+            "service_account_only"
+        );
+        let groups = AccessPolicy {
+            users_gid: Some(USERS),
+            admin_gid: Some(ADMIN),
+        };
+        assert_eq!(admin_policy(&groups), "linux_group");
+        assert_eq!(client_policy(&groups), "service_account_and_linux_groups");
+    }
 
     /// Command names used as match-arm patterns in handler sources
     /// (`"x.y" =>`, `"x.y" | "x.z"`, and the PTY `routes` list).

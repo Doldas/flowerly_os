@@ -30,8 +30,12 @@ class RuntimeTopology(unittest.TestCase):
         source = (ROOT / "src/flowerlyd/src/main.rs").read_text()
         self.assertIn('config.name = "flowerlyd".into()', source)
         self.assertNotIn("run_service(config", source)
-        self.assertIn("run_service_with_status(config", source)
+        # The single CLI-facing socket is served by the peer-authorizing
+        # core runner (#31), never the unauthenticated-handler variant.
+        self.assertIn("run_authorized_service(config", source)
+        self.assertNotIn("run_service_with_status(config", source)
         for name in LEGACY_DAEMONS:
+            self.assertNotIn('run_authorized_service("' + name + '"', source)
             self.assertNotIn('run_service_with_status("' + name + '"', source)
 
     def test_release_ships_the_consolidated_binaries(self):

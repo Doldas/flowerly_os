@@ -5,9 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::{
+    AccessPolicy, AuthenticatedHandler, Envelope, ErrorCode, Payload, PeerIdentity,
+};
 use flowerly_core::storage::Store;
-use flowerly_core::{coded_error_envelope, init_tracing, run_service_with_status, ServiceConfig};
+use flowerly_core::{coded_error_envelope, init_tracing, run_authorized_service, ServiceConfig};
 use tokio::sync::mpsc;
 
 #[allow(dead_code)]
@@ -103,6 +105,7 @@ fn via_queue(tx: &Queue, request: &Envelope) -> Envelope {
 }
 
 struct Router {
+    policy: AccessPolicy,
     store: SharedStore,
     session: session::SessionRuntime,
     flow: Queue,
@@ -112,7 +115,7 @@ struct Router {
 }
 
 impl Router {
-    fn handle(&self, request: &Envelope) -> Envelope {
+    fn handle(&self, request: &Envelope, peer: &PeerIdentity) -> Envelope {
         let Payload::Command { name, .. } = &request.payload else {
             return coded_error_envelope(
                 request.id.clone(),
@@ -120,13 +123,10 @@ impl Router {
                 "command required",
             );
         };
-        // Deny by default: only inventoried commands reach a handler.
-        if authorization::classify(name).is_none() {
-            return coded_error_envelope(
-                request.id.clone(),
-                ErrorCode::InvalidArgument,
-                format!("unknown command: {name}"),
-            );
+        // Deny by default: only inventoried commands the kernel-attested
+        // peer is authorized for reach a handler.
+        if let Err((code, message)) = authorization::authorize(name, peer, &self.policy) {
+            return coded_error_envelope(request.id.clone(), code, message);
         }
         match name.split('.').next() {
             Some("flow") => via_queue(&self.flow, request),
@@ -163,7 +163,7 @@ const MODULES: [&str; 8] = [
 /// Status reports ready only when the database answers a consistent count
 /// snapshot; a failed read is reported with its typed storage error code
 /// instead of `ready: true` with missing counts.
-fn status_details(db: &Store) -> serde_json::Value {
+fn status_details(db: &Store, policy: &AccessPolicy) -> serde_json::Value {
     match db.status_counts() {
         Ok(counts) => serde_json::json!({
             "ready": true,
@@ -179,7 +179,8 @@ fn status_details(db: &Store) -> serde_json::Value {
             "profile_count": counts.profiles,
             "active_workload_count": counts.active_workloads,
             "provider_count": counts.providers,
-            "admin_authorization": authorization::ADMIN_POLICY,
+            "admin_authorization": authorization::admin_policy(policy),
+            "client_access": authorization::client_policy(policy),
             "database": "ready"
         }),
         Err(error) => serde_json::json!({
@@ -218,6 +219,16 @@ async fn main() -> Result<()> {
         config.runtime_dir = runtime_dir;
     }
     init_tracing(&config.name, config.log_format);
+    let policy = config
+        .access_policy()
+        .context("resolving IPC access groups")?;
+    tracing::info!(
+        admin_authorization = authorization::admin_policy(&policy),
+        client_access = authorization::client_policy(&policy),
+        users_gid = ?policy.users_gid,
+        admin_gid = ?policy.admin_gid,
+        "IPC access policy"
+    );
     let mut db = Store::open(config.database_path()).context("opening unified state")?;
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
@@ -226,6 +237,7 @@ async fn main() -> Result<()> {
     let store: SharedStore = Arc::new(Mutex::new(db));
     let session = session::SessionRuntime::start(&config, &store)?;
     let router = Arc::new(Router {
+        policy,
         flow: spawn_worker(&store, flow::handle_command),
         generation: spawn_worker(&store, generation::handle_command),
         provenance: spawn_worker(&store, provenance::handle_command),
@@ -235,11 +247,12 @@ async fn main() -> Result<()> {
     });
     let status_store = Arc::clone(&store);
     let status = Arc::new(move || match status_store.try_lock() {
-        Ok(db) => status_details(&db),
+        Ok(db) => status_details(&db, &policy),
         Err(_) => serde_json::json!({"ready": false, "reason": "store busy"}),
     });
-    let handler = Arc::new(move |request: &Envelope| router.handle(request));
-    run_service_with_status(config, status, handler)
+    let handler: Arc<AuthenticatedHandler> =
+        Arc::new(move |request: &Envelope, peer: &PeerIdentity| router.handle(request, peer));
+    run_authorized_service(config, policy, status, handler)
         .await
         .context("flowerlyd terminated")
 }
@@ -253,8 +266,10 @@ mod tests {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
         store.ensure_general_flow().expect("general flow");
-        let details = status_details(&store);
+        let details = status_details(&store, &AccessPolicy::default());
         assert_eq!(details["ready"], true, "{details}");
+        assert_eq!(details["admin_authorization"], "denied_unconfigured");
+        assert_eq!(details["client_access"], "service_account_only");
         assert_eq!(details["database"], "ready");
         assert_eq!(details["flow_count"], 1);
         // Bootstrapping General records its created-by provenance edge.
@@ -271,7 +286,7 @@ mod tests {
             .expect("open second connection")
             .execute_batch("DROP TABLE sessions;")
             .expect("damage schema");
-        let details = status_details(&store);
+        let details = status_details(&store, &AccessPolicy::default());
         assert_eq!(details["ready"], false, "{details}");
         assert_eq!(details["database"], "error");
         assert_eq!(details["error_code"], "internal");

@@ -17,6 +17,7 @@ fn config(name: &str, dir: &std::path::Path) -> ServiceConfig {
         state_dir: dir.join("state"),
         database_path: None,
         log_format: flowerly_core::LogFormat::Text,
+        ..ServiceConfig::default()
     }
 }
 

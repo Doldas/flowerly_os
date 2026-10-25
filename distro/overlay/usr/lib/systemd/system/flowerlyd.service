@@ -6,12 +6,16 @@ Wants=local-fs.target
 [Service]
 Type=simple
 User=flowerly
-Group=flowerly
+# Primary group: the socket is group-owned by flowerly-users (mode 0660) and
+# /run/flowerly is group-traversable. State stays private to flowerly (#31).
+Group=flowerly-users
 Environment=AGENTIC_RUNTIME_DIR=/run/flowerly
 Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
+Environment=AGENTIC_USERS_GROUP=flowerly-users
+Environment=AGENTIC_ADMIN_GROUP=flowerly-admin
 ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
 RuntimeDirectory=flowerly
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 StateDirectory=flowerly
 StateDirectoryMode=0700
 UMask=0077

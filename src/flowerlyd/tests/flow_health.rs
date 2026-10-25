@@ -19,6 +19,10 @@ fn unified_supervisor_preserves_flows_across_restart() {
     let state = temp.path().join("state");
     let mut runtime_dirs = Vec::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
+    // IPC shutdown requires an explicit admin group (#31): grant our own gid.
+    let probe = temp.path().join("gid-probe");
+    std::fs::write(&probe, "").unwrap();
+    let own_gid = std::os::unix::fs::MetadataExt::gid(&std::fs::metadata(&probe).unwrap());
     for attempt in 0..2 {
         let runtime = temp.path().join(format!("runtime-{attempt}"));
         std::fs::create_dir_all(&runtime).unwrap();
@@ -26,6 +30,7 @@ fn unified_supervisor_preserves_flows_across_restart() {
         let mut child = Command::new(env!("CARGO_BIN_EXE_flowerlyd"))
             .env("AGENTIC_RUNTIME_DIR", &runtime)
             .env("AGENTIC_STATE_DIR", &state)
+            .env("AGENTIC_ADMIN_GROUP", own_gid.to_string())
             .spawn()
             .unwrap();
         let socket = runtime.join("flowerlyd.sock");
@@ -59,7 +64,8 @@ fn unified_supervisor_preserves_flows_across_restart() {
             .unwrap()
             .iter()
             .any(|f| f["name"] == "Durable Flow"));
-        let _ = rt.block_on(ipc::call(&socket, Payload::Shutdown)).unwrap();
+        let reply = rt.block_on(ipc::call(&socket, Payload::Shutdown)).unwrap();
+        assert!(matches!(reply.payload, Payload::Ok { .. }), "{reply:?}");
         assert!(child.wait().unwrap().success());
     }
 }
