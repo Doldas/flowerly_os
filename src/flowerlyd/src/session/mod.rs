@@ -494,7 +494,8 @@ mod tests {
         assert_eq!(store.list_sessions().expect("sessions").len(), 1);
         let id = SessionId::from_str(first["id"].as_str().expect("id")).expect("typed id");
         assert_eq!(
-            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+            store
+                .provenance_from(&ObjectRef::from(&id))
                 .expect("edges")
                 .len(),
             1

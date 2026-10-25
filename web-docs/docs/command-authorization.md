@@ -57,17 +57,17 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 
 ## Object ownership (#225): partly enforced
 
-> **The ownership boundary is NOT complete.** Flows, Goals, Sessions and
-> Executions are now owner-scoped (PR 3, below). Provenance, Generations,
-> profiles, workloads, usage and inference are **not** owner-scoped yet
-> (PRs 4–6), so two `flowerly-users` members could still see each other's
-> data there. The shipped configuration therefore still admits only the
+> **The ownership boundary is NOT complete.** Flows, Goals, Sessions,
+> Executions (PR 3) and provenance and Status (PR 4) are now owner-scoped
+> (below). Generation listings, profiles, workloads, usage and inference are
+> **not** owner-scoped yet (PRs 5–6), so two `flowerly-users` members could
+> still see each other's data there. The shipped configuration therefore still admits only the
 > service account (see
 > [the temporary restriction](#temporary-restriction-service-account-only-225)).
 > `flowerlyd` refuses to start with a users group while any User command is
 > pending. Status reports how many are pending in `ownership_pending_commands`.
 
-### Enforced: Flows, Goals, Sessions, Executions
+### Enforced: Flows, Goals, Sessions, Executions, provenance, Status
 
 Every User command is classified in `DATA_SCOPES` in
 `src/flowerlyd/src/authorization.rs` as `OwnerScoped`, `SharedSystem`,
@@ -95,9 +95,33 @@ the command inventory. For the owner-scoped commands:
   also be General).
 - **Foreground** is per uid; see the
   [Flow model](flow-model.md#activation-the-per-user-foreground-and-archiving).
-- **Status** counts Flows (own + General), Goals, Sessions and Executions for
-  the caller only, and reports the caller's `foreground_flow`. Generation,
-  provenance and compute counts are still global until PRs 4–5.
+- **Status** is fully caller-scoped (PR 4). It reports the caller's
+  `foreground_flow` and the following counts:
+  - Flows: own + General.
+  - Goals, Sessions and Executions: own.
+  - Generations, profiles and active workloads: own + `system`.
+  - Provenance edges: visible as below.
+  - Models and providers: the shared catalog counts.
+- **Provenance (PR 4)** is filtered by **both endpoints** in one SQL
+  statement. An endpoint is one of three kinds:
+  - *Visible:* the caller's own Flow, Goal, Session, Execution, Generation,
+    profile or workload; General; a `system` Generation, profile or
+    workload; a catalog model or provider; the caller's own `actor:uid:<n>`.
+  - *Hidden:* any other row of those kinds, a missing one, or another uid's
+    `actor:uid:<n>`.
+  - *Neutral:* kinds with no owner yet (agents, experiments, findings, …)
+    and other actor labels.
+
+  An edge is shown only if no endpoint is hidden and at least one is
+  visible, so neutral-to-neutral edges are never shown to ordinary users.
+  Querying another uid's object returns no edges, exactly like a missing
+  reference, and the Status count matches. Audit history is never deleted.
+  `provenance.add` stays an audited Admin command.
+- **Generation `reason_goal` (PR 4).** `generation.create` accepts only the
+  caller's own Goal (`not_found` otherwise). This is checked in the inserting
+  transaction and backed by a migration 0011 trigger. `generation.inspect`
+  shows `reason_goal: null` when the Goal is not the caller's. Generation
+  visibility itself (private candidates) is PR 6.
 - **Admin membership never widens** these User commands.
 - **Tests:** `storage::scoped` unit tests use real file-backed connections.
   They cover two uids, the same uid concurrently, General, the archive vs

@@ -86,7 +86,7 @@ pub(crate) fn refuse_unenforced_multi_user(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataScope {
     /// Only the caller's own objects, plus the shared General Flow for Flow
-    /// commands. Enforced in the owner-scoped storage API, inside the same
+    /// commands; provenance edges only when both endpoints are visible. Enforced in the owner-scoped storage API, inside the same
     /// SQLite statement or transaction as any mutation; other uids' objects
     /// are `not_found`.
     OwnerScoped,

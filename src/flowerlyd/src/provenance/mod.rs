@@ -9,12 +9,13 @@ use flowerly_core::types::{ObjectRef, ProvenanceEdge, ProvenanceRelation, Timest
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-/// `_caller` is accepted so the Router has one handler signature; provenance
-/// visibility filtering by both endpoints lands in #225 PR 4.
+/// Provenance reads are filtered by the visibility of both endpoints to the
+/// kernel-attested caller (#225 PR 4). `provenance.add` is an audited Admin
+/// command and writes unscoped.
 pub(crate) fn handle_command(
     store: &Arc<Mutex<Store>>,
     request: &Envelope,
-    _caller: Caller,
+    caller: Caller,
 ) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
@@ -26,7 +27,7 @@ pub(crate) fn handle_command(
     if let Err((code, message)) = validate_provenance_command(name, args) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&store, name, args) {
+    match run_command(&store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
@@ -133,7 +134,12 @@ impl PartialEq<String> for CommandFailure {
     }
 }
 
-fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "provenance.add" => {
             let from = args
@@ -170,7 +176,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, Command
                 .ok_or("missing string arg `ref`")?;
             let object_ref = ObjectRef::from_str(from).map_err(err_str)?;
             let edges = store
-                .provenance_from(&object_ref)
+                .provenance_from_for(caller, &object_ref)
                 .map_err(CommandFailure::storage)?;
             Ok(edges_response(&edges))
         }
@@ -182,7 +188,7 @@ fn run_command(store: &Store, name: &str, args: &Value) -> Result<Value, Command
                 .ok_or("missing string arg `ref`")?;
             let object_ref = ObjectRef::from_str(to).map_err(err_str)?;
             let edges = store
-                .provenance_to(&object_ref)
+                .provenance_to_for(caller, &object_ref)
                 .map_err(CommandFailure::storage)?;
             Ok(edges_response(&edges))
         }
@@ -248,7 +254,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flowerly_core::types::{ExecutionId, GoalId};
+    use flowerly_core::types::{Execution, ExecutionId, Goal, GoalId};
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
@@ -256,33 +262,158 @@ mod tests {
         store
     }
 
-    #[test]
-    fn provenance_queries_work_in_both_directions() {
-        let store = migrated_store();
-        let execution = ExecutionId::new();
-        let goal = GoalId::new();
+    const TEST_CALLER: Caller = Caller::new(1000);
+    const OTHER: Caller = Caller::new(2000);
+
+    /// A Goal and an Execution owned by `caller`, linked by one edge.
+    fn linked(store: &Store, caller: Caller) -> (ExecutionId, GoalId) {
+        let mut goal = Goal::new("g", caller.actor());
+        goal.owner = caller.owner();
+        store.insert_goal(&goal).expect("insert goal");
+        let execution = Execution {
+            id: ExecutionId::new(),
+            agent_id: None,
+            goal_id: Some(goal.id.clone()),
+            reason: None,
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+            started_at: Timestamp::now(),
+            owner: caller.owner(),
+        };
+        store
+            .insert_execution(&execution)
+            .expect("insert execution");
         let edge = ProvenanceEdge {
-            from: ObjectRef::from(&execution),
+            from: ObjectRef::from(&execution.id),
             relation: ProvenanceRelation::CausedBy,
-            to: ObjectRef::from(&goal),
+            to: ObjectRef::from(&goal.id),
             created_at: Timestamp::now(),
             note: Some("test edge".to_owned()),
         };
         store.insert_provenance(&edge).expect("insert edge");
+        (execution.id, goal.id)
+    }
+
+    fn count(store: &Store, command: &str, reference: &str, caller: Caller) -> Value {
+        run_command(
+            store,
+            command,
+            &serde_json::json!({ "ref": reference }),
+            caller,
+        )
+        .expect("query")["count"]
+            .clone()
+    }
+
+    #[test]
+    fn provenance_queries_work_in_both_directions() {
+        let store = migrated_store();
+        let (execution, goal) = linked(&store, TEST_CALLER);
 
         let from = run_command(
             &store,
             "provenance.from",
             &serde_json::json!({ "ref": execution }),
+            TEST_CALLER,
         )
         .expect("query outgoing");
         assert_eq!(from["count"], 1);
         assert_eq!(from["edges"][0]["to"], serde_json::json!(goal));
 
-        let to = run_command(&store, "provenance.to", &serde_json::json!({ "ref": goal }))
-            .expect("query incoming");
+        let to = run_command(
+            &store,
+            "provenance.to",
+            &serde_json::json!({ "ref": goal }),
+            TEST_CALLER,
+        )
+        .expect("query incoming");
         assert_eq!(to["count"], 1);
         assert_eq!(to["edges"][0]["from"], serde_json::json!(execution));
+    }
+
+    #[test]
+    fn another_owners_provenance_is_answered_like_a_missing_reference() {
+        let store = migrated_store();
+        let (execution, goal) = linked(&store, OTHER);
+        for (command, reference) in [
+            ("provenance.from", execution.to_string()),
+            ("provenance.to", goal.to_string()),
+            ("provenance.from", ExecutionId::new().to_string()),
+        ] {
+            assert_eq!(
+                count(&store, command, &reference, TEST_CALLER),
+                0,
+                "{command}"
+            );
+        }
+        assert_eq!(
+            count(&store, "provenance.from", execution.as_str(), OTHER),
+            1
+        );
+        // Another uid's actor label never reveals that uid's objects.
+        let actor = ObjectRef::actor("uid:2000").unwrap();
+        store
+            .insert_provenance(&ProvenanceEdge {
+                from: ObjectRef::from(&goal),
+                relation: ProvenanceRelation::CreatedBy,
+                to: actor.clone(),
+                created_at: Timestamp::now(),
+                note: None,
+            })
+            .unwrap();
+        assert_eq!(
+            count(&store, "provenance.to", actor.as_str(), TEST_CALLER),
+            0
+        );
+        assert_eq!(count(&store, "provenance.to", actor.as_str(), OTHER), 1);
+    }
+
+    #[test]
+    fn an_edge_needs_both_endpoints_visible_and_one_positively() {
+        let store = migrated_store();
+        let (mine, _) = linked(&store, TEST_CALLER);
+        let (theirs, _) = linked(&store, OTHER);
+        let agent = flowerly_core::types::AgentId::new();
+        for edge in [
+            // own -> other's: hidden (the other endpoint is not visible)
+            (ObjectRef::from(&mine), ObjectRef::from(&theirs)),
+            // own -> unowned kind: visible
+            (ObjectRef::from(&mine), ObjectRef::from(&agent)),
+            // unowned -> actor label: neutral on both sides, hidden
+            (
+                ObjectRef::from(&agent),
+                ObjectRef::actor("planner").unwrap(),
+            ),
+        ] {
+            store
+                .insert_provenance(&ProvenanceEdge {
+                    from: edge.0,
+                    relation: ProvenanceRelation::BelongsTo,
+                    to: edge.1,
+                    created_at: Timestamp::now(),
+                    note: None,
+                })
+                .unwrap();
+        }
+        // The fixture edge to its own Goal plus the edge to the agent.
+        assert_eq!(
+            count(&store, "provenance.from", mine.as_str(), TEST_CALLER),
+            2
+        );
+        assert_eq!(
+            count(&store, "provenance.to", theirs.as_str(), TEST_CALLER),
+            0
+        );
+        assert_eq!(
+            count(&store, "provenance.from", agent.as_str(), TEST_CALLER),
+            0
+        );
+        assert_eq!(
+            count(&store, "provenance.to", agent.as_str(), TEST_CALLER),
+            1
+        );
+        assert_eq!(count(&store, "provenance.to", agent.as_str(), OTHER), 0);
     }
 
     #[test]
@@ -292,6 +423,7 @@ mod tests {
             &store,
             "provenance.to",
             &serde_json::json!({ "ref": "plain-string" }),
+            TEST_CALLER,
         )
         .expect_err("untyped reference must fail");
         assert!(

@@ -378,6 +378,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "per_owner_foreground",
         sql: include_str!("../../migrations/0010_per_owner_foreground.sql"),
     },
+    Migration {
+        version: 11,
+        name: "generation_reason_goal_owner",
+        sql: include_str!("../../migrations/0011_generation_reason_goal_owner.sql"),
+    },
 ];
 
 /// Live domain counts reported by service Status.
@@ -1743,6 +1748,9 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(goal) = &generation.reason_goal {
+                scoped::require_same_owner_goal(&tx, generation.owner, goal)?;
+            }
             insert_generation_row(&tx, generation)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;

@@ -727,22 +727,25 @@ mod ownership_recording {
     }
 }
 
-/// #225 PR 3: Flow, Goal, Session and Execution handlers reach storage only
-/// through the owner-scoped API. The unscoped helpers remain for bootstrap,
+/// #225 PRs 3–4: Flow, Goal, Session, Execution and provenance handlers (and
+/// Generation's Goal references) reach storage only through the owner-scoped
+/// API. The unscoped helpers remain for bootstrap,
 /// offline self-tests and unit tests, so production handler code is scanned.
 #[cfg(test)]
 mod owner_scoped_storage {
-    const HANDLERS: [(&str, &str); 6] = [
+    const HANDLERS: [(&str, &str); 8] = [
         ("flow", include_str!("flow/mod.rs")),
         ("goal", include_str!("goal/mod.rs")),
         ("session", include_str!("session/mod.rs")),
         ("session/pty", include_str!("session/pty.rs")),
         ("execution", include_str!("agentic/mod.rs")),
+        ("provenance", include_str!("provenance/mod.rs")),
+        ("generation", include_str!("generation/mod.rs")),
         ("main", include_str!("main.rs")),
     ];
 
     /// Reads and mutations that ignore the caller.
-    const UNSCOPED: [&str; 11] = [
+    const UNSCOPED: [&str; 13] = [
         ".get_flow(",
         ".list_flows(",
         ".get_goal(",
@@ -754,6 +757,8 @@ mod owner_scoped_storage {
         ".set_flow_state(",
         ".set_goal_status(",
         ".status_counts(",
+        ".provenance_from(",
+        ".provenance_to(",
     ];
 
     /// Production code: everything before the offline self-test and tests.
