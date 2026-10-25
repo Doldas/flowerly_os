@@ -125,9 +125,30 @@ impl Router {
         };
         // Deny by default: only inventoried commands the kernel-attested
         // peer is authorized for reach a handler.
+        let admin = authorization::classify(name) == Some(authorization::CommandClass::Admin);
         if let Err((code, message)) = authorization::authorize(name, peer, &self.policy) {
+            if admin {
+                audit_admin(request, name, peer, "denied", Some(code));
+            }
             return coded_error_envelope(request.id.clone(), code, message);
         }
+        let response = self.dispatch(name, request);
+        if admin {
+            let code = match &response.payload {
+                Payload::Err { code, .. } => Some(code.unwrap_or(ErrorCode::Internal)),
+                _ => None,
+            };
+            let outcome = if code.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            };
+            audit_admin(request, name, peer, outcome, code);
+        }
+        response
+    }
+
+    fn dispatch(&self, name: &str, request: &Envelope) -> Envelope {
         match name.split('.').next() {
             Some("flow") => via_queue(&self.flow, request),
             Some("generation") => via_queue(&self.generation, request),
@@ -147,6 +168,32 @@ impl Router {
             ),
         }
     }
+}
+
+/// One journal record per Admin command decision (#225 break-glass audit).
+/// The peer is the kernel-attested client. Under the root-only maintenance
+/// procedure that is the service account, so the human operator is
+/// identified by the sudo/journal record of the same client PID, never by
+/// this record alone. Arguments are never logged.
+fn audit_admin(
+    request: &Envelope,
+    name: &str,
+    peer: &PeerIdentity,
+    outcome: &str,
+    code: Option<ErrorCode>,
+) {
+    tracing::info!(
+        target: "flowerly::admin_audit",
+        request_id = %request.id,
+        command = name,
+        peer_uid = peer.uid,
+        peer_gid = peer.gid,
+        peer_pid = ?peer.pid,
+        service_account = peer.service_account,
+        outcome,
+        code = ?code,
+        "admin command"
+    );
 }
 
 const MODULES: [&str; 8] = [

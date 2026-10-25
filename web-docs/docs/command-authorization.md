@@ -117,24 +117,50 @@ system daemon. Admin commands are refused by default, because the service
 account is not an administrator. The group-based implementation stays in
 place and is restored after #225.
 
-**Out-of-band administration (root only).** To run one Admin command, root
-starts a single client process as the service account with the admin group
-added to **that process only**:
+**Break-glass administration (temporary, root only).** Owner-approved on
+2026-10-25 for authorized maintenance only, while multi-user admission is
+disabled. A privileged local administrator runs **one** client process as
+the service account, with the admin group added to that process only:
 
 ```bash
 sudo runuser -u flowerly -g flowerly -G flowerly-admin -- \
     agenticctl --runtime-dir /run/flowerly <admin command>
 ```
 
-Limits of this procedure:
-- It needs root, which already has full authority over the host, so it
-  grants nothing new.
-- It never adds `flowerly-admin` to the daemon or to PTY shells; their
-  groups come from the unit.
-- It is per invocation and leaves no persistent membership.
-- Accepted and refused peers are logged by `flowerlyd` in the journal.
+Rules:
 
-The `--cross-uid` CI test exercises it.
+- **Who may use it.** Only an already privileged local administrator, for
+  authorized maintenance. It is not an ordinary-user path and not remote
+  access.
+- **No persistent privilege.** Never add `flowerly` to `flowerly-admin`
+  (sysusers, `usermod` or `SupplementaryGroups=`). Never give the daemon or
+  PTY guardians the admin group. The extra group exists only in the invoked
+  client process and ends with it.
+- **Identity seen by Flowerly.** IPC sees the effective service-account UID
+  (`flowerly`), not the human administrator. Flowerly's own records,
+  including `created_by` and provenance, therefore **cannot identify the
+  original operator**.
+- **Required audit trail.** Run the command through `sudo` as a named
+  administrator, never from a shared root shell. `sudo` records the invoking
+  user, time and full command line in the system journal
+  (`journalctl _COMM=sudo`).
+  - `flowerlyd` writes one `admin command` record per Admin decision
+    (target `flowerly::admin_audit`) with command, peer uid/gid/pid,
+    `service_account` and outcome (`denied`, `succeeded`, `failed`, or
+    `accepted` for `shutdown`). Arguments are never logged.
+  - Correlate the two records by time and command. Both together are the
+    audit trail; neither alone is.
+- **Risks.**
+  - Any process running as `flowerly` with that extra group is an
+    administrator for that connection.
+  - A mistyped command runs with full Admin authority.
+  - The journal must be protected and retained by the host's policy.
+- **Lifetime.** Remove or redesign this procedure when proper
+  administrative access and per-user isolation land (#225).
+
+The `--cross-uid` CI test exercises the procedure and checks that the
+daemon records it as the service account, with refusals and outcomes
+journaled.
 
 ### Upgrade
 
@@ -210,6 +236,9 @@ the test user's own gid.
     and, with the modes opened, by the kernel check;
   - the service account is not an administrator;
   - the out-of-band procedure admits Admin commands.
+- Admin audit: both test modes assert an `admin command` journal record for
+  every Admin decision and `shutdown`, refused or not, and that arguments
+  (including forged identity values) are never logged.
 - `scripts/test-shipped-ipc-admission.py` (offline, `docs` job and
   preflight): the shipped unit, sysusers and overlay admit only the service
   account. Each known bypass (users group, `EnvironmentFile`,

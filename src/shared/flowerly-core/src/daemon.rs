@@ -118,6 +118,21 @@ pub async fn run_authorized_service(
     .await
 }
 
+/// Journal record of an Admin-authorized IPC shutdown decision.
+fn audit_shutdown(request_id: &str, peer: &PeerIdentity, outcome: &str) {
+    tracing::info!(
+        target: "flowerly::admin_audit",
+        request_id,
+        command = "shutdown",
+        peer_uid = peer.uid,
+        peer_gid = peer.gid,
+        peer_pid = ?peer.pid,
+        service_account = peer.service_account,
+        outcome,
+        "admin command"
+    );
+}
+
 /// Who may stop the service over IPC. SIGTERM from the service account or
 /// the service manager is unaffected.
 #[derive(Clone, Copy)]
@@ -163,6 +178,7 @@ async fn serve(
                 if matches!(shutdown_authority, ShutdownAuthority::AdminGroup)
                     && !policy.is_admin(peer) =>
             {
+                audit_shutdown(&request.id, peer, "denied");
                 coded_error_envelope(
                     request.id.clone(),
                     ErrorCode::PermissionDenied,
@@ -170,6 +186,9 @@ async fn serve(
                 )
             }
             Payload::Shutdown => {
+                if matches!(shutdown_authority, ShutdownAuthority::AdminGroup) {
+                    audit_shutdown(&request.id, peer, "accepted");
+                }
                 let _ = shutdown_tx.send(true);
                 Envelope {
                     version: crate::ipc::PROTOCOL_VERSION,
