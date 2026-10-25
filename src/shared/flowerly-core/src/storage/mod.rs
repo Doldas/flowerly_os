@@ -610,6 +610,22 @@ impl Store {
         operation: &MutationOperation<'_>,
         write: impl FnOnce(&Connection) -> Result<()>,
     ) -> Result<String> {
+        let response = operation.response_payload;
+        self.run_once(operation, |conn| {
+            write(conn)?;
+            Ok(response.to_owned())
+        })
+    }
+
+    /// Like `insert_once`, but the response is produced by `write` inside the
+    /// transaction, for mutations whose result (such as an allocated version
+    /// number) is only known once the write runs. `response_payload` of the
+    /// operation is ignored.
+    fn run_once(
+        &mut self,
+        operation: &MutationOperation<'_>,
+        write: impl FnOnce(&Connection) -> Result<String>,
+    ) -> Result<String> {
         let id = operation.operation_id;
         if id.is_empty()
             || id.len() > 128
@@ -621,9 +637,7 @@ impl Store {
                 "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
             ));
         }
-        if operation.request_payload.len() > 64 * 1024
-            || operation.response_payload.len() > 64 * 1024
-        {
+        if operation.request_payload.len() > 64 * 1024 {
             return Err(StorageError::InvalidOperation(
                 "idempotent operation payload exceeds 64 KiB".into(),
             ));
@@ -655,7 +669,12 @@ impl Store {
             tx.commit()?;
             return Ok(prior_response);
         }
-        write(&tx)?;
+        let response = write(&tx)?;
+        if response.len() > 64 * 1024 {
+            return Err(StorageError::InvalidOperation(
+                "idempotent operation payload exceeds 64 KiB".into(),
+            ));
+        }
         tx.execute(
             "INSERT INTO ipc_operations
              (actor, command, operation_id, request_payload, response_payload, created_at)
@@ -665,12 +684,12 @@ impl Store {
                 operation.command,
                 id,
                 operation.request_payload,
-                operation.response_payload,
+                response,
                 Timestamp::now().as_millis(),
             ],
         )?;
         tx.commit()?;
-        Ok(operation.response_payload.to_owned())
+        Ok(response)
     }
 
     /// Reserve an externally effective PTY operation BEFORE launching anything.
@@ -934,34 +953,29 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = Timestamp::now();
-        let next: u32 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) + 1
-                 FROM ai_profile_versions WHERE profile_id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(1);
-        tx.execute(
-            "INSERT INTO ai_profile_versions
-                 (profile_id, version, toml, summary, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id.as_str(),
-                next,
-                toml,
-                summary,
-                appended_by,
-                now.as_millis()
-            ],
-        )?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
+        let next = append_profile_version_row(&tx, id, toml, summary, appended_by, edges)?;
         tx.commit()?;
         Ok(next)
+    }
+
+    /// Idempotent `append_profile_version`: an exact retry of `operation`
+    /// replays the stored response instead of appending another version.
+    /// `response` renders the allocated version into the stored JSON.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_profile_version_once(
+        &mut self,
+        id: &ProfileId,
+        toml: &str,
+        summary: &str,
+        appended_by: &str,
+        edges: &[ProvenanceEdge],
+        operation: &MutationOperation<'_>,
+        response: impl FnOnce(u32) -> String,
+    ) -> Result<String> {
+        self.run_once(operation, |conn| {
+            let next = append_profile_version_row(conn, id, toml, summary, appended_by, edges)?;
+            Ok(response(next))
+        })
     }
 
     pub fn rename_profile(
@@ -1922,6 +1936,43 @@ fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<(
         ],
     )?;
     Ok(())
+}
+
+fn append_profile_version_row(
+    tx: &Connection,
+    id: &ProfileId,
+    toml: &str,
+    summary: &str,
+    appended_by: &str,
+    edges: &[ProvenanceEdge],
+) -> Result<u32> {
+    let now = Timestamp::now();
+    let next: u32 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1
+                 FROM ai_profile_versions WHERE profile_id = ?1",
+            params![id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(1);
+    tx.execute(
+        "INSERT INTO ai_profile_versions
+                 (profile_id, version, toml, summary, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id.as_str(),
+            next,
+            toml,
+            summary,
+            appended_by,
+            now.as_millis()
+        ],
+    )?;
+    for edge in edges {
+        insert_provenance_row(tx, edge)?;
+    }
+    Ok(next)
 }
 
 fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()> {

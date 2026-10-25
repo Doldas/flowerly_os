@@ -774,6 +774,159 @@ mod tests {
         }
     }
 
+    const PROFILE_TOML: &str = "capability_tier = 'advanced'\nbackground_activity = 'quiet'\n";
+
+    fn create_profile(store: &SharedStore, name: &str) -> String {
+        let data = assert_ok(&call(
+            store,
+            "profile.create",
+            serde_json::json!({"name": name, "toml": PROFILE_TOML, "created_by": "uid:1000"}),
+        ));
+        data["id"].as_str().expect("profile id").to_owned()
+    }
+
+    /// #53/#63: a retried clone with the same key must replay the first
+    /// clone, not report a freshly generated id that was never stored.
+    #[test]
+    fn profile_clone_replay_returns_the_stored_clone() {
+        let store = store();
+        let source = create_profile(&store, "source");
+        let args = serde_json::json!({
+            "id": source, "name": "copy", "operation_id": "clone-1", "created_by": "uid:1000"
+        });
+        let first = assert_ok(&call(&store, "profile.clone", args.clone()));
+        let second = assert_ok(&call(&store, "profile.clone", args));
+        assert_eq!(first["id"], second["id"]);
+        let shown = call(
+            &store,
+            "profile.show",
+            serde_json::json!({"id": second["id"]}),
+        );
+        assert_eq!(assert_ok(&shown)["name"], "copy");
+        assert_eq!(store.lock().unwrap().list_profiles().unwrap().len(), 2);
+        let reused = call(
+            &store,
+            "profile.clone",
+            serde_json::json!({
+                "id": source, "name": "other", "operation_id": "clone-1", "created_by": "uid:1000"
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    /// #53/#63: `operation_id` on profile.edit was validated and dropped, so
+    /// a retry appended a duplicate version.
+    #[test]
+    fn profile_edit_replay_does_not_append_a_second_version() {
+        let store = store();
+        let id = create_profile(&store, "edited");
+        let edit = serde_json::json!({
+            "id": id,
+            "toml": "capability_tier = 'advanced'\nbackground_activity = 'normal'\n",
+            "operation_id": "edit-1",
+            "created_by": "uid:1000",
+        });
+        let first = assert_ok(&call(&store, "profile.edit", edit.clone()));
+        let second = assert_ok(&call(&store, "profile.edit", edit));
+        assert_eq!(first, serde_json::json!({"id": id, "version": 2}));
+        assert_eq!(second, first);
+        let history = assert_ok(&call(
+            &store,
+            "profile.version_history",
+            serde_json::json!({"id": id}),
+        ));
+        assert_eq!(history["versions"].as_array().map(Vec::len), Some(2));
+        let reused = call(
+            &store,
+            "profile.edit",
+            serde_json::json!({
+                "id": id, "toml": "capability_tier = 'advanced'\nbackground_activity = 'intensive'\n",
+                "operation_id": "edit-1", "created_by": "uid:1000"
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    #[test]
+    fn profile_rename_rejects_a_malformed_operation_id() {
+        let store = store();
+        let id = create_profile(&store, "named");
+        for bad in [serde_json::json!(7), serde_json::json!("bad key")] {
+            let reply = call(
+                &store,
+                "profile.rename",
+                serde_json::json!({"id": id, "name": "renamed", "operation_id": bad}),
+            );
+            assert_error(&reply, ErrorCode::InvalidArgument);
+        }
+        let shown = assert_ok(&call(&store, "profile.show", serde_json::json!({"id": id})));
+        assert_eq!(shown["name"], "named");
+    }
+
+    /// #53/#63: a retried registration must replay the stored provider id.
+    #[test]
+    fn provider_register_replay_returns_the_stored_provider() {
+        let store = store();
+        let args = serde_json::json!({
+            "name": "local", "capabilities": ["text"], "operation_id": "prov-1",
+            "created_by": "uid:1000",
+        });
+        let first = assert_ok(&call(&store, "provider.register", args.clone()));
+        let second = assert_ok(&call(&store, "provider.register", args));
+        assert_eq!(first["id"], second["id"]);
+        assert_ok(&call(
+            &store,
+            "provider.show",
+            serde_json::json!({"id": second["id"]}),
+        ));
+        assert_eq!(store.lock().unwrap().list_providers().unwrap().len(), 1);
+        let reused = call(
+            &store,
+            "provider.register",
+            serde_json::json!({
+                "name": "local", "capabilities": ["image"], "operation_id": "prov-1",
+                "created_by": "uid:1000",
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    #[test]
+    fn usage_record_refuses_an_operation_id_it_cannot_honor() {
+        let store = store();
+        let reply = call(
+            &store,
+            "usage.record",
+            serde_json::json!({
+                "workload_id": format!("wl-{}", uuid::Uuid::new_v4().simple()),
+                "tokens_in": 1, "tokens_out": 1, "latency_ms": 1, "cost_micros": 0,
+                "operation_id": "usage-1",
+            }),
+        );
+        let message = assert_error(&reply, ErrorCode::InvalidArgument);
+        assert!(message.contains("operation_id"), "{message}");
+    }
+
+    #[test]
+    fn workload_list_treats_null_mine_as_absent() {
+        let store = store();
+        for mine in [
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!(false),
+        ] {
+            assert_ok(&call(
+                &store,
+                "workload.list",
+                serde_json::json!({"mine": mine, "created_by": "uid:1000"}),
+            ));
+        }
+        assert_error(
+            &call(&store, "workload.list", serde_json::json!({"mine": "yes"})),
+            ErrorCode::InvalidArgument,
+        );
+    }
+
     #[test]
     fn unknown_compute_commands_are_typed_rejections() {
         let store = store();
