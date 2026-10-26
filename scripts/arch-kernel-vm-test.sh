@@ -89,8 +89,10 @@ growpart:
   mode: auto
   devices: ['/']
 resize_rootfs: true
+# The CI login is not named flowerly: that is the service account the
+# guest's systemd acceptance creates from the shipped sysusers file (#225).
 users:
-  - name: flowerly
+  - name: flowerly-ci
     gecos: Flowerly CI
     groups: [wheel]
     shell: /bin/bash
@@ -261,7 +263,7 @@ scp_opts=(
     -o ConnectTimeout=5
 )
 
-guest="flowerly@127.0.0.1"
+guest="flowerly-ci@127.0.0.1"
 
 wait_for_ssh() {
     local label="$1"

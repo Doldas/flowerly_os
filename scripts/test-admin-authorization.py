@@ -9,23 +9,29 @@ current user and proves:
   * with an admin group the caller is not in, the same holds;
   * an explicit grant of the caller's own gid admits Admin commands and
     shutdown;
-  * an unknown group name is a startup error, not a silent downgrade.
+  * an unknown group name is a startup error, not a silent downgrade;
+  * a users group starts (every User command is owner-scoped, #225).
 
 --cross-uid (root, used by CI through sudo) creates a dedicated service
 account plus users/admin groups and members, runs flowerlyd as the service
 account and connects as each identity:
   * a users-group member runs User commands but no Admin, PTY or shutdown;
-  * an admin-group member runs Admin commands and shutdown, but no PTY;
+  * a human administrator (users and admin groups) runs Admin commands and
+    shutdown, but no PTY, and the Admin journal names their own uid;
+  * an admin-group member who is not a users member cannot connect;
   * the service account is never implicitly admin;
   * a non-member is refused by the kernel credential check even when the
     socket file is made world-accessible.
-It then starts flowerlyd exactly as the shipped systemd unit configures it
-(#225 temporary default) and proves service-account-only admission at both
-the filesystem and the kernel check, no implicit admin for the service
-account, and the documented root-only out-of-band maintenance procedure.
+It then starts flowerlyd exactly as the shipped systemd unit configures it,
+first alone (the 0.0.4 default: service-account-only at the filesystem and
+the kernel check, no implicit admin) and then merged with the opt-in
+multi-user drop-in (users members admitted, admin-only and non-members
+refused, state still private). Real systemd is accepted in the Arch guest by
+test-systemd-multi-user.py.
 """
 import argparse
 import grp
+import importlib.util
 import json
 import os
 import pathlib
@@ -45,6 +51,10 @@ import uuid
 ADMIN_COMMANDS = [
     "provenance.add",
     "generation.activate",
+    "generation.promote",
+    "ownership.inspect",
+    "ownership.claim",
+    "ownership.release",
     "model.register",
     "model.retire",
     "provider.register",
@@ -53,11 +63,6 @@ ADMIN_COMMANDS = [
 # Forged identity claims that must never influence authorization.
 SPOOFED = {"admin": True, "created_by": "uid:0", "uid": 0, "groups": [0], "role": "admin"}
 
-
-# Test-only acknowledgment that lets flowerlyd admit a users group before
-# per-user ownership is enforced (#225); the shipped unit unsets it.
-UNENFORCED_ACK = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"
-UNENFORCED_ACK_VALUE = "members-can-read-each-others-data"
 
 
 def recv_exact(conn, count):
@@ -101,17 +106,21 @@ def client_main(socket_path, payload):
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def audit_records(log_text):
-    """(command, outcome, service_account) of each `admin command` journal record."""
+def audit_fields(log_text):
+    """Fields of each `admin command` journal record."""
     records = []
     for line in ANSI.sub("", log_text).splitlines():
         if "admin command" not in line:
             continue
         fields = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', line))
-        records.append((fields.get("command", "").strip('"'),
-                        fields.get("outcome", "").strip('"'),
-                        fields.get("service_account")))
+        records.append({key: value.strip('"') for key, value in fields.items()})
     return records
+
+
+def audit_records(log_text):
+    """(command, outcome, service_account) of each `admin command` journal record."""
+    return [(f.get("command", ""), f.get("outcome", ""), f.get("service_account"))
+            for f in audit_fields(log_text)]
 
 
 def is_denied(reply):
@@ -141,7 +150,6 @@ def start(bin_dir, root, label, extra_env):
     env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
     env.pop("AGENTIC_USERS_GROUP", None)
     env.pop("AGENTIC_ADMIN_GROUP", None)
-    env.pop(UNENFORCED_ACK, None)
     env.update(extra_env)
     with log_path.open("wb") as log:
         process = subprocess.Popen([str(bin_dir / "flowerlyd")], env=env,
@@ -220,23 +228,23 @@ def same_uid(bin_dir):
         assert process.returncode != 0, "unknown admin group must refuse to start"
         assert "flowerly-no-such-group" in log.read_text(), log.read_text()
 
-        # Until #225 enforces ownership, a users group refuses to start unless
-        # the exact test-only acknowledgment is given.
-        for label, extra in [
-            ("users-no-ack", {}),
-            ("users-wrong-ack", {UNENFORCED_ACK: "1"}),
-        ]:
-            process, sock, log = start(bin_dir, root, label,
-                                       {"AGENTIC_USERS_GROUP": str(os.getgid()), **extra})
-            try:
-                process.wait(timeout=15)
-            finally:
-                stop(process)
-            assert process.returncode != 0, f"{label}: a users group must refuse to start"
-            assert "#225" in log.read_text() and not sock.exists(), log.read_text()
+        # Every User command is owner-scoped (#225), so a users group starts
+        # without any acknowledgment; the removed test-only bypass is inert.
+        process, sock, log = start(bin_dir, root, "users",
+                                   {"AGENTIC_USERS_GROUP": str(os.getgid()),
+                                    "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP": "1"})
+        try:
+            wait_ready(sock, process, log)
+            status = rpc(sock, {"type": "status"})["data"]["details"]
+            assert status["client_access"] == "service_account_and_linux_groups", status
+            assert status["ownership_pending_commands"] == 0, status
+            assert os.stat(sock).st_mode & 0o777 == 0o660, oct(os.stat(sock).st_mode)
+            assert "TEST ONLY" not in log.read_text(), log.read_text()
+        finally:
+            stop(process)
         print("same-UID admin authorization: Admin commands and shutdown refused without an "
               "explicit admin group; spoofed JSON ignored; explicit grant admitted; "
-              "unknown group refused at startup: OK")
+              "unknown group refused at startup; owner-scoped users group admitted: OK")
 
 
 def run(*argv):
@@ -251,50 +259,53 @@ def as_user(user, script, sock, payload, groups=()):
     return json.loads(result.stdout)
 
 
-UNIT = pathlib.Path(__file__).resolve().parents[1] / "distro/overlay/usr/lib/systemd/system/flowerlyd.service"
+SCRIPTS = pathlib.Path(__file__).resolve().parent
 
 
-def unit_settings(path):
-    """Active Environment= variables and other directives of a unit."""
-    environment, values = {}, {}
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";", "[")) or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key == "Environment":
-            name, setting = value.split("=", 1)
-            environment[name] = setting
-        else:
-            values[key] = value
-    return environment, values
+def shipped_policy():
+    """The offline unit/drop-in parser shared with test-shipped-ipc-admission."""
+    spec = importlib.util.spec_from_file_location(
+        "shipped_admission", SCRIPTS / "test-shipped-ipc-admission.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def shipped_unit(root, local_bin, script, service, users, admin, users_group, admin_group):
-    """#225: run flowerlyd exactly as the shipped unit configures it, with the
-    unit's group names mapped to this run's test groups, and prove that only
-    the service account is admitted, at the filesystem and the kernel check."""
-    environment, values = unit_settings(UNIT)
+def shipped_unit(root, local_bin, script, service, users, admin, admin_only, mallory,
+                 users_group, admin_group, opt_in):
+    """#225: run flowerlyd exactly as the shipped unit configures it (alone, or
+    merged with the opt-in drop-in), with the unit's group names mapped to this
+    run's test groups, and check admission at the filesystem and the kernel."""
+    policy = shipped_policy()
+    texts = [policy.UNIT.read_text()] + ([policy.DROP_IN.read_text()] if opt_in else [])
+    values = policy.effective(*texts)
+    problems = (policy.opt_in_problems if opt_in else policy.default_problems)(values)
+    assert problems == [], problems
+    environment = policy.environment_of(values)
+    label = "opt-in" if opt_in else "default"
     names = {"flowerly-users": users_group, "flowerly-admin": admin_group, "flowerly": service}
     service_pw = pwd.getpwnam(service)
-    group = names[values["Group"]]
+    group = names[values["Group"][0]]
     gid = grp.getgrnam(group).gr_gid
-    runtime, state = root / "shipped-runtime", root / "shipped-state"
+    runtime, state = root / f"shipped-{label}-runtime", root / f"shipped-{label}-state"
     runtime.mkdir()
     state.mkdir()
+    # What systemd does for RuntimeDirectory=/StateDirectory= with User=/Group=.
     os.chown(runtime, service_pw.pw_uid, gid)
     os.chown(state, service_pw.pw_uid, gid)
-    runtime.chmod(int(values["RuntimeDirectoryMode"], 8))
-    state.chmod(int(values["StateDirectoryMode"], 8))
+    runtime_mode = int(values["RuntimeDirectoryMode"][0], 8)
+    runtime.chmod(runtime_mode)
+    state.chmod(int(values["StateDirectoryMode"][0], 8))
     settings = [f"{name}={names.get(value, value)}" for name, value in environment.items()
                 if name not in ("AGENTIC_RUNTIME_DIR", "AGENTIC_STATE_DIR")]
     sock = runtime / "flowerlyd.sock"
-    log_path = root / "shipped.log"
+    log_path = root / f"shipped-{label}.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(
             ["runuser", "-u", service, "-g", group, "--", "env", "-i", "PATH=/usr/bin:/bin",
              f"HOME={state}", f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
-             *settings, str(local_bin / "flowerlyd")],
+             *settings, "sh", "-c", f"umask {values['UMask'][0]} && exec \"$0\"",
+             str(local_bin / "flowerlyd")],
             stdout=log, stderr=subprocess.STDOUT)
     try:
         for _ in range(200):
@@ -305,52 +316,61 @@ def shipped_unit(root, local_bin, script, service, users, admin, users_group, ad
             time.sleep(0.05)
         else:
             raise AssertionError(f"flowerlyd not ready: {log_path.read_text()}")
-        assert os.stat(sock).st_mode & 0o777 == 0o600, oct(os.stat(sock).st_mode)
-        assert os.stat(runtime).st_mode & 0o777 == 0o700, oct(os.stat(runtime).st_mode)
+        meta = os.stat(sock)
+        assert meta.st_mode & 0o777 == (0o660 if opt_in else 0o600), (label, oct(meta.st_mode))
+        assert meta.st_gid == gid, (label, meta.st_gid, gid)
+        assert os.stat(runtime).st_mode & 0o777 == runtime_mode, oct(os.stat(runtime).st_mode)
+        # The database stays private to the service account in both.
+        for entry in state.iterdir():
+            mode = entry.stat().st_mode & 0o777
+            assert mode & 0o077 == 0 and entry.stat().st_uid == service_pw.pw_uid, (
+                label, entry, oct(mode))
         status = reply_of(as_user(service, script, sock, {"type": "status"}), "status")["data"]["details"]
-        assert status["client_access"] == "service_account_only", status
+        expected = "service_account_and_linux_groups" if opt_in else "service_account_only"
+        assert status["client_access"] == expected, status
         assert status["admin_authorization"] == "linux_group", status
 
-        # A users member and a different-UID admin cannot reach the socket...
-        for user in (users, admin):
-            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "eacces", user
+        if opt_in:
+            # Users members connect for User commands only; the human admin
+            # also runs Admin commands; neither gets a PTY.
+            assert reply_of(as_user(users, script, sock, command("flow.list")), "u")["type"] == "ok"
+            for name in ADMIN_COMMANDS + ["session.spawn"]:
+                assert is_denied(reply_of(as_user(users, script, sock, command(name)), name)), name
+            for name in ADMIN_COMMANDS:
+                assert not is_denied(reply_of(as_user(admin, script, sock, command(name)), name)), name
+            assert is_denied(reply_of(as_user(admin, script, sock, command("session.spawn")), "pty"))
+            refused = (admin_only, mallory)
+        else:
+            refused = (users, admin, admin_only, mallory)
+        # Everyone else cannot reach the socket...
+        for user in refused:
+            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "eacces", (label, user)
         # ...and the kernel check refuses them even when the modes are opened.
         runtime.chmod(0o755)
         os.chmod(sock, 0o666)
-        for user in (users, admin):
-            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "closed", user
-        os.chmod(sock, 0o600)
-        runtime.chmod(0o700)
+        for user in refused:
+            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "closed", (label, user)
+        os.chmod(sock, meta.st_mode & 0o777)
+        runtime.chmod(runtime_mode)
 
-        # The service account is not an administrator by default.
+        # The service account is not an administrator in either configuration.
         for name in ADMIN_COMMANDS:
             assert is_denied(reply_of(as_user(service, script, sock, command(name)), name)), name
         assert is_denied(reply_of(as_user(service, script, sock, {"type": "shutdown"}), "svc"))
-
-        # Documented out-of-band maintenance: root runs ONE client process as
-        # the service account with the admin group added to that process only.
-        maintenance = ("-g", group, "-G", admin_group)
-        for name in ADMIN_COMMANDS:
-            reply = reply_of(as_user(service, script, sock, command(name), maintenance), name)
-            assert not is_denied(reply), (name, reply)
-        reply = reply_of(as_user(service, script, sock, {"type": "shutdown"}, maintenance), "stop")
-        assert reply["type"] == "ok", reply
-        process.wait(timeout=15)
-        assert process.returncode == 0, log_path.read_text()
-        # The journal shows the service account, not the human operator: the
-        # operator must be identified from the sudo record (documented).
-        records = audit_records(log_path.read_text())
-        assert ("shutdown", "accepted", "true") in records, records
-        for name in ADMIN_COMMANDS:
-            assert (name, "denied", "true") in records, (name, records)
-            assert any(c == name and o in ("succeeded", "failed") for c, o, _ in records), name
+        assert process.poll() is None, log_path.read_text()
     finally:
         if process.poll() is None:
-            process.kill()
-            process.wait()
-    print("shipped unit (#225): service-account-only at filesystem and kernel check; "
-          "users members and other-UID admins refused; service account not admin; "
-          "root-only out-of-band admin maintenance works: OK")
+            process.terminate()
+            process.wait(timeout=15)
+    records = audit_records(log_path.read_text())
+    for name in ADMIN_COMMANDS:
+        assert (name, "denied", "true") in records, (label, name, records)
+    print(f"shipped unit ({label}, #225): " + (
+        "users members admitted for User commands only, human admin for Admin, no PTY; "
+        "admin-only and non-members refused at filesystem and kernel check; state private; "
+        "service account not admin: OK" if opt_in else
+        "service-account-only at filesystem and kernel check; users members, admins and "
+        "non-members refused; state private; service account not admin: OK"))
 
 
 def reply_of(outcome, label):
@@ -363,7 +383,8 @@ def cross_uid(bin_dir):
         raise SystemExit("--cross-uid must run as root (CI uses sudo)")
     suffix = uuid.uuid4().hex[:6]
     users_group, admin_group = f"flw-users-{suffix}", f"flw-admin-{suffix}"
-    service, alice, bob, mallory = (f"flw-{name}-{suffix}" for name in ("svc", "alice", "bob", "mal"))
+    service, alice, bob, mallory, carol = (
+        f"flw-{name}-{suffix}" for name in ("svc", "alice", "bob", "mal", "aon"))
     created_users, created_groups = [], []
     root = pathlib.Path(tempfile.mkdtemp(prefix="flowerly-cross-uid-"))
     process = None
@@ -371,8 +392,11 @@ def cross_uid(bin_dir):
         for group in (users_group, admin_group):
             run("groupadd", "--system", group)
             created_groups.append(group)
+        # bob is a human administrator (users + admin); carol is in the admin
+        # group only, which never admits a connection by itself.
         for user, groups in [(service, None), (alice, users_group),
-                             (bob, f"{users_group},{admin_group}"), (mallory, None)]:
+                             (bob, f"{users_group},{admin_group}"), (mallory, None),
+                             (carol, admin_group)]:
             argv = ["useradd", "--system", "--user-group", "--no-create-home",
                     "--shell", "/usr/sbin/nologin"]
             if groups:
@@ -405,7 +429,6 @@ def cross_uid(bin_dir):
                  "env", "-i", "PATH=/usr/bin:/bin", f"HOME={state}",
                  f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
                  f"AGENTIC_USERS_GROUP={users_group}", f"AGENTIC_ADMIN_GROUP={admin_group}",
-                 f"{UNENFORCED_ACK}={UNENFORCED_ACK_VALUE}",
                  str(local_bin / "flowerlyd")],
                 stdout=log, stderr=subprocess.STDOUT)
         for _ in range(200):
@@ -459,12 +482,14 @@ def cross_uid(bin_dir):
             assert not is_denied(reply_of(as_user(bob, script, sock, command(name)), name)), ("bob", name)
         assert is_denied(reply_of(as_user(bob, script, sock, command("session.spawn")), "bob spawn"))
 
-        # Non-member: the filesystem refuses, and so does the kernel check
-        # when the directory and socket modes are deliberately opened up.
-        assert as_user(mallory, script, sock, {"type": "ping"})["outcome"] == "eacces"
+        # Non-member and admin-only member: the filesystem refuses, and so does
+        # the kernel check when the directory and socket modes are opened up.
+        for user in (mallory, carol):
+            assert as_user(user, script, sock, {"type": "ping"})["outcome"] == "eacces", user
         runtime.chmod(0o755)
         os.chmod(sock, 0o666)
-        assert as_user(mallory, script, sock, command("flow.list"))["outcome"] == "closed"
+        for user in (mallory, carol):
+            assert as_user(user, script, sock, command("flow.list"))["outcome"] == "closed", user
         os.chmod(sock, 0o660)
         runtime.chmod(0o750)
         assert process.poll() is None, log_path.read_text()
@@ -474,11 +499,19 @@ def cross_uid(bin_dir):
         process.wait(timeout=15)
         assert process.returncode == 0, log_path.read_text()
         assert "rejecting IPC peer outside the access policy" in log_path.read_text()
-        print("cross-UID admin authorization: users member limited to User commands, admin "
-              "member admitted for Admin and shutdown, service account never implicit admin, "
-              "PTY limited to the service account, non-member refused by kernel credentials: OK")
+        # The Admin journal names the human administrator's own uid.
+        bob_uid = str(pwd.getpwnam(bob).pw_uid)
+        granted = [f for f in audit_fields(log_path.read_text())
+                   if f.get("peer_uid") == bob_uid and f.get("outcome") != "denied"]
+        assert granted and all(f.get("service_account") == "false" for f in granted), granted
+        print("cross-UID admin authorization: users member limited to User commands, human "
+              "admin admitted for Admin and shutdown and journaled by own uid, admin-only "
+              "member and non-member refused by kernel credentials, service account never "
+              "implicit admin, PTY limited to the service account: OK")
         process = None
-        shipped_unit(root, local_bin, script, service, alice, bob, users_group, admin_group)
+        for opt_in in (False, True):
+            shipped_unit(root, local_bin, script, service, alice, bob, carol, mallory,
+                         users_group, admin_group, opt_in)
     finally:
         if process is not None and process.poll() is None:
             process.kill()

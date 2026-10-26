@@ -3,10 +3,9 @@
 
 --cross-uid (root, used by CI through sudo) creates a service account, a
 users group and two members, alice and bob, and runs the real flowerlyd as
-the service account with multi-user admission. This needs the test-only
-acknowledgment, because shipped flowerlyd refuses a users group until #225
-closes. It then turns the two-UID reproduction from #225 into permanent
-assertions:
+the service account with multi-user admission, exactly as the opt-in
+drop-in configures it (no test-only override exists). It then turns the
+two-UID reproduction from #225 into permanent assertions:
 
   * Status counts and the foreground are the caller's own. The status-count
     leak is fixed.
@@ -60,8 +59,6 @@ import tempfile
 import time
 import uuid
 
-UNENFORCED_ACK = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"
-UNENFORCED_ACK_VALUE = "members-can-read-each-others-data"
 MISSING_FLOW = "flow-00000000000000000000000000000000"
 MISSING_GOAL = "goal-00000000000000000000000000000000"
 MISSING_PROFILE = "profile-00000000000000000000000000000000"
@@ -177,7 +174,6 @@ def start_daemon(script, local_bin, service, users_group, admin_group, runtime, 
              "env", "-i", "PATH=/usr/bin:/bin", f"HOME={state}",
              f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
              f"AGENTIC_USERS_GROUP={users_group}", f"AGENTIC_ADMIN_GROUP={admin_group}",
-             f"{UNENFORCED_ACK}={UNENFORCED_ACK_VALUE}",
              str(local_bin / "flowerlyd")],
             stdout=log, stderr=subprocess.STDOUT)
     sock = runtime / "flowerlyd.sock"
@@ -486,7 +482,7 @@ def cross_uid(bin_dir):
         log_path = root / "flowerlyd.log"
         process, sock = start_daemon(script, local_bin, service, users_group, admin_group,
                                      runtime, state, log_path)
-        assert "TEST ONLY" in log_path.read_text(), log_path.read_text()
+        assert "TEST ONLY" not in log_path.read_text(), log_path.read_text()
 
         def restart():
             nonlocal process
