@@ -58,9 +58,10 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 ## Object ownership (#225): enforced, admission not yet restored
 
 > **Every User command is now owner-scoped** (PRs 3–6, below), and Status
-> reports `ownership_pending_commands: 0`. **Multi-user admission is still
-> not restored.** The audited Admin `ownership.inspect/claim/release` (PR 7)
-> and the full cross-UID and real Arch acceptance (PR 8) are outstanding.
+> reports `ownership_pending_commands: 0`. The audited Admin
+> `ownership.inspect/claim/release` (PR 7) handle legacy `unresolved` data.
+> **Multi-user admission is still not restored:** the full cross-UID and
+> real Arch acceptance (PR 8) is outstanding.
 > The shipped configuration therefore still admits only the service account
 > (see [the temporary restriction](#temporary-restriction-service-account-only-225)).
 > `flowerlyd` refuses to start with a users group while any User command is
@@ -145,6 +146,37 @@ the command inventory. For the owner-scoped commands:
   - **`admin_audit`** (migration 0013) is append-only: triggers refuse
     UPDATE and DELETE for every writer. Refusals are journaled
     (`flowerly::admin_audit`), not stored. PR 7 reuses the table.
+- **Ownership administration (PR 7, Admin, audited).** These commands are
+  the only way to cross or change ownership of user data. Each one needs a
+  `reason` (1..512 bytes) and appends one `admin_audit` row per object, in
+  the same `IMMEDIATE` transaction as the change. `ref` is a Flow, Goal,
+  Session, Execution, Generation, profile, workload or usage id. Model and
+  provider ids are `invalid_argument`, and a missing id is `not_found`.
+  - **Ownership component.** Ownership moves as a unit. The unit is the
+    object plus every object linked to it, transitively and in both
+    directions, through a same-owner reference that has the same owner:
+    Goal parent, Flow parent, Execution Goal, Session Flow, Generation
+    reason Goal and parent, workload profile, and usage workload. `system`
+    objects such as General bound the component and never move. A linked
+    object with another non-system owner blocks the move unless it already
+    has the target owner. Before commit, the transaction re-checks every
+    reference of the moved objects.
+  - **`ownership.inspect {ref, reason}`** returns `owner`, `created_by`,
+    `component`, `foreign_links` and the object's earlier `audit` records.
+    It returns ownership metadata only, never content. The read is audited
+    with an unchanged owner.
+  - **`ownership.claim {ref, to_uid, reason, expect}`** gives an
+    `unresolved` component to `user:<to_uid>`. It does not check that
+    `to_uid` exists.
+  - **`ownership.release {ref, reason, expect}`** makes a user's component
+    `unresolved` (protected) again. A foreground Flow among the moved
+    objects falls back to General.
+  - `expect` must equal the current component size, otherwise the command
+    is `conflict` and nothing moves. The same applies to a blocking link,
+    a non-movable owner (`system`, already claimed or already unresolved)
+    and a per-owner profile-name clash. Components are capped at 10 000
+    objects. A release followed by a claim restores the same component.
+    Backup restore is not an ownership operation.
 - **Compute (PR 5).** The model catalog and the provider registry stay
   shared system data (Admin-only mutation).
   - *Profiles* are the caller's own plus read-only `system` profiles.
@@ -171,7 +203,8 @@ the command inventory. For the owner-scoped commands:
   repeated migration. `scripts/test-user-ownership.py --cross-uid` (CI, root)
   turns the two-UID reproduction into regression assertions with real Linux
   users, including profiles, workloads and usage with a separate admin
-  user that registers the model and records usage. On the pre-PR 3 daemon
+  user that registers the model and records usage, and an audited claim and
+  release of a legacy `unresolved` Goal tree. On the pre-PR 3 daemon
   it fails on the status-count leak.
 
 ### Recorded (PR 2)
@@ -427,13 +460,16 @@ the test user's own gid.
 
 ## Inventory
 
-63 commands: 7 Admin, 10 ServiceAccount, 46 User.
+66 commands: 10 Admin, 10 ServiceAccount, 46 User.
 
 | Command | Class | Reason |
 | --- | --- | --- |
 | `provenance.add` | Admin | arbitrary edges can forge the audit trail |
 | `generation.activate` | Admin | changes the active system Generation |
 | `generation.promote` | Admin | audited: makes a private candidate a shared system Generation |
+| `ownership.inspect` | Admin | audited: reads another owner's ownership metadata |
+| `ownership.claim` | Admin | audited: gives unresolved data to a user |
+| `ownership.release` | Admin | audited: makes a user's data unresolved (protected) |
 | `model.register` | Admin | system model catalog |
 | `model.retire` | Admin | system model catalog |
 | `provider.register` | Admin | system provider registry |

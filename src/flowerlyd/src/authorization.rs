@@ -299,6 +299,22 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
         CommandClass::Admin,
         "audited: makes a private candidate a shared system Generation",
     ),
+    // Ownership: audited Admin crossing of owner boundaries (#225 PR 7).
+    (
+        "ownership.inspect",
+        CommandClass::Admin,
+        "audited: reads another owner's ownership metadata",
+    ),
+    (
+        "ownership.claim",
+        CommandClass::Admin,
+        "audited: gives unresolved data to a user",
+    ),
+    (
+        "ownership.release",
+        CommandClass::Admin,
+        "audited: makes a user's data unresolved (protected)",
+    ),
     ("capability.list", CommandClass::User, "descriptive catalog"),
     // Compute: the model and provider catalogs are shared system configuration.
     (
@@ -440,7 +456,7 @@ mod tests {
     #[test]
     fn admin_commands_require_admin_group_membership() {
         let admin = with_class(CommandClass::Admin);
-        assert_eq!(admin.len(), 7, "{admin:?}");
+        assert_eq!(admin.len(), 10, "{admin:?}");
         let configured = AccessPolicy {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),
@@ -623,8 +639,12 @@ mod tests {
     fn named_administrative_operations_are_admin() {
         for name in [
             "generation.activate",
+            "generation.promote",
             "model.register",
             "model.retire",
+            "ownership.claim",
+            "ownership.inspect",
+            "ownership.release",
             "provider.register",
         ] {
             assert_eq!(classify(name), Some(CommandClass::Admin), "{name}");

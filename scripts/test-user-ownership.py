@@ -36,6 +36,11 @@ assertions:
     one (audited, Admin only). Promotion shares the Generation, not its
     reason Goal. A private candidate cannot be activated, and no User
     command is pending any more.
+  * Ownership (PR 7): a legacy `unresolved` Goal tree is visible to no
+    user. Only the admin may inspect, claim or release it (audited, with a
+    reason). Inspect reveals ownership metadata, not content. A claim with
+    a stale `expect` moves nothing; a claim moves the whole component to
+    alice only, and a release makes it protected again.
 
 Default mode (no root) runs only the offline parser and helper self-checks.
 """
@@ -376,6 +381,71 @@ def generation_scenario(alice, bob, admin, admin_uid):
     assert alice.status()["ownership_pending_commands"] == 0
 
 
+def insert_legacy_rows(service, db_path, root_goal, child_goal, execution):
+    """Rows as a pre-#225 daemon left them, written as the service account."""
+    code = (
+        "import sqlite3, sys\n"
+        "db = sqlite3.connect(sys.argv[1], timeout=10)\n"
+        "with db:\n"
+        "    db.execute(\"INSERT INTO goals (id, parent_goal, objective, status, created_by,"
+        " created_at) VALUES (?, NULL, 'legacy objective', 'ACTIVE', 'user', 1)\","
+        " (sys.argv[2],))\n"
+        "    db.execute(\"INSERT INTO goals (id, parent_goal, objective, status, created_by,"
+        " created_at) VALUES (?, ?, 'legacy child', 'ACTIVE', 'user', 1)\","
+        " (sys.argv[3], sys.argv[2]))\n"
+        "    db.execute(\"INSERT INTO executions (id, goal_id, started_at) VALUES (?, ?, 1)\","
+        " (sys.argv[4], sys.argv[3]))\n"
+        "db.close()\n")
+    subprocess.run(["runuser", "-u", service, "--", sys.executable, "-I", "-c", code,
+                    str(db_path), root_goal, child_goal, execution], check=True, timeout=30)
+
+
+def claim_scenario(alice, bob, admin, admin_uid, alice_uid, service, db_path):
+    root_goal, child_goal = (f"goal-{uuid.uuid4().hex}" for _ in range(2))
+    execution = f"exec-{uuid.uuid4().hex}"
+    insert_legacy_rows(service, db_path, root_goal, child_goal, execution)
+    # Unresolved data is protected: no user sees it.
+    for peer in (alice, bob):
+        assert_like_missing(peer, "goal.show", root_goal, MISSING_GOAL)
+    # Only the admin may cross ownership.
+    for peer in (alice, bob):
+        assert error_of(peer.call("ownership.inspect", ref=root_goal,
+                                  reason="curious"))[0] == "permission_denied"
+        assert error_of(peer.call("ownership.claim", ref=root_goal, to_uid=alice_uid,
+                                  reason="mine", expect=3))[0] == "permission_denied"
+    report = admin.ok("ownership.inspect", ref=child_goal, reason="triage legacy goals")
+    assert report["owner"] == {"class": "unresolved", "uid": None}, report
+    assert {o["ref"] for o in report["component"]} == {root_goal, child_goal, execution}, report
+    assert "legacy" not in json.dumps(report).replace(root_goal, ""), report
+
+    assert error_of(admin.call("ownership.claim", ref=root_goal, to_uid=alice_uid,
+                               reason="legacy", expect=2))[0] == "conflict"
+    assert_like_missing(alice, "goal.show", root_goal, MISSING_GOAL)
+    moved = admin.ok("ownership.claim", ref=root_goal, to_uid=alice_uid,
+                     reason="alice's legacy work", expect=3)
+    assert set(moved["moved"]) == {root_goal, child_goal, execution}, moved
+    assert alice.ok("goal.show", id=child_goal)["objective"] == "legacy child"
+    assert alice.ok("execution.show", id=execution)["execution"]["id"] == execution
+    assert_like_missing(bob, "goal.show", root_goal, MISSING_GOAL)
+    assert bob.ok("execution.show", id=execution)["execution"] is None
+
+    admin.ok("ownership.release", ref=execution, reason="wrong uid", expect=3)
+    assert_like_missing(alice, "goal.show", root_goal, MISSING_GOAL)
+
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = db.execute("SELECT actor_uid, command, to_owner_class, to_owner_uid, reason "
+                          "FROM admin_audit WHERE object_ref = ? ORDER BY id",
+                          (root_goal,)).fetchall()
+        assert rows == [(admin_uid, "ownership.claim", "user", alice_uid, "alice's legacy work"),
+                        (admin_uid, "ownership.release", "unresolved", None, "wrong uid")], rows
+        inspected = db.execute("SELECT actor_uid, command FROM admin_audit WHERE object_ref = ?",
+                               (child_goal,)).fetchall()[0]
+        assert inspected == (admin_uid, "ownership.inspect"), inspected
+    finally:
+        db.close()
+
+
 def cross_uid(bin_dir):
     if os.geteuid() != 0:
         raise SystemExit("--cross-uid must run as root (CI uses sudo)")
@@ -429,7 +499,10 @@ def cross_uid(bin_dir):
         ownership_scenario(alice_peer, bob_peer, alice_uid, bob_uid, state / "state.db", restart)
         admin_peer = Peer(admin, script, sock, alice_uid)
         compute_scenario(alice_peer, bob_peer, admin_peer)
-        generation_scenario(alice_peer, bob_peer, admin_peer, pwd.getpwnam(admin).pw_uid)
+        admin_uid = pwd.getpwnam(admin).pw_uid
+        generation_scenario(alice_peer, bob_peer, admin_peer, admin_uid)
+        claim_scenario(alice_peer, bob_peer, admin_peer, admin_uid, alice_uid, service,
+                       state / "state.db")
         assert process.poll() is None, log_path.read_text()
         print("cross-UID ownership (#225): status counts and foreground are per caller; "
               "other users' Flows, Goals, Sessions and Executions are not_found like missing "
@@ -438,7 +511,8 @@ def cross_uid(bin_dir):
               "protected; no activation changes another user's foreground; foregrounds "
               "survive restart; profiles, workloads and usage are private; Generation "
               "candidates are private until an audited Admin promotion, which never "
-              "reveals the reason Goal: OK")
+              "reveals the reason Goal; unresolved legacy data is protected until an "
+              "audited Admin claim moves its whole component: OK")
     finally:
         if process is not None:
             stop_daemon(process)

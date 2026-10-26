@@ -29,6 +29,7 @@ mod flow;
 mod generation;
 #[allow(dead_code)]
 mod goal;
+mod ownership;
 #[allow(dead_code)]
 mod provenance;
 #[allow(dead_code)]
@@ -167,6 +168,7 @@ impl Router {
             Some("generation") => via_queue(&self.generation, request, caller),
             Some("provenance") => via_queue(&self.provenance, request, caller),
             Some("goal") => goal::handle_command(&self.store, request, caller),
+            Some("ownership") => ownership::handle_command(&self.store, request, caller),
             Some("session") => self.session.handle(&self.store, request, caller),
             Some("execution") | Some("agent") => {
                 agentic::handle_command(&self.store, request, caller)
@@ -407,6 +409,9 @@ mod malformed_arguments {
             "generation.inspect",
             "generation.activate",
             "generation.promote",
+            "ownership.inspect",
+            "ownership.claim",
+            "ownership.release",
             "provenance.add",
             "provenance.from",
             "provenance.to",
@@ -470,6 +475,9 @@ mod malformed_arguments {
                 let reply = match command.split('.').next() {
                     Some("flow") => flow::handle_command(&store, &request, Caller::new(1000)),
                     Some("goal") => goal::handle_command(&store, &request, Caller::new(1000)),
+                    Some("ownership") => {
+                        ownership::handle_command(&store, &request, Caller::new(1000))
+                    }
                     Some("session") => session::handle_command(&store, &request, Caller::new(1000)),
                     Some("execution") => {
                         agentic::handle_command(&store, &request, Caller::new(1000))
@@ -734,7 +742,7 @@ mod ownership_recording {
 /// offline self-tests and unit tests, so production handler code is scanned.
 #[cfg(test)]
 mod owner_scoped_storage {
-    const HANDLERS: [(&str, &str); 12] = [
+    const HANDLERS: [(&str, &str); 13] = [
         ("compute", include_str!("compute/mod.rs")),
         ("compute/profiles", include_str!("compute/profiles.rs")),
         ("compute/admission", include_str!("compute/admission.rs")),
@@ -746,6 +754,7 @@ mod owner_scoped_storage {
         ("execution", include_str!("agentic/mod.rs")),
         ("provenance", include_str!("provenance/mod.rs")),
         ("generation", include_str!("generation/mod.rs")),
+        ("ownership", include_str!("ownership/mod.rs")),
         ("main", include_str!("main.rs")),
     ];
 
