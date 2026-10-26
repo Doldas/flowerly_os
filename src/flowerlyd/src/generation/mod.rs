@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
-use flowerly_core::storage::{StorageError, Store};
+use flowerly_core::storage::{StorageError, Store, MAX_AUDIT_REASON};
 use flowerly_core::types::{Caller, Owner};
 use flowerly_core::types::{
     ExperimentId, Generation, GenerationId, GenerationStatus, GoalId, ObjectRef, ProvenanceEdge,
@@ -58,6 +58,12 @@ struct GenerationIdArgs {
 #[derive(Debug, Deserialize)]
 struct GenerationListArgs {}
 
+#[derive(Debug, Deserialize)]
+struct GenerationPromoteArgs {
+    id: String,
+    reason: String,
+}
+
 fn typed_generation_args<T: serde::de::DeserializeOwned>(
     args: &Value,
 ) -> Result<T, (ErrorCode, String)> {
@@ -89,9 +95,10 @@ fn validate_generation_command(
                 .map(|raw| ExperimentId::from_str(&raw).map_err(|error| invalid(error.to_string())))
                 .transpose()?;
             let _ = (&typed.source_commit, &typed.system_manifest);
+            // Only a parent the caller can see (own or system) (#225 PR 6).
             if let Some(parent) = &parent {
                 if store
-                    .get_generation(parent)
+                    .generation_for(caller, parent)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
@@ -115,16 +122,33 @@ fn validate_generation_command(
         "generation.list" => {
             let _: GenerationListArgs = typed_generation_args(args)?;
         }
-        "generation.inspect" | "generation.activate" => {
+        "generation.inspect" => {
             let typed: GenerationIdArgs = typed_generation_args(args)?;
             let id = GenerationId::from_str(&typed.id)
                 .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
             if store
-                .get_generation(&id)
+                .generation_for(caller, &id)
                 .map_err(|e| (storage_error_code(&e), e.to_string()))?
                 .is_none()
             {
                 return Err((ErrorCode::NotFound, format!("generation not found: {id}")));
+            }
+        }
+        // Admin: existence and ownership are checked in the transaction.
+        "generation.activate" => {
+            let typed: GenerationIdArgs = typed_generation_args(args)?;
+            GenerationId::from_str(&typed.id)
+                .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
+        }
+        "generation.promote" => {
+            let typed: GenerationPromoteArgs = typed_generation_args(args)?;
+            GenerationId::from_str(&typed.id)
+                .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
+            if typed.reason.trim().is_empty() || typed.reason.len() > MAX_AUDIT_REASON {
+                return Err((
+                    ErrorCode::InvalidArgument,
+                    format!("`reason` must be 1..{MAX_AUDIT_REASON} bytes and not blank"),
+                ));
             }
         }
         other => {
@@ -213,9 +237,10 @@ fn run_command(
     match name {
         "generation.create" => {
             let parent: Option<GenerationId> = parse_optional_typed(args, "parent")?;
+            // Rechecked in the inserting transaction and by a 0013 trigger.
             if let Some(parent) = &parent {
                 if store
-                    .get_generation(parent)
+                    .generation_for(caller, parent)
                     .map_err(CommandFailure::storage)?
                     .is_none()
                 {
@@ -302,7 +327,7 @@ fn run_command(
         }
         "generation.list" => {
             let items: Vec<Value> = store
-                .list_generations()
+                .generations_for(caller)
                 .map_err(CommandFailure::storage)?
                 .iter()
                 .map(|g| {
@@ -322,14 +347,16 @@ fn run_command(
                 .and_then(Value::as_str)
                 .ok_or_else(|| CommandFailure::invalid("missing string arg `id`"))?;
             let mut generation = store
-                .get_generation(
+                .generation_for(
+                    caller,
                     &GenerationId::from_str(id)
                         .map_err(|e| CommandFailure::invalid(e.to_string()))?,
                 )
                 .map_err(CommandFailure::storage)?
                 .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
-            // A reason Goal the caller cannot see is not revealed (#225 PR 4).
-            // Generation visibility itself is #225 PR 6.
+            // Visible: own and system Generations (#225 PR 6). A reason Goal
+            // the caller cannot see is not revealed, also on a promoted
+            // system Generation (redaction contract, PR 4).
             if let Some(goal) = &generation.reason_goal {
                 if store
                     .goal_for(caller, goal)
@@ -352,6 +379,26 @@ fn run_command(
                 .activate_generation(&generation_id)
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
+        }
+        // Admin, audited: the caller is the real admin uid (#225 PR 6).
+        "generation.promote" => {
+            let typed: GenerationPromoteArgs =
+                serde_json::from_value(args.clone()).map_err(err_str)?;
+            let generation_id = GenerationId::from_str(&typed.id)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let promoted = store
+                .promote_generation(caller, &generation_id, &typed.reason)
+                .map_err(CommandFailure::storage)?;
+            tracing::info!(
+                generation_id = %promoted.id,
+                admin_uid = caller.uid(),
+                "generation promoted to system"
+            );
+            Ok(serde_json::json!({
+                "id": promoted.id,
+                "status": promoted.status,
+                "owner": promoted.owner.class(),
+            }))
         }
         other => Err(CommandFailure::invalid(format!(
             "generationd: unknown command `{other}`"
@@ -640,12 +687,27 @@ mod tests {
         assert_eq!(failure.code, ErrorCode::NotFound);
         assert!(store.list_generations().unwrap().is_empty());
 
-        // A Generation that names another uid's Goal (as legacy data could)
-        // does not reveal it on inspect.
+        // Another uid's candidate is private (#225 PR 6); once an admin
+        // promotes it, its reason Goal is still shown only to the Goal's owner.
         let mut legacy = candidate(None);
         legacy.reason_goal = Some(theirs.id.clone());
         legacy.owner = theirs.owner;
         store.insert_generation(&legacy).expect("insert generation");
+        let hidden = run_command(
+            &mut store,
+            "generation.inspect",
+            &serde_json::json!({ "id": legacy.id }),
+            TEST_CALLER,
+        )
+        .unwrap_err();
+        assert_eq!(hidden.code, ErrorCode::NotFound);
+        run_command(
+            &mut store,
+            "generation.promote",
+            &serde_json::json!({ "id": legacy.id, "reason": "share it" }),
+            Caller::new(0),
+        )
+        .unwrap();
         let shown = run_command(
             &mut store,
             "generation.inspect",
@@ -752,9 +814,14 @@ mod tests {
                 ErrorCode::InvalidArgument,
             ),
             (
-                "generation.activate",
+                "generation.promote",
                 serde_json::json!({"id": "gen-missing"}),
-                ErrorCode::NotFound,
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                "generation.promote",
+                serde_json::json!({"id": "gen-missing", "reason": " "}),
+                ErrorCode::InvalidArgument,
             ),
             (
                 "generation.delete",
@@ -826,9 +893,43 @@ mod tests {
         let mut store = migrated_store();
         let mut first = candidate(None);
         first.status = GenerationStatus::Stable;
+        first.owner = Owner::System;
         let second = candidate(Some(first.id.clone()));
         store.insert_generation(&first).expect("insert first");
         store.insert_generation(&second).expect("insert second");
+
+        let missing = run_command(
+            &mut store,
+            "generation.activate",
+            &serde_json::json!({ "id": "gen-missing" }),
+            TEST_CALLER,
+        )
+        .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        // A private candidate is promoted, with an audit row, before activation.
+        let private = run_command(
+            &mut store,
+            "generation.activate",
+            &serde_json::json!({ "id": second.id }),
+            TEST_CALLER,
+        )
+        .unwrap_err();
+        assert_eq!(private.code, ErrorCode::Conflict);
+        let promoted = run_command(
+            &mut store,
+            "generation.promote",
+            &serde_json::json!({ "id": second.id, "reason": "release" }),
+            TEST_CALLER,
+        )
+        .expect("promote second");
+        assert_eq!(promoted["owner"], "system");
+        assert_eq!(
+            store
+                .admin_audit_for_object(&ObjectRef::from(&second.id))
+                .unwrap()
+                .len(),
+            1
+        );
 
         run_command(
             &mut store,

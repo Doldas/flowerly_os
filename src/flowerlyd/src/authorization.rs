@@ -61,22 +61,30 @@ pub(crate) fn pending_scopes() -> impl Iterator<Item = (&'static str, &'static s
     })
 }
 
-/// Refuse to admit other UIDs while any User command is not owner-scoped
-/// (#225): users group members could read and change each other's data.
-/// Only an exact, deliberately unwieldy acknowledgment (used by the
-/// cross-UID tests) starts anyway; the shipped unit unsets it.
+/// Set by #225 PR 8, after full cross-UID and real Arch acceptance and the
+/// break-glass removal. Until then a users group is refused even though every
+/// User command is owner-scoped: scoping alone is not the acceptance.
+pub(crate) const MULTI_USER_ADMISSION_RESTORED: bool = false;
+
+/// Refuse to admit other UIDs while any User command is not owner-scoped, or
+/// before multi-user admission is restored (#225). Only an exact,
+/// deliberately unwieldy acknowledgment (used by the cross-UID tests) starts
+/// anyway; the shipped unit unsets it.
 pub(crate) fn refuse_unenforced_multi_user(
     policy: &AccessPolicy,
     ack: Option<&str>,
 ) -> Result<(), String> {
     let pending = pending_scopes().count();
-    if policy.users_gid.is_none() || pending == 0 || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE) {
+    if policy.users_gid.is_none()
+        || (pending == 0 && MULTI_USER_ADMISSION_RESTORED)
+        || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE)
+    {
         return Ok(());
     }
     Err(format!(
-        "a users group is configured, but per-user data ownership is not enforced yet \
-         (#225; {pending} User commands pending): users could read and change each other's \
-         data. Unset AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only \
+        "a users group is configured, but multi-user admission is not restored yet \
+         (#225; {pending} User commands not owner-scoped; acceptance pending): \
+         unset AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only \
          until #225 is closed. Test harnesses only: \
          {UNENFORCED_OWNERSHIP_ACK}={UNENFORCED_OWNERSHIP_ACK_VALUE}"
     ))
@@ -95,8 +103,11 @@ pub(crate) enum DataScope {
     SharedSystem,
     /// Reads no stored data.
     Stateless,
-    /// Not yet owner-scoped; the named #225 PR scopes it. While any command is
-    /// pending, multi-user admission stays disabled (startup refusal).
+    /// Not yet owner-scoped; the named PR scopes it. While any command is
+    /// pending, multi-user admission stays disabled (startup refusal). No
+    /// command is pending since #225 PR 6; a new User command that cannot be
+    /// scoped yet must use this rather than another class.
+    #[allow(dead_code)]
     Pending(&'static str),
 }
 
@@ -121,18 +132,9 @@ pub(crate) const DATA_SCOPES: &[(&str, DataScope)] = &[
     ("execution.list", DataScope::OwnerScoped),
     ("provenance.from", DataScope::OwnerScoped),
     ("provenance.to", DataScope::OwnerScoped),
-    (
-        "generation.create",
-        DataScope::Pending("PR 6: private candidates"),
-    ),
-    (
-        "generation.list",
-        DataScope::Pending("PR 6: private candidates"),
-    ),
-    (
-        "generation.inspect",
-        DataScope::Pending("PR 6: private candidates"),
-    ),
+    ("generation.create", DataScope::OwnerScoped),
+    ("generation.list", DataScope::OwnerScoped),
+    ("generation.inspect", DataScope::OwnerScoped),
     ("capability.list", DataScope::Stateless),
     ("model.list", DataScope::SharedSystem),
     ("model.show", DataScope::SharedSystem),
@@ -292,6 +294,11 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
         CommandClass::Admin,
         "changes the active system Generation",
     ),
+    (
+        "generation.promote",
+        CommandClass::Admin,
+        "audited: makes a private candidate a shared system Generation",
+    ),
     ("capability.list", CommandClass::User, "descriptive catalog"),
     // Compute: the model and provider catalogs are shared system configuration.
     (
@@ -433,7 +440,7 @@ mod tests {
     #[test]
     fn admin_commands_require_admin_group_membership() {
         let admin = with_class(CommandClass::Admin);
-        assert_eq!(admin.len(), 6, "{admin:?}");
+        assert_eq!(admin.len(), 7, "{admin:?}");
         let configured = AccessPolicy {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),

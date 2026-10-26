@@ -26,14 +26,14 @@ use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
 use super::Store;
 use super::{
-    append_profile_version_row, insert_provenance_row, map_execution, map_flow, map_goal,
-    map_owner, map_provenance, map_session, map_workload, parse_text, MutationOperation, Result,
-    StatusCounts, StorageError,
+    append_profile_version_row, insert_provenance_row, map_execution, map_flow, map_generation,
+    map_goal, map_owner, map_provenance, map_session, map_workload, parse_text, MutationOperation,
+    Result, StatusCounts, StorageError,
 };
 use crate::types::{
-    Caller, Execution, ExecutionId, Flow, FlowId, Goal, GoalId, GoalStatus, ModelId, ObjectRef,
-    Owner, ProfileId, ProvenanceEdge, Session, SessionId, SessionPresentationState, SessionState,
-    Timestamp, WorkloadId, WorkloadRecord, WorkloadState,
+    Caller, Execution, ExecutionId, Flow, FlowId, Generation, GenerationId, Goal, GoalId,
+    GoalStatus, ModelId, ObjectRef, Owner, ProfileId, ProvenanceEdge, Session, SessionId,
+    SessionPresentationState, SessionState, Timestamp, WorkloadId, WorkloadRecord, WorkloadState,
 };
 
 /// SQL predicate for the canonical General Flow (unique by 0004).
@@ -169,6 +169,26 @@ pub(super) fn require_same_owner_goal(conn: &Connection, owner: Owner, id: &Goal
         Ok(())
     } else {
         Err(not_found("goal", id.as_str()))
+    }
+}
+
+/// A new Generation may name only a parent its owner can see: its own or a
+/// `system` Generation. The 0013 trigger backs it up.
+pub(super) fn require_visible_parent_generation(
+    conn: &Connection,
+    owner: Owner,
+    id: &GenerationId,
+) -> Result<()> {
+    let found: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM generations WHERE id = ?1 AND (owner_class = 'system'
+             OR (owner_class = ?2 AND owner_uid IS ?3)))",
+        params![id.as_str(), owner.class(), owner.uid()],
+        |row| row.get(0),
+    )?;
+    if found {
+        Ok(())
+    } else {
+        Err(not_found("generation", id.as_str()))
     }
 }
 
@@ -458,6 +478,35 @@ impl Store {
             },
         )?;
         Ok(counts)
+    }
+}
+
+const GENERATION_COLUMNS: &str = "id, parent, source_commit, system_manifest, reason_goal, \
+     experiment, status, created_at, owner_class, owner_uid";
+
+impl Store {
+    /// Generations visible to `caller` (its own and `system` ones), oldest
+    /// first. Another uid's and `unresolved` candidates are absent.
+    pub fn generations_for(&self, caller: Caller) -> Result<Vec<Generation>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {GENERATION_COLUMNS} FROM generations WHERE {OWN_OR_SYSTEM}
+             ORDER BY created_at, id"
+        ))?;
+        let rows = stmt.query_map(params![caller.uid()], map_generation)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn generation_for(&self, caller: Caller, id: &GenerationId) -> Result<Option<Generation>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {GENERATION_COLUMNS} FROM generations WHERE {OWN_OR_SYSTEM} AND id = ?2"
+                ),
+                params![caller.uid(), id.as_str()],
+                map_generation,
+            )
+            .optional()
+            .map_err(StorageError::from)
     }
 }
 
@@ -1687,5 +1736,174 @@ mod tests {
             .unwrap();
         assert_eq!(store.profiles_for(BOB).unwrap().len(), 1, "only system");
         assert_eq!(store.profiles_for(ALICE).unwrap().len(), 2);
+    }
+
+    fn generation(store: &Store, owner: Owner, parent: Option<&GenerationId>) -> GenerationId {
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: parent.cloned(),
+            source_commit: Some("abc".to_owned()),
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: crate::types::GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+            owner,
+        };
+        store.insert_generation(&generation).unwrap();
+        generation.id
+    }
+
+    #[test]
+    fn generation_candidates_are_private_and_parents_must_be_visible() {
+        let (_dir, _path, mut store) = file_store();
+        let system = generation(&store, Owner::System, None);
+        let alice = generation(&store, ALICE.owner(), Some(&system));
+        let legacy = generation(&store, Owner::Unresolved, None);
+        let ids = |caller: Caller| -> Vec<String> {
+            let mut ids: Vec<String> = store
+                .generations_for(caller)
+                .unwrap()
+                .into_iter()
+                .map(|g| g.id.as_str().to_owned())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mut both = vec![system.as_str().to_owned(), alice.as_str().to_owned()];
+        both.sort();
+        assert_eq!(ids(ALICE), both);
+        assert_eq!(ids(BOB), [system.as_str().to_owned()]);
+        assert!(store.generation_for(BOB, &alice).unwrap().is_none());
+        assert!(store.generation_for(ALICE, &legacy).unwrap().is_none());
+
+        // The transaction check and the 0013 trigger refuse a hidden parent.
+        let child = |parent: &GenerationId| Generation {
+            id: GenerationId::new(),
+            parent: Some(parent.clone()),
+            source_commit: None,
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: crate::types::GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+            owner: BOB.owner(),
+        };
+        let refused = store.insert_generation_with_provenance(&child(&alice), &[]);
+        assert_eq!(
+            not_found_text(refused),
+            not_found_text(store.insert_generation_with_provenance(
+                &child(&GenerationId::from_raw("gen-none")),
+                &[]
+            ))
+            .replace("gen-none", alice.as_str())
+        );
+        assert!(store.insert_generation(&child(&legacy)).is_err(), "trigger");
+        store
+            .insert_generation_with_provenance(&child(&system), &[])
+            .unwrap();
+        assert_eq!(store.status_counts_for(BOB).unwrap().generations, 2);
+    }
+
+    #[test]
+    fn promotion_is_audited_atomically_and_shares_only_the_generation() {
+        let (_dir, _path, mut store) = file_store();
+        let goal = goal_of(&store, ALICE, "private reason");
+        let candidate = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: Some("abc".to_owned()),
+            system_manifest: None,
+            reason_goal: Some(goal.id.clone()),
+            experiment: None,
+            status: crate::types::GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+            owner: ALICE.owner(),
+        };
+        store
+            .insert_generation_with_provenance(
+                &candidate,
+                &[ProvenanceEdge {
+                    from: ObjectRef::from(&candidate.id),
+                    relation: crate::types::ProvenanceRelation::CausedBy,
+                    to: ObjectRef::from(&goal.id),
+                    created_at: Timestamp::now(),
+                    note: None,
+                }],
+            )
+            .unwrap();
+        let admin = Caller::new(1500);
+        let object = ObjectRef::from(&candidate.id);
+
+        for reason in ["", "   ", &"x".repeat(513)] {
+            assert!(store
+                .promote_generation(admin, &candidate.id, reason)
+                .is_err());
+        }
+        assert!(store.admin_audit_for_object(&object).unwrap().is_empty());
+        assert!(store.generation_for(BOB, &candidate.id).unwrap().is_none());
+
+        let promoted = store
+            .promote_generation(admin, &candidate.id, "ship the fix")
+            .unwrap();
+        assert_eq!(promoted.owner, Owner::System);
+        let audit = store.admin_audit_for_object(&object).unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(
+            (
+                audit[0].actor_uid,
+                audit[0].command.as_str(),
+                audit[0].reason.as_str()
+            ),
+            (1500, "generation.promote", "ship the fix")
+        );
+        assert_eq!(
+            (audit[0].from_owner, audit[0].to_owner),
+            (ALICE.owner(), Owner::System)
+        );
+
+        // Shared now, but the reason Goal edge stays hidden from others.
+        assert!(store.generation_for(BOB, &candidate.id).unwrap().is_some());
+        let bob_edges = store.provenance_from_for(BOB, &object).unwrap();
+        assert!(
+            bob_edges.iter().all(|e| e.to.as_str() != goal.id.as_str()),
+            "{bob_edges:?}"
+        );
+        assert!(store
+            .provenance_from_for(ALICE, &object)
+            .unwrap()
+            .iter()
+            .any(|e| e.to.as_str() == goal.id.as_str()));
+        // The promotion edge names the admin's uid label, so only that admin
+        // sees it; the audit row is the record for everyone else.
+        let names_admin = |caller: Caller| {
+            store
+                .provenance_from_for(caller, &object)
+                .unwrap()
+                .iter()
+                .any(|e| e.to.as_str() == "actor:uid:1500")
+        };
+        assert!(names_admin(admin));
+        assert!(!names_admin(BOB));
+
+        // Promoting twice, or a non-candidate, is a conflict and records nothing.
+        assert!(matches!(
+            store.promote_generation(admin, &candidate.id, "again"),
+            Err(StorageError::OperationConflict(_))
+        ));
+        assert!(matches!(
+            store.promote_generation(admin, &GenerationId::from_raw("gen-none"), "x"),
+            Err(StorageError::NotFound(_))
+        ));
+        assert_eq!(store.admin_audit_for_object(&object).unwrap().len(), 1);
+
+        // The audit log is append-only for every writer.
+        for sql in [
+            "UPDATE admin_audit SET reason = 'edited'",
+            "DELETE FROM admin_audit",
+        ] {
+            assert!(store.conn.execute(sql, []).is_err(), "{sql}");
+        }
+        assert_eq!(store.admin_audit_for_object(&object).unwrap().len(), 1);
     }
 }

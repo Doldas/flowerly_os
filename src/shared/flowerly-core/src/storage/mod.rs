@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod repository;
 pub mod scoped;
 
+pub use admin::{AdminAuditRecord, MAX_AUDIT_REASON};
 pub use scoped::{FlowView, ProfileView};
 
 use std::fmt;
@@ -387,6 +389,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 12,
         name: "compute_ownership",
         sql: include_str!("../../migrations/0012_compute_ownership.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "generation_ownership_admin_audit",
+        sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
     },
 ];
 
@@ -1526,6 +1533,9 @@ impl Store {
             if let Some(goal) = &generation.reason_goal {
                 scoped::require_same_owner_goal(&tx, generation.owner, goal)?;
             }
+            if let Some(parent) = &generation.parent {
+                scoped::require_visible_parent_generation(&tx, generation.owner, parent)?;
+            }
             insert_generation_row(&tx, generation)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1587,6 +1597,18 @@ impl Store {
                 .is_some();
             if !exists {
                 return Err(StorageError::NotFound(id.to_string()));
+            }
+            // A private candidate never becomes the system STABLE (#225):
+            // it must be promoted, with an audit record, first.
+            let owner_class: String = tx.query_row(
+                "SELECT owner_class FROM generations WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get(0),
+            )?;
+            if owner_class != "system" {
+                return Err(StorageError::OperationConflict(format!(
+                    "generation {id} is not a system Generation; promote it first"
+                )));
             }
 
             tx.execute(
@@ -3482,7 +3504,7 @@ mod tests {
     fn generation_activation_keeps_exactly_one_stable_generation() {
         let mut store = migrated_store();
         let first = Generation {
-            owner: crate::types::Owner::User(1000),
+            owner: crate::types::Owner::System,
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("first".to_owned()),
@@ -3506,6 +3528,18 @@ mod tests {
         store.insert_generation(&first).expect("insert first");
         store.insert_generation(&second).expect("insert second");
 
+        // A private candidate must be promoted (audited) before activation.
+        assert!(matches!(
+            store.activate_generation(&second.id),
+            Err(StorageError::OperationConflict(_))
+        ));
+        assert_eq!(
+            store.get_generation(&first.id).unwrap().unwrap().status,
+            GenerationStatus::Stable
+        );
+        store
+            .promote_generation(Caller::new(0), &second.id, "release candidate")
+            .expect("promote second");
         store
             .activate_generation(&second.id)
             .expect("activate second");

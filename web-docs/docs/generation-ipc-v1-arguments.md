@@ -12,6 +12,12 @@ are optional string identifiers; `source_commit` and
 continue to mean absent values. Numeric, boolean, array, invalid-prefix
 or malformed known fields fail as `invalid_argument`.
 
+`generation.promote` (Admin, #225 PR 6) requires `id` and a string
+`reason` of 1..512 bytes that is not blank; anything else is
+`invalid_argument`. Promoting a Generation that is already `system`, or
+is not `CANDIDATE`/`TESTED`, is `conflict`, and so is activating a
+Generation that is not `system`.
+
 Inspect/activate require `id` to be a valid Generation ID. Unknown
 object keys continue to be ignored to preserve forwards compatibility
 with existing IPC v1 clients. Unknown command names still return
