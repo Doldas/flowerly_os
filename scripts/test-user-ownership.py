@@ -32,6 +32,10 @@ assertions:
     caller's own profile; another uid's workload, its usage totals and its
     provenance are answered like missing ones; `workload.list` never lists
     other users' workloads.
+  * Generations (PR 6): candidates are private until the admin promotes
+    one (audited, Admin only). Promotion shares the Generation, not its
+    reason Goal. A private candidate cannot be activated, and no User
+    command is pending any more.
 
 Default mode (no root) runs only the offline parser and helper self-checks.
 """
@@ -57,6 +61,7 @@ MISSING_FLOW = "flow-00000000000000000000000000000000"
 MISSING_GOAL = "goal-00000000000000000000000000000000"
 MISSING_PROFILE = "profile-00000000000000000000000000000000"
 MISSING_WORKLOAD = "work-00000000000000000000000000000000"
+MISSING_GENERATION = "gen-00000000000000000000000000000000"
 
 
 def recv_exact(conn, count):
@@ -263,7 +268,8 @@ def ownership_scenario(alice, bob, alice_uid, bob_uid, db_path, restart):
     bob_view = bob.status()
     generation = alice.ok("generation.create", reason_goal=goal_a)["id"]
     assert alice.ok("generation.inspect", id=generation)["reason_goal"] == goal_a
-    assert bob.ok("generation.inspect", id=generation)["reason_goal"] is None
+    # Candidates are private (PR 6); see generation_scenario for promotion.
+    assert_like_missing(bob, "generation.inspect", generation, MISSING_GENERATION)
 
     # Nothing alice did changes any count bob sees.
     alice.ok("goal.create", objective="more private work")
@@ -342,6 +348,34 @@ def compute_scenario(alice, bob, admin):
         assert after[key] == bob_view[key], (key, bob_view[key], after[key])
 
 
+def generation_scenario(alice, bob, admin, admin_uid):
+    goal = alice.ok("goal.create", objective="why this image")["id"]
+    candidate = alice.ok("generation.create", reason_goal=goal, source_commit="abc")["id"]
+    visible = {g["id"] for g in bob.ok("generation.list")["generations"]}
+    assert candidate not in visible, visible
+    assert_like_missing(bob, "generation.inspect", candidate, MISSING_GENERATION)
+    code, _ = error_of(bob.call("generation.create", parent=candidate))
+    assert code == "not_found", code
+    # A private candidate can never become the system STABLE directly.
+    assert error_of(admin.call("generation.activate", id=candidate))[0] == "conflict"
+    assert error_of(admin.call("generation.promote", id=candidate, reason=" "))[0] == (
+        "invalid_argument")
+    # Promotion is Admin only, then shares the Generation but not its reason Goal.
+    assert error_of(bob.call("generation.promote", id=candidate,
+                             reason="mine now"))[0] == "permission_denied"
+    promoted = admin.ok("generation.promote", id=candidate, reason="ship the fix")
+    assert promoted["owner"] == "system", promoted
+    shown = bob.ok("generation.inspect", id=candidate)
+    assert shown["source_commit"] == "abc" and shown["reason_goal"] is None, shown
+    assert alice.ok("generation.inspect", id=candidate)["reason_goal"] == goal
+    edges = {edge["to"] for edge in bob.ok("provenance.from", ref=candidate)["edges"]}
+    assert goal not in edges and f"actor:uid:{admin_uid}" not in edges, edges
+    bob.ok("generation.create", parent=candidate)
+    admin.ok("generation.activate", id=candidate)
+    assert bob.ok("generation.inspect", id=candidate)["status"] == "STABLE"
+    assert alice.status()["ownership_pending_commands"] == 0
+
+
 def cross_uid(bin_dir):
     if os.geteuid() != 0:
         raise SystemExit("--cross-uid must run as root (CI uses sudo)")
@@ -393,14 +427,18 @@ def cross_uid(bin_dir):
         alice_peer = Peer(alice, script, sock, bob_uid)
         bob_peer = Peer(bob, script, sock, alice_uid)
         ownership_scenario(alice_peer, bob_peer, alice_uid, bob_uid, state / "state.db", restart)
-        compute_scenario(alice_peer, bob_peer, Peer(admin, script, sock, alice_uid))
+        admin_peer = Peer(admin, script, sock, alice_uid)
+        compute_scenario(alice_peer, bob_peer, admin_peer)
+        generation_scenario(alice_peer, bob_peer, admin_peer, pwd.getpwnam(admin).pw_uid)
         assert process.poll() is None, log_path.read_text()
         print("cross-UID ownership (#225): status counts and foreground are per caller; "
               "other users' Flows, Goals, Sessions and Executions are not_found like missing "
               "ones, including cross-object references; provenance needs both endpoints "
               "visible; Generation reason Goals stay private; General is shared and "
               "protected; no activation changes another user's foreground; foregrounds "
-              "survive restart; profiles, workloads and usage are private: OK")
+              "survive restart; profiles, workloads and usage are private; Generation "
+              "candidates are private until an audited Admin promotion, which never "
+              "reveals the reason Goal: OK")
     finally:
         if process is not None:
             stop_daemon(process)

@@ -406,6 +406,7 @@ mod malformed_arguments {
             "generation.list",
             "generation.inspect",
             "generation.activate",
+            "generation.promote",
             "provenance.add",
             "provenance.from",
             "provenance.to",
@@ -749,7 +750,7 @@ mod owner_scoped_storage {
     ];
 
     /// Reads and mutations that ignore the caller.
-    const UNSCOPED: [&str; 15] = [
+    const UNSCOPED: [&str; 17] = [
         ".get_flow(",
         ".list_flows(",
         ".get_goal(",
@@ -765,6 +766,8 @@ mod owner_scoped_storage {
         ".provenance_to(",
         ".usage_totals_per_model(",
         ".get_workload(",
+        ".get_generation(",
+        ".list_generations(",
     ];
 
     /// Production code: everything before the offline self-test and tests.

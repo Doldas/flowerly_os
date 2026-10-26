@@ -55,20 +55,18 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 `src/shared/flowerly-peercred` crate, the only workspace code with `unsafe`
 (documented safety contract). `flowerly-core` keeps `#![forbid(unsafe_code)]`.
 
-## Object ownership (#225): partly enforced
+## Object ownership (#225): enforced, admission not yet restored
 
-> **The ownership boundary is NOT complete.** Flows, Goals, Sessions,
-> Executions (PR 3), provenance and Status (PR 4) and Compute profiles,
-> workloads, usage and inference (PR 5) are now owner-scoped (below).
-> Generation listings are **not** owner-scoped yet (PR 6), so two
-> `flowerly-users` members could still see each other's Generation
-> candidates. The shipped configuration therefore still admits only the
-> service account (see
-> [the temporary restriction](#temporary-restriction-service-account-only-225)).
+> **Every User command is now owner-scoped** (PRs 3–6, below), and Status
+> reports `ownership_pending_commands: 0`. **Multi-user admission is still
+> not restored.** The audited Admin `ownership.inspect/claim/release` (PR 7)
+> and the full cross-UID and real Arch acceptance (PR 8) are outstanding.
+> The shipped configuration therefore still admits only the service account
+> (see [the temporary restriction](#temporary-restriction-service-account-only-225)).
 > `flowerlyd` refuses to start with a users group while any User command is
-> pending. Status reports how many are pending in `ownership_pending_commands`.
+> pending **or** until PR 8 sets `MULTI_USER_ADMISSION_RESTORED`.
 
-### Enforced: Flows, Goals, Sessions, Executions, provenance, Status, Compute
+### Enforced: Flows, Goals, Sessions, Executions, provenance, Status, Compute, Generations
 
 Every User command is classified in `DATA_SCOPES` in
 `src/flowerlyd/src/authorization.rs` as `OwnerScoped`, `SharedSystem`,
@@ -124,8 +122,29 @@ the command inventory. For the owner-scoped commands:
 - **Generation `reason_goal` (PR 4).** `generation.create` accepts only the
   caller's own Goal (`not_found` otherwise). This is checked in the inserting
   transaction and backed by a migration 0011 trigger. `generation.inspect`
-  shows `reason_goal: null` when the Goal is not the caller's. Generation
-  visibility itself (private candidates) is PR 6.
+  shows `reason_goal: null` when the Goal is not the caller's.
+- **Generations (PR 6).** `generation.list` and `generation.inspect` show
+  the caller's own Generations plus `system` ones (the STABLE/SUPERSEDED
+  history). Another uid's or an `unresolved` legacy candidate is `not_found`
+  like a missing id. `generation.create` accepts only a visible `parent`,
+  checked in the transaction and backed by a migration 0013 trigger.
+  - **`generation.promote {id, reason}` (Admin, audited)** makes a
+    `CANDIDATE` or `TESTED` private (or `unresolved`) Generation a `system`
+    one. One `IMMEDIATE` transaction changes the owner and appends an
+    `admin_audit` row: admin uid, command, object, previous and new owner,
+    reason (1..512 bytes) and `applied`. It also writes a provenance edge to
+    `actor:uid:<admin>`, which only that admin sees. Nothing is converted
+    silently.
+  - **Redaction contract.** A promoted Generation shares its id, status,
+    parent, source commit, manifest, experiment and creation time.
+    `reason_goal` is kept but shown only to the Goal's owner, and its
+    provenance edge stays hidden from everyone else.
+  - **`generation.activate`** activates only `system` Generations. A
+    private candidate is `conflict` ("promote it first"), so it can never
+    become the system STABLE directly.
+  - **`admin_audit`** (migration 0013) is append-only: triggers refuse
+    UPDATE and DELETE for every writer. Refusals are journaled
+    (`flowerly::admin_audit`), not stored. PR 7 reuses the table.
 - **Compute (PR 5).** The model catalog and the provider registry stay
   shared system data (Admin-only mutation).
   - *Profiles* are the caller's own plus read-only `system` profiles.
@@ -408,12 +427,13 @@ the test user's own gid.
 
 ## Inventory
 
-62 commands: 6 Admin, 10 ServiceAccount, 46 User.
+63 commands: 7 Admin, 10 ServiceAccount, 46 User.
 
 | Command | Class | Reason |
 | --- | --- | --- |
 | `provenance.add` | Admin | arbitrary edges can forge the audit trail |
 | `generation.activate` | Admin | changes the active system Generation |
+| `generation.promote` | Admin | audited: makes a private candidate a shared system Generation |
 | `model.register` | Admin | system model catalog |
 | `model.retire` | Admin | system model catalog |
 | `provider.register` | Admin | system provider registry |
