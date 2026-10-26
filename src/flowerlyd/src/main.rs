@@ -187,11 +187,9 @@ impl Router {
     }
 }
 
-/// One journal record per Admin command decision (#225 break-glass audit).
-/// The peer is the kernel-attested client. Under the root-only maintenance
-/// procedure that is the service account, so the human operator is
-/// identified by the sudo/journal record of the same client PID, never by
-/// this record alone. Arguments are never logged.
+/// One journal record per Admin command decision (#225). The peer is the
+/// kernel-attested client: the human administrator's own uid when they
+/// connect through the opt-in users group. Arguments are never logged.
 fn audit_admin(
     request: &Envelope,
     name: &str,
@@ -292,14 +290,7 @@ async fn main() -> Result<()> {
     let policy = config
         .access_policy()
         .context("resolving IPC access groups")?;
-    let ack = std::env::var(authorization::UNENFORCED_OWNERSHIP_ACK).ok();
-    authorization::refuse_unenforced_multi_user(&policy, ack.as_deref())
-        .map_err(anyhow::Error::msg)?;
-    if policy.users_gid.is_some() {
-        tracing::warn!(
-            "TEST ONLY: users group admitted while per-user ownership is not enforced (#225)"
-        );
-    }
+    authorization::refuse_unenforced_multi_user(&policy).map_err(anyhow::Error::msg)?;
     tracing::info!(
         admin_authorization = authorization::admin_policy(&policy),
         client_access = authorization::client_policy(&policy),

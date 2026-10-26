@@ -48,11 +48,6 @@ pub(crate) fn client_policy(policy: &AccessPolicy) -> &'static str {
     }
 }
 
-/// Environment variable that, set to [`UNENFORCED_OWNERSHIP_ACK_VALUE`],
-/// lets a test harness start with a users group before ownership is enforced.
-pub(crate) const UNENFORCED_OWNERSHIP_ACK: &str = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP";
-pub(crate) const UNENFORCED_OWNERSHIP_ACK_VALUE: &str = "members-can-read-each-others-data";
-
 /// User commands whose data is not yet owner-scoped (#225).
 pub(crate) fn pending_scopes() -> impl Iterator<Item = (&'static str, &'static str)> {
     DATA_SCOPES.iter().filter_map(|(name, scope)| match scope {
@@ -61,32 +56,30 @@ pub(crate) fn pending_scopes() -> impl Iterator<Item = (&'static str, &'static s
     })
 }
 
-/// Set by #225 PR 8, after full cross-UID and real Arch acceptance and the
-/// break-glass removal. Until then a users group is refused even though every
-/// User command is owner-scoped: scoping alone is not the acceptance.
-pub(crate) const MULTI_USER_ADMISSION_RESTORED: bool = false;
+/// Set by #225 PR 8 after full cross-UID and real Arch acceptance: an
+/// administrator may opt in to a users group (the shipped unit stays
+/// service-account-only). It never overrides a pending User command.
+pub(crate) const MULTI_USER_ADMISSION_RESTORED: bool = true;
 
-/// Refuse to admit other UIDs while any User command is not owner-scoped, or
-/// before multi-user admission is restored (#225). Only an exact,
-/// deliberately unwieldy acknowledgment (used by the cross-UID tests) starts
-/// anyway; the shipped unit unsets it.
-pub(crate) fn refuse_unenforced_multi_user(
-    policy: &AccessPolicy,
-    ack: Option<&str>,
-) -> Result<(), String> {
-    let pending = pending_scopes().count();
-    if policy.users_gid.is_none()
-        || (pending == 0 && MULTI_USER_ADMISSION_RESTORED)
-        || ack == Some(UNENFORCED_OWNERSHIP_ACK_VALUE)
-    {
+/// Refuse to admit other UIDs while any User command is not owner-scoped
+/// (#225). There is no override: a users group with a pending command, or
+/// before admission is restored, stops startup.
+pub(crate) fn refuse_unenforced_multi_user(policy: &AccessPolicy) -> Result<(), String> {
+    multi_user_refusal(
+        policy,
+        pending_scopes().count(),
+        MULTI_USER_ADMISSION_RESTORED,
+    )
+}
+
+fn multi_user_refusal(policy: &AccessPolicy, pending: usize, restored: bool) -> Result<(), String> {
+    if policy.users_gid.is_none() || (pending == 0 && restored) {
         return Ok(());
     }
     Err(format!(
-        "a users group is configured, but multi-user admission is not restored yet \
-         (#225; {pending} User commands not owner-scoped; acceptance pending): \
-         unset AGENTIC_USERS_GROUP / users_group; flowerlyd stays service-account-only \
-         until #225 is closed. Test harnesses only: \
-         {UNENFORCED_OWNERSHIP_ACK}={UNENFORCED_OWNERSHIP_ACK_VALUE}"
+        "a users group is configured, but multi-user admission is not available \
+         (#225; {pending} User commands not owner-scoped): unset AGENTIC_USERS_GROUP / \
+         users_group (remove the multi-user drop-in) to run service-account-only"
     ))
 }
 
@@ -398,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn a_users_group_refuses_to_start_without_the_exact_acknowledgment() {
+    fn a_users_group_starts_only_when_every_user_command_is_scoped() {
         let private = AccessPolicy {
             users_gid: None,
             admin_gid: Some(ADMIN),
@@ -407,21 +400,20 @@ mod tests {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),
         };
-        assert!(refuse_unenforced_multi_user(&private, None).is_ok());
-        assert!(refuse_unenforced_multi_user(&private, Some("x")).is_ok());
-        for ack in [
-            None,
-            Some(""),
-            Some("1"),
-            Some("true"),
-            Some("Members-can-read-each-others-data"),
-        ] {
-            let error = refuse_unenforced_multi_user(&shared, ack).unwrap_err();
+        assert_eq!(pending_scopes().count(), 0);
+        const { assert!(MULTI_USER_ADMISSION_RESTORED) };
+        assert!(refuse_unenforced_multi_user(&private).is_ok());
+        assert!(refuse_unenforced_multi_user(&shared).is_ok());
+        // Service-account-only never depends on the scopes.
+        for (pending, restored) in [(0, false), (1, false), (1, true), (3, true)] {
+            assert!(multi_user_refusal(&private, pending, restored).is_ok());
+        }
+        // A future pending User command fails closed even after restoration,
+        // so an opt-in drop-in can never admit unscoped data.
+        for (pending, restored) in [(1, true), (3, true), (0, false), (1, false)] {
+            let error = multi_user_refusal(&shared, pending, restored).unwrap_err();
             assert!(error.contains("#225"), "{error}");
         }
-        assert!(
-            refuse_unenforced_multi_user(&shared, Some(UNENFORCED_OWNERSHIP_ACK_VALUE)).is_ok()
-        );
     }
 
     const SERVICE_UID: u32 = 961;
