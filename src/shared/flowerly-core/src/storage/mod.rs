@@ -4,7 +4,9 @@ pub mod admin;
 pub mod repository;
 pub mod scoped;
 
-pub use admin::{AdminAuditRecord, MAX_AUDIT_REASON};
+pub use admin::{
+    AdminAuditRecord, OwnedObject, OwnershipReport, MAX_AUDIT_REASON, MAX_OWNERSHIP_COMPONENT,
+};
 pub use scoped::{FlowView, ProfileView};
 
 use std::fmt;
