@@ -298,7 +298,19 @@ async fn main() -> Result<()> {
         admin_gid = ?policy.admin_gid,
         "IPC access policy"
     );
-    let mut db = Store::open(config.database_path()).context("opening unified state")?;
+    // A database outside the state directory is a deliberate test or
+    // recovery override; make it visible in the journal (#237).
+    let database_path = config.database_path();
+    if database_path != config.state_dir.join("state.db") {
+        tracing::warn!(
+            database = %database_path.display(),
+            state_dir = %config.state_dir.display(),
+            "database path overrides the state directory"
+        );
+    } else {
+        tracing::info!(database = %database_path.display(), "unified state database");
+    }
+    let mut db = Store::open(&database_path).context("opening unified state")?;
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
