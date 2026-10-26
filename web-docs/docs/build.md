@@ -58,7 +58,9 @@ AGENTIC_DATABASE_PATH explicit database path for tests/recovery
 
 These are for running the binaries directly. The shipped `flowerlyd.service`
 fixes the runtime and state directories and unsets `AGENTIC_DATABASE_PATH`,
-so the service manager cannot repoint the system database (#237).
+so the service manager cannot repoint the system database (#237). It also
+unsets `FLOWERLY_PTY_ISOLATION` and `FLOWERLY_PTY_CGROUP_ROOT`, so development
+PTY isolation cannot be injected (#240).
 
 `scripts/dev-runtime.sh` deliberately keeps its durable development state under
 `target/flowerly-state` while its sockets/logs live in a separate runtime

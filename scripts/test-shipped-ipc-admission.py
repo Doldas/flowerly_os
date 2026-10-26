@@ -12,7 +12,7 @@ staged inactive. Merged over the unit with systemd's rules, it must give
 exactly: users group flowerly-users, primary group flowerly-users (socket
 0660), a 0750 runtime directory, a still-private 0700 state directory and
 0077 umask, the unchanged admin group, and still no manager-injected config
-or database path (#237).
+or database path (#237) or PTY isolation override (#240).
 
 Checked offline against the files that install-flowerly-rootfs.sh copies into
 the image, and against mutated copies so each bypass is proven to be
@@ -59,6 +59,21 @@ def effective(*texts):
     return values
 
 
+# Unset in every configuration so the service manager (`systemctl
+# set-environment`, DefaultEnvironment=) cannot weaken a boundary; tests and
+# recovery run the binary directly.
+MANAGER_UNSET = {
+    "AGENTIC_CONFIG": "a config file could set users_group",
+    # #237: /dev/shm or a second file instead of the system database.
+    "AGENTIC_DATABASE_PATH": "the database must stay in the state directory",
+    # #240: "development" spawns PTYs without delegated-cgroup containment.
+    "FLOWERLY_PTY_ISOLATION": "PTY containment must stay required",
+    "FLOWERLY_PTY_CGROUP_ROOT": "the PTY cgroup root must be the unit's own cgroup",
+}
+UNIT_UNSET = "UnsetEnvironment=AGENTIC_USERS_GROUP " + " ".join(MANAGER_UNSET)
+DROP_IN_UNSET = "UnsetEnvironment=" + " ".join(MANAGER_UNSET)
+
+
 def environment_of(values):
     env = {}
     for entry in values.get("Environment", []):
@@ -87,16 +102,11 @@ def common_problems(values):
         problems.append("UMask must be 0077")
     if env.get("AGENTIC_ADMIN_GROUP") != "flowerly-admin":
         problems.append("AGENTIC_ADMIN_GROUP must stay flowerly-admin (deny by default)")
-    if "AGENTIC_CONFIG" in env:
-        problems.append("sets AGENTIC_CONFIG: a config file could set users_group")
-    if "AGENTIC_CONFIG" not in unset_of(values):
-        problems.append("must UnsetEnvironment=AGENTIC_CONFIG so the manager cannot inject it")
-    # #237: the manager must not repoint the system database (/dev/shm, a
-    # second file); tests and recovery run the binary directly.
-    if "AGENTIC_DATABASE_PATH" in env:
-        problems.append("sets AGENTIC_DATABASE_PATH: the database must stay in the state directory")
-    if "AGENTIC_DATABASE_PATH" not in unset_of(values):
-        problems.append("must UnsetEnvironment=AGENTIC_DATABASE_PATH so the manager cannot inject it")
+    for name, reason in MANAGER_UNSET.items():
+        if name in env:
+            problems.append(f"sets {name}: {reason}")
+        if name not in unset_of(values):
+            problems.append(f"must UnsetEnvironment={name} so the manager cannot inject it")
     exec_start = " ".join(values.get("ExecStart", []))
     if exec_start != "/usr/bin/flowerlyd --state-dir /var/lib/flowerly":
         problems.append(f"ExecStart changed: {exec_start!r}")
@@ -182,7 +192,7 @@ class ShippedAdmission(unittest.TestCase):
     def test_each_default_bypass_is_rejected(self):
         unit = UNIT.read_text()
         env = "Environment=AGENTIC_ADMIN_GROUP=flowerly-admin"
-        unset = "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH"
+        unset = UNIT_UNSET
         self.assertIn(unset, unit)
         mutations = {
             "users group": unit.replace(env, env + "\nEnvironment=AGENTIC_USERS_GROUP=flowerly-users"),
@@ -193,14 +203,13 @@ class ShippedAdmission(unittest.TestCase):
             "readable state": unit.replace("StateDirectoryMode=0700", "StateDirectoryMode=0750"),
             "loose umask": unit.replace("UMask=0077", "UMask=0022"),
             "no admin group": unit.replace(env, ""),
-            "inherits manager users group": unit.replace(
-                unset, "UnsetEnvironment=AGENTIC_CONFIG AGENTIC_DATABASE_PATH"),
-            "inherits manager config": unit.replace(
-                unset, "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_DATABASE_PATH"),
-            "inherits manager database path": unit.replace(
-                unset, "UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG"),
+            "inherits manager users group": unit.replace(unset, DROP_IN_UNSET),
+            **{f"inherits manager {name}": unit.replace(unset, unset.replace(f" {name}", ""))
+               for name in MANAGER_UNSET},
             "sets database path": unit.replace(
                 env, env + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/state.db"),
+            "sets development PTY isolation": unit.replace(
+                env, env + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"),
             "config file": unit.replace("ExecStart=/usr/bin/flowerlyd",
                                         "ExecStart=/usr/bin/flowerlyd --config /etc/f.toml"),
             "root": unit.replace("User=flowerly", "User=root"),
@@ -220,13 +229,15 @@ class ShippedAdmission(unittest.TestCase):
         drop_in = DROP_IN.read_text()
         users = "Environment=AGENTIC_USERS_GROUP=flowerly-users"
         self.assertIn(users, drop_in)
+        self.assertIn(DROP_IN_UNSET + "\n", drop_in)
         mutations = {
             "keeps unit unset list": drop_in.replace("UnsetEnvironment=\n", ""),
-            "drops config unset": drop_in.replace("UnsetEnvironment=AGENTIC_CONFIG AGENTIC_DATABASE_PATH\n",
-                                                  "UnsetEnvironment=AGENTIC_DATABASE_PATH\n"),
-            "drops database unset": drop_in.replace("UnsetEnvironment=AGENTIC_CONFIG AGENTIC_DATABASE_PATH\n",
-                                                    "UnsetEnvironment=AGENTIC_CONFIG\n"),
+            **{f"drops {name} unset": drop_in.replace(DROP_IN_UNSET, DROP_IN_UNSET.replace(f"={name} ", "=")
+                                                       .replace(f" {name}", ""))
+               for name in MANAGER_UNSET},
             "database path": drop_in.replace(users, users + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/x.db"),
+            "development PTY isolation": drop_in.replace(
+                users, users + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"),
             "other users group": drop_in.replace(users, "Environment=AGENTIC_USERS_GROUP=wheel"),
             "no users group": drop_in.replace(users, ""),
             "admin group swap": drop_in.replace(users, users + "\nEnvironment=AGENTIC_ADMIN_GROUP=wheel"),

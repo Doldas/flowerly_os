@@ -12,8 +12,9 @@ refuses to run unless FLOWERLY_DISPOSABLE_HOST=1.
      human admins, admin-only members and non-members are refused, also
      with a manager-injected users group, config file or database path
      (#237: the daemon must keep /var/lib/flowerly/state.db, never
-     /dev/shm) and a stale partial drop-in. The service account is not an
-     administrator.
+     /dev/shm), PTY isolation override (#240: PTY spawning stays disabled,
+     never uncontained) and a stale partial drop-in. The service account is
+     not an administrator.
   2. Opt-in (the documented drop-in installed as documented): flowerly-users
      members connect; the socket is 0660 group flowerly-users, /run/flowerly
      0750, state still 0700/0600. The full two-user ownership suite from
@@ -69,7 +70,13 @@ USERS, ADMINS, EVIL = "flowerly-users", "flowerly-admin", "flwt-evil"
 ALICE, BOB, DANA, CAROL, MALLORY = (f"flwt-{n}" for n in ("alice", "bob", "dana", "carol", "mallory"))
 MANAGER_ENV = [f"AGENTIC_USERS_GROUP={EVIL}", f"AGENTIC_CONFIG={EVIL_CONFIG}",
                f"AGENTIC_DATABASE_PATH={EVIL_DB}",
+               # #240: would spawn PTYs without delegated-cgroup containment.
+               "FLOWERLY_PTY_ISOLATION=development", "FLOWERLY_PTY_CGROUP_ROOT=/sys/fs/cgroup",
                "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=members-can-read-each-others-data"]
+UNSET_IN_EVERY_MODE = ("AGENTIC_CONFIG", "AGENTIC_DATABASE_PATH",
+                       "FLOWERLY_PTY_ISOLATION", "FLOWERLY_PTY_CGROUP_ROOT")
+PTY_FAIL_CLOSED = "PTY delegation unavailable; spawning disabled"
+PTY_DEVELOPMENT = "PTY isolation is development"
 ADMIN_COMMANDS = ["generation.activate", "generation.promote", "model.register",
                   "ownership.inspect", "ownership.claim", "ownership.release",
                   "provenance.add", "provider.register", "usage.record"]
@@ -111,6 +118,24 @@ class Host:
 
     def peer(self, user, spoof_user):
         return self.own.Peer(user, self.script, SOCKET, pwd.getpwnam(spoof_user).pw_uid)
+
+    def journal(self):
+        """Log lines of the current flowerlyd invocation only."""
+        invocation = sh("systemctl", "show", "-p", "InvocationID", "--value",
+                        "flowerlyd").stdout.strip()
+        return sh("journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "-o", "cat",
+                  "--no-pager").stdout
+
+    def pty_contained(self, label):
+        """The shipped unit has no Delegate=: PTY spawning must stay disabled,
+        never fall back to uncontained development isolation (#240)."""
+        for _ in range(50):
+            journal = self.journal()
+            if PTY_FAIL_CLOSED in journal:
+                break
+            time.sleep(0.1)
+        assert PTY_DEVELOPMENT not in journal, (label, journal)
+        assert PTY_FAIL_CLOSED in journal, (label, journal)
 
     def restart(self):
         sh("systemctl", "daemon-reload")
@@ -197,8 +222,9 @@ def default_phase(host, label):
     env = host.environ()
     assert host.open_databases() == {str(DB)}, host.open_databases()
     assert not EVIL_DB.exists(), EVIL_DB
-    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG", "AGENTIC_DATABASE_PATH"):
+    for name in ("AGENTIC_USERS_GROUP",) + UNSET_IN_EVERY_MODE:
         assert name not in env, (label, name, env.get(name))
+    host.pty_contained(label)
     status = host.status()
     assert status["client_access"] == "service_account_only", status
     assert status["admin_authorization"] == "linux_group", status
@@ -224,8 +250,9 @@ def opt_in_phase(host, ownership, authorization):
     env = host.environ()
     # The drop-in's own value wins over the manager-injected one.
     assert env.get("AGENTIC_USERS_GROUP") == USERS, env.get("AGENTIC_USERS_GROUP")
-    assert "AGENTIC_CONFIG" not in env, env.get("AGENTIC_CONFIG")
-    assert "AGENTIC_DATABASE_PATH" not in env, env.get("AGENTIC_DATABASE_PATH")
+    for name in UNSET_IN_EVERY_MODE:
+        assert name not in env, ("opt-in", name, env.get(name))
+    host.pty_contained("opt-in")
     assert host.open_databases() == {str(DB)}, host.open_databases()
     assert not EVIL_DB.exists(), EVIL_DB
     status = host.status()
