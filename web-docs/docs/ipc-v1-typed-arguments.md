@@ -71,7 +71,7 @@ never applied to a wrongly typed value.
 | `provider.register` | `name`; `kind` (string; default `local-unix`; any other kind is `permission_denied`); `endpoint` (bare filename); `capabilities` (1..16 strings); `operation_id` |
 | `provider.show` | `id` (Provider ID) |
 | `workload.submit` | `profile_id`, `model_id` (IDs, required); `background` (`quiet` / `normal` / `intensive`; default `normal`); `priority` (integer in i32 range; default 0); `operation_id` |
-| `workload.list` | `mine` (boolean; default `true`) |
+| `workload.list` | `mine` (boolean; default `true`; `false` is `invalid_argument` since #225 PR 5, because only the caller's own workloads are listed) |
 | `workload.show`, `workload.stop`, `workload.complete` | `id` (Workload ID) |
 | `workload.usage_brief` | `model_id` |
 | `usage.record` | `workload_id`; `tokens_in`, `tokens_out`, `latency_ms`, `cost_micros` (required integers ≤ 4 × u32::MAX); `operation_id` **refused** |

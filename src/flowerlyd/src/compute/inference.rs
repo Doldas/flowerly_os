@@ -25,8 +25,8 @@ use flowerly_core::ipc::Payload;
 use flowerly_core::profile::FallbackBehavior;
 use flowerly_core::storage::{MutationOperation, Store};
 use flowerly_core::types::{
-    ObjectRef, ProvenanceEdge, ProvenanceRelation, ProviderId, Timestamp, UsageId, WorkloadId,
-    WorkloadRecord, WorkloadState,
+    Caller, ObjectRef, ProvenanceEdge, ProvenanceRelation, ProviderId, Timestamp, UsageId,
+    WorkloadId, WorkloadRecord, WorkloadState,
 };
 use serde_json::Value;
 
@@ -53,9 +53,14 @@ fn runtime_dir_snapshot() -> Result<&'static PathBuf, CommandFailure> {
     })
 }
 
-pub(crate) fn run_inference(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+pub(crate) fn run_inference(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> CommandResult {
     match name {
-        "inference.request" => request(store, args),
+        "inference.request" => request(store, args, caller),
         "inference.capabilities" => capabilities(store, args),
         other => Err(CommandFailure::invalid(format!(
             "compute: unknown command `{other}`"
@@ -81,7 +86,12 @@ fn validate_operation(args: &Value) -> Result<(), CommandFailure> {
     }
 }
 
-fn load_workload(store: &Store, args: &Value) -> Result<WorkloadRecord, CommandFailure> {
+/// One of the caller's own workloads; another uid's is `not_found`.
+fn load_workload(
+    store: &Store,
+    args: &Value,
+    caller: Caller,
+) -> Result<WorkloadRecord, CommandFailure> {
     let raw = args
         .get("workload_id")
         .and_then(Value::as_str)
@@ -89,7 +99,7 @@ fn load_workload(store: &Store, args: &Value) -> Result<WorkloadRecord, CommandF
     let workload_id = WorkloadId::from_str(raw)
         .map_err(|error| CommandFailure::invalid(format!("invalid workload id: {error}")))?;
     store
-        .get_workload(&workload_id)
+        .workload_for(caller, &workload_id)
         .map_err(CommandFailure::storage)?
         .ok_or_else(|| CommandFailure {
             code: flowerly_core::ipc::ErrorCode::NotFound,
@@ -184,8 +194,8 @@ fn outage_outcome(message: String, fallback: FallbackBehavior) -> CommandResult 
     }
 }
 
-fn request(store: &mut Store, args: &Value) -> CommandResult {
-    let workload = load_workload(store, args)?;
+fn request(store: &mut Store, args: &Value, caller: Caller) -> CommandResult {
+    let workload = load_workload(store, args, caller)?;
     if workload.state != WorkloadState::Admitted {
         return Err(CommandFailure {
             code: flowerly_core::ipc::ErrorCode::Conflict,
@@ -237,7 +247,7 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
         })?;
 
     // An unresolvable profile is an error, never a silently assumed policy.
-    let fallback = profiles::resolve_effective(store, &workload.profile_id)?
+    let fallback = profiles::resolve_effective(store, caller, &workload.profile_id)?
         .1
         .fallback;
 

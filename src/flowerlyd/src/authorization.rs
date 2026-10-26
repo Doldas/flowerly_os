@@ -86,9 +86,10 @@ pub(crate) fn refuse_unenforced_multi_user(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DataScope {
     /// Only the caller's own objects, plus the shared General Flow for Flow
-    /// commands; provenance edges only when both endpoints are visible. Enforced in the owner-scoped storage API, inside the same
-    /// SQLite statement or transaction as any mutation; other uids' objects
-    /// are `not_found`.
+    /// commands and read-only `system` profiles for profile commands;
+    /// provenance edges only when both endpoints are visible. Enforced in the
+    /// owner-scoped storage API, inside the same SQLite statement or
+    /// transaction as any mutation; other uids' objects are `not_found`.
     OwnerScoped,
     /// Shared system catalog data, read-only for User commands.
     SharedSystem,
@@ -118,14 +119,8 @@ pub(crate) const DATA_SCOPES: &[(&str, DataScope)] = &[
     ("execution.create", DataScope::OwnerScoped),
     ("execution.show", DataScope::OwnerScoped),
     ("execution.list", DataScope::OwnerScoped),
-    (
-        "provenance.from",
-        DataScope::Pending("PR 4: both endpoints visible"),
-    ),
-    (
-        "provenance.to",
-        DataScope::Pending("PR 4: both endpoints visible"),
-    ),
+    ("provenance.from", DataScope::OwnerScoped),
+    ("provenance.to", DataScope::OwnerScoped),
     (
         "generation.create",
         DataScope::Pending("PR 6: private candidates"),
@@ -145,66 +140,24 @@ pub(crate) const DATA_SCOPES: &[(&str, DataScope)] = &[
     ("device.budget", DataScope::SharedSystem),
     ("provider.list", DataScope::SharedSystem),
     ("provider.show", DataScope::SharedSystem),
-    (
-        "profile.create",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    (
-        "profile.clone",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    (
-        "profile.rename",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    ("profile.edit", DataScope::Pending("PR 5: private profiles")),
-    (
-        "profile.import",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    (
-        "profile.export",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    ("profile.list", DataScope::Pending("PR 5: private profiles")),
-    ("profile.show", DataScope::Pending("PR 5: private profiles")),
-    (
-        "profile.version_history",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    (
-        "profile.resolve",
-        DataScope::Pending("PR 5: private profiles"),
-    ),
-    (
-        "workload.submit",
-        DataScope::Pending("PR 5: private workloads"),
-    ),
-    (
-        "workload.list",
-        DataScope::Pending("PR 5: private workloads"),
-    ),
-    (
-        "workload.show",
-        DataScope::Pending("PR 5: private workloads"),
-    ),
-    (
-        "workload.stop",
-        DataScope::Pending("PR 5: private workloads"),
-    ),
-    (
-        "workload.complete",
-        DataScope::Pending("PR 5: private workloads"),
-    ),
-    (
-        "workload.usage_brief",
-        DataScope::Pending("PR 5: private usage"),
-    ),
+    ("profile.create", DataScope::OwnerScoped),
+    ("profile.clone", DataScope::OwnerScoped),
+    ("profile.rename", DataScope::OwnerScoped),
+    ("profile.edit", DataScope::OwnerScoped),
+    ("profile.import", DataScope::OwnerScoped),
+    ("profile.export", DataScope::OwnerScoped),
+    ("profile.list", DataScope::OwnerScoped),
+    ("profile.show", DataScope::OwnerScoped),
+    ("profile.version_history", DataScope::OwnerScoped),
+    ("profile.resolve", DataScope::OwnerScoped),
+    ("workload.submit", DataScope::OwnerScoped),
+    ("workload.list", DataScope::OwnerScoped),
+    ("workload.show", DataScope::OwnerScoped),
+    ("workload.stop", DataScope::OwnerScoped),
+    ("workload.complete", DataScope::OwnerScoped),
+    ("workload.usage_brief", DataScope::OwnerScoped),
     ("inference.capabilities", DataScope::SharedSystem),
-    (
-        "inference.request",
-        DataScope::Pending("PR 5: private workloads and usage"),
-    ),
+    ("inference.request", DataScope::OwnerScoped),
 ];
 
 /// Decide a command for a kernel-attested peer. Only inventoried commands
