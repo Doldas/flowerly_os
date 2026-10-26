@@ -10,8 +10,10 @@ refuses to run unless FLOWERLY_DISPOSABLE_HOST=1.
   1. Default (unit alone): only the flowerly service account can connect.
      /run/flowerly is 0700, the socket 0600, state private. Users members,
      human admins, admin-only members and non-members are refused, also
-     with a manager-injected users group or config file and a stale partial
-     drop-in. The service account is not an administrator.
+     with a manager-injected users group, config file or database path
+     (#237: the daemon must keep /var/lib/flowerly/state.db, never
+     /dev/shm) and a stale partial drop-in. The service account is not an
+     administrator.
   2. Opt-in (the documented drop-in installed as documented): flowerly-users
      members connect; the socket is 0660 group flowerly-users, /run/flowerly
      0750, state still 0700/0600. The full two-user ownership suite from
@@ -60,10 +62,13 @@ STATE = pathlib.Path("/var/lib/flowerly")
 SOCKET = RUNTIME / "flowerlyd.sock"
 DB = STATE / "state.db"
 EVIL_CONFIG = pathlib.Path("/etc/flowerly-injected.toml")
+# Writable for the sandboxed daemon despite ProtectSystem=strict (#237).
+EVIL_DB = pathlib.Path("/dev/shm/flowerly-injected.db")
 SERVICE = "flowerly"
 USERS, ADMINS, EVIL = "flowerly-users", "flowerly-admin", "flwt-evil"
 ALICE, BOB, DANA, CAROL, MALLORY = (f"flwt-{n}" for n in ("alice", "bob", "dana", "carol", "mallory"))
 MANAGER_ENV = [f"AGENTIC_USERS_GROUP={EVIL}", f"AGENTIC_CONFIG={EVIL_CONFIG}",
+               f"AGENTIC_DATABASE_PATH={EVIL_DB}",
                "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=members-can-read-each-others-data"]
 ADMIN_COMMANDS = ["generation.activate", "generation.promote", "model.register",
                   "ownership.inspect", "ownership.claim", "ownership.release",
@@ -121,16 +126,25 @@ class Host:
         status = sh("systemctl", "status", "--no-pager", "flowerlyd", check=False).stdout
         raise AssertionError(f"flowerlyd not ready after restart:\n{status}")
 
-    def environ(self):
+    def as_daemon(self, *argv):
+        """Run argv with the daemon's own uid and gid (no ptrace capability
+        needed to read its /proc entries)."""
         pid = sh("systemctl", "show", "-p", "MainPID", "--value", "flowerlyd").stdout.strip()
         assert pid not in ("", "0"), pid
-        # Read with the daemon's own uid and gid (no ptrace capability needed).
         status = pathlib.Path(f"/proc/{pid}/status").read_text()
         gid = int(next(l for l in status.splitlines() if l.startswith("Gid:")).split()[1])
-        raw = subprocess.run(["runuser", "-u", SERVICE, "-g", grp.getgrgid(gid).gr_name, "--",
-                              "cat", f"/proc/{pid}/environ"],
-                             check=True, capture_output=True).stdout.split(b"\0")
+        return subprocess.run(["runuser", "-u", SERVICE, "-g", grp.getgrgid(gid).gr_name, "--",
+                               *[a.replace("{pid}", pid) for a in argv]],
+                              check=True, capture_output=True).stdout
+
+    def environ(self):
+        raw = self.as_daemon("cat", "/proc/{pid}/environ").split(b"\0")
         return dict(item.decode().partition("=")[::2] for item in raw if item)
+
+    def open_databases(self):
+        """The *.db files the daemon has open (#237)."""
+        listing = self.as_daemon("find", "/proc/{pid}/fd", "-lname", "*.db", "-printf", "%l\n")
+        return set(listing.decode().split())
 
     def status(self):
         reply = self.raw(SERVICE, {"type": "status"})
@@ -181,7 +195,9 @@ def default_phase(host, label):
     assert mode_of(SOCKET) == (0o600, SERVICE, SERVICE), mode_of(SOCKET)
     check_state_private()
     env = host.environ()
-    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG"):
+    assert host.open_databases() == {str(DB)}, host.open_databases()
+    assert not EVIL_DB.exists(), EVIL_DB
+    for name in ("AGENTIC_USERS_GROUP", "AGENTIC_CONFIG", "AGENTIC_DATABASE_PATH"):
         assert name not in env, (label, name, env.get(name))
     status = host.status()
     assert status["client_access"] == "service_account_only", status
@@ -209,6 +225,9 @@ def opt_in_phase(host, ownership, authorization):
     # The drop-in's own value wins over the manager-injected one.
     assert env.get("AGENTIC_USERS_GROUP") == USERS, env.get("AGENTIC_USERS_GROUP")
     assert "AGENTIC_CONFIG" not in env, env.get("AGENTIC_CONFIG")
+    assert "AGENTIC_DATABASE_PATH" not in env, env.get("AGENTIC_DATABASE_PATH")
+    assert host.open_databases() == {str(DB)}, host.open_databases()
+    assert not EVIL_DB.exists(), EVIL_DB
     status = host.status()
     assert status["client_access"] == "service_account_and_linux_groups", status
     assert status["ownership_pending_commands"] == 0, status
@@ -256,7 +275,7 @@ def opt_in_phase(host, ownership, authorization):
            "audited claim/release); human admin runs audited Admin commands journaled by own "
            f"uid ({audited} admin_audit rows, actor uid {uid[DANA]}); users members refused "
            "Admin; PTY only for the service account; admin-only member and non-member refused; "
-           "manager-injected users group and config ignored; state private: PASS")
+           "manager-injected users group, config and database path ignored; state private: PASS")
 
 
 def install(bin_dir):
@@ -282,7 +301,7 @@ def install(bin_dir):
 def cleanup():
     sh("systemctl", "stop", "flowerlyd", check=False)
     sh("systemctl", "unset-environment", *[e.split("=")[0] for e in MANAGER_ENV], check=False)
-    for path in (DROP_IN, STALE_DROP_IN, EVIL_CONFIG):
+    for path in (DROP_IN, STALE_DROP_IN, EVIL_CONFIG, EVIL_DB):
         path.unlink(missing_ok=True)
     for user in (ALICE, BOB, DANA, CAROL, MALLORY):
         sh("userdel", user, check=False)
