@@ -26,6 +26,12 @@ assertions:
     uid's Goal. No Status count changes for bob when alice adds data.
   * Foregrounds survive a daemon restart, and the database holds one
     flow_foreground row per uid that chose a non-General Flow.
+  * Compute (PR 5): profiles are private with names unique per owner (no
+    name-existence oracle); a separate admin user registers a model and
+    records usage through Admin commands. Workloads may use only the
+    caller's own profile; another uid's workload, its usage totals and its
+    provenance are answered like missing ones; `workload.list` never lists
+    other users' workloads.
 
 Default mode (no root) runs only the offline parser and helper self-checks.
 """
@@ -49,6 +55,8 @@ UNENFORCED_ACK = "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP"
 UNENFORCED_ACK_VALUE = "members-can-read-each-others-data"
 MISSING_FLOW = "flow-00000000000000000000000000000000"
 MISSING_GOAL = "goal-00000000000000000000000000000000"
+MISSING_PROFILE = "profile-00000000000000000000000000000000"
+MISSING_WORKLOAD = "work-00000000000000000000000000000000"
 
 
 def recv_exact(conn, count):
@@ -151,13 +159,14 @@ def ping_as(user, script, sock):
     return result.returncode == 0 and json.loads(result.stdout or "{}").get("outcome") == "reply"
 
 
-def start_daemon(script, local_bin, service, users_group, runtime, state, log_path):
+def start_daemon(script, local_bin, service, users_group, admin_group, runtime, state,
+                 log_path):
     with log_path.open("ab") as log:
         process = subprocess.Popen(
             ["runuser", "-u", service, "-g", users_group, "--",
              "env", "-i", "PATH=/usr/bin:/bin", f"HOME={state}",
              f"AGENTIC_RUNTIME_DIR={runtime}", f"AGENTIC_STATE_DIR={state}",
-             f"AGENTIC_USERS_GROUP={users_group}",
+             f"AGENTIC_USERS_GROUP={users_group}", f"AGENTIC_ADMIN_GROUP={admin_group}",
              f"{UNENFORCED_ACK}={UNENFORCED_ACK_VALUE}",
              str(local_bin / "flowerlyd")],
             stdout=log, stderr=subprocess.STDOUT)
@@ -283,19 +292,71 @@ def ownership_scenario(alice, bob, alice_uid, bob_uid, db_path, restart):
         db.close()
 
 
+def compute_scenario(alice, bob, admin):
+    bob_view = bob.status()
+    model = admin.ok("model.register", name="tiny-cpu", backend="CPU",
+                     measured_memory_bytes=1_000_000, context_tokens=2048,
+                     modalities=["text"], license="apache-2.0", evidence="measure:test")["id"]
+
+    # Profiles: private, and the same name is free for another owner.
+    profile_a = alice.ok("profile.create", name="expert", toml="fallback = 'queue'\n")["id"]
+    profile_b = bob.ok("profile.create", name="expert", toml="fallback = 'ask'\n")["id"]
+    assert error_of(alice.call("profile.create", name="expert",
+                               toml="fallback = 'ask'\n"))[0] == "conflict"
+    assert [p["id"] for p in bob.ok("profile.list")["profiles"]] == [profile_b]
+    for name, args in [("profile.show", {}), ("profile.export", {}),
+                       ("profile.version_history", {}), ("profile.resolve", {}),
+                       ("profile.clone", {"name": "copy"}),
+                       ("profile.rename", {"name": "taken"}),
+                       ("profile.edit", {"toml": "fallback = 'fail'\n"})]:
+        assert_like_missing(bob, name, profile_a, MISSING_PROFILE, **args)
+    code, _ = error_of(bob.call("profile.create", name="graft", toml="base = 'derived'\n"))
+    assert code == "not_found", code
+
+    # Workloads: only one's own profile, and private like missing ones.
+    work_a = alice.ok("workload.submit", profile_id=profile_a, model_id=model)["id"]
+    work_b = bob.ok("workload.submit", profile_id=profile_b, model_id=model)["id"]
+    code, _ = error_of(bob.call("workload.submit", profile_id=profile_a, model_id=model))
+    assert code == "not_found", code
+    for name in ("workload.show", "workload.stop", "workload.complete"):
+        assert_like_missing(bob, name, work_a, MISSING_WORKLOAD)
+    code, message = error_of(bob.call("inference.request", workload_id=work_a, prompt="hi",
+                                      request_id="r-1", provider_id="provider-" + "0" * 32))
+    assert code == "not_found" and "workload" in message, (code, message)
+    assert [w["id"] for w in bob.ok("workload.list")["workloads"]] == [work_b]
+    assert error_of(bob.call("workload.list", mine=False))[0] == "invalid_argument"
+    assert bob.ok("provenance.from", ref=work_a)["count"] == 0
+    assert alice.ok("provenance.from", ref=work_a)["count"] >= 1
+
+    # Usage recorded by the admin for alice's workload is alice's alone.
+    admin.ok("usage.record", workload_id=work_a, tokens_in=7, tokens_out=11, latency_ms=3,
+             cost_micros=5)
+    assert bob.ok("workload.usage_brief", model_id=model)["tokens_in"] == 0
+    assert bob.ok("workload.show", id=work_b)["usage_tokens_in_total_for_model"] == 0
+    assert alice.ok("workload.usage_brief", model_id=model)["tokens_in"] == 7
+
+    # Bob's own profile and workload are his only visible changes.
+    after = bob.status()
+    assert after["profile_count"] == bob_view["profile_count"] + 1, (bob_view, after)
+    for key in ("goal_count", "session_count", "execution_count", "generation_count"):
+        assert after[key] == bob_view[key], (key, bob_view[key], after[key])
+
+
 def cross_uid(bin_dir):
     if os.geteuid() != 0:
         raise SystemExit("--cross-uid must run as root (CI uses sudo)")
     suffix = uuid.uuid4().hex[:6]
-    users_group = f"flw-own-{suffix}"
-    service, alice, bob = (f"flw-{name}-{suffix}" for name in ("svc", "ali", "bob"))
+    users_group, admin_group = f"flw-own-{suffix}", f"flw-adg-{suffix}"
+    service, alice, bob, admin = (f"flw-{name}-{suffix}" for name in ("svc", "ali", "bob", "adm"))
     created_users, created_groups = [], []
     root = pathlib.Path(tempfile.mkdtemp(prefix="flowerly-ownership-"))
     process = None
     try:
-        run("groupadd", "--system", users_group)
-        created_groups.append(users_group)
-        for user, groups in [(service, None), (alice, users_group), (bob, users_group)]:
+        for group in (users_group, admin_group):
+            run("groupadd", "--system", group)
+            created_groups.append(group)
+        for user, groups in [(service, None), (alice, users_group), (bob, users_group),
+                             (admin, f"{users_group},{admin_group}")]:
             argv = ["useradd", "--system", "--user-group", "--no-create-home",
                     "--shell", "/usr/sbin/nologin"]
             if groups:
@@ -319,25 +380,27 @@ def cross_uid(bin_dir):
         os.chown(runtime, service_pw.pw_uid, users_gid)
         os.chown(state, service_pw.pw_uid, service_pw.pw_gid)
         log_path = root / "flowerlyd.log"
-        process, sock = start_daemon(script, local_bin, service, users_group, runtime, state,
-                                     log_path)
+        process, sock = start_daemon(script, local_bin, service, users_group, admin_group,
+                                     runtime, state, log_path)
         assert "TEST ONLY" in log_path.read_text(), log_path.read_text()
 
         def restart():
             nonlocal process
             stop_daemon(process)
-            process, _ = start_daemon(script, local_bin, service, users_group, runtime, state,
-                                      log_path)
+            process, _ = start_daemon(script, local_bin, service, users_group, admin_group,
+                                      runtime, state, log_path)
 
-        ownership_scenario(Peer(alice, script, sock, bob_uid), Peer(bob, script, sock, alice_uid),
-                           alice_uid, bob_uid, state / "state.db", restart)
+        alice_peer = Peer(alice, script, sock, bob_uid)
+        bob_peer = Peer(bob, script, sock, alice_uid)
+        ownership_scenario(alice_peer, bob_peer, alice_uid, bob_uid, state / "state.db", restart)
+        compute_scenario(alice_peer, bob_peer, Peer(admin, script, sock, alice_uid))
         assert process.poll() is None, log_path.read_text()
         print("cross-UID ownership (#225): status counts and foreground are per caller; "
               "other users' Flows, Goals, Sessions and Executions are not_found like missing "
               "ones, including cross-object references; provenance needs both endpoints "
               "visible; Generation reason Goals stay private; General is shared and "
               "protected; no activation changes another user's foreground; foregrounds "
-              "survive restart: OK")
+              "survive restart; profiles, workloads and usage are private: OK")
     finally:
         if process is not None:
             stop_daemon(process)

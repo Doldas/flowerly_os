@@ -733,7 +733,11 @@ mod ownership_recording {
 /// offline self-tests and unit tests, so production handler code is scanned.
 #[cfg(test)]
 mod owner_scoped_storage {
-    const HANDLERS: [(&str, &str); 8] = [
+    const HANDLERS: [(&str, &str); 12] = [
+        ("compute", include_str!("compute/mod.rs")),
+        ("compute/profiles", include_str!("compute/profiles.rs")),
+        ("compute/admission", include_str!("compute/admission.rs")),
+        ("compute/inference", include_str!("compute/inference.rs")),
         ("flow", include_str!("flow/mod.rs")),
         ("goal", include_str!("goal/mod.rs")),
         ("session", include_str!("session/mod.rs")),
@@ -745,7 +749,7 @@ mod owner_scoped_storage {
     ];
 
     /// Reads and mutations that ignore the caller.
-    const UNSCOPED: [&str; 13] = [
+    const UNSCOPED: [&str; 15] = [
         ".get_flow(",
         ".list_flows(",
         ".get_goal(",
@@ -759,6 +763,8 @@ mod owner_scoped_storage {
         ".status_counts(",
         ".provenance_from(",
         ".provenance_to(",
+        ".usage_totals_per_model(",
+        ".get_workload(",
     ];
 
     /// Production code: everything before the offline self-test and tests.
@@ -776,8 +782,34 @@ mod owner_scoped_storage {
         for (name, source) in HANDLERS {
             let code = production(source);
             for call in UNSCOPED {
+                if name == "compute/admission"
+                    && matches!(call, ".get_workload(" | ".usage_totals_per_model(")
+                {
+                    continue; // see the next test
+                }
                 assert!(!code.contains(call), "{name} calls unscoped `{call}`");
             }
+        }
+    }
+
+    /// `usage.record` (Admin) writes the shared usage ledger for any workload
+    /// and is the only caller-blind workload read; an Admin audit design
+    /// (PR 7) replaces it.
+    #[test]
+    fn unscoped_workload_reads_are_confined_to_admin_usage_record() {
+        let admission = production(include_str!("compute/admission.rs"));
+        let start = admission
+            .find("fn record_usage(")
+            .expect("record_usage exists");
+        let end = start + admission[start..].find("\n}\n").expect("record_usage ends");
+        let record_usage = &admission[start..end];
+        for call in [".get_workload(", ".usage_totals_per_model("] {
+            assert_eq!(record_usage.matches(call).count(), 1, "{call}");
+            assert_eq!(
+                admission.matches(call).count(),
+                1,
+                "{call} outside record_usage"
+            );
         }
     }
 

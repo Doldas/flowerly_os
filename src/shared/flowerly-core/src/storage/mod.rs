@@ -3,7 +3,7 @@
 pub mod repository;
 pub mod scoped;
 
-pub use scoped::FlowView;
+pub use scoped::{FlowView, ProfileView};
 
 use std::fmt;
 use std::path::Path;
@@ -382,6 +382,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "generation_reason_goal_owner",
         sql: include_str!("../../migrations/0011_generation_reason_goal_owner.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "compute_ownership",
+        sql: include_str!("../../migrations/0012_compute_ownership.sql"),
     },
 ];
 
@@ -969,151 +974,6 @@ impl Store {
         }
     }
 
-    /// Append a new version; the caller has fully validated the TOML and the
-    /// name is immutable after creation (renames update the profile row).
-    pub fn append_profile_version(
-        &mut self,
-        id: &ProfileId,
-        toml: &str,
-        summary: &str,
-        appended_by: &str,
-        edges: &[ProvenanceEdge],
-    ) -> Result<u32> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let next = append_profile_version_row(&tx, id, toml, summary, appended_by, edges)?;
-        tx.commit()?;
-        Ok(next)
-    }
-
-    /// Idempotent `append_profile_version`: an exact retry of `operation`
-    /// replays the stored response instead of appending another version.
-    /// `response` renders the allocated version into the stored JSON.
-    #[allow(clippy::too_many_arguments)]
-    pub fn append_profile_version_once(
-        &mut self,
-        id: &ProfileId,
-        toml: &str,
-        summary: &str,
-        appended_by: &str,
-        edges: &[ProvenanceEdge],
-        operation: &MutationOperation<'_>,
-        response: impl FnOnce(u32) -> String,
-    ) -> Result<String> {
-        self.run_once(operation, |conn| {
-            let next = append_profile_version_row(conn, id, toml, summary, appended_by, edges)?;
-            Ok(response(next))
-        })
-    }
-
-    pub fn rename_profile(
-        &mut self,
-        id: &ProfileId,
-        new_name: &str,
-        renamed_by: &str,
-    ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = tx.execute(
-            "UPDATE ai_profiles SET name = ?2 WHERE id = ?1",
-            params![id.as_str(), new_name],
-        )?;
-        if changed == 0 {
-            tx.commit()?;
-            return Err(StorageError::NotFound(format!("profile not found: {id}")));
-        }
-        insert_provenance_row(
-            &tx,
-            &ProvenanceEdge {
-                from: ObjectRef::from(id),
-                relation: crate::types::ProvenanceRelation::CausedBy,
-                to: ObjectRef::actor(format!("rename:{renamed_by}")).map_err(|error| {
-                    StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
-                })?,
-                created_at: Timestamp::now(),
-                note: Some("profile rename".to_owned()),
-            },
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn profile_row(&self, id: &ProfileId) -> Result<Option<(String, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT name, created_by, created_at FROM ai_profiles WHERE id = ?1",
-                params![id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    pub fn profile_by_name(&self, name: &str) -> Result<Option<(ProfileId, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT id, created_by, created_at FROM ai_profiles WHERE name = ?1",
-                params![name],
-                |row| {
-                    let id: ProfileId = parse_text(row.get::<_, String>(0)?, 0)?;
-                    Ok((id, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
-                },
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    pub fn list_profiles(&self) -> Result<Vec<(ProfileId, String, u32, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.name, COALESCE(MAX(v.version), 0), p.created_at
-             FROM ai_profiles p
-             LEFT JOIN ai_profile_versions v ON v.profile_id = p.id
-             GROUP BY p.id ORDER BY p.created_at",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let raw: String = row.get(0)?;
-            Ok((
-                parse_text::<ProfileId>(raw, 0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-            ))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    pub fn profile_version(
-        &self,
-        id: &ProfileId,
-        version: u32,
-    ) -> Result<Option<(String, String, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT toml, summary, created_by, created_at
-                 FROM ai_profile_versions WHERE profile_id = ?1 AND version = ?2",
-                params![id.as_str(), version],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    /// Latest version tuple `(version, toml, summary)`.
-    pub fn profile_latest(&self, id: &ProfileId) -> Result<Option<(u32, String, String)>> {
-        self.conn
-            .query_row(
-                "SELECT version, toml, summary
-                 FROM ai_profile_versions
-                 WHERE profile_id = ?1 ORDER BY version DESC LIMIT 1",
-                params![id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
     /// Register a provider. Remote kinds never pass storage here; the daemon
     /// must refuse them against egress policy before calling this.
     #[allow(clippy::too_many_arguments)]
@@ -1240,26 +1100,6 @@ impl Store {
         }
     }
 
-    /// Count admission over all started (queued+admitted) workloads of a
-    /// profile for the concurrency ceiling check; owner = caller-relevant
-    /// filter by `created_by` when Some("")
-    pub fn count_active_workloads_for_profile(
-        &self,
-        id: &ProfileId,
-        created_by: Option<&str>,
-    ) -> Result<u32> {
-        self.conn
-            .query_row(
-                "SELECT COUNT(*) FROM inference_workloads
-             WHERE profile_id = ?1
-               AND state IN ('QUEUED', 'ADMITTED')
-               AND (?2 IS NULL OR created_by = ?2)",
-                params![id.as_str(), created_by],
-                |row| row.get(0),
-            )
-            .map_err(StorageError::from)
-    }
-
     pub fn get_workload(&self, id: &WorkloadId) -> Result<Option<WorkloadRecord>> {
         self.conn
             .query_row(
@@ -1272,71 +1112,6 @@ impl Store {
             )
             .optional()
             .map_err(StorageError::from)
-    }
-
-    pub fn list_workloads(&self, created_by: Option<&str>) -> Result<Vec<WorkloadRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, profile_id, profile_name, model_id, background, priority,
-                    state, reason, ceilings, created_by, created_at,
-                    admitted_at, stopped_at, completed_at, operation_id, owner_class, owner_uid
-             FROM inference_workloads
-             WHERE (?1 IS NULL OR created_by = ?1)
-             ORDER BY priority DESC, created_at",
-        )?;
-        let rows = stmt.query_map(params![created_by], map_workload)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Stop or complete a workload. The target state must be a terminal
-    /// transition from QUEUED or ADMITTED; anything else is a typed conflict.
-    pub fn transition_workload(
-        &mut self,
-        id: &WorkloadId,
-        target: WorkloadState,
-        edges: &[ProvenanceEdge],
-    ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = Timestamp::now().as_millis();
-        let column = match target {
-            WorkloadState::Stopped => "stopped_at",
-            WorkloadState::Completed => "completed_at",
-            other => {
-                return Err(StorageError::InvalidOperation(format!(
-                    "invalid terminal workload transition to {other}"
-                )));
-            }
-        };
-        let changed = tx.execute(
-            &format!(
-                "UPDATE inference_workloads
-                 SET state = ?2, {column} = ?3
-                 WHERE id = ?1 AND state IN ('QUEUED', 'ADMITTED')"
-            ),
-            params![id.as_str(), target.to_string(), now],
-        )?;
-        if changed == 0 {
-            let exists: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM inference_workloads WHERE id = ?1",
-                    params![id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            tx.commit()?;
-            return match exists {
-                None => Err(StorageError::NotFound(format!("workload not found: {id}"))),
-                Some(_) => Err(StorageError::OperationConflict(format!(
-                    "workload {id} is not running for a {target} transition"
-                ))),
-            };
-        }
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     /// Record one usage ledger entry; the workload must exist.
@@ -2318,7 +2093,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::types::{ModelBackend, ProvenanceRelation};
+    use crate::types::{Caller, ModelBackend, ProvenanceRelation};
 
     #[test]
     fn sqlite_extended_constraints_do_not_conflate_conflict_and_integrity() {
@@ -2634,7 +2409,6 @@ mod tests {
         assert_eq!(counts.models, store.list_models().unwrap().len() as u64);
         assert_eq!(counts.models, 1, "retired models are not counted");
         assert_eq!(counts.sessions, store.list_sessions().unwrap().len() as u64);
-        assert_eq!(counts.profiles, store.list_profiles().unwrap().len() as u64);
         assert_eq!(
             counts.providers,
             store.list_providers().unwrap().len() as u64
@@ -2810,21 +2584,28 @@ mod tests {
                 &[],
             )
             .unwrap();
+        let owner = Caller::new(1000);
         let v2 = store
-            .append_profile_version(&id, "fallback = 'queue'\n", "{}", "uid:1000", &[])
+            .append_profile_version_for(owner, &id, "fallback = 'queue'\n", "{}", "uid:1000", &[])
             .unwrap();
         assert_eq!(v2, 2);
-        let (latest, latest_toml, _) = store.profile_latest(&id).unwrap().unwrap();
+        let (latest, latest_toml, _) = store.profile_latest_for(owner, &id).unwrap().unwrap();
         assert_eq!(latest, 2);
         assert!(latest_toml.contains("queue"));
-        store.rename_profile(&id, "renamed", "uid:1000").unwrap();
-        let (name, _, _) = store.profile_row(&id).unwrap().unwrap();
-        assert_eq!(name, "renamed");
-        let missing = store.rename_profile(&ProfileId::from_raw("profile-none"), "x", "uid:1000");
+        store
+            .rename_profile_for(owner, &id, "renamed", "uid:1000")
+            .unwrap();
+        let view = store.profile_for(owner, &id).unwrap().unwrap();
+        assert_eq!(view.name, "renamed");
+        let missing =
+            store.rename_profile_for(owner, &ProfileId::from_raw("profile-none"), "x", "uid:1000");
         assert!(matches!(missing, Err(StorageError::NotFound(_))));
-        let (by_name_id, _, _) = store.profile_by_name("renamed").unwrap().unwrap();
-        assert_eq!(by_name_id, id);
-        assert_eq!(store.list_profiles().unwrap().len(), 1);
+        let by_name = store
+            .profile_base_for(Owner::User(1000), "renamed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_name.id, id);
+        assert_eq!(store.profiles_for(owner).unwrap().len(), 1);
     }
 
     #[test]

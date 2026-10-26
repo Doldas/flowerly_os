@@ -58,16 +58,17 @@ The `getsockopt(SO_PEERGROUPS)` call lives in the small
 ## Object ownership (#225): partly enforced
 
 > **The ownership boundary is NOT complete.** Flows, Goals, Sessions,
-> Executions (PR 3) and provenance and Status (PR 4) are now owner-scoped
-> (below). Generation listings, profiles, workloads, usage and inference are
-> **not** owner-scoped yet (PRs 5–6), so two `flowerly-users` members could
-> still see each other's data there. The shipped configuration therefore still admits only the
+> Executions (PR 3), provenance and Status (PR 4) and Compute profiles,
+> workloads, usage and inference (PR 5) are now owner-scoped (below).
+> Generation listings are **not** owner-scoped yet (PR 6), so two
+> `flowerly-users` members could still see each other's Generation
+> candidates. The shipped configuration therefore still admits only the
 > service account (see
 > [the temporary restriction](#temporary-restriction-service-account-only-225)).
 > `flowerlyd` refuses to start with a users group while any User command is
 > pending. Status reports how many are pending in `ownership_pending_commands`.
 
-### Enforced: Flows, Goals, Sessions, Executions, provenance, Status
+### Enforced: Flows, Goals, Sessions, Executions, provenance, Status, Compute
 
 Every User command is classified in `DATA_SCOPES` in
 `src/flowerlyd/src/authorization.rs` as `OwnerScoped`, `SharedSystem`,
@@ -83,12 +84,14 @@ the command inventory. For the owner-scoped commands:
   transaction as the mutation, so a concurrent change cannot slip between
   the check and the write.
 - **Visible:** your own rows, plus the canonical General Flow for Flow
-  commands. Not visible: other users', `unresolved` and other `system` rows.
+  commands and read-only `system` profiles for profile commands. Not
+  visible: other users', `unresolved` and other `system` rows.
 - **No existence oracle.** Another user's object is answered exactly like a
   missing one: `not_found` with the same message, for show, list, activate,
   archive, complete, abandon, child and terminate (`execution.show` returns
   `null`, as for a missing id). `permission_denied` is used only where it
-  reveals nothing: archiving the shared General.
+  reveals nothing: archiving the shared General, or editing or renaming a
+  `system` profile.
 - **Cross-object references** must have the same owner, checked in the
   inserting transaction and enforced by 0010 triggers for any other writer:
   a child Goal's parent, an Execution's Goal, and a Session's Flow (which may
@@ -99,14 +102,15 @@ the command inventory. For the owner-scoped commands:
   `foreground_flow` and the following counts:
   - Flows: own + General.
   - Goals, Sessions and Executions: own.
-  - Generations, profiles and active workloads: own + `system`.
+  - Generations and profiles: own + `system`.
+  - Active workloads: own.
   - Provenance edges: visible as below.
   - Models and providers: the shared catalog counts.
 - **Provenance (PR 4)** is filtered by **both endpoints** in one SQL
   statement. An endpoint is one of three kinds:
   - *Visible:* the caller's own Flow, Goal, Session, Execution, Generation,
-    profile or workload; General; a `system` Generation, profile or
-    workload; a catalog model or provider; the caller's own `actor:uid:<n>`.
+    profile or workload; General; a `system` Generation or profile; a
+    catalog model or provider; the caller's own `actor:uid:<n>`.
   - *Hidden:* any other row of those kinds, a missing one, or another uid's
     `actor:uid:<n>`.
   - *Neutral:* kinds with no owner yet (agents, experiments, findings, …)
@@ -122,13 +126,34 @@ the command inventory. For the owner-scoped commands:
   transaction and backed by a migration 0011 trigger. `generation.inspect`
   shows `reason_goal: null` when the Goal is not the caller's. Generation
   visibility itself (private candidates) is PR 6.
+- **Compute (PR 5).** The model catalog and the provider registry stay
+  shared system data (Admin-only mutation).
+  - *Profiles* are the caller's own plus read-only `system` profiles.
+    Names are unique **per owner** (migration 0012 replaces the global
+    unique index), so creating or renaming a profile can no longer reveal
+    that another user uses a name. A `base` resolves as its child's owner
+    sees it: the owner's own profile of that name first, then a `system`
+    one; a `system` profile resolves only `system` bases. Another user's
+    profile can never enter a chain. `profile.show` reports `owner`.
+  - *Workloads* are the caller's own only. `workload.submit` accepts only a
+    profile the caller can see (backed by a migration 0012 trigger), and
+    the concurrency ceiling counts the caller's own active workloads.
+    `workload.list` lists only the caller's own: `mine: false` (formerly
+    everyone's) is now `invalid_argument` instead of being silently
+    narrowed. `workload.show`, `stop`, `complete` and `inference.request`
+    answer another user's workload like a missing one.
+  - *Usage* belongs to the owner of its workload (migration 0012 trigger).
+    `workload.usage_brief` and the totals in `workload.show` count only the
+    caller's own usage. `usage.record` stays an Admin command.
 - **Admin membership never widens** these User commands.
 - **Tests:** `storage::scoped` unit tests use real file-backed connections.
   They cover two uids, the same uid concurrently, General, the archive vs
   activate race, ownership transfer, delete, restart, and a failed or
   repeated migration. `scripts/test-user-ownership.py --cross-uid` (CI, root)
   turns the two-UID reproduction into regression assertions with real Linux
-  users. On the pre-PR 3 daemon it fails on the status-count leak.
+  users, including profiles, workloads and usage with a separate admin
+  user that registers the model and records usage. On the pre-PR 3 daemon
+  it fails on the status-count leak.
 
 ### Recorded (PR 2)
 
