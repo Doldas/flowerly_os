@@ -285,7 +285,8 @@ group to connect.
 - `flowerlyd.service`: `User=flowerly`, `Group=flowerly`,
   `AGENTIC_ADMIN_GROUP=flowerly-admin`, **no** `AGENTIC_USERS_GROUP`,
   `RuntimeDirectoryMode=0700`, `StateDirectoryMode=0700`, `UMask=0077`,
-  `UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH`.
+  `UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH
+  FLOWERLY_PTY_ISOLATION FLOWERLY_PTY_CGROUP_ROOT`.
 - `/usr/share/flowerly/systemd/flowerlyd-multi-user.conf`: the maintained
   opt-in drop-in, **staged inactive**. Nothing under a `*.service.d`
   directory is shipped.
@@ -311,6 +312,13 @@ The 0.0.4 default admits **only the `flowerly` service account**:
   when it is not `<state_dir>/state.db`. For tests or recovery against another
   database, run the binary directly as the service account, never through
   the manager environment.
+- The service manager cannot weaken PTY containment (#240).
+  `FLOWERLY_PTY_ISOLATION` and `FLOWERLY_PTY_CGROUP_ROOT` are unset in both
+  configurations. The shipped unit has no `Delegate=`, so PTY spawning stays
+  disabled (`PTY delegation unavailable; spawning disabled`). An injected
+  `FLOWERLY_PTY_ISOLATION=development` would otherwise have spawned Sessions
+  without cgroup containment. `flowerlyd` warns whenever development isolation
+  is active.
 - No socket unit, active drop-in, `EnvironmentFile`, config file or
   `SupplementaryGroups` is shipped. `scripts/test-shipped-ipc-admission.py`
   fails the build if one appears or if the default weakens.
@@ -343,7 +351,7 @@ The drop-in sets exactly:
 | --- | --- | --- |
 | `Group=` | `flowerly-users` | primary group: the socket is created group `flowerly-users`, and systemd creates `/run/flowerly` group `flowerly-users` |
 | `RuntimeDirectoryMode=` | `0750` | members can traverse `/run/flowerly`, nobody else can |
-| `UnsetEnvironment=` (reset), `UnsetEnvironment=AGENTIC_CONFIG AGENTIC_DATABASE_PATH` | | lets the drop-in's own users group through; a manager-injected config file or database path stays impossible |
+| `UnsetEnvironment=` (reset), `UnsetEnvironment=AGENTIC_CONFIG AGENTIC_DATABASE_PATH FLOWERLY_PTY_ISOLATION FLOWERLY_PTY_CGROUP_ROOT` | | lets the drop-in's own users group through; a manager-injected config file, database path or PTY isolation override stays impossible |
 | `Environment=` | `AGENTIC_USERS_GROUP=flowerly-users` | overrides any manager-injected value |
 
 The state directory stays 0700 and `state.db` 0600 with `UMask=0077`. systemd
@@ -421,7 +429,7 @@ so it cannot identify the operator.
 **Upgrade check: no stale overrides.** An installation upgraded from an
 earlier `release/2` may carry a local drop-in. `systemctl cat flowerlyd`
 must show no drop-in other than `50-multi-user.conf`, and none may set
-`AGENTIC_CONFIG`, `AGENTIC_DATABASE_PATH`, `EnvironmentFile=` or
+`AGENTIC_CONFIG`, `AGENTIC_DATABASE_PATH`, `FLOWERLY_PTY_*`, `EnvironmentFile=` or
 `SupplementaryGroups=`. The former
 test-only variable `AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP` is no longer
 read by `flowerlyd`; remove any drop-in that sets it.
@@ -496,8 +504,10 @@ the test user's own gid.
   `systemctl`, and checks:
   - the **default**, also with an injected manager environment
     (`AGENTIC_USERS_GROUP`, `AGENTIC_CONFIG`, `AGENTIC_DATABASE_PATH` into
-    `/dev/shm`, the removed test-only variable) and a stale partial drop-in.
-    The daemon must keep `/var/lib/flowerly/state.db` open;
+    `/dev/shm`, `FLOWERLY_PTY_ISOLATION=development`, the removed test-only
+    variable) and a stale partial drop-in. The daemon must keep
+    `/var/lib/flowerly/state.db` open and PTY spawning disabled, never
+    uncontained;
   - the **opt-in** drop-in installed as documented, running the complete
     two-user ownership suite against the real socket, including restart
     persistence and audited Admin operations by a human administrator;

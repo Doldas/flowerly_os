@@ -33,6 +33,8 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
     let isolation =
         std::env::var("FLOWERLY_PTY_ISOLATION").unwrap_or_else(|_| "required".to_owned());
     if isolation == "development" {
+        // Never silent (#240): the shipped unit unsets this variable.
+        tracing::warn!("PTY isolation is development: Sessions spawn without cgroup containment");
         return Ok(None);
     }
     if isolation != "required" {

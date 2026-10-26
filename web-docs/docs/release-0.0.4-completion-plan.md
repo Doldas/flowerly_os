@@ -44,6 +44,7 @@ before acting (see `AGENTS.md`).
 | 12 | Release evidence | #8, #31, #55 | Branch rules active. | Exact-SHA full Arch VM run on the promotion candidate; final owner review. |
 | 13 | Per-user data ownership | #225 (P0) | **Done**: PRs 1–8 (#226 through #236) enforce ownership for every domain and add audited Admin promotion and ownership commands; #225 closed 2026-10-26 with Arch guest evidence. The shipped default is service-account-only; multi-user admission is the opt-in drop-in `/usr/share/flowerly/systemd/flowerlyd-multi-user.conf`. See [command authorization](command-authorization.md). | — |
 | 14 | Database path override | #237 | **Done**: #238 unsets `AGENTIC_DATABASE_PATH` in the unit and the drop-in, and logs a warning when the path leaves the state directory. Real-systemd test asserts the open database fd; verified in the Arch guest on `29c9e88`. | — |
+| 15 | PTY isolation override | #240 | Fixed in the PR for #240: the unit and the drop-in unset `FLOWERLY_PTY_ISOLATION` and `FLOWERLY_PTY_CGROUP_ROOT`, so a manager-injected `development` can no longer turn disabled PTY spawning into uncontained spawning. `flowerlyd` warns when development isolation is active. | Close #240 after merge with Arch guest evidence. |
 
 Items 8–12 need the self-hosted Arch VM runner and owner review; do not mark
 them done from unit tests or hosted CI alone.
