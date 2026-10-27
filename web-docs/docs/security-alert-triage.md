@@ -46,21 +46,29 @@ Missing API access is not evidence of zero alerts.
 
 The scripts neither dismiss alerts nor bypass release protection.
 
-## Triage snapshot 2026-10-24 (`release/2`)
+## Triage snapshot 2026-10-27 (`release/2`)
 
 Open alerts: **9 Code Scanning (all OpenSSF Scorecard), 0 Dependabot,
 0 Secret Scanning.** There are no open CodeQL, cargo-audit or cargo-deny
-findings. None of the nine alerts is a code defect. **Dismissal needs
-maintainer approval**; until a maintainer records it here and in #187,
-each alert stays open.
+findings. Scorecard analyses **`master`**, so a fix on `release/2` closes an
+alert only after promotion and the next Scorecard run.
 
-| Alert | Rule | Location | Assessment | Proposed action |
+Policy (owner, 2026-10-27): each alert is judged on its own evidence. Being
+reported by Scorecard is never a reason to call it harmless. Alerts are fixed
+by focused hardening, or stay open with a documented rationale. **None is
+dismissed** without a concrete, independently reviewable justification and
+the maintainer's approval recorded here and in #187.
+
+| Alert | Rule | Scorecard evidence | Impact | Disposition |
 | --- | --- | --- | --- | --- |
-| 113 | TokenPermissions | `release.yml:75` | The `release` job needs `contents: write` to publish a GitHub release. The top-level default is `contents: read`. Only `v*` tag pushes run it, on the trusted runner. | Accept as required; dismiss as "used in tests / won't fix" with this rationale. |
-| 93, 92 | TokenPermissions | `project-sync.yml`, `project-sync-manual.yml` | No top-level `permissions:` block, deliberately: 2026-10-18 probes showed some permissions/trigger combinations create empty failed push-validation runs. These workflows only touch the GitHub Project board. | Maintainer decision: accept with that evidence, or re-probe whether a top-level block is safe now. |
-| 1 | BranchProtection | repository | Rulesets `MERGERULES` (24880732) and `FLOWERLY_RELEASE_REQUIRED_CHECKS` (25024564) are active (#55). Scorecard reads only the default-branch classic protection settings. | Verify ruleset coverage in settings, then dismiss with a link to #55. |
-| 33 | CodeReview | repository | Solo-maintainer history. PRs are reviewed by the owner and CI, not by a second human. | Accept for the current project stage. |
-| 34 | Maintained | repository | Scorecard heuristic based on project age and activity. | Re-evaluates on its own; no action. |
-| 32 | Fuzzing | repository | No fuzz targets yet. The IPC frame decoder and SQLite row parsing are the best candidates. | Track as future hardening; not a 0.0.4 gate. |
-| 35 | CIIBestPractices | repository | No OpenSSF Best Practices badge. | Optional; not a 0.0.4 gate. |
-| 2 | SecurityPolicy | repository | `SECURITY.md` exists; Scorecard warned "no linked content". Private vulnerability reporting is enabled. | `SECURITY.md` now links the private advisory URL (this PR). The alert should close on the next Scorecard run. |
+| 93, 92 | TokenPermissions | `project-sync.yml` and `project-sync-manual.yml`: "no topLevel permission defined". | **Real.** Without a block, jobs get the repository default token. | **Fixed on `release/2`**: top-level `contents: read`, `issues: read`, `pull-requests: read`. Project writes need `FLOWERLY_PROJECT_TOKEN`. `scripts/test-workflow-permissions.py` (CI `rust` job, with regression tests) now requires a write-free top-level block in every workflow and allows write scopes only on recorded jobs. `docs-pages.yml` also moved `pages`/`id-token: write` from top level to the two jobs that publish. Closes after promotion. |
+| 113 | TokenPermissions | `release.yml:75`: "jobLevel 'contents' permission set to 'write'". | Needed: the `release` job publishes the GitHub release, which requires `contents: write`. It runs only for `v*` tag pushes, after the exact-tag Arch VM job, and is the only job with that scope (enforced by `ALLOWED_WRITES`). | **Stays open**, accepted as required. A dismissal ("won't fix") needs maintainer approval. |
+| 1 | BranchProtection | Score 6: "settings apply to administrators" disabled; required approving review count 1; "no status checks found". | **Partly real.** Rulesets `MERGERULES` (24880732, default branch: deletion, non-fast-forward, linear history, PR with 1 approval) and `FLOWERLY_RELEASE_REQUIRED_CHECKS` (25024564, default branch and `release/*`: required `rust`, `docs`, branch policy, cargo-audit, cargo-deny, `CodeQL (rust)`) are active. Scorecard does not read rulesets for status checks. Two real gaps: (a) both rulesets list the repository owner (`User`) as a bypass actor, which is the "administrators" warning; (b) `release/*` has required checks but **no deletion or non-fast-forward rule**. | **Stays open. Maintainer decision** (repository settings are not changed by agents): consider adding deletion and non-fast-forward rules for `release/*`, and decide whether the owner bypass is still needed. |
+| 33 | CodeReview | "Found 0/8 approved changesets". | **Real** process risk: changes are reviewed by the owner and CI, not by a second human. | **Stays open.** Accepted for the solo-maintainer stage; it is mitigated by required checks, exact-SHA Arch evidence and manual master promotion. Not dismissible as a false positive. |
+| 34 | Maintained | "project was created within the last 90 days". | Informational. It reflects repository age, not code. | **Stays open.** It re-evaluates automatically once the repository is 90 days old. |
+| 32 | Fuzzing | "no fuzzer integrations found". | **Real gap.** The IPC frame decoder and SQLite row parsing handle untrusted input from local peers. | **Stays open.** Tracked as future hardening, not a 0.0.4 gate. A focused issue for `cargo fuzz` targets on the IPC decoder is recommended. |
+| 35 | CIIBestPractices | "no effort to earn an OpenSSF best practices badge". | Informational. | **Stays open.** Optional; a maintainer decision. |
+| 2 | SecurityPolicy | Score 4: "security policy file detected; no linked content found". | Minor. `SECURITY.md` on `release/2` links the private advisory URL, but `master` does not have it yet. | **Stays open** until `SECURITY.md` reaches `master` and Scorecard re-evaluates (owner decision 2026-10-27). |
+
+The 2026-10-24 snapshot recorded the same nine alerts without the evidence
+column; the assessments above supersede it.
