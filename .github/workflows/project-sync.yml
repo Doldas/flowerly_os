@@ -11,13 +11,16 @@ on:
     # Daily field reconciliation; keeps Sprint/release views accurate.
     - cron: "23 3 * * *"
   # NOTE: workflow_dispatch intentionally lives in project-sync-manual.yml.
-  # NOTE: no top-level `permissions:` block here. Empirical mini-workflow
-  # probes on 2026-10-18 (15 variants, throwaway branches) showed GitHub
-  # creates empty push-validation runs marked failed for some
-  # permissions/trigger combinations, while {issues, pull_request,
-  # schedule} without a permissions block produces none. If the default
-  # GITHUB_TOKEN cannot write to the project, configure the
-  # FLOWERLY_PROJECT_TOKEN secret (PAT with 'project' scope).
+
+# Least privilege (#187). GITHUB_TOKEN only reads: writing to the user-owned
+# Project needs the FLOWERLY_PROJECT_TOKEN secret (PAT with 'project' scope),
+# which the steps below prefer. An earlier note (2026-10-18 probes) avoided
+# a permissions block because some combinations produced empty failed runs;
+# this block was re-checked on the #187 PR push (security-alert-triage.md).
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: project-sync-${{ github.event_name }}
