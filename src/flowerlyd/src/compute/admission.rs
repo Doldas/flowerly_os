@@ -16,17 +16,17 @@
 use super::host::HostTelemetry;
 use std::str::FromStr;
 
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::ErrorCode;
 use flowerly_core::profile::BackgroundActivity;
 use flowerly_core::storage::{MutationOperation, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ModelBackend, ModelId, ObjectRef, ProfileId, ProvenanceEdge, ProvenanceRelation, Timestamp,
     UsageId, WorkloadId, WorkloadRecord, WorkloadState,
 };
-use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde_json::Value;
 
-use super::{actor_from, profiles, CommandFailure, CommandResult, DeviceBudget, SharedStore};
+use super::{actor_from, profiles, CommandFailure, CommandResult, DeviceBudget};
 
 /// Memory pressure (PSI `avg10`, percent) above which admission refuses.
 /// Deliberately high enough to only trigger under real pressure; the value
@@ -51,21 +51,7 @@ fn parse_operation_id(args: &Value) -> Result<Option<String>, CommandFailure> {
     }
 }
 
-pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelope {
-    let Payload::Command { name, args } = &request.payload else {
-        return error_envelope(request.id.clone(), "unexpected request type");
-    };
-    let mut store = match store.lock() {
-        Ok(store) => store,
-        Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
-    };
-    match run(&mut store, name, args) {
-        Ok(data) => ok_envelope(request.id.clone(), data),
-        Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
-    }
-}
-
-pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+pub(crate) fn run(store: &mut Store, name: &str, args: &Value, caller: Caller) -> CommandResult {
     match name {
         "workload.submit"
         | "workload.list"
@@ -81,12 +67,12 @@ pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult 
         }
     }
     match name {
-        "workload.submit" => submit(store, args),
-        "workload.list" => list(store, args),
-        "workload.show" => show(store, args),
-        "workload.stop" | "workload.complete" => transition(store, name, args),
+        "workload.submit" => submit(store, args, caller),
+        "workload.list" => list(store, args, caller),
+        "workload.show" => show(store, args, caller),
+        "workload.stop" | "workload.complete" => transition(store, name, args, caller),
         "usage.record" => record_usage(store, args),
-        "workload.usage_brief" => usage_brief(store, args),
+        "workload.usage_brief" => usage_brief(store, args, caller),
         other => Err(CommandFailure::invalid(format!(
             "compute: unknown command `{other}`"
         ))),
@@ -94,6 +80,13 @@ pub(crate) fn run(store: &mut Store, name: &str, args: &Value) -> CommandResult 
 }
 
 fn validate_usage(args: &Value) -> Result<(), CommandFailure> {
+    // Ledger rows are not deduplicated, so a key would promise retry safety
+    // that does not exist. Refuse it instead of silently ignoring it.
+    if !args.get("operation_id").is_none_or(Value::is_null) {
+        return Err(CommandFailure::invalid(
+            "usage.record does not support `operation_id`: ledger writes are not deduplicated",
+        ));
+    }
     for field in ["tokens_in", "tokens_out", "latency_ms", "cost_micros"] {
         match args.get(field) {
             None | Some(Value::Null) => {
@@ -171,7 +164,7 @@ fn accelerator_backend(backend: ModelBackend) -> bool {
     )
 }
 
-fn submit(store: &mut Store, args: &Value) -> CommandResult {
+fn submit(store: &mut Store, args: &Value, caller: Caller) -> CommandResult {
     let actor = actor_from(args);
     let profile_raw = args
         .get("profile_id")
@@ -207,7 +200,7 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
             .ok_or_else(|| CommandFailure::invalid("`priority` must be an i32"))?,
     };
     parse_operation_id(args)?;
-    let (_, spec) = profiles::resolve_effective(store, &profile_id)?;
+    let (profile_name, spec) = profiles::resolve_effective(store, caller, &profile_id)?;
     let model = store
         .get_model(&model_id)
         .map_err(CommandFailure::storage)?
@@ -258,7 +251,7 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
     }
 
     let active = store
-        .count_active_workloads_for_profile(&profile_id, Some(&actor))
+        .count_active_workloads_for(caller, &profile_id)
         .map_err(CommandFailure::storage)?;
     let concurrency_limit = spec.concurrency_max.unwrap_or(u32::MAX);
     let state = if reasons.is_empty() && active >= concurrency_limit {
@@ -297,10 +290,7 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
     let workload = WorkloadRecord {
         id: WorkloadId::new(),
         profile_id: profile_id.clone(),
-        profile_name: store
-            .profile_row(&profile_id)
-            .map_err(CommandFailure::storage)?
-            .map_or_else(|| "unknown".to_owned(), |(name, _, _)| name),
+        profile_name,
         model_id: model_id.clone(),
         background,
         priority,
@@ -309,6 +299,7 @@ fn submit(store: &mut Store, args: &Value) -> CommandResult {
         ceilings: ceilings.clone(),
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        owner: caller.owner(),
         admitted_at: if state == WorkloadState::Admitted {
             Some(Timestamp::now())
         } else {
@@ -380,34 +371,41 @@ fn workload_summary(record: &WorkloadRecord) -> Value {
     })
 }
 
-fn list(store: &Store, args: &Value) -> CommandResult {
-    let scope = match args.get("mine") {
-        Some(Value::Bool(true)) | None => Some(actor_from(args)),
-        Some(Value::Bool(false)) => None,
+/// Only the caller's own workloads are listed (#225). `mine: false` used to
+/// list everyone's; it is refused rather than silently narrowed.
+fn list(store: &Store, args: &Value, caller: Caller) -> CommandResult {
+    match args.get("mine") {
+        None | Some(Value::Null) | Some(Value::Bool(true)) => {}
+        Some(Value::Bool(false)) => {
+            return Err(CommandFailure::invalid(
+                "`mine: false` is not available: workload.list lists only the caller's own workloads",
+            ));
+        }
         Some(other) => {
             return Err(CommandFailure::invalid(format!(
                 "`mine` must be a boolean: {other:?}"
             )));
         }
-    };
+    }
     let rows = store
-        .list_workloads(scope.as_deref())
+        .workloads_for(caller)
         .map_err(CommandFailure::storage)?;
     let items: Vec<Value> = rows.iter().map(workload_summary).collect();
     Ok(serde_json::json!({ "workloads": items, "count": items.len() }))
 }
 
-fn show(store: &Store, args: &Value) -> CommandResult {
+fn show(store: &Store, args: &Value, caller: Caller) -> CommandResult {
     let id = parse_workload_id(args)?;
     let record = store
-        .get_workload(&id)
+        .workload_for(caller, &id)
         .map_err(CommandFailure::storage)?
         .ok_or_else(|| CommandFailure {
             code: ErrorCode::NotFound,
             message: format!("workload not found: {id}"),
         })?;
+    // The caller's own usage of this model, never other users' totals.
     let (tokens_in, tokens_out, cost_micros) = store
-        .usage_totals_per_model(&record.model_id)
+        .usage_totals_for(caller, &record.model_id)
         .map_err(CommandFailure::storage)?;
     let mut detail = workload_summary(&record);
     if let Some(fields) = detail.as_object_mut() {
@@ -437,7 +435,7 @@ fn parse_workload_id(args: &Value) -> Result<WorkloadId, CommandFailure> {
         .map_err(|error| CommandFailure::invalid(format!("invalid workload id: {error}")))
 }
 
-fn transition(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+fn transition(store: &mut Store, name: &str, args: &Value, caller: Caller) -> CommandResult {
     let id = parse_workload_id(args)?;
     let target = if name == "workload.stop" {
         WorkloadState::Stopped
@@ -453,7 +451,7 @@ fn transition(store: &mut Store, name: &str, args: &Value) -> CommandResult {
         note: Some(format!("workload {target}")),
     }];
     store
-        .transition_workload(&id, target, &edges)
+        .transition_workload_for(caller, &id, target, &edges)
         .map_err(CommandFailure::storage)?;
     Ok(serde_json::json!({ "id": id.as_str(), "state": target.to_string() }))
 }
@@ -488,6 +486,8 @@ fn record_usage(store: &mut Store, args: &Value) -> CommandResult {
         cost_micros: get_u64("cost_micros"),
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        // Usage belongs to the owner of the workload it accounts for.
+        owner: record.owner,
     };
     store
         .insert_usage(&usage)
@@ -506,10 +506,11 @@ fn record_usage(store: &mut Store, args: &Value) -> CommandResult {
     }))
 }
 
-fn usage_brief(store: &Store, args: &Value) -> CommandResult {
+/// The caller's own usage of one model.
+fn usage_brief(store: &Store, args: &Value, caller: Caller) -> CommandResult {
     let id = parse_model_id(args)?;
     let (tokens_in, tokens_out, cost_micros) = store
-        .usage_totals_per_model(&id)
+        .usage_totals_for(caller, &id)
         .map_err(CommandFailure::storage)?;
     Ok(serde_json::json!({
         "model": id.as_str(),

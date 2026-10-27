@@ -33,6 +33,12 @@ jobs:
       - name: Regression-test workflow action pin policy
         run: python3 scripts/test-workflow-action-pins-regression.py
 
+      - name: Ensure workflow tokens are least-privilege
+        run: python3 scripts/test-workflow-permissions.py
+
+      - name: Regression-test workflow token permission policy
+        run: python3 scripts/test-workflow-permissions-regression.py
+
       - name: Security alert inventory redaction regression
         run: python3 scripts/test-security-alert-inventory.py
 
@@ -119,6 +125,22 @@ jobs:
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-compute-error-codes.py target/release
 
 
+      - name: Admin commands and IPC shutdown require an explicit admin group
+        run: python3 ./scripts/test-admin-authorization.py target/release
+
+      - name: Cross-UID Linux group authorization with real users and groups
+        run: sudo -n python3 ./scripts/test-admin-authorization.py --cross-uid target/release
+
+      - name: Cross-UID per-user ownership of Flows, Goals, Sessions and Executions (#225)
+        run: sudo -n python3 ./scripts/test-user-ownership.py --cross-uid target/release
+
+      # Ephemeral hosted runners only: this installs flowerlyd, its unit and
+      # test accounts system-wide. The Arch guest runs it on every release
+      # push and dispatch (guest-verify.sh).
+      - name: Real systemd admission, shipped default, opt-in drop-in and disable (#225)
+        if: github.event_name == 'pull_request'
+        run: sudo -n env FLOWERLY_DISPOSABLE_HOST=1 FLOWERLY_TEST_SHA=${{ github.sha }} python3 ./scripts/test-systemd-multi-user.py target/release
+
       - name: Check development runtime ownership isolation
         run: bash ./scripts/test-dev-runtime-ownership.sh
 
@@ -153,24 +175,24 @@ jobs:
         run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-pty-adversarial.py target/release
 
       - name: Prepare trusted Arch VM host for real delegated PTY acceptance
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || github.event_name == 'workflow_dispatch'
         run: bash ./scripts/prepare-arch-vm-host.sh
 
       - name: Release PTY kernel cgroup, escaped descendant and Arch guest acceptance
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || github.event_name == 'workflow_dispatch'
         timeout-minutes: 90
         env:
           FLOWERLY_TEST_REF: ${{ github.ref_name }}
           FLOWERLY_TEST_SHA: ${{ github.sha }}
-          FLOWERLY_TEST_SLUG: release-push
+          FLOWERLY_TEST_SLUG: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'release-push' }}
         run: bash ./scripts/arch-kernel-vm-test.sh
 
       - name: Preserve exact-SHA Arch guest and failed kernel acceptance evidence
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+        if: always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: arch-release-pty-${{ github.sha }}
-          path: target/arch-kernel/release-push/report/
+          path: target/arch-kernel/${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'release-push' }}/report/
           if-no-files-found: warn
           retention-days: 14
 
@@ -206,6 +228,9 @@ jobs:
 
       - name: Verify runtime topology and provider separation (#105)
         run: python3 scripts/test-runtime-topology.py
+
+      - name: Shipped IPC admission is service-account-only until per-user ownership (#225)
+        run: python3 scripts/test-shipped-ipc-admission.py
 
       - name: Reject new raw Linux and SQLite imports in core domains (#91)
         run: python3 scripts/test-layer-15-boundaries.py
@@ -254,6 +279,9 @@ jobs:
 
       - name: Arch VM sparse disk growth and guest preflight regression
         run: bash ./scripts/test-arch-vm-disk.sh
+
+      - name: Arch VM failure classification regression (#184)
+        run: python3 ./scripts/test-arch-vm-failure-classify.py
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24

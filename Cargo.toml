@@ -5,6 +5,7 @@ members = [
     "src/evolutiond",
     "src/providerd",
     "src/shared/flowerly-core",
+    "src/shared/flowerly-peercred",
     "tools/agenticctl",
     "tools/distro-builder",
     "testbed/integration",
@@ -22,7 +23,9 @@ description = "Flowerly OS — a self-evolving Linux distribution built around a
 
 [workspace.dependencies]
 flowerly-core = { path = "src/shared/flowerly-core" }
+flowerly-peercred = { path = "src/shared/flowerly-peercred" }
 anyhow = "1"
+libc = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -6,8 +6,10 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod model;
+mod ownership;
 
 pub use model::*;
+pub use ownership::{Caller, Owner};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IdParseError {

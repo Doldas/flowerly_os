@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -157,6 +157,8 @@ struct SocketOwnership {
     path: PathBuf,
     device: u64,
     inode: u64,
+    // Released only after the socket is removed (fields drop after `drop`).
+    _instance: Option<InstanceLock>,
 }
 
 impl SocketOwnership {
@@ -166,8 +168,113 @@ impl SocketOwnership {
             path: path.to_path_buf(),
             device: meta.dev(),
             inode: meta.ino(),
+            _instance: None,
         })
     }
+}
+
+/// Exclusive per-socket instance lock (`<socket>.lock`, held for the
+/// server's lifetime). Every Flowerly IPC server takes it before binding, so
+/// while it is held no cooperating instance can bind, probe or unlink the
+/// same pathname. The lock file is never deleted: unlinking it would let two
+/// instances lock different inodes for the same socket.
+struct InstanceLock {
+    file: std::fs::File,
+}
+
+impl InstanceLock {
+    fn acquire(socket: &Path) -> std::io::Result<Self> {
+        let mut name = socket.as_os_str().to_owned();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if !meta.file_type().is_file() {
+                return Err(std::io::Error::other(format!(
+                    "instance lock {} is not a regular file",
+                    path.display()
+                )));
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)?;
+        let opened = file.metadata()?;
+        let linked = std::fs::symlink_metadata(&path)?;
+        if (opened.dev(), opened.ino()) != (linked.dev(), linked.ino())
+            || opened.mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::other(format!(
+                "instance lock {} was replaced or is accessible to other users",
+                path.display()
+            )));
+        }
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!(
+                    "another instance holds {}; refusing to bind {}",
+                    path.display(),
+                    socket.display()
+                ),
+            )),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    fn owner_uid(&self) -> std::io::Result<u32> {
+        Ok(self.file.metadata()?.uid())
+    }
+}
+
+/// Remove a leftover socket only when it is provably stale. The caller holds
+/// the instance lock, so no cooperating server can bind the path meanwhile.
+/// Anything that is not a same-owner socket whose listener refuses
+/// connections and whose inode is unchanged fails closed.
+fn remove_verified_stale_socket(path: &Path, owner_uid: u32) -> std::io::Result<()> {
+    let refuse = |reason: &str| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("refusing to replace {}: {reason}", path.display()),
+        ))
+    };
+    let before = std::fs::symlink_metadata(path)?;
+    if !before.file_type().is_socket() {
+        return refuse("path exists and is not a Unix socket");
+    }
+    if before.uid() != owner_uid {
+        return refuse("socket is owned by another user");
+    }
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => return refuse("a listener is accepting connections"),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
+        Err(error) => return refuse(&format!("liveness probe was inconclusive: {error}")),
+    }
+    let after = std::fs::symlink_metadata(path)?;
+    if (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+        return refuse("socket was replaced during verification");
+    }
+    std::fs::remove_file(path)?;
+    tracing::warn!(socket = %path.display(), "removed verified stale IPC socket");
+    Ok(())
+}
+
+/// Bind under the instance lock, recovering only a verified stale socket.
+fn bind_owned(path: &Path) -> std::io::Result<(UnixListener, InstanceLock)> {
+    let lock = InstanceLock::acquire(path)?;
+    let listener = match UnixListener::bind(path) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            remove_verified_stale_socket(path, lock.owner_uid()?)?;
+            UnixListener::bind(path)?
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((listener, lock))
 }
 
 impl Drop for SocketOwnership {
@@ -186,13 +293,63 @@ impl Drop for SocketOwnership {
 
 pub type Handler = dyn Fn(&Envelope) -> Envelope + Send + Sync;
 
-/// Kernel-attested identity of the Unix socket peer. Never populated from
-/// JSON command arguments or client-supplied identity claims.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Kernel-attested identity of the Unix socket peer, captured once at
+/// `connect()` (`SO_PEERCRED` plus `SO_PEERGROUPS`) and reused for every
+/// request on that connection. Never populated from JSON command arguments
+/// or client-supplied identity claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerIdentity {
     pub uid: u32,
     pub gid: u32,
     pub pid: Option<u32>,
+    /// Supplementary groups; the primary `gid` is not repeated here.
+    pub groups: Arc<[u32]>,
+    /// The peer runs as the service account that owns the socket.
+    pub service_account: bool,
+}
+
+impl PeerIdentity {
+    /// The kernel-attested caller of requests on this connection (#225).
+    #[must_use]
+    pub fn caller(&self) -> crate::types::Caller {
+        crate::types::Caller::new(self.uid)
+    }
+
+    /// Primary or supplementary membership of `gid`.
+    #[must_use]
+    pub fn in_group(&self, gid: u32) -> bool {
+        self.gid == gid || self.groups.contains(&gid)
+    }
+}
+
+/// Who may connect and who may administer, as resolved Linux gids.
+///
+/// The default policy admits only the service account and grants no
+/// administrative authority to anyone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AccessPolicy {
+    /// Members may connect and run User commands.
+    pub users_gid: Option<u32>,
+    /// Members may run Admin commands. The service account is not
+    /// implicitly a member.
+    pub admin_gid: Option<u32>,
+}
+
+impl AccessPolicy {
+    /// The service account and members of the users group. Admin group
+    /// membership alone never admits a peer: it authorizes Admin commands
+    /// for a peer that is already admitted, so without a users group the
+    /// socket is service-account-only at the kernel check too (#225).
+    #[must_use]
+    pub fn admits(&self, peer: &PeerIdentity) -> bool {
+        peer.service_account || self.users_gid.is_some_and(|gid| peer.in_group(gid))
+    }
+
+    /// Kernel-attested membership of the configured admin group.
+    #[must_use]
+    pub fn is_admin(&self, peer: &PeerIdentity) -> bool {
+        self.admin_gid.is_some_and(|gid| peer.in_group(gid))
+    }
 }
 
 pub type AuthenticatedHandler = dyn Fn(&Envelope, &PeerIdentity) -> Envelope + Send + Sync;
@@ -218,17 +375,44 @@ pub async fn serve_with_shutdown(
 pub async fn serve_with_shutdown_authenticated(
     socket_path: impl AsRef<Path>,
     handler: Arc<AuthenticatedHandler>,
+    shutdown_requested: watch::Receiver<bool>,
+) -> Result<()> {
+    serve_with_policy(
+        socket_path,
+        AccessPolicy::default(),
+        handler,
+        shutdown_requested,
+    )
+    .await
+}
+
+/// Accept the service account and members of the policy's groups. With a
+/// users group the socket is group-owned by it with mode 0660; otherwise it
+/// stays 0600. The kernel identity of each peer, including supplementary
+/// groups, is checked again at accept time, so filesystem access alone is
+/// never sufficient.
+pub async fn serve_with_policy(
+    socket_path: impl AsRef<Path>,
+    policy: AccessPolicy,
+    handler: Arc<AuthenticatedHandler>,
     mut shutdown_requested: watch::Receiver<bool>,
 ) -> Result<()> {
     let path = socket_path.as_ref().to_path_buf();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Bind without unlinking: an existing socket (active OR stale) must not be
-    // silently replaced. Stale sockets require explicit operator recovery.
-    let listener = UnixListener::bind(&path)?;
+    // Never blindly unlink: a live socket, foreign file or another instance's
+    // socket fails closed. Only a verified stale socket is recovered.
+    let (listener, instance) = bind_owned(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let ownership = SocketOwnership::new(&path)?;
+    let mut ownership = SocketOwnership::new(&path)?;
+    if let Some(gid) = policy.users_gid {
+        // Change the group while the mode is still 0600, then grant group
+        // access, so no other group can ever reach the socket.
+        std::os::unix::fs::lchown(&path, None, Some(gid))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+    }
+    ownership._instance = Some(instance);
 
     // The socket owner is the daemon's effective filesystem identity.
     // Credentials come from the kernel, never request JSON.
@@ -260,20 +444,16 @@ pub async fn serve_with_shutdown_authenticated(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        // Fail closed if the kernel cannot identify the peer or
-                        // its UID differs from the socket owner's UID.
-                        // This is an explicitly single-user IPC boundary.
-                        let peer = match stream.peer_cred() {
-                            Ok(peer) if peer.uid() == server_uid => {
-                                tracing::trace!(peer_uid = peer.uid(), peer_pid = ?peer.pid(), "authorized local IPC peer");
-                                PeerIdentity {
-                                    uid: peer.uid(),
-                                    gid: peer.gid(),
-                                    pid: peer.pid().and_then(|pid| u32::try_from(pid).ok()),
-                                }
+                        // Fail closed if the kernel cannot identify the peer,
+                        // its groups cannot be read, or the policy does not
+                        // admit it. Credentials are the connect-time snapshot.
+                        let peer = match peer_identity(&stream, server_uid) {
+                            Ok(peer) if policy.admits(&peer) => {
+                                tracing::trace!(peer_uid = peer.uid, peer_pid = ?peer.pid, "authorized local IPC peer");
+                                peer
                             }
                             Ok(peer) => {
-                                tracing::warn!(peer_uid = peer.uid(), server_uid, "rejecting IPC peer from another UID");
+                                tracing::warn!(peer_uid = peer.uid, server_uid, "rejecting IPC peer outside the access policy");
                                 continue;
                             }
                             Err(error) => {
@@ -325,14 +505,104 @@ pub async fn serve_with_shutdown_authenticated(
     Ok(())
 }
 
-fn unavailable_response(request: &Envelope) -> Envelope {
+/// Kernel credentials of an accepted peer. Any failure, including an
+/// unreadable supplementary group list, refuses the connection.
+fn peer_identity(stream: &UnixStream, server_uid: u32) -> std::io::Result<PeerIdentity> {
+    let credentials = stream.peer_cred()?;
+    let groups = flowerly_peercred::peer_groups(stream)?;
+    Ok(PeerIdentity {
+        uid: credentials.uid(),
+        gid: credentials.gid(),
+        pid: credentials.pid().and_then(|pid| u32::try_from(pid).ok()),
+        groups: groups.into(),
+        service_account: credentials.uid() == server_uid,
+    })
+}
+
+/// Where a request's deadline expired. The distinction matters to callers:
+/// a request that never left the queue was not executed, while one whose
+/// handler was still running may commit later (see ipc-mutation-outcomes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeadlineStage {
+    Queued,
+    Running,
+}
+
+fn unavailable_response(
+    request: &Envelope,
+    stage: DeadlineStage,
+    elapsed: std::time::Duration,
+) -> Envelope {
+    let ms = elapsed.as_millis();
+    let message = match stage {
+        DeadlineStage::Queued => format!(
+            "request deadline exceeded after {ms} ms while queued for a handler; the request was not executed"
+        ),
+        DeadlineStage::Running => format!(
+            "request deadline exceeded after {ms} ms while the handler was running; the outcome is unknown"
+        ),
+    };
     Envelope {
         version: PROTOCOL_VERSION,
         id: request.id.clone(),
         payload: Payload::Err {
-            message: "request deadline exceeded while waiting for a handler".to_owned(),
+            message,
             code: Some(ErrorCode::Unavailable),
         },
+    }
+}
+
+/// Stable label for request diagnostics. Command arguments are never logged.
+fn request_label(payload: &Payload) -> String {
+    match payload {
+        Payload::Command { name, .. } => name.clone(),
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| "unknown".to_owned()),
+    }
+}
+
+/// Requests slower than this are logged at warn level even when they succeed.
+const SLOW_REQUEST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// One structured event per request: correlation ID, request label, peer UID,
+/// time queued for a handler slot, handler time, total time and outcome.
+fn log_request(
+    request: &Envelope,
+    response: &Envelope,
+    peer: &PeerIdentity,
+    queue: std::time::Duration,
+    handler: Option<std::time::Duration>,
+    total: std::time::Duration,
+    deadline: Option<DeadlineStage>,
+) {
+    let code = match &response.payload {
+        Payload::Err { code, .. } => Some(code.unwrap_or(ErrorCode::Internal)),
+        _ => None,
+    };
+    let outcome = match (deadline, code) {
+        (Some(DeadlineStage::Queued), _) => "deadline_queued",
+        (Some(DeadlineStage::Running), _) => "deadline_running",
+        (None, Some(_)) => "error",
+        (None, None) => "ok",
+    };
+    let label = request_label(&request.payload);
+    let queue_ms = queue.as_millis() as u64;
+    let handler_ms = handler.map(|elapsed| elapsed.as_millis() as u64);
+    let total_ms = total.as_millis() as u64;
+    if deadline.is_some() || total >= SLOW_REQUEST {
+        tracing::warn!(
+            request_id = %request.id, request = %label, peer_uid = peer.uid,
+            queue_ms, handler_ms, total_ms, outcome, code = ?code,
+            "ipc request"
+        );
+    } else {
+        tracing::debug!(
+            request_id = %request.id, request = %label, peer_uid = peer.uid,
+            queue_ms, handler_ms, total_ms, outcome, code = ?code,
+            "ipc request"
+        );
     }
 }
 
@@ -352,32 +622,61 @@ async fn handle_connection(
         // Set the clock before waiting for a handler slot. A busy SQLite
         // writer can keep a synchronous worker occupied, but it must not
         // extend the IPC caller's budget or consume another async worker.
-        let deadline = tokio::time::Instant::now() + REQUEST_DEADLINE;
+        let received = tokio::time::Instant::now();
+        let deadline = received + REQUEST_DEADLINE;
         // Reserve a short response window so expired queued work can still
         // return a correlated, machine-readable Unavailable response.
         let handler_deadline = deadline - std::time::Duration::from_millis(250);
+        let queue;
+        let mut handler_elapsed = None;
+        let mut expired = None;
         let response =
             match tokio::time::timeout_at(handler_deadline, Arc::clone(&blocking).acquire_owned())
                 .await
             {
                 Ok(Ok(permit)) => {
+                    queue = received.elapsed();
+                    let started = tokio::time::Instant::now();
                     // The permit remains with the worker even when the request
                     // expires; do not count a still-running SQLite write as free.
                     let handler_ref = Arc::clone(&handler);
                     let request_for_handler = request.clone();
+                    let peer = peer.clone();
                     let task = tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         handler_ref(&request_for_handler, &peer)
                     });
-                    match tokio::time::timeout_at(handler_deadline, task).await {
+                    let outcome = tokio::time::timeout_at(handler_deadline, task).await;
+                    handler_elapsed = Some(started.elapsed());
+                    match outcome {
                         Ok(Ok(response)) => response,
                         Ok(Err(error)) => return Err(IpcError::Task(error)),
-                        Err(_) => unavailable_response(&request),
+                        Err(_) => {
+                            expired = Some(DeadlineStage::Running);
+                            unavailable_response(
+                                &request,
+                                DeadlineStage::Running,
+                                received.elapsed(),
+                            )
+                        }
                     }
                 }
                 Ok(Err(_)) => return Err(IpcError::Closed("handler pool shut down".into())),
-                Err(_) => unavailable_response(&request),
+                Err(_) => {
+                    queue = received.elapsed();
+                    expired = Some(DeadlineStage::Queued);
+                    unavailable_response(&request, DeadlineStage::Queued, queue)
+                }
             };
+        log_request(
+            &request,
+            &response,
+            &peer,
+            queue,
+            handler_elapsed,
+            received.elapsed(),
+            expired,
+        );
         // Responses that themselves cannot be written before the deadline
         // close the connection. The client has the same bounded budget.
         tokio::time::timeout_at(deadline, write_frame(&mut stream, &response))
@@ -533,6 +832,97 @@ mod tests {
         drop(listener);
     }
 
+    fn ok_handler() -> Arc<Handler> {
+        Arc::new(|req: &Envelope| Envelope {
+            version: PROTOCOL_VERSION,
+            id: req.id.clone(),
+            payload: Payload::Ok { data: Value::Null },
+        })
+    }
+
+    async fn wait_for_ping(path: &Path) {
+        for _ in 0..100 {
+            if call(path, Payload::Ping).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("server never answered on {}", path.display());
+    }
+
+    #[tokio::test]
+    async fn recovers_a_verified_stale_socket() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stale.sock");
+        // A crashed server leaves its pathname behind with no listener.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_socket());
+
+        let (shutdown, receiver) = watch::channel(false);
+        let server = tokio::spawn(serve_with_shutdown(path.clone(), ok_handler(), receiver));
+        wait_for_ping(&path).await;
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(!path.exists(), "owned socket is removed on shutdown");
+    }
+
+    #[tokio::test]
+    async fn second_instance_is_refused_while_the_first_holds_the_lock() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("single.sock");
+        let (shutdown, receiver) = watch::channel(false);
+        let first = tokio::spawn(serve_with_shutdown(path.clone(), ok_handler(), receiver));
+        wait_for_ping(&path).await;
+        let inode = std::fs::symlink_metadata(&path).unwrap().ino();
+
+        let error = serve(&path, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("another instance"), "{error}");
+        assert_eq!(std::fs::symlink_metadata(&path).unwrap().ino(), inode);
+        wait_for_ping(&path).await;
+
+        shutdown.send(true).unwrap();
+        first.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn never_follows_a_symlinked_socket_or_lock() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("elsewhere.sock");
+        drop(std::os::unix::net::UnixListener::bind(&target).unwrap());
+        let path = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(serve(&path, ok_handler()).await.is_err());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(target.exists(), "symlink target must not be removed");
+
+        let lock_target = dir.path().join("victim");
+        std::fs::write(&lock_target, "keep").unwrap();
+        let locked = dir.path().join("locked.sock");
+        std::os::unix::fs::symlink(&lock_target, dir.path().join("locked.sock.lock")).unwrap();
+        let error = serve(&locked, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        assert_eq!(std::fs::read_to_string(&lock_target).unwrap(), "keep");
+        assert!(!locked.exists());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_lock_file_other_users_can_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shared.sock");
+        let lock = dir.path().join("shared.sock.lock");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let error = serve(&path, ok_handler()).await.unwrap_err();
+        assert!(error.to_string().contains("other users"), "{error}");
+        assert!(!path.exists());
+    }
+
     #[tokio::test]
     async fn cleanup_does_not_remove_a_replacement_socket() {
         let dir = tempdir().unwrap();
@@ -561,6 +951,8 @@ mod tests {
                         "uid": peer.uid,
                         "gid": peer.gid,
                         "pid": peer.pid,
+                        "groups": peer.groups.to_vec(),
+                        "service_account": peer.service_account,
                     }),
                 },
             });
@@ -581,11 +973,109 @@ mod tests {
             Payload::Ok { data } => {
                 assert_eq!(data["uid"], expected_uid);
                 assert_eq!(data["pid"], std::process::id());
+                assert_eq!(data["service_account"], true);
+                let own_groups = flowerly_peercred::peer_groups(
+                    &std::os::unix::net::UnixStream::pair().unwrap().0,
+                )
+                .unwrap();
+                assert_eq!(data["groups"], serde_json::json!(own_groups));
             }
             _ => panic!("expected authenticated IPC response"),
         }
         shutdown.send(true).unwrap();
         server.await.unwrap().unwrap();
+    }
+
+    fn peer(uid: u32, gid: u32, groups: &[u32], service_account: bool) -> PeerIdentity {
+        PeerIdentity {
+            uid,
+            gid,
+            pid: None,
+            groups: groups.into(),
+            service_account,
+        }
+    }
+
+    #[test]
+    fn access_policy_admits_only_the_service_account_and_group_members() {
+        let default = AccessPolicy::default();
+        assert!(default.admits(&peer(10, 10, &[], true)));
+        assert!(!default.admits(&peer(11, 50, &[51], false)));
+        assert!(!default.is_admin(&peer(10, 10, &[], true)));
+
+        let groups = AccessPolicy {
+            users_gid: Some(50),
+            admin_gid: Some(51),
+        };
+        assert!(groups.admits(&peer(11, 50, &[], false)), "primary gid");
+        assert!(groups.admits(&peer(12, 12, &[50], false)), "supplementary");
+        assert!(!groups.admits(&peer(13, 13, &[51], false)), "admin only");
+        assert!(
+            groups.admits(&peer(16, 16, &[50, 51], false)),
+            "admin and users"
+        );
+        assert!(!groups.admits(&peer(14, 14, &[49, 52], false)));
+        let admin_only = AccessPolicy {
+            users_gid: None,
+            admin_gid: Some(51),
+        };
+        assert!(admin_only.admits(&peer(10, 10, &[51], true)));
+        assert!(
+            !admin_only.admits(&peer(17, 51, &[51], false)),
+            "service account only"
+        );
+        assert!(groups.is_admin(&peer(13, 13, &[51], false)));
+        assert!(groups.is_admin(&peer(15, 51, &[], false)));
+        assert!(!groups.is_admin(&peer(10, 10, &[50], true)));
+    }
+
+    async fn wait_for_socket(path: &Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("socket {} never appeared", path.display());
+    }
+
+    #[tokio::test]
+    async fn socket_is_private_without_a_users_group_and_group_owned_with_one() {
+        let dir = tempdir().unwrap();
+        let probe = dir.path().join("gid-probe");
+        std::fs::write(&probe, "").unwrap();
+        let own_gid = std::fs::metadata(&probe).unwrap().gid();
+        for (name, policy, mode) in [
+            ("private.sock", AccessPolicy::default(), 0o600),
+            (
+                "shared.sock",
+                AccessPolicy {
+                    users_gid: Some(own_gid),
+                    admin_gid: None,
+                },
+                0o660,
+            ),
+        ] {
+            let path = dir.path().join(name);
+            let (shutdown, receiver) = watch::channel(false);
+            let handler: Arc<AuthenticatedHandler> =
+                Arc::new(|request: &Envelope, _peer: &PeerIdentity| Envelope {
+                    version: PROTOCOL_VERSION,
+                    id: request.id.clone(),
+                    payload: Payload::Ok { data: Value::Null },
+                });
+            let server = tokio::spawn(serve_with_policy(path.clone(), policy, handler, receiver));
+            wait_for_socket(&path).await;
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.mode() & 0o777, mode, "{name}");
+            assert_eq!(meta.gid(), own_gid, "{name}");
+            assert!(matches!(
+                call(&path, Payload::Ping).await.unwrap().payload,
+                Payload::Ok { .. }
+            ));
+            shutdown.send(true).unwrap();
+            server.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]
@@ -675,20 +1165,54 @@ mod tests {
         let began = std::time::Instant::now();
         let response = call(&path, Payload::Ping).await.unwrap();
         assert!(began.elapsed() <= REQUEST_DEADLINE + std::time::Duration::from_secs(1));
-        assert!(matches!(
-            response.payload,
+        match &response.payload {
             Payload::Err {
                 code: Some(ErrorCode::Unavailable),
-                ..
-            }
-        ));
-        for request in requests {
-            // First eight responses may time out because their handlers
-            // deliberately remain blocked beyond the single response budget.
-            let _ = request.await.unwrap();
+                message,
+            } => assert!(
+                message.contains("while queued") && message.contains("not executed"),
+                "{message}"
+            ),
+            other => panic!("expected queued unavailable, got {other:?}"),
         }
+        let mut running_deadlines = 0;
+        for request in requests {
+            // The blocked handlers exceed the budget. The server answers
+            // before the client deadline and must say the outcome is unknown.
+            if let Ok(reply) = request.await.unwrap() {
+                match &reply.payload {
+                    Payload::Err {
+                        code: Some(ErrorCode::Unavailable),
+                        message,
+                    } => {
+                        assert!(
+                            message.contains("handler was running")
+                                && message.contains("outcome is unknown"),
+                            "{message}"
+                        );
+                        running_deadlines += 1;
+                    }
+                    other => panic!("expected running unavailable, got {other:?}"),
+                }
+            }
+        }
+        assert!(
+            running_deadlines > 0,
+            "no running-handler deadline was reported"
+        );
         shutdown.send(true).unwrap();
         server.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn request_labels_never_include_command_arguments() {
+        let command = Payload::Command {
+            name: "flow.create".into(),
+            args: serde_json::json!({"name": "secret-project"}),
+        };
+        assert_eq!(request_label(&command), "flow.create");
+        assert_eq!(request_label(&Payload::Ping), "ping");
+        assert_eq!(request_label(&Payload::Status), "status");
     }
 
     #[test]

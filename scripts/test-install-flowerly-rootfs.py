@@ -40,9 +40,13 @@ def main():
         for name in ("flowerlyd", "evolutiond"):
             assert (rootfs / "usr/lib/systemd/system" / (name + ".service")).is_file()
             assert not (rootfs / "etc/systemd/system/multi-user.target.wants" / (name + ".service")).exists()
+        # The multi-user drop-in is staged for administrators, never active.
+        assert (rootfs / "usr/share/flowerly/systemd/flowerlyd-multi-user.conf").is_file()
+        assert not (rootfs / "usr/lib/systemd/system/flowerlyd.service.d").exists()
+        assert not (rootfs / "etc/systemd/system/flowerlyd.service.d").exists()
         users = (rootfs / "usr/lib/sysusers.d/flowerly.conf").read_text()
         assert "u flowerly " in users and "u flowerly-evolution " in users
-        print("Flowerly rootfs installation: missing inputs rejected, units staged but not enabled")
+        print("Flowerly rootfs installation: missing inputs rejected, units staged but not enabled, multi-user drop-in staged inactive")
 
 
 if __name__ == "__main__":

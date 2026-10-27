@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ModelBackend, ModelId, ModelRecord, ObjectRef, ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
@@ -23,7 +24,7 @@ use serde_json::Value;
 
 pub(crate) type SharedStore = Arc<std::sync::Mutex<Store>>;
 
-pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(store: &SharedStore, request: &Envelope, caller: Caller) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -33,7 +34,7 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope) -> Envelop
             return error_envelope(request.id.clone(), "storage lock poisoned");
         }
     };
-    let data = match run_command(&mut store, name, args) {
+    let data = match run_command(&mut store, name, args, caller) {
         Ok(data) => data,
         Err(error) => {
             return coded_error_envelope(request.id.clone(), error.code, error.message);
@@ -63,15 +64,8 @@ impl CommandFailure {
     }
 
     fn storage(error: StorageError) -> Self {
-        let code = match &error {
-            StorageError::NotFound(_) => ErrorCode::NotFound,
-            StorageError::InvalidOperation(_) => ErrorCode::InvalidArgument,
-            StorageError::OperationConflict(_) => ErrorCode::Conflict,
-            other if other.is_busy() => ErrorCode::Unavailable,
-            _ => ErrorCode::Internal,
-        };
         Self {
-            code,
+            code: error.ipc_error_code(),
             message: error.to_string(),
         }
     }
@@ -230,22 +224,22 @@ fn idempotency_key_valid(raw: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+fn run_command(store: &mut Store, name: &str, args: &Value, caller: Caller) -> CommandResult {
     match name {
         "model.register" => validate_registration(args)?,
         "model.list" | "model.show" | "model.retire" | "device.budget" | "model.compatibility" => {}
         _ => {
             if name.starts_with("profile.") {
-                return profiles::run_profile(store, name, args);
+                return profiles::run_profile(store, name, args, caller);
             }
             if name.starts_with("provider.") {
                 return profiles::run_provider(store, name, args);
             }
             if name.starts_with("workload.") || name.starts_with("usage.") {
-                return admission::run(store, name, args);
+                return admission::run(store, name, args, caller);
             }
             if name.starts_with("inference.") {
-                return inference::run_inference(store, name, args);
+                return inference::run_inference(store, name, args, caller);
             }
             return Err(CommandFailure::invalid(format!(
                 "compute: unknown command `{name}`"
@@ -572,6 +566,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    const TEST_CALLER: Caller = Caller::new(1000);
+
     use flowerly_core::ipc::Envelope;
 
     fn payload(name: &str, args: Value) -> Envelope {
@@ -586,7 +582,7 @@ mod tests {
     }
 
     fn call(store: &SharedStore, name: &str, args: Value) -> Envelope {
-        handle_command(store, &payload(name, args))
+        handle_command(store, &payload(name, args), TEST_CALLER)
     }
 
     fn store() -> SharedStore {
@@ -779,6 +775,423 @@ mod tests {
             let message = assert_error(&response, ErrorCode::NotFound);
             assert!(message.contains("model not found"), "{message}");
         }
+    }
+
+    const PROFILE_TOML: &str = "capability_tier = 'advanced'\nbackground_activity = 'quiet'\n";
+
+    fn create_profile(store: &SharedStore, name: &str) -> String {
+        let data = assert_ok(&call(
+            store,
+            "profile.create",
+            serde_json::json!({"name": name, "toml": PROFILE_TOML, "created_by": "uid:1000"}),
+        ));
+        data["id"].as_str().expect("profile id").to_owned()
+    }
+
+    /// #53/#63: a retried clone with the same key must replay the first
+    /// clone, not report a freshly generated id that was never stored.
+    #[test]
+    fn profile_clone_replay_returns_the_stored_clone() {
+        let store = store();
+        let source = create_profile(&store, "source");
+        let args = serde_json::json!({
+            "id": source, "name": "copy", "operation_id": "clone-1", "created_by": "uid:1000"
+        });
+        let first = assert_ok(&call(&store, "profile.clone", args.clone()));
+        let second = assert_ok(&call(&store, "profile.clone", args));
+        assert_eq!(first["id"], second["id"]);
+        let shown = call(
+            &store,
+            "profile.show",
+            serde_json::json!({"id": second["id"]}),
+        );
+        assert_eq!(assert_ok(&shown)["name"], "copy");
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .profiles_for(TEST_CALLER)
+                .unwrap()
+                .len(),
+            2
+        );
+        let reused = call(
+            &store,
+            "profile.clone",
+            serde_json::json!({
+                "id": source, "name": "other", "operation_id": "clone-1", "created_by": "uid:1000"
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    /// #53/#63: `operation_id` on profile.edit was validated and dropped, so
+    /// a retry appended a duplicate version.
+    #[test]
+    fn profile_edit_replay_does_not_append_a_second_version() {
+        let store = store();
+        let id = create_profile(&store, "edited");
+        let edit = serde_json::json!({
+            "id": id,
+            "toml": "capability_tier = 'advanced'\nbackground_activity = 'normal'\n",
+            "operation_id": "edit-1",
+            "created_by": "uid:1000",
+        });
+        let first = assert_ok(&call(&store, "profile.edit", edit.clone()));
+        let second = assert_ok(&call(&store, "profile.edit", edit));
+        assert_eq!(first, serde_json::json!({"id": id, "version": 2}));
+        assert_eq!(second, first);
+        let history = assert_ok(&call(
+            &store,
+            "profile.version_history",
+            serde_json::json!({"id": id}),
+        ));
+        assert_eq!(history["versions"].as_array().map(Vec::len), Some(2));
+        let reused = call(
+            &store,
+            "profile.edit",
+            serde_json::json!({
+                "id": id, "toml": "capability_tier = 'advanced'\nbackground_activity = 'intensive'\n",
+                "operation_id": "edit-1", "created_by": "uid:1000"
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    #[test]
+    fn profile_rename_rejects_a_malformed_operation_id() {
+        let store = store();
+        let id = create_profile(&store, "named");
+        for bad in [serde_json::json!(7), serde_json::json!("bad key")] {
+            let reply = call(
+                &store,
+                "profile.rename",
+                serde_json::json!({"id": id, "name": "renamed", "operation_id": bad}),
+            );
+            assert_error(&reply, ErrorCode::InvalidArgument);
+        }
+        let shown = assert_ok(&call(&store, "profile.show", serde_json::json!({"id": id})));
+        assert_eq!(shown["name"], "named");
+    }
+
+    /// #53/#63: a retried registration must replay the stored provider id.
+    #[test]
+    fn provider_register_replay_returns_the_stored_provider() {
+        let store = store();
+        let args = serde_json::json!({
+            "name": "local", "capabilities": ["text"], "operation_id": "prov-1",
+            "created_by": "uid:1000",
+        });
+        let first = assert_ok(&call(&store, "provider.register", args.clone()));
+        let second = assert_ok(&call(&store, "provider.register", args));
+        assert_eq!(first["id"], second["id"]);
+        assert_ok(&call(
+            &store,
+            "provider.show",
+            serde_json::json!({"id": second["id"]}),
+        ));
+        assert_eq!(store.lock().unwrap().list_providers().unwrap().len(), 1);
+        let reused = call(
+            &store,
+            "provider.register",
+            serde_json::json!({
+                "name": "local", "capabilities": ["image"], "operation_id": "prov-1",
+                "created_by": "uid:1000",
+            }),
+        );
+        assert_error(&reused, ErrorCode::Conflict);
+    }
+
+    #[test]
+    fn usage_record_refuses_an_operation_id_it_cannot_honor() {
+        let store = store();
+        let reply = call(
+            &store,
+            "usage.record",
+            serde_json::json!({
+                "workload_id": format!("wl-{}", uuid::Uuid::new_v4().simple()),
+                "tokens_in": 1, "tokens_out": 1, "latency_ms": 1, "cost_micros": 0,
+                "operation_id": "usage-1",
+            }),
+        );
+        let message = assert_error(&reply, ErrorCode::InvalidArgument);
+        assert!(message.contains("operation_id"), "{message}");
+    }
+
+    #[test]
+    fn workload_list_treats_null_mine_as_absent() {
+        let store = store();
+        for mine in [serde_json::json!(null), serde_json::json!(true)] {
+            assert_ok(&call(
+                &store,
+                "workload.list",
+                serde_json::json!({"mine": mine, "created_by": "uid:1000"}),
+            ));
+        }
+        // Listing everyone's workloads is no longer a User command (#225).
+        for mine in [serde_json::json!(false), serde_json::json!("yes")] {
+            assert_error(
+                &call(&store, "workload.list", serde_json::json!({"mine": mine})),
+                ErrorCode::InvalidArgument,
+            );
+        }
+    }
+
+    const ALICE: Caller = Caller::new(1001);
+    const BOB: Caller = Caller::new(1002);
+
+    fn call_as(store: &SharedStore, caller: Caller, name: &str, args: Value) -> Envelope {
+        handle_command(store, &payload(name, args), caller)
+    }
+
+    fn profile_as(store: &SharedStore, caller: Caller, name: &str, toml: &str) -> String {
+        let created = assert_ok(&call_as(
+            store,
+            caller,
+            "profile.create",
+            serde_json::json!({ "name": name, "toml": toml }),
+        ));
+        created["id"].as_str().unwrap().to_owned()
+    }
+
+    fn system_profile(store: &SharedStore, name: &str) -> String {
+        let id = flowerly_core::types::ProfileId::new();
+        store
+            .lock()
+            .unwrap()
+            .create_profile(
+                &id,
+                name,
+                "system",
+                "fallback = 'ask'\n",
+                "{}",
+                flowerly_core::types::Owner::System,
+                None,
+                &[],
+            )
+            .unwrap();
+        id.as_str().to_owned()
+    }
+
+    fn workload_as(store: &SharedStore, caller: Caller, profile: &str, model: &str) -> String {
+        let submitted = assert_ok(&call_as(
+            store,
+            caller,
+            "workload.submit",
+            serde_json::json!({ "profile_id": profile, "model_id": model }),
+        ));
+        submitted["id"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn profiles_are_private_to_their_owner_and_names_are_per_owner() {
+        let store = store();
+        let alice = profile_as(&store, ALICE, "expert", "fallback = 'ask'\n");
+        // The same name is free for another owner: no existence oracle.
+        let bob = profile_as(&store, BOB, "expert", "fallback = 'queue'\n");
+        let clash = call_as(
+            &store,
+            ALICE,
+            "profile.create",
+            serde_json::json!({ "name": "expert", "toml": "fallback = 'ask'\n" }),
+        );
+        assert_error(&clash, ErrorCode::Conflict);
+
+        let listed = assert_ok(&call_as(&store, BOB, "profile.list", serde_json::json!({})));
+        let ids: Vec<&str> = listed["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [bob.as_str()]);
+
+        let missing = format!("profile-{}", "0".repeat(32));
+        for (name, extra) in [
+            ("profile.show", serde_json::json!({})),
+            ("profile.export", serde_json::json!({})),
+            ("profile.version_history", serde_json::json!({})),
+            ("profile.resolve", serde_json::json!({})),
+            ("profile.clone", serde_json::json!({ "name": "copy" })),
+            ("profile.rename", serde_json::json!({ "name": "mine-now" })),
+            (
+                "profile.edit",
+                serde_json::json!({ "toml": "fallback = 'fail'\n" }),
+            ),
+        ] {
+            let mut args = extra.clone();
+            args["id"] = serde_json::json!(alice);
+            let foreign = assert_error(&call_as(&store, BOB, name, args), ErrorCode::NotFound);
+            let mut args = extra;
+            args["id"] = serde_json::json!(missing);
+            let absent = call_as(&store, BOB, name, args);
+            if let Payload::Err { code, .. } = &absent.payload {
+                assert_eq!(*code, Some(ErrorCode::NotFound), "{name}");
+            }
+            assert!(!foreign.contains("expert"), "{name}: {foreign}");
+        }
+        let shown = assert_ok(&call_as(
+            &store,
+            ALICE,
+            "profile.show",
+            serde_json::json!({ "id": alice }),
+        ));
+        assert_eq!(shown["name"], "expert");
+        assert_eq!(shown["toml"], "fallback = 'ask'\n");
+    }
+
+    #[test]
+    fn system_profiles_are_shared_read_only_and_resolve_only_system_bases() {
+        let store = store();
+        let shared = system_profile(&store, "baseline");
+        for caller in [ALICE, BOB] {
+            let shown = assert_ok(&call_as(
+                &store,
+                caller,
+                "profile.show",
+                serde_json::json!({ "id": shared }),
+            ));
+            assert_eq!(shown["owner"], "system");
+            let edit = call_as(
+                &store,
+                caller,
+                "profile.edit",
+                serde_json::json!({ "id": shared, "toml": "fallback = 'fail'\n" }),
+            );
+            assert_error(&edit, ErrorCode::PermissionDenied);
+            let rename = call_as(
+                &store,
+                caller,
+                "profile.rename",
+                serde_json::json!({ "id": shared, "name": "taken" }),
+            );
+            assert_error(&rename, ErrorCode::PermissionDenied);
+        }
+        // Alice's own profile may build on the shared one and may clone it.
+        let child = profile_as(
+            &store,
+            ALICE,
+            "derived",
+            "base = 'baseline'\nfallback = 'queue'\n",
+        );
+        let resolved = assert_ok(&call_as(
+            &store,
+            ALICE,
+            "profile.resolve",
+            serde_json::json!({ "id": child }),
+        ));
+        assert_eq!(
+            resolved["chain"],
+            serde_json::json!(["derived", "baseline"])
+        );
+        assert_ok(&call_as(
+            &store,
+            ALICE,
+            "profile.clone",
+            serde_json::json!({ "id": shared, "name": "my-baseline" }),
+        ));
+        // Bob cannot name Alice's private profile as a base.
+        let foreign_base = call_as(
+            &store,
+            BOB,
+            "profile.create",
+            serde_json::json!({ "name": "sneaky", "toml": "base = 'derived'\n" }),
+        );
+        assert_error(&foreign_base, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn workloads_and_usage_are_private_to_their_owner() {
+        let store = store();
+        let model = register_extra(&store, serde_json::json!({}))["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let alice_profile = profile_as(&store, ALICE, "worker", "fallback = 'queue'\n");
+        let shared = system_profile(&store, "shared-worker");
+        let alice = workload_as(&store, ALICE, &alice_profile, &model);
+        let alice_shared = workload_as(&store, ALICE, &shared, &model);
+        // Bob may use the system profile but not Alice's private one.
+        let bob = workload_as(&store, BOB, &shared, &model);
+        let foreign_profile = call_as(
+            &store,
+            BOB,
+            "workload.submit",
+            serde_json::json!({ "profile_id": alice_profile, "model_id": model }),
+        );
+        assert_error(&foreign_profile, ErrorCode::NotFound);
+
+        // Usage recorded (Admin path) for Alice's workload stays Alice's.
+        assert_ok(&call(
+            &store,
+            "usage.record",
+            serde_json::json!({
+                "workload_id": alice,
+                "tokens_in": 7, "tokens_out": 11, "latency_ms": 3, "cost_micros": 5,
+            }),
+        ));
+
+        let listed = assert_ok(&call_as(
+            &store,
+            BOB,
+            "workload.list",
+            serde_json::json!({}),
+        ));
+        let ids: Vec<&str> = listed["workloads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [bob.as_str()]);
+        let listed = assert_ok(&call_as(
+            &store,
+            ALICE,
+            "workload.list",
+            serde_json::json!({}),
+        ));
+        assert_eq!(listed["count"], 2);
+
+        for name in ["workload.show", "workload.stop", "workload.complete"] {
+            for id in [&alice, &alice_shared] {
+                let reply = call_as(&store, BOB, name, serde_json::json!({ "id": id }));
+                assert_error(&reply, ErrorCode::NotFound);
+            }
+        }
+        let foreign_inference = call_as(
+            &store,
+            BOB,
+            "inference.request",
+            serde_json::json!({
+                "workload_id": alice, "prompt": "hi", "request_id": "r-1",
+                "provider_id": format!("provider-{}", "0".repeat(32)),
+            }),
+        );
+        let message = assert_error(&foreign_inference, ErrorCode::NotFound);
+        assert!(message.contains("workload not found"), "{message}");
+
+        let bob_brief = assert_ok(&call_as(
+            &store,
+            BOB,
+            "workload.usage_brief",
+            serde_json::json!({ "model_id": model }),
+        ));
+        assert_eq!(bob_brief["tokens_in"], 0);
+        let bob_show = assert_ok(&call_as(
+            &store,
+            BOB,
+            "workload.show",
+            serde_json::json!({ "id": bob }),
+        ));
+        assert_eq!(bob_show["usage_tokens_in_total_for_model"], 0);
+        let alice_brief = assert_ok(&call_as(
+            &store,
+            ALICE,
+            "workload.usage_brief",
+            serde_json::json!({ "model_id": model }),
+        ));
+        assert_eq!(alice_brief["tokens_in"], 7);
+        assert_eq!(alice_brief["cost_micros"], 5);
     }
 
     #[test]

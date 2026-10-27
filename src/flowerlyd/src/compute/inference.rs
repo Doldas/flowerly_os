@@ -25,8 +25,8 @@ use flowerly_core::ipc::Payload;
 use flowerly_core::profile::FallbackBehavior;
 use flowerly_core::storage::{MutationOperation, Store};
 use flowerly_core::types::{
-    ObjectRef, ProvenanceEdge, ProvenanceRelation, ProviderId, Timestamp, UsageId, WorkloadId,
-    WorkloadRecord, WorkloadState,
+    Caller, ObjectRef, ProvenanceEdge, ProvenanceRelation, ProviderId, Timestamp, UsageId,
+    WorkloadId, WorkloadRecord, WorkloadState,
 };
 use serde_json::Value;
 
@@ -53,9 +53,14 @@ fn runtime_dir_snapshot() -> Result<&'static PathBuf, CommandFailure> {
     })
 }
 
-pub(crate) fn run_inference(store: &mut Store, name: &str, args: &Value) -> CommandResult {
+pub(crate) fn run_inference(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> CommandResult {
     match name {
-        "inference.request" => request(store, args),
+        "inference.request" => request(store, args, caller),
         "inference.capabilities" => capabilities(store, args),
         other => Err(CommandFailure::invalid(format!(
             "compute: unknown command `{other}`"
@@ -81,7 +86,12 @@ fn validate_operation(args: &Value) -> Result<(), CommandFailure> {
     }
 }
 
-fn load_workload(store: &Store, args: &Value) -> Result<WorkloadRecord, CommandFailure> {
+/// One of the caller's own workloads; another uid's is `not_found`.
+fn load_workload(
+    store: &Store,
+    args: &Value,
+    caller: Caller,
+) -> Result<WorkloadRecord, CommandFailure> {
     let raw = args
         .get("workload_id")
         .and_then(Value::as_str)
@@ -89,7 +99,7 @@ fn load_workload(store: &Store, args: &Value) -> Result<WorkloadRecord, CommandF
     let workload_id = WorkloadId::from_str(raw)
         .map_err(|error| CommandFailure::invalid(format!("invalid workload id: {error}")))?;
     store
-        .get_workload(&workload_id)
+        .workload_for(caller, &workload_id)
         .map_err(CommandFailure::storage)?
         .ok_or_else(|| CommandFailure {
             code: flowerly_core::ipc::ErrorCode::NotFound,
@@ -184,8 +194,8 @@ fn outage_outcome(message: String, fallback: FallbackBehavior) -> CommandResult 
     }
 }
 
-fn request(store: &mut Store, args: &Value) -> CommandResult {
-    let workload = load_workload(store, args)?;
+fn request(store: &mut Store, args: &Value, caller: Caller) -> CommandResult {
+    let workload = load_workload(store, args, caller)?;
     if workload.state != WorkloadState::Admitted {
         return Err(CommandFailure {
             code: flowerly_core::ipc::ErrorCode::Conflict,
@@ -236,9 +246,10 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
             message: format!("provider not found: {provider_id}"),
         })?;
 
-    let fallback = profiles::resolve_effective(store, &workload.profile_id)
-        .map(|(_, spec)| spec.fallback)
-        .unwrap_or(FallbackBehavior::Ask);
+    // An unresolvable profile is an error, never a silently assumed policy.
+    let fallback = profiles::resolve_effective(store, caller, &workload.profile_id)?
+        .1
+        .fallback;
 
     let runtime_dir = runtime_dir_snapshot()?;
     let socket = runtime_dir.join(
@@ -299,13 +310,19 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
                 code: flowerly_core::ipc::ErrorCode::Internal,
                 message: "provider result missing bounded token counts".to_owned(),
             })?,
+        // Unknown latency is never recorded as a measured zero.
         latency_ms: generated
             .get("latency_ms")
             .and_then(Value::as_u64)
-            .unwrap_or(0),
+            .ok_or_else(|| CommandFailure {
+                code: flowerly_core::ipc::ErrorCode::Internal,
+                message: "provider result missing measured latency".to_owned(),
+            })?,
         cost_micros: 0, // reference provider is cost-free; accounting covers real providers later
         created_by: actor.clone(),
         created_at: Timestamp::now(),
+        // Usage belongs to the owner of the workload it accounts for.
+        owner: workload.owner,
     };
     let intended = serde_json::json!({
         "usage_id": usage_id.as_str(),
@@ -315,50 +332,43 @@ fn request(store: &mut Store, args: &Value) -> CommandResult {
         "executed": true,
         "result": generated,
     });
-    let response_value = if let Some(operation_id) =
-        args.get("operation_id").and_then(Value::as_str)
-    {
-        let request_json = serde_json::to_string(args)
-            .map_err(|error| CommandFailure::invalid(error.to_string()))?;
-        let response_json = serde_json::to_string(&intended)
-            .map_err(|error| CommandFailure::invalid(error.to_string()))?;
-        let operation = MutationOperation {
-            actor: &actor,
-            command: "inference.request",
-            operation_id,
-            request_payload: &request_json,
-            response_payload: &response_json,
-        };
-        let stored = store
-            .insert_usage_once(&usage, operation)
-            .map_err(|error| match &error {
-                flowerly_core::storage::StorageError::OperationConflict(_) => CommandFailure {
-                    code: flowerly_core::ipc::ErrorCode::Conflict,
-                    message: error.to_string(),
-                },
-                _ => CommandFailure::storage(error),
-            })?;
-        if stored.is_empty() {
-            intended
+    let response_value =
+        if let Some(operation_id) = args.get("operation_id").and_then(Value::as_str) {
+            let request_json = serde_json::to_string(args)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let response_json = serde_json::to_string(&intended)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let operation = MutationOperation {
+                actor: &actor,
+                command: "inference.request",
+                operation_id,
+                request_payload: &request_json,
+                response_payload: &response_json,
+            };
+            let stored = store
+                .insert_usage_once(&usage, operation)
+                .map_err(CommandFailure::storage)?;
+            if stored.is_empty() {
+                intended
+            } else {
+                serde_json::from_str(&stored)
+                    .map_err(|error| CommandFailure::invalid(error.to_string()))?
+            }
         } else {
-            serde_json::from_str(&stored)
-                .map_err(|error| CommandFailure::invalid(error.to_string()))?
-        }
-    } else {
-        store
-            .insert_usage(&usage)
-            .map_err(CommandFailure::storage)?;
-        store
-            .insert_provenance(&ProvenanceEdge {
-                from: ObjectRef::from(&provider.id),
-                relation: ProvenanceRelation::Produced,
-                to: ObjectRef::from(&workload.id),
-                created_at: Timestamp::now(),
-                note: Some("reference provider usage ledger".to_owned()),
-            })
-            .map_err(CommandFailure::storage)?;
-        intended
-    };
+            store
+                .insert_usage(&usage)
+                .map_err(CommandFailure::storage)?;
+            store
+                .insert_provenance(&ProvenanceEdge {
+                    from: ObjectRef::from(&provider.id),
+                    relation: ProvenanceRelation::Produced,
+                    to: ObjectRef::from(&workload.id),
+                    created_at: Timestamp::now(),
+                    note: Some("reference provider usage ledger".to_owned()),
+                })
+                .map_err(CommandFailure::storage)?;
+            intended
+        };
     tracing::info!(
         workload = %workload.id,
         usage = %usage.id,

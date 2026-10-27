@@ -19,6 +19,7 @@ async fn a_timed_out_mutation_can_commit_later_and_naive_retry_duplicates_it() {
         state_dir: dir.path().join("state"),
         database_path: None,
         log_format: flowerly_core::LogFormat::Text,
+        ..ServiceConfig::default()
     };
     let db_path = config.database_path();
     let mut initial = Store::open(&db_path).expect("open");

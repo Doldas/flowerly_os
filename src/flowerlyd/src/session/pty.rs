@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::Store;
+use flowerly_core::types::Caller;
 use flowerly_core::types::{
     ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId, SessionPresentationState,
     SessionState, Timestamp,
@@ -47,6 +48,61 @@ struct Guardian {
 struct WriterLease {
     token: String,
     expires_at: Instant,
+}
+
+impl WriterLease {
+    fn issue(now: Instant) -> Self {
+        Self {
+            token: Uuid::new_v4().to_string(),
+            expires_at: now + WRITER_LEASE,
+        }
+    }
+}
+
+/// Drop a writer lease whose deadline has passed, so a new attach can win.
+fn expire_writer(writer: &mut Option<WriterLease>, now: Instant) {
+    if writer.as_ref().is_some_and(|lease| lease.expires_at <= now) {
+        *writer = None;
+    }
+}
+
+/// Exclusive writer attachment: refused while another live lease exists.
+fn attach_writer(writer: &mut Option<WriterLease>, now: Instant) -> Result<String, Failure> {
+    expire_writer(writer, now);
+    if writer.is_some() {
+        return Err((
+            ErrorCode::Conflict,
+            "Session already has an active writer".to_owned(),
+        ));
+    }
+    let lease = WriterLease::issue(now);
+    let token = lease.token.clone();
+    *writer = Some(lease);
+    Ok(token)
+}
+
+/// Authorize a writer operation and extend the lease on success. An expired,
+/// revoked or foreign token never authorizes and never extends a lease.
+fn renew_writer(
+    writer: &mut Option<WriterLease>,
+    requested: &str,
+    now: Instant,
+) -> Result<(), Failure> {
+    expire_writer(writer, now);
+    let lease = writer.as_mut().ok_or_else(|| {
+        (
+            ErrorCode::Conflict,
+            "no active writer attachment".to_owned(),
+        )
+    })?;
+    if requested != lease.token {
+        return Err((
+            ErrorCode::Conflict,
+            "writer attachment token revoked or incorrect".to_owned(),
+        ));
+    }
+    lease.expires_at = now + WRITER_LEASE;
+    Ok(())
 }
 
 struct PendingGuardian {
@@ -150,7 +206,12 @@ impl Supervisor {
             })
     }
 
-    pub fn handle(&self, store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+    pub fn handle(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        request: &Envelope,
+        caller: Caller,
+    ) -> Envelope {
         let Payload::Command { name, args } = &request.payload else {
             return coded_error_envelope(
                 request.id.clone(),
@@ -159,9 +220,9 @@ impl Supervisor {
             );
         };
         let result = if name == "session.spawn" {
-            self.spawn(store, args)
+            self.spawn(store, args, caller)
         } else if name == "session.spawn.lookup" {
-            self.lookup_spawn(store, args)
+            self.lookup_spawn(store, args, caller)
         } else {
             self.control(store, name, args)
         };
@@ -253,7 +314,12 @@ impl Supervisor {
         Ok(())
     }
 
-    fn spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+    fn spawn(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        args: &Value,
+        caller: Caller,
+    ) -> Result<Value, Failure> {
         let _serial = self
             .launch
             .lock()
@@ -325,9 +391,20 @@ impl Supervisor {
             .unwrap_or("user");
         let flow_id = {
             let db = store.lock().map_err(|_| internal("store lock poisoned"))?;
-            super::parse_optional_flow_id(&db, args).map_err(|error| (error.code, error.message))?
+            super::parse_optional_flow_id(&db, args, caller)
+                .map_err(|error| (error.code, error.message))?
         };
         let session_id = SessionId::new();
+        if operation_id.is_none() {
+            // Every launch is durably recorded before Command::spawn (#74):
+            // restart recovery must find this cgroup even if the Session row
+            // never commits.
+            store
+                .lock()
+                .map_err(|_| internal("store lock poisoned"))?
+                .reserve_unkeyed_spawn(&self.principal()?, &session_id)
+                .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+        }
         if let Some(operation_id) = operation_id {
             let payload = json!({
                 "shell": shell,
@@ -423,6 +500,9 @@ impl Supervisor {
             presentation_state: SessionPresentationState::Detached,
             created_by: actor.to_owned(),
             created_at: Timestamp::now(),
+            // PTY commands are service-account-only (#222), so this is the
+            // kernel-attested service account, never a request field.
+            owner: caller.owner(),
         };
         let provenance = ProvenanceEdge {
             from: ObjectRef::from(&session_id),
@@ -431,10 +511,17 @@ impl Supervisor {
             created_at: Timestamp::now(),
             note: None,
         };
-        let insertion = store
-            .lock()
-            .map_err(|_| internal("store lock poisoned"))?
-            .insert_session_with_provenance(&session, &[provenance]);
+        let insertion = {
+            let mut db = store.lock().map_err(|_| internal("store lock poisoned"))?;
+            db.insert_session_with_provenance(&session, &[provenance])
+                .and_then(|()| {
+                    if operation_id.is_none() {
+                        db.release_unkeyed_spawn(&session_id)
+                    } else {
+                        Ok(())
+                    }
+                })
+        };
         if let Err(error) = insertion {
             return Err((super::storage_error_code(&error), error.to_string()));
         }
@@ -465,7 +552,12 @@ impl Supervisor {
     /// A lookup never adopts a PID, grants a control token or starts a shell.
     /// It only identifies the reserved Session and whether its guardian is
     /// currently supervised by this daemon instance.
-    fn lookup_spawn(&self, store: &Arc<Mutex<Store>>, args: &Value) -> Result<Value, Failure> {
+    fn lookup_spawn(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        args: &Value,
+        caller: Caller,
+    ) -> Result<Value, Failure> {
         let key = args
             .get("operation_id")
             .and_then(Value::as_str)
@@ -495,7 +587,7 @@ impl Supervisor {
         let durable = store
             .lock()
             .map_err(|_| internal("store lock poisoned"))?
-            .get_session(&id)
+            .session_for(caller, &id)
             .map_err(|error| (super::storage_error_code(&error), error.to_string()))?
             .is_some();
         Ok(json!({
@@ -668,27 +760,10 @@ impl Supervisor {
                 .map_err(|error| internal(error.to_string()))?
                 .is_some();
             if !exited {
-                if guardian
-                    .writer
-                    .as_ref()
-                    .is_some_and(|lease| lease.expires_at <= Instant::now())
-                {
-                    guardian.writer = None;
-                }
+                let now = Instant::now();
                 match name {
                     "session.attach" => {
-                        if guardian.writer.is_some() {
-                            return Err((
-                                ErrorCode::Conflict,
-                                "Session already has an active writer".to_owned(),
-                            ));
-                        }
-                        let token = Uuid::new_v4().to_string();
-                        guardian.writer = Some(WriterLease {
-                            token: token.clone(),
-                            expires_at: Instant::now() + WRITER_LEASE,
-                        });
-                        issued_token = Some(token);
+                        issued_token = Some(attach_writer(&mut guardian.writer, now)?);
                     }
                     "session.write" | "session.resize" | "session.detach" | "session.heartbeat" => {
                         let requested = args
@@ -697,21 +772,9 @@ impl Supervisor {
                             .ok_or_else(|| {
                                 invalid("attachment_token required for terminal writer operations")
                             })?;
-                        let lease = guardian.writer.as_mut().ok_or_else(|| {
-                            (
-                                ErrorCode::Conflict,
-                                "no active writer attachment".to_owned(),
-                            )
-                        })?;
-                        if requested != lease.token {
-                            return Err((
-                                ErrorCode::Conflict,
-                                "writer attachment token revoked or incorrect".to_owned(),
-                            ));
-                        }
-                        lease.expires_at = Instant::now() + WRITER_LEASE;
+                        renew_writer(&mut guardian.writer, requested, now)?;
                     }
-                    _ => {}
+                    _ => expire_writer(&mut guardian.writer, now),
                 }
             }
             (guardian.socket.clone(), exited)
@@ -724,7 +787,7 @@ impl Supervisor {
             ));
         }
         if name == "session.heartbeat" {
-            return Ok(json!({"lease_active": true, "expires_in_ms": 60000}));
+            return Ok(json!({"lease_active": true, "expires_in_ms": WRITER_LEASE.as_millis()}));
         }
         let op = name.strip_prefix("session.").unwrap_or(name);
         let query = match op {
@@ -867,7 +930,79 @@ fn exchange(socket: &Path, request: &Value) -> Result<Value, Failure> {
     let response: Value =
         serde_json::from_str(&line).map_err(|error| internal(error.to_string()))?;
     if let Some(reason) = response.get("error").and_then(Value::as_str) {
-        return Err((ErrorCode::Unavailable, reason.to_owned()));
+        // The guardian marks caller mistakes structurally; anything else
+        // (exited, backpressure, lost state) stays transient `unavailable`.
+        let code = match response.get("code").and_then(Value::as_str) {
+            Some("invalid_argument") => ErrorCode::InvalidArgument,
+            _ => ErrorCode::Unavailable,
+        };
+        return Err((code, reason.to_owned()));
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_lease_is_exclusive_until_it_expires() {
+        let start = Instant::now();
+        let mut writer = None;
+        let first = attach_writer(&mut writer, start).expect("first attach");
+        let contested = attach_writer(&mut writer, start + WRITER_LEASE - Duration::from_millis(1));
+        assert_eq!(contested.unwrap_err().0, ErrorCode::Conflict);
+
+        // At the deadline the lease lapses: a new writer wins with a new token
+        // and the old token is revoked, not silently revived.
+        let second = attach_writer(&mut writer, start + WRITER_LEASE).expect("attach after expiry");
+        assert_ne!(first, second);
+        let revoked = renew_writer(&mut writer, &first, start + WRITER_LEASE);
+        assert_eq!(revoked.unwrap_err().0, ErrorCode::Conflict);
+        renew_writer(&mut writer, &second, start + WRITER_LEASE).expect("current token");
+    }
+
+    #[test]
+    fn heartbeats_extend_the_lease_and_expired_tokens_never_renew() {
+        let start = Instant::now();
+        let mut writer = None;
+        let token = attach_writer(&mut writer, start).expect("attach");
+        let half = WRITER_LEASE / 2;
+        // Renewing every half lease keeps the writer alive well past one lease.
+        for step in 1..=4 {
+            renew_writer(&mut writer, &token, start + half * step).expect("renewal");
+        }
+        let last_renewal = start + half * 4;
+        assert!(attach_writer(
+            &mut writer,
+            last_renewal + WRITER_LEASE - Duration::from_millis(1)
+        )
+        .is_err());
+
+        // Once it lapses, the same token cannot resurrect it.
+        let lapsed = renew_writer(&mut writer, &token, last_renewal + WRITER_LEASE);
+        assert_eq!(lapsed.unwrap_err().0, ErrorCode::Conflict);
+        assert!(writer.is_none(), "expired lease must be dropped");
+    }
+
+    #[test]
+    fn foreign_tokens_never_extend_a_live_lease() {
+        let start = Instant::now();
+        let mut writer = None;
+        let token = attach_writer(&mut writer, start).expect("attach");
+        for attempt in 1..=100u32 {
+            let forged = renew_writer(
+                &mut writer,
+                &format!("forged-{attempt}"),
+                start + Duration::from_secs(1),
+            );
+            assert_eq!(forged.unwrap_err().0, ErrorCode::Conflict);
+        }
+        // The forged attempts did not move the deadline.
+        let after = start + WRITER_LEASE;
+        assert_eq!(
+            renew_writer(&mut writer, &token, after).unwrap_err().0,
+            ErrorCode::Conflict
+        );
+    }
 }

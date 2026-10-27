@@ -7,6 +7,8 @@ Status: **implemented SQLite retries, externally effective PTY safety under revi
 - Each request uses a correlated IPC v1 response ID and has a bounded network/queue/handler response deadline.
 - The worker holding an IPC handler slot continues until its blocking SQLite work returns, even if the client has already received a timeout. A timeout does **not** prove a database transaction was rolled back.
 - `unavailable` caused by SQLite BUSY/LOCKED means SQLite rejected the operation under lock contention. `unavailable` from an overall IPC deadline **can have an unknown mutation outcome**.
+- Deadline `unavailable` messages name the stage and elapsed milliseconds. "while queued for a handler; the request was not executed" means the handler never started. "while the handler was running; the outcome is unknown" and the `flowerlyd` module "the outcome is unknown" mean the mutation may still commit. Clients must branch on the error `code`; the message is a diagnostic, not a contract.
+- Each request produces one structured `ipc request` log event with `request_id`, the command name (never its arguments), `peer_uid`, `queue_ms`, `handler_ms`, `total_ms`, `outcome` (`ok`, `error`, `deadline_queued`, `deadline_running`) and `code`. It logs at `warn` for deadline expiry or requests taking 1 s or more, and at `debug` otherwise.
 - The envelope correlation ID is not a durable idempotency key. Legacy calls with no explicit `operation_id` remain non-idempotent. Merged PRs #66–#67 introduced opt-in, actor-scoped durable results for SQLite `flow.create`, `goal.create` and metadata-only `session.create`; it does not cover externally visible side effects.
 - Read-after-timeout reconciliation is possible in some cases by listing or querying domain records, but names and goals are not guaranteed unique and that alone is **not** a correctness proof of idempotency.
 
@@ -72,6 +74,58 @@ after an ambiguous response, and do **not** submit the same effect again
 under a new key until it has been explicitly reconciled. No guarantee is made
 about adopting old file descriptors or replaying capabilities across crashes.
 
+### `session.spawn` idempotency policy (#74)
+
+This is the single, precise contract. It reuses the durable operation-key
+registry (`ipc_operations`, migration 0005) and its key rules; it adds no
+second idempotency model.
+
+1. **Key and binding.** The key is `(trusted actor, "session.spawn",
+   operation_id)`, with the same `operation_id` syntax as the SQLite create
+   commands. It is bound to the normalized `shell`, `created_by` and
+   `flow_id`. The actor is the kernel-attested owner of the runtime
+   directory, never a request field.
+2. **At-most-once admission, not replay.** The first request reserves the key
+   and an immutable Session ID in an IMMEDIATE transaction **before**
+   `Command::spawn`. A repeated key never launches anything, never replays the
+   first response and never re-issues its control token. It returns
+   `unavailable` ("prior attempt has an unknown external outcome"); this
+   holds after a restart too. Changed arguments return `conflict`. Unlike
+   SQLite create keys, which replay a stored result, a spawn key cannot replay,
+   because its result is a live process and a secret token.
+3. **No expiry.** Spawn keys are never pruned: forgetting one could let a late
+   retry start a second shell.
+4. **Reconciliation.** `session.spawn.lookup` reports `session_recorded`,
+   `guardian_supervised` and `external_outcome` (`supervised` or `unknown`),
+   always with `retry_safe: false`. A client that sees `unknown` must treat
+   the effect as possibly having happened, and may start a new Session only
+   under a **new** key, as an explicit decision.
+5. **Unkeyed spawns** stay legacy and non-idempotent: a timeout means outcome
+   unknown, and nothing can be looked up. They are still recorded durably
+   before launch (`session.spawn.unkeyed`, not a retry identity). The record
+   is released when the Session row commits and cleared by restart recovery,
+   so the cgroup of every launch can be found.
+6. **Crash recovery.** On startup with delegated cgroup v2, `flowerlyd` kills
+   the exact `pty-<Session ID>` cgroup of every recorded launch and of every
+   PTY Session row, marks RUNNING PTY Sessions `suspended`/`detached`, and
+   removes empty `management-*` groups left by earlier instances. It never
+   signals a bare PID and never adopts an old guardian. Without delegation,
+   spawning is disabled and recovery cannot prove cleanup; records are kept.
+
+The kernel-level evidence is `scripts/test-pty-daemon-recovery.py`. It runs the
+real `flowerlyd` in a `Delegate=yes` unit, with the shell under a distinct UID,
+in the Arch guest. It covers:
+
+- `flowerlyd` SIGKILL with keyed and unkeyed Sessions and setsid descendants;
+- SIGKILL between guardian launch and the Session row, with the insert held
+  behind a real SQLite write lock;
+- total supervision loss: watcher, guardian and daemon SIGKILLed together;
+- concurrent duplicate-key spawns, terminate and restart.
+
+Before #74, the last combination with no key leaked a live setsid process in a
+cgroup that no record named. The suite reproduced that leak and the empty
+`management-*` groups that accumulated on every restart.
+
 ## Required evidence before closing #63
 
 - A deterministic test makes a handler continue and commit after the caller has timed out, using a real durable SQLite database, then demonstrates a naive retry's duplicate effect.
@@ -81,4 +135,34 @@ about adopting old file descriptors or replaying capabilities across crashes.
 
 ## Contention and liveness limits
 
-SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. Typed `unavailable` for BUSY/LOCKED is being extended to all domain operations under #62; this document does not certify other daemons or guarantee distributed exactly-once execution.
+SQLite connections use a finite writer busy timeout. A separate process holding `BEGIN IMMEDIATE` can prevent independent writers from committing and temporarily occupy synchronous service Store mutexes. Ping must remain available; Status may correctly report `ready: false` while its Store mutex is busy. When the Store is free, Status reads all domain counts (`flow_count`, `goal_count`, `session_count`, `execution_count`, `generation_count`, `provenance_edge_count`, `model_count`, `profile_count`, `provider_count`, `active_workload_count`) in one SQLite statement, so they come from one snapshot. If that read fails, Status reports `ready: false`, `database: "error"` and the typed `error_code`, and leaves out the counts; it never reports `ready: true` with missing counts. This document does not guarantee distributed exactly-once execution.
+
+## Storage error classification
+
+`StorageError::ipc_error_code()` in `flowerly-core` is the single mapping from storage failures to IPC error codes. Every storage-backed command uses it. It matches on typed variants and SQLite result codes only; it never interprets error message text, so a diagnostic such as "database is locked" on a corrupt-database error stays `internal`.
+
+| Storage failure | IPC code | Retry meaning |
+| --- | --- | --- |
+| SQLite `BUSY*` / `LOCKED*` (writer contention, snapshot, recovery, shared cache) | `unavailable` | Transient; the statement was rejected. Retry only per the client policy above. |
+| `UniqueViolation`, `OperationConflict`, SQLite `CONSTRAINT_UNIQUE` / `CONSTRAINT_PRIMARYKEY` | `conflict` | Not transient; the request collides with existing state. |
+| `ForeignKeyViolation`, `InvalidOperation`, SQLite `CONSTRAINT_FOREIGNKEY` | `invalid_argument` | Not transient; a referenced record is missing or the request is malformed. |
+| `NotFound` | `not_found` | Not transient. |
+| SQLite `CORRUPT`, `NOTADB`, `READONLY`, `FULL`, `IOERR`, `CANTOPEN`, `MISMATCH`, `CONSTRAINT_CHECK`, `CONSTRAINT_NOTNULL`, `CONSTRAINT_TRIGGER`, generic `CONSTRAINT`; row decode, serialization and I/O errors | `internal` | Never reported as transient; these indicate a defect, a damaged database or a host failure that retries cannot fix. |
+
+Audit of storage-backed commands on `release/2` (issue #62, 2026-10-24):
+
+| Service area | Commands | Storage error path |
+| --- | --- | --- |
+| Flow | `flow.create`, `flow.list`, `flow.activate`, `flow.archive` | Pre-validation and handlers use the shared mapping. |
+| Goal | `goal.create`, `goal.child`, `goal.show`, `goal.list`, `goal.complete`, `goal.abandon` | Pre-validation and handlers use the shared mapping. |
+| Session | `session.create`, `session.list`, `session.terminate`, PTY lifecycle persistence | Handlers and the PTY supervisor use the shared mapping. |
+| Execution | `execution.create`, `execution.show`, `execution.list` | Shared mapping. |
+| Generation | All Generation commands | Shared mapping; earlier generation-only extended-code handling now applies everywhere. |
+| Provenance | `provenance.add`, `provenance.from`, `provenance.to` | Shared mapping. |
+| Compute | Catalog, profiles, admission, inference ledger | Shared mapping. Before this audit, compute did not type `UniqueViolation` or `ForeignKeyViolation` and reported both as `internal`. |
+
+Before this audit, six of the seven per-service copies reported raw SQLite UNIQUE/PRIMARY KEY and FOREIGN KEY failures as `internal`. Only Generation typed them.
+
+Regression evidence is in the `flowerly-core` storage unit tests. They cover every error family, message-text spoofing, and real SQLite failures: a BUSY from a second connection holding `BEGIN IMMEDIATE` followed by recovery once the lock is released, a non-database file, and UNIQUE/FK/CHECK constraint failures. The six-service real-process writer-lock test from PRs #66–#67 still covers end-to-end `unavailable` and recovery.
+
+Per-request elapsed time is logged as described above; lock-wait time inside SQLite is not measured separately and appears as `handler_ms`. Argument typing in the legacy fallback handlers is tracked under #53. Those fallback handlers can only be reached after the typed pre-validation that runs under the same Store lock.

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import base64
-import errno
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -131,26 +130,6 @@ class SessionDaemon:
     def close(self):
         self.stop()
         self.temporary.cleanup()
-
-    def recover_socket_after_abrupt_stop(self):
-        assert self.process is not None and self.process.poll() is not None
-        runtime = self.runtime.stat()
-        assert runtime.st_uid == os.geteuid() and stat.S_IMODE(runtime.st_mode) == 0o700
-        original = self.socket_path.lstat()
-        assert stat.S_ISSOCK(original.st_mode) and original.st_uid == os.geteuid()
-        with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(1)
-            try:
-                connection.connect(str(self.socket_path))
-            except OSError as error:
-                assert error.errno == errno.ECONNREFUSED, error
-            else:
-                raise AssertionError("refusing recovery of live IPC socket")
-        current = self.socket_path.lstat()
-        assert (current.st_dev, current.st_ino) == (
-            original.st_dev, original.st_ino
-        ), "stale socket pathname was replaced before recovery"
-        self.socket_path.unlink()
 
     def spawn(self):
         response = successful(self.socket_path, "session.spawn", {"shell": "/bin/sh"})
@@ -447,6 +426,143 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             pass
 
 
+def test_long_poll_contract(daemon):
+    """#73 long-poll transport: reconnect without loss, stale and future
+    cursors, slow consumers, concurrent owner writes and termination while
+    followers are blocked."""
+    session = daemon.socket_path
+    spawned = daemon.spawn()
+    identifier = spawned["id"]
+    control = spawned["control_token"]
+    token = successful(session, "session.attach", {
+        "id": identifier, "control_token": control,
+    })["attachment_token"]
+
+    def follow_until(cursor, marker, rounds=40):
+        for _ in range(rounds):
+            reply = successful(session, "session.follow", {
+                "id": identifier, "control_token": control,
+                "cursor": cursor, "wait_ms": 200,
+            })
+            if marker in output(reply):
+                return reply
+            cursor = reply["cursor"]
+        raise AssertionError(f"marker {marker!r} never observed")
+
+    # Reconnect: a follower that disconnects and resumes from its last cursor
+    # on a fresh connection loses nothing still inside the replay window.
+    resume = successful(session, "session.status", {"id": identifier})["cursor"]
+    write(session, identifier, token, "echo FLOWERLY_RESUME_MARK\n")
+    resumed = follow_until(resume, b"FLOWERLY_RESUME_MARK")
+    assert resumed["truncated"] is False, resumed["cursor"]
+
+    # A cursor past the end of output is a caller error, never `unavailable`
+    # (which tells clients to retry).
+    current = successful(session, "session.status", {"id": identifier})["cursor"]
+    for command in ("session.read", "session.follow"):
+        future = request(session, command, {
+            "id": identifier, "control_token": control,
+            "cursor": current + 1_000_000, "wait_ms": 0,
+        })
+        assert future["type"] == "err" and future.get("code") == "invalid_argument", (command, future)
+    negative = request(session, "session.read", {
+        "id": identifier, "control_token": control, "cursor": -1,
+    })
+    assert negative["type"] == "err" and negative.get("code") == "invalid_argument", negative
+
+    # A cursor that fell out of the bounded replay window is reported as
+    # truncated with at most 64 KiB, and the reader can continue from there.
+    stale = successful(session, "session.status", {"id": identifier})["cursor"]
+    flood = 'python3 -c ' + "'import sys; sys.stdout.write(\"S\"*150000); sys.stdout.flush()'" + "\n"
+    write(session, identifier, token, flood)
+    for _ in range(250):
+        if successful(session, "session.status", {"id": identifier})["cursor"] > stale + 140000:
+            break
+        time.sleep(0.025)
+    else:
+        raise AssertionError("flood output never reached replay")
+    lagging = successful(session, "session.read", {
+        "id": identifier, "control_token": control, "cursor": stale,
+    })
+    assert lagging["truncated"] is True and 0 < len(output(lagging)) <= 65536, lagging["cursor"]
+    write(session, identifier, token, "echo FLOWERLY_AFTER_LAG\n")
+    follow_until(lagging["cursor"], b"FLOWERLY_AFTER_LAG")
+
+    # Slow consumer: clients that send a large read and then never drain
+    # their socket must not stall the writer or other observers.
+    request_body = json.dumps({
+        "version": 1, "id": str(uuid.uuid4()), "type": "command",
+        "name": "session.read",
+        "args": {"id": identifier, "control_token": control, "cursor": stale},
+    }).encode()
+    stalled = []
+    try:
+        for _ in range(4):
+            connection = socket.socket(socket.AF_UNIX)
+            connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            connection.connect(str(session))
+            connection.sendall(struct.pack("<I", len(request_body)) + request_body)
+            stalled.append(connection)
+        time.sleep(0.3)
+        began = time.monotonic()
+        assert successful(session, "session.heartbeat", {
+            "id": identifier, "attachment_token": token,
+        })["lease_active"]
+        write(session, identifier, token, "echo FLOWERLY_SLOW_CONSUMER\n")
+        follow_until(successful(session, "session.status", {"id": identifier})["cursor"] - 64,
+                     b"FLOWERLY_SLOW_CONSUMER")
+        assert time.monotonic() - began < 3, "slow consumers stalled the session"
+    finally:
+        for connection in stalled:
+            connection.close()
+
+    # Concurrent writes by the single owner are each accepted whole.
+    lines = [f"echo FLOWERLY_W{index:02d}\n" for index in range(16)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        accepted = list(pool.map(
+            lambda line: write(session, identifier, token, line)["written"], lines,
+        ))
+    assert accepted == [len(line) for line in lines], accepted
+    seen = b""
+    position = successful(session, "session.status", {"id": identifier})["cursor"] - 4096
+    for _ in range(60):
+        reply = successful(session, "session.follow", {
+            "id": identifier, "control_token": control,
+            "cursor": max(position, 0), "wait_ms": 200,
+        })
+        seen += output(reply)
+        position = reply["cursor"]
+        if all(f"FLOWERLY_W{index:02d}".encode() in seen for index in range(16)):
+            break
+    else:
+        raise AssertionError("not every concurrent owner write reached the PTY")
+
+    # Terminate while followers are blocked: every follower returns within
+    # its bounded wait with either the exited snapshot or `unavailable`.
+    idle = successful(session, "session.status", {"id": identifier})["cursor"]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        waiting = [pool.submit(request, session, "session.follow", {
+            "id": identifier, "control_token": control,
+            "cursor": idle, "wait_ms": 250,
+        }) for _ in range(6)]
+        time.sleep(0.05)
+        began = time.monotonic()
+        terminated = successful(session, "session.terminate", {
+            "id": identifier, "control_token": control,
+        })
+        assert terminated["terminated"], terminated
+        for future in waiting:
+            reply = future.result(timeout=5)
+            assert reply["type"] == "ok" or reply.get("code") == "unavailable", reply
+        assert time.monotonic() - began < 3, "blocked followers outlived termination"
+    after = request(session, "session.follow", {
+        "id": identifier, "control_token": control, "cursor": idle, "wait_ms": 0,
+    })
+    assert after["type"] == "err" and after.get("code") == "unavailable", after
+    print("PTY long-poll: reconnect resume, future/negative cursor typed, stale-cursor truncation, "
+          "slow consumers, concurrent owner writes, terminate with blocked followers")
+
+
 def test_failed_durable_spawn_reaps_guardian(daemon):
     session = daemon.socket_path
     database = daemon.state / "state.db"
@@ -590,13 +706,13 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     assert_original_process_exited(supervisor_pid, supervisor_identity)
     assert_original_process_exited(uncertain_pid, uncertain_identity)
 
-    try:
-        daemon.start()
-    except AssertionError as error:
-        assert "Address already in use" in str(error), error
-        daemon.recover_socket_after_abrupt_stop()
-        daemon.start()
-        print("PTY daemon SIGKILL: stale IPC socket refused until guarded operator recovery")
+    # SIGKILL leaves the socket pathname behind. Its listener is gone and the
+    # instance lock died with the process, so the restarted daemon must
+    # verify the socket is stale and recover it without operator help.
+    stale = daemon.socket_path.lstat()
+    assert stat.S_ISSOCK(stale.st_mode), "SIGKILL should leave a stale socket"
+    daemon.start()
+    print("PTY daemon SIGKILL: verified stale IPC socket recovered automatically")
 
     historical = next(row for row in successful(
         session, "session.list", {}
@@ -631,6 +747,7 @@ def main(binary_directory):
     try:
         daemon.start()
         test_independent_readers_backpressure_and_disconnection(daemon)
+        test_long_poll_contract(daemon)
         test_failed_durable_spawn_reaps_guardian(daemon)
         test_abrupt_daemon_loss_and_restart(daemon)
     finally:

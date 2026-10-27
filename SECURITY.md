@@ -5,7 +5,8 @@
 Please report security vulnerabilities privately. Do not open a public issue,
 pull request, or discussion for a vulnerability.
 
-Use GitHub's private vulnerability reporting for this repository (the
+Use GitHub's private vulnerability reporting for this repository:
+<https://github.com/Doldas/flowerly_os/security/advisories/new> (the
 **Security** tab, "Report a vulnerability"). Include, where possible:
 
 - a description of the issue and its impact;

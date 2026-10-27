@@ -6,9 +6,24 @@ Wants=local-fs.target
 [Service]
 Type=simple
 User=flowerly
+# Default (#225, 0.0.4): service-account-only IPC admission. The socket is
+# 0600 and /run/flowerly 0700, and AGENTIC_USERS_GROUP is never taken from
+# the service manager. Multi-user access for flowerly-users members is an
+# explicit administrator opt-in: install the maintained drop-in
+# /usr/share/flowerly/systemd/flowerlyd-multi-user.conf (see
+# command-authorization.md). Admin commands require flowerly-admin membership
+# of the calling process; the flowerly account itself is never a member.
 Group=flowerly
 Environment=AGENTIC_RUNTIME_DIR=/run/flowerly
 Environment=AGENTIC_STATE_DIR=/var/lib/flowerly
+Environment=AGENTIC_ADMIN_GROUP=flowerly-admin
+# Never inherit these from the service manager's environment
+# (`systemctl set-environment`, DefaultEnvironment=): the first two could
+# enable multi-user admission, AGENTIC_DATABASE_PATH could repoint the
+# system database to /dev/shm or a second file (#237), and the FLOWERLY_PTY_*
+# pair could turn off or redirect PTY cgroup containment (#240), without any
+# change to this unit or a drop-in.
+UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH FLOWERLY_PTY_ISOLATION FLOWERLY_PTY_CGROUP_ROOT
 ExecStart=/usr/bin/flowerlyd --state-dir /var/lib/flowerly
 RuntimeDirectory=flowerly
 RuntimeDirectoryMode=0700

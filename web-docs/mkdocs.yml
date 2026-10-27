@@ -42,10 +42,12 @@ nav:
       - Evolution: evolution.md
       - Provenance: provenance.md
       - Capabilities: capabilities.md
+      - Command Authorization: command-authorization.md
       - Compute Catalog: compute-catalog.md
       - Compute Profiles: compute-profiles.md
       - Compute Scheduling: compute-scheduling.md
       - Compute Inference: compute-inference.md
+      - IPC v1 Typed Arguments: ipc-v1-typed-arguments.md
       - User Model: user-model.md
       - Threat Model: threat-model.md
       - Language Policy: language-policy.md
@@ -57,6 +59,7 @@ nav:
       - Project Overview: project/index.md
       - Roadmap: roadmap.md
       - Review Implementation Plan: review-implementation-plan-2026-10-12.md
+      - 0.0.4 Completion Plan: release-0.0.4-completion-plan.md
       - Releases: releases.md
       - Build Guide: build.md
   - Contributing: contributing.md

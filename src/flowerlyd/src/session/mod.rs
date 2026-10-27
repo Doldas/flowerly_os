@@ -11,11 +11,13 @@ use flowerly_core::storage::repository::{
     CoreCommandRepository, CoreQueryRepository, CreateSession,
 };
 use flowerly_core::storage::{MutationOperation, StorageError, Store};
+use flowerly_core::types::{Caller, Owner};
 use flowerly_core::types::{
     FlowId, ObjectRef, ProvenanceEdge, ProvenanceRelation, Session, SessionId,
     SessionPresentationState, SessionState, Timestamp,
 };
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
+use serde::Deserialize;
 use serde_json::Value;
 
 #[cfg(target_os = "linux")]
@@ -31,6 +33,8 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
     let isolation =
         std::env::var("FLOWERLY_PTY_ISOLATION").unwrap_or_else(|_| "required".to_owned());
     if isolation == "development" {
+        // Never silent (#240): the shipped unit unsets this variable.
+        tracing::warn!("PTY isolation is development: Sessions spawn without cgroup containment");
         return Ok(None);
     }
     if isolation != "required" {
@@ -57,6 +61,7 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
     if host.dev() != delegated.dev() || !root.join("cgroup.controllers").is_file() {
         anyhow::bail!("PTY supervision requires a real delegated Linux cgroup v2 root");
     }
+    remove_stale_management_groups(&root);
     let management = format!("management-{}", uuid::Uuid::new_v4().simple());
     std::fs::create_dir(root.join(&management))
         .context("creating PTY supervisor management cgroup")?;
@@ -71,6 +76,45 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
         path: root,
         management,
     }))
+}
+
+/// A SIGKILLed instance leaves its `management-<uuid>` group behind, briefly
+/// holding its exiting guardians and cleanup watchers. rmdir succeeds only on
+/// an empty cgroup, so a live instance's group (it contains that daemon) is
+/// never removed; it is retried for at most 2 s.
+#[cfg(target_os = "linux")]
+fn remove_stale_management_groups(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(suffix) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("management-"))
+        else {
+            continue;
+        };
+        if suffix.len() != 32 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        for attempt in 0..100 {
+            match std::fs::remove_dir(entry.path()) {
+                Ok(()) => break,
+                Err(error) if error.raw_os_error() == Some(16) && attempt < 99 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    tracing::warn!(group = %entry.path().display(), %error,
+                        "stale PTY management cgroup not removed");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -109,7 +153,11 @@ fn terminate_stale_cgroup(
     anyhow::bail!("unrecovered PTY cgroup did not become empty")
 }
 
-pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+pub(crate) fn handle_command(
+    store: &Arc<Mutex<Store>>,
+    request: &Envelope,
+    caller: Caller,
+) -> Envelope {
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
@@ -117,50 +165,73 @@ pub(crate) fn handle_command(store: &Arc<Mutex<Store>>, request: &Envelope) -> E
         Ok(store) => store,
         Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
     };
-    if let Err((code, message)) = validate_session_command(&store, name, args) {
+    if let Err((code, message)) = validate_session_command(&store, name, args, caller) {
         return coded_error_envelope(request.id.clone(), code, message);
     }
-    match run_command(&mut store, name, args) {
+    match run_command(&mut store, name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
     }
 }
 
+/// Typed IPC-v1 arguments for the metadata Session commands (see
+/// `crate::args`). PTY commands keep their own token-checked validation.
+#[derive(Debug, Deserialize)]
+struct CreateSessionArgs {
+    #[serde(default)]
+    flow_id: Option<String>,
+    #[serde(default)]
+    pid: Option<i64>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    operation_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionIdArgs {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionListArgs {}
+
 fn validate_session_command(
     store: &Store,
     name: &str,
     args: &Value,
+    caller: Caller,
 ) -> Result<(), (ErrorCode, String)> {
     let invalid = |message: &str| (ErrorCode::InvalidArgument, message.to_owned());
     match name {
         "session.create" => {
-            if let Some(value) = args.get("flow_id").filter(|value| !value.is_null()) {
-                let raw = value
-                    .as_str()
-                    .ok_or_else(|| invalid("arg `flow_id` must be a string or null"))?;
+            let typed: CreateSessionArgs = crate::args::typed_args("session", args)?;
+            // Type-checked here; the handler applies them.
+            let _ = (&typed.kind, &typed.cwd, &typed.operation_id);
+            if let Some(raw) = typed.flow_id.as_deref() {
                 let flow_id = FlowId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-                if CoreQueryRepository::flow(store, &flow_id)
+                // Own Flow or General only; rechecked when inserting (#225).
+                if CoreQueryRepository::flow(store, caller, &flow_id)
                     .map_err(|e| (storage_error_code(&e), e.to_string()))?
                     .is_none()
                 {
                     return Err((ErrorCode::NotFound, format!("flow not found: {flow_id}")));
                 }
             }
-            if let Some(value) = args.get("pid").filter(|value| !value.is_null()) {
-                let raw = value
-                    .as_i64()
-                    .ok_or_else(|| invalid("arg `pid` must be an integer or null"))?;
+            if let Some(raw) = typed.pid {
                 i32::try_from(raw).map_err(|_| invalid("pid out of range for i32"))?;
             }
         }
-        "session.list" => {}
+        "session.list" => {
+            let _: SessionListArgs = crate::args::typed_args("session", args)?;
+        }
         "session.terminate" => {
-            let raw = args
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("missing string arg `id`"))?;
+            let typed: SessionIdArgs = crate::args::typed_args("session", args)?;
+            let raw = typed.id.as_str();
             let id = SessionId::from_str(raw).map_err(|e| invalid(&e.to_string()))?;
-            let existing = CoreQueryRepository::session(store, &id)
+            let existing = CoreQueryRepository::session(store, caller, &id)
                 .map_err(|error| (storage_error_code(&error), error.to_string()))?;
             let session = existing
                 .ok_or_else(|| (ErrorCode::NotFound, format!("session not found: {raw}")))?;
@@ -183,17 +254,7 @@ fn validate_session_command(
 }
 
 fn storage_error_code(error: &StorageError) -> ErrorCode {
-    match error {
-        StorageError::NotFound(_) => ErrorCode::NotFound,
-        StorageError::InvalidOperation(_) | StorageError::ForeignKeyViolation(_) => {
-            ErrorCode::InvalidArgument
-        }
-        StorageError::OperationConflict(_) | StorageError::UniqueViolation(_) => {
-            ErrorCode::Conflict
-        }
-        _ if error.is_busy() => ErrorCode::Unavailable,
-        _ => ErrorCode::Internal,
-    }
+    error.ipc_error_code()
 }
 
 #[derive(Debug)]
@@ -245,7 +306,12 @@ impl CommandFailure {
     }
 }
 
-fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, CommandFailure> {
+fn run_command(
+    store: &mut Store,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
     match name {
         "session.create" => {
             if args
@@ -265,7 +331,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .get("created_by")
                 .and_then(Value::as_str)
                 .unwrap_or("user");
-            let flow_id = parse_optional_flow_id(store, args)?;
+            let flow_id = parse_optional_flow_id(store, args, caller)?;
             let pid = parse_optional_pid(args)?;
             let session = Session {
                 id: SessionId::new(),
@@ -281,6 +347,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 },
                 created_by: created_by.to_owned(),
                 created_at: Timestamp::now(),
+                owner: caller.owner(),
             };
             let provenance = ProvenanceEdge {
                 from: ObjectRef::from(&session.id),
@@ -333,7 +400,8 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
             Ok(response)
         }
         "session.list" => {
-            let sessions = CoreQueryRepository::sessions(store).map_err(CommandFailure::storage)?;
+            let sessions =
+                CoreQueryRepository::sessions(store, caller).map_err(CommandFailure::storage)?;
             let items: Vec<Value> = sessions
                 .iter()
                 .map(|s| {
@@ -356,15 +424,7 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
                 .and_then(Value::as_str)
                 .ok_or("missing string arg `id`")?;
             let session_id = SessionId::from_str(id).map_err(err_str)?;
-            let session = CoreQueryRepository::session(store, &session_id)
-                .map_err(CommandFailure::storage)?
-                .ok_or_else(|| format!("session not found: {id}"))?;
-
-            store
-                .update_session_state(&session_id, SessionState::Exited)
-                .map_err(CommandFailure::storage)?;
-            store
-                .update_session_presentation_state(&session_id, SessionPresentationState::Detached)
+            let session = CoreCommandRepository::terminate_session(store, caller, &session_id)
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({
                 "id": session_id,
@@ -378,7 +438,12 @@ fn run_command(store: &mut Store, name: &str, args: &Value) -> Result<Value, Com
     }
 }
 
-fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>, CommandFailure> {
+/// A Flow the caller may attach a Session to: its own or General.
+fn parse_optional_flow_id(
+    store: &Store,
+    args: &Value,
+    caller: Caller,
+) -> Result<Option<FlowId>, CommandFailure> {
     let Some(value) = args.get("flow_id") else {
         return Ok(None);
     };
@@ -390,11 +455,14 @@ fn parse_optional_flow_id(store: &Store, args: &Value) -> Result<Option<FlowId>,
         .as_str()
         .ok_or("arg `flow_id` must be a string or null")?;
     let flow_id = FlowId::from_str(raw).map_err(err_str)?;
-    if CoreQueryRepository::flow(store, &flow_id)
+    if CoreQueryRepository::flow(store, caller, &flow_id)
         .map_err(CommandFailure::storage)?
         .is_none()
     {
-        return Err(format!("flow not found: {flow_id}").into());
+        return Err(CommandFailure {
+            code: ErrorCode::NotFound,
+            message: format!("flow not found: {flow_id}"),
+        });
     }
     Ok(Some(flow_id))
 }
@@ -433,6 +501,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         presentation_state: SessionPresentationState::Attached,
         created_by: "self-test".to_owned(),
         created_at: Timestamp::now(),
+        owner: Owner::System,
     };
     store.insert_session(&session)?;
     store.update_session_state(&session.id, SessionState::Exited)?;
@@ -444,6 +513,8 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_CALLER: Caller = Caller::new(1000);
 
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
@@ -459,13 +530,14 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-1"
         });
-        let first = run_command(&mut store, "session.create", &args).expect("first");
-        let replay = run_command(&mut store, "session.create", &args).expect("replay");
+        let first = run_command(&mut store, "session.create", &args, TEST_CALLER).expect("first");
+        let replay = run_command(&mut store, "session.create", &args, TEST_CALLER).expect("replay");
         assert_eq!(first, replay);
         assert_eq!(store.list_sessions().expect("sessions").len(), 1);
         let id = SessionId::from_str(first["id"].as_str().expect("id")).expect("typed id");
         assert_eq!(
-            CoreQueryRepository::provenance_from(&store, &ObjectRef::from(&id))
+            store
+                .provenance_from(&ObjectRef::from(&id))
                 .expect("edges")
                 .len(),
             1
@@ -480,13 +552,13 @@ mod tests {
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-conflict"
         });
-        run_command(&mut store, "session.create", &first).expect("create");
+        run_command(&mut store, "session.create", &first, TEST_CALLER).expect("create");
         let changed = serde_json::json!({
             "kind": "different-kind",
             "created_by": "uid:1000",
             "operation_id": "typed-session-service-conflict"
         });
-        assert!(run_command(&mut store, "session.create", &changed).is_err());
+        assert!(run_command(&mut store, "session.create", &changed, TEST_CALLER).is_err());
         assert_eq!(store.list_sessions().expect("sessions").len(), 1);
     }
 
@@ -524,7 +596,7 @@ mod tests {
         ];
         for (command, args, expected) in cases {
             assert_eq!(
-                validate_session_command(&store, command, &args)
+                validate_session_command(&store, command, &args, TEST_CALLER)
                     .unwrap_err()
                     .0,
                 expected
@@ -539,6 +611,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": "not-a-flow-id" }),
+            TEST_CALLER,
         )
         .expect_err("malformed flow id must fail");
 
@@ -554,6 +627,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": missing }),
+            TEST_CALLER,
         )
         .expect_err("missing flow must fail");
 
@@ -568,6 +642,7 @@ mod tests {
             &mut store,
             "session.create",
             &serde_json::json!({ "pid": i64::from(i32::MAX) + 1 }),
+            TEST_CALLER,
         )
         .expect_err("out-of-range pid must fail");
 
@@ -576,15 +651,56 @@ mod tests {
     }
 
     #[test]
+    fn sessions_attach_only_to_own_flows_or_general_and_stay_private() {
+        let mut store = migrated_store();
+        let general = store.ensure_general_flow().unwrap();
+        let other = Caller::new(2000);
+        let mut theirs = flowerly_core::types::Flow::new("Theirs", "uid:2000");
+        theirs.owner = other.owner();
+        store.insert_flow(&theirs).expect("insert flow");
+        let args = serde_json::json!({ "flow_id": theirs.id, "kind": "metadata" });
+        let (code, _) =
+            validate_session_command(&store, "session.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        let failure = run_command(&mut store, "session.create", &args, TEST_CALLER).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::NotFound);
+        assert!(store.list_sessions().unwrap().is_empty());
+
+        let in_general = serde_json::json!({ "flow_id": general, "kind": "metadata" });
+        let created = run_command(&mut store, "session.create", &in_general, other).unwrap();
+        let id = serde_json::json!({ "id": created["id"] });
+        let (code, _) =
+            validate_session_command(&store, "session.terminate", &id, TEST_CALLER).unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+        assert_eq!(
+            run_command(&mut store, "session.terminate", &id, TEST_CALLER)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+        let listed = run_command(
+            &mut store,
+            "session.list",
+            &serde_json::json!({}),
+            TEST_CALLER,
+        )
+        .unwrap();
+        assert_eq!(listed["count"], 0);
+        run_command(&mut store, "session.terminate", &id, other).expect("owner may terminate");
+    }
+
+    #[test]
     fn valid_existing_flow_is_preserved_on_session() {
         let mut store = migrated_store();
-        let flow = flowerly_core::types::Flow::new("Development", "test");
+        let mut flow = flowerly_core::types::Flow::new("Development", "test");
+        flow.owner = TEST_CALLER.owner();
         store.insert_flow(&flow).expect("insert flow");
 
         let response = run_command(
             &mut store,
             "session.create",
             &serde_json::json!({ "flow_id": flow.id, "pid": 42 }),
+            TEST_CALLER,
         )
         .expect("create session");
 
@@ -592,6 +708,59 @@ mod tests {
         let sessions = store.list_sessions().expect("list sessions");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].flow_id.as_ref(), Some(&flow.id));
+    }
+
+    fn ipc(store: &Arc<Mutex<Store>>, command: &str, args: Value) -> Result<Value, ErrorCode> {
+        let request = Envelope::new(Payload::Command {
+            name: command.into(),
+            args,
+        });
+        match handle_command(store, &request, TEST_CALLER).payload {
+            Payload::Ok { data } => Ok(data),
+            Payload::Err { code, .. } => Err(code.expect("typed error code")),
+            other => panic!("unexpected reply {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_v1_arguments_contract() {
+        let store = Arc::new(Mutex::new(migrated_store()));
+        let created = ipc(
+            &store,
+            "session.create",
+            serde_json::json!({"kind": "metadata", "cwd": "/tmp", "flow_id": null,
+                               "pid": null, "operation_id": null, "future": [1]}),
+        )
+        .expect("create with nulls and unknown field");
+        ipc(&store, "session.list", serde_json::json!({"page": 1})).expect("list");
+        for (command, args) in [
+            // Previously `kind` silently became "local-pty" and `cwd` was dropped.
+            ("session.create", serde_json::json!({"kind": 42})),
+            ("session.create", serde_json::json!({"cwd": ["/tmp"]})),
+            ("session.create", serde_json::json!({"pid": "1"})),
+            (
+                "session.create",
+                serde_json::json!({"pid": 9_999_999_999_i64}),
+            ),
+            ("session.create", serde_json::json!({"flow_id": 3})),
+            ("session.create", serde_json::json!({"operation_id": 5})),
+            ("session.terminate", serde_json::json!({"id": 7})),
+            ("session.terminate", serde_json::json!({})),
+            ("session.list", serde_json::json!("all")),
+        ] {
+            assert_eq!(
+                ipc(&store, command, args.clone()),
+                Err(ErrorCode::InvalidArgument),
+                "{command} {args}"
+            );
+        }
+        let id = created["id"].as_str().expect("session id").to_owned();
+        assert!(ipc(
+            &store,
+            "session.terminate",
+            serde_json::json!({"id": id, "extra": 1})
+        )
+        .is_ok());
     }
 }
 

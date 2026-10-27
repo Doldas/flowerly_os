@@ -48,9 +48,11 @@ def good(path, name, args):
 def begin(binary, runtime, state):
     runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
     state.mkdir(parents=True, mode=0o700, exist_ok=True)
+    # IPC shutdown needs an explicit admin group grant (#31).
     environment = dict(os.environ,
                        AGENTIC_RUNTIME_DIR=str(runtime),
-                       AGENTIC_STATE_DIR=str(state))
+                       AGENTIC_STATE_DIR=str(state),
+                       AGENTIC_ADMIN_GROUP=str(os.getgid()))
     proc = subprocess.Popen([str(binary)], env=environment,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     sock = runtime / (binary.name + ".sock")

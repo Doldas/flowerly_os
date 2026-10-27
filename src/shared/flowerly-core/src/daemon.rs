@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::ipc::{Envelope, ErrorCode, Payload, PeerIdentity};
+use crate::ipc::{AccessPolicy, AuthenticatedHandler, Envelope, ErrorCode, Payload, PeerIdentity};
 use serde_json::Value;
 use tracing::Instrument;
 
@@ -81,12 +81,76 @@ pub async fn run_service(
     run_service_with_status(config, Arc::new(move || extra_status.clone()), handler).await
 }
 
+/// Status details for one kernel-attested peer, recomputed per request.
+pub type StatusProvider = dyn Fn(&PeerIdentity) -> Value + Send + Sync;
+
 /// Status details are recomputed for each request by the bounded IPC handler,
 /// rather than reporting counts captured at service startup.
 pub async fn run_service_with_status(
     config: ServiceConfig,
     status_details: Arc<dyn Fn() -> Value + Send + Sync>,
     handler: Arc<dyn Fn(&Envelope) -> Envelope + Send + Sync>,
+) -> anyhow::Result<()> {
+    let handler: Arc<AuthenticatedHandler> = Arc::new(move |request, _peer| handler(request));
+    serve(
+        config,
+        AccessPolicy::default(),
+        ShutdownAuthority::ServiceAccount,
+        Arc::new(move |_peer: &PeerIdentity| status_details()),
+        handler,
+    )
+    .await
+}
+
+/// Like [`run_service_with_status`], but admits peers by `policy`, hands
+/// the kernel-attested peer to `handler` for per-command authorization and
+/// to `status_details` so Status can be scoped to it, and refuses IPC
+/// `shutdown` to anyone outside the admin group.
+pub async fn run_authorized_service(
+    config: ServiceConfig,
+    policy: AccessPolicy,
+    status_details: Arc<StatusProvider>,
+    handler: Arc<AuthenticatedHandler>,
+) -> anyhow::Result<()> {
+    serve(
+        config,
+        policy,
+        ShutdownAuthority::AdminGroup,
+        status_details,
+        handler,
+    )
+    .await
+}
+
+/// Journal record of an Admin-authorized IPC shutdown decision.
+fn audit_shutdown(request_id: &str, peer: &PeerIdentity, outcome: &str) {
+    tracing::info!(
+        target: "flowerly::admin_audit",
+        request_id,
+        command = "shutdown",
+        peer_uid = peer.uid,
+        peer_gid = peer.gid,
+        peer_pid = ?peer.pid,
+        service_account = peer.service_account,
+        outcome,
+        "admin command"
+    );
+}
+
+/// Who may stop the service over IPC. SIGTERM from the service account or
+/// the service manager is unaffected.
+#[derive(Clone, Copy)]
+enum ShutdownAuthority {
+    ServiceAccount,
+    AdminGroup,
+}
+
+async fn serve(
+    config: ServiceConfig,
+    policy: AccessPolicy,
+    shutdown_authority: ShutdownAuthority,
+    status_details: Arc<StatusProvider>,
+    handler: Arc<AuthenticatedHandler>,
 ) -> anyhow::Result<()> {
     let context = ServiceContext::for_current_process(&config.name);
 
@@ -111,10 +175,24 @@ pub async fn run_service_with_status(
                 version: crate::ipc::PROTOCOL_VERSION,
                 id: request.id.clone(),
                 payload: Payload::Ok {
-                    data: status_context.status(status_details()),
+                    data: status_context.status(status_details(peer)),
                 },
             },
+            Payload::Shutdown
+                if matches!(shutdown_authority, ShutdownAuthority::AdminGroup)
+                    && !policy.is_admin(peer) =>
+            {
+                audit_shutdown(&request.id, peer, "denied");
+                coded_error_envelope(
+                    request.id.clone(),
+                    ErrorCode::PermissionDenied,
+                    "shutdown requires membership of the configured admin group",
+                )
+            }
             Payload::Shutdown => {
+                if matches!(shutdown_authority, ShutdownAuthority::AdminGroup) {
+                    audit_shutdown(&request.id, peer, "accepted");
+                }
                 let _ = shutdown_tx.send(true);
                 Envelope {
                     version: crate::ipc::PROTOCOL_VERSION,
@@ -140,14 +218,17 @@ pub async fn run_service_with_status(
                     "created_by".to_owned(),
                     Value::String(format!("uid:{}", peer.uid)),
                 );
-                handler(&Envelope {
-                    version: crate::ipc::PROTOCOL_VERSION,
-                    id: request.id.clone(),
-                    payload: Payload::Command {
-                        name: name.clone(),
-                        args: trusted_args,
+                handler(
+                    &Envelope {
+                        version: crate::ipc::PROTOCOL_VERSION,
+                        id: request.id.clone(),
+                        payload: Payload::Command {
+                            name: name.clone(),
+                            args: trusted_args,
+                        },
                     },
-                })
+                    peer,
+                )
             }
             other => coded_error_envelope(
                 request.id.clone(),
@@ -158,7 +239,7 @@ pub async fn run_service_with_status(
         reply
     });
 
-    crate::ipc::serve_with_shutdown_authenticated(&socket, request_handler, shutdown_rx)
+    crate::ipc::serve_with_policy(&socket, policy, request_handler, shutdown_rx)
         .instrument(tracing::info_span!("service", service = %context.name))
         .await
         .map_err(anyhow::Error::from)
@@ -180,6 +261,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             database_path: None,
             log_format: crate::config::LogFormat::Text,
+            ..ServiceConfig::default()
         };
         let server = tokio::spawn(run_service(
             config,
@@ -238,6 +320,116 @@ mod tests {
         server.await.unwrap().unwrap();
     }
 
+    async fn wait_for(socket: &std::path::Path) {
+        for _ in 0..100 {
+            if crate::ipc::call(socket, Payload::Ping).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("service never answered on {}", socket.display());
+    }
+
+    fn own_primary_gid(dir: &std::path::Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        let probe = dir.join("gid-probe");
+        std::fs::write(&probe, "").unwrap();
+        std::fs::metadata(&probe).unwrap().gid()
+    }
+
+    /// #31: IPC shutdown is an Admin operation. Without an admin group the
+    /// service account itself is refused, and forged JSON cannot help.
+    #[tokio::test]
+    async fn authorized_service_refuses_shutdown_outside_the_admin_group() {
+        let dir = tempdir().unwrap();
+        let config = ServiceConfig {
+            name: "guarded".to_owned(),
+            runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+            ..ServiceConfig::default()
+        };
+        // A gid no account on a test host plausibly belongs to.
+        let foreign_gid = 3_999_999_999;
+        let server = tokio::spawn(run_authorized_service(
+            config,
+            AccessPolicy {
+                users_gid: None,
+                admin_gid: Some(foreign_gid),
+            },
+            Arc::new(|_: &PeerIdentity| serde_json::json!({})),
+            Arc::new(|request: &Envelope, peer: &PeerIdentity| {
+                ok_envelope(
+                    request.id.clone(),
+                    serde_json::json!({
+                        "service_account": peer.service_account,
+                        "groups": peer.groups.to_vec(),
+                    }),
+                )
+            }),
+        ));
+        let socket = dir.path().join("guarded.sock");
+        wait_for(&socket).await;
+        let refused = crate::ipc::call(&socket, Payload::Shutdown).await.unwrap();
+        assert!(
+            matches!(
+                refused.payload,
+                Payload::Err {
+                    code: Some(ErrorCode::PermissionDenied),
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        // Still serving, and the handler sees the kernel-attested peer.
+        let reply = crate::ipc::call(
+            &socket,
+            Payload::Command {
+                name: "x.y".to_owned(),
+                args: serde_json::json!({"admin": true, "groups": [foreign_gid]}),
+            },
+        )
+        .await
+        .unwrap();
+        let Payload::Ok { data } = reply.payload else {
+            panic!("expected handler reply");
+        };
+        assert_eq!(data["service_account"], true);
+        assert!(!data["groups"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(foreign_gid)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn authorized_service_accepts_shutdown_from_an_admin_group_member() {
+        let dir = tempdir().unwrap();
+        let config = ServiceConfig {
+            name: "admin-stop".to_owned(),
+            runtime_dir: dir.path().to_path_buf(),
+            state_dir: dir.path().join("state"),
+            ..ServiceConfig::default()
+        };
+        let gid = own_primary_gid(dir.path());
+        let server = tokio::spawn(run_authorized_service(
+            config,
+            AccessPolicy {
+                users_gid: None,
+                admin_gid: Some(gid),
+            },
+            Arc::new(|_: &PeerIdentity| serde_json::json!({})),
+            Arc::new(|request: &Envelope, _peer: &PeerIdentity| {
+                ok_envelope(request.id.clone(), serde_json::json!({}))
+            }),
+        ));
+        let socket = dir.path().join("admin-stop.sock");
+        wait_for(&socket).await;
+        let stopped = crate::ipc::call(&socket, Payload::Shutdown).await.unwrap();
+        assert!(matches!(stopped.payload, Payload::Ok { .. }), "{stopped:?}");
+        server.await.unwrap().unwrap();
+        assert!(!socket.exists());
+    }
+
     #[tokio::test]
     async fn status_provider_is_evaluated_per_request() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -248,6 +440,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             database_path: None,
             log_format: crate::config::LogFormat::Text,
+            ..ServiceConfig::default()
         };
         let count = Arc::new(AtomicUsize::new(1));
         let status_count = Arc::clone(&count);
@@ -288,6 +481,7 @@ mod tests {
             state_dir: dir.path().join("state"),
             database_path: None,
             log_format: crate::config::LogFormat::Text,
+            ..ServiceConfig::default()
         };
 
         let handler = |request: &Envelope| -> Envelope {

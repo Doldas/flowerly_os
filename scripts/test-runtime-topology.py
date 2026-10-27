@@ -30,9 +30,28 @@ class RuntimeTopology(unittest.TestCase):
         source = (ROOT / "src/flowerlyd/src/main.rs").read_text()
         self.assertIn('config.name = "flowerlyd".into()', source)
         self.assertNotIn("run_service(config", source)
-        self.assertIn("run_service_with_status(config", source)
+        # The single CLI-facing socket is served by the peer-authorizing
+        # core runner (#31), never the unauthenticated-handler variant.
+        self.assertIn("run_authorized_service(config", source)
+        self.assertNotIn("run_service_with_status(config", source)
         for name in LEGACY_DAEMONS:
+            self.assertNotIn('run_authorized_service("' + name + '"', source)
             self.assertNotIn('run_service_with_status("' + name + '"', source)
+
+    def test_release_ships_the_consolidated_binaries(self):
+        # A tag release checksums and uploads exactly the built binaries;
+        # a legacy daemon name would make sha256sum fail the release job.
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        shipped = set()
+        for line in workflow.splitlines():
+            line = line.strip()
+            if line.startswith("target/release/"):
+                shipped.add(line.removeprefix("target/release/"))
+            if line.startswith("sha256sum "):
+                checksummed = set(line.split(">")[0].split()[1:])
+        self.assertEqual(shipped - {"SHA256SUMS"}, checksummed)
+        self.assertEqual(checksummed, CORE_DAEMONS | {"providerd", "agenticctl"})
+        self.assertFalse(checksummed & LEGACY_DAEMONS, checksummed)
 
     def test_unprovisioned_kvm_is_not_claimed_as_ready(self):
         source = (ROOT / "src/evolutiond/src/main.rs").read_text()

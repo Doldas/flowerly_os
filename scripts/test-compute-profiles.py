@@ -101,7 +101,9 @@ def main(bin_dir):
         state = root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state))
+        # Admin commands and IPC shutdown need an explicit admin group (#31).
+        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
+                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
         log_path = root / "flowerlyd.log"
 
         def start():
@@ -234,6 +236,17 @@ def main(bin_dir):
                         {"name": "external-api", "kind": "openai-api",
                          "capabilities": ["text"]}),
                 "permission_denied", "no egress policy authorization",
+            )
+            # Wrongly typed fields are refused, never coerced or filtered (#53).
+            err_args(
+                request(sock, "provider.register",
+                        {"name": "typed-kind", "kind": 42, "capabilities": ["text"]}),
+                "invalid_argument", "`kind` must be a string",
+            )
+            err_args(
+                request(sock, "provider.register",
+                        {"name": "typed-caps", "capabilities": [1, "text"]}),
+                "invalid_argument", "capabilities",
             )
             listed = request(sock, "provider.list", {})["data"]
             kinds = [row["kind"] for row in listed["providers"]]

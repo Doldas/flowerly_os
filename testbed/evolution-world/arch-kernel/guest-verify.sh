@@ -62,6 +62,18 @@ echo "== Release build =="
 just build
 
 echo
+echo "== #225 cross-UID authorization and per-user ownership with real Arch UIDs =="
+sudo python3 scripts/test-admin-authorization.py --cross-uid target/release
+sudo python3 scripts/test-user-ownership.py --cross-uid target/release
+
+echo
+echo "== #225 real systemd admission: shipped default, opt-in drop-in, disable =="
+# The guest is disposable: this installs flowerlyd, its unit and test users.
+sudo env FLOWERLY_DISPOSABLE_HOST=1 \
+    FLOWERLY_TEST_SHA="${FLOWERLY_TEST_SHA:-$(cat .flowerly-tested-commit 2>/dev/null || echo unknown)}" \
+    python3 scripts/test-systemd-multi-user.py target/release
+
+echo
 echo "== PTY root-refusal negative, unprivileged ownership and adversarial stream/crash tests =="
 sudo python3 scripts/test-pty-guardian.py --expect-root-denied
 python3 scripts/test-pty-guardian.py
@@ -98,10 +110,24 @@ fi
 sudo install -d -m 0755 "$acceptance_root/scripts"
 sudo install -m 0644 scripts/arch-pty-cgroup-acceptance.sh \
     scripts/test-pty-cgroup.py scripts/pty-guardian.py \
+    scripts/test-pty-daemon-recovery.py scripts/test-pty-containment-adversarial.py \
+    scripts/pty-escape-probe.py scripts/pty-pid-reuse-helper.py \
     "$acceptance_root/scripts"
+# Root-owned copy: the manager account must not be able to replace it.
+sudo install -d -m 0755 "$acceptance_root/bin"
+sudo install -m 0755 target/release/flowerlyd "$acceptance_root/bin/flowerlyd"
 (
     cd "$acceptance_root"
     sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user"
+    echo
+    echo "== #74 flowerlyd crash/restart matrix with delegated cgroup v2 =="
+    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user" \
+        "$acceptance_root/bin"
+    echo
+    echo "== #72 adversarial PTY containment: namespaces, PID reuse, exhaustion, orphans =="
+    # The guest is disposable: the PID-reuse helper writes ns_last_pid as root.
+    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user" \
+        "$acceptance_root/bin" containment
 )
 
 echo

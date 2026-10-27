@@ -8,6 +8,7 @@ python3 scripts/test-release-gates.py
 python3 scripts/test-branch-forward.py
 python3 scripts/test-layer-15-boundaries.py
 python3 scripts/test-runtime-topology.py
+python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
@@ -19,5 +20,6 @@ python3 scripts/test-probe-arch-qemu-boot.py
 python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
 bash scripts/test-arch-vm-disk.sh
+python3 scripts/test-arch-vm-failure-classify.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."

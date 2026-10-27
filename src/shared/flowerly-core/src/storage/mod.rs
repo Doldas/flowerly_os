@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod repository;
+pub mod scoped;
+
+pub use admin::{
+    AdminAuditRecord, OwnedObject, OwnershipReport, MAX_AUDIT_REASON, MAX_OWNERSHIP_COMPONENT,
+};
+pub use scoped::{FlowView, ProfileView};
 
 use std::fmt;
 use std::path::Path;
@@ -8,7 +15,7 @@ use std::str::FromStr;
 
 use crate::types::{
     AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, ProfileId,
+    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId,
     ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
     SessionState, Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
 };
@@ -42,6 +49,20 @@ pub enum StorageError {
 
     #[error("invalid operation request: {0}")]
     InvalidOperation(String),
+
+    /// Refused for a reason that reveals nothing the caller cannot already
+    /// see (for example archiving the shared General Flow).
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+
+    /// The database was migrated by a newer binary. Running older code on it
+    /// would bypass invariants it does not know about (for example per-owner
+    /// data), so the store refuses to open for use.
+    #[error(
+        "database schema version {found} is newer than this binary supports ({supported}); \
+         restore the pre-upgrade backup or install the newer release"
+    )]
+    SchemaNewerThanBinary { found: i64, supported: i64 },
 }
 
 impl StorageError {
@@ -82,6 +103,31 @@ impl StorageError {
             Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
                 if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
         ) || matches!(self, Self::ForeignKeyViolation(_))
+    }
+
+    /// The single IPC error classification for storage failures, shared by
+    /// every storage-backed command so the mapping cannot drift per daemon.
+    ///
+    /// Classification uses typed variants and SQLite result codes, never the
+    /// error text. Only BUSY/LOCKED contention is transient (`Unavailable`);
+    /// corruption, I/O, full disk, read-only databases, CHECK/NOT NULL
+    /// violations and decode failures stay `Internal` because retrying cannot
+    /// fix them and they usually indicate a defect or a damaged database.
+    #[must_use]
+    pub fn ipc_error_code(&self) -> crate::ipc::ErrorCode {
+        use crate::ipc::ErrorCode;
+        match self {
+            Self::NotFound(_) => ErrorCode::NotFound,
+            Self::PermissionDenied(_) => ErrorCode::PermissionDenied,
+            Self::InvalidOperation(_) | Self::ForeignKeyViolation(_) => ErrorCode::InvalidArgument,
+            Self::OperationConflict(_) | Self::UniqueViolation(_) => ErrorCode::Conflict,
+            Self::Sqlite(_) if self.is_busy() => ErrorCode::Unavailable,
+            Self::Sqlite(_) if self.is_unique_violation() => ErrorCode::Conflict,
+            Self::Sqlite(_) if self.is_foreign_key_violation() => ErrorCode::InvalidArgument,
+            Self::Sqlite(_) | Self::Serde(_) | Self::Io(_) | Self::SchemaNewerThanBinary { .. } => {
+                ErrorCode::Internal
+            }
+        }
     }
 }
 
@@ -337,7 +383,47 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "workloads_usage",
         sql: include_str!("../../migrations/0008_workloads_usage.sql"),
     },
+    Migration {
+        version: 9,
+        name: "object_ownership",
+        sql: include_str!("../../migrations/0009_object_ownership.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "per_owner_foreground",
+        sql: include_str!("../../migrations/0010_per_owner_foreground.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "generation_reason_goal_owner",
+        sql: include_str!("../../migrations/0011_generation_reason_goal_owner.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "compute_ownership",
+        sql: include_str!("../../migrations/0012_compute_ownership.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "generation_ownership_admin_audit",
+        sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
+    },
 ];
+
+/// Live domain counts reported by service Status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatusCounts {
+    pub flows: u64,
+    pub goals: u64,
+    pub sessions: u64,
+    pub executions: u64,
+    pub generations: u64,
+    pub provenance_edges: u64,
+    pub models: u64,
+    pub profiles: u64,
+    pub providers: u64,
+    pub active_workloads: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -397,6 +483,18 @@ impl Store {
                  applied_at INTEGER NOT NULL
              );",
         )?;
+
+        // Refuse a rollback onto a newer schema before touching anything (an
+        // older binary would otherwise run on tables it does not understand).
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+        let found: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if found > supported {
+            return Err(StorageError::SchemaNewerThanBinary { found, supported });
+        }
 
         let mut applied = Vec::new();
         for migration in MIGRATIONS {
@@ -464,11 +562,51 @@ impl Store {
         Ok(())
     }
 
+    /// Live per-domain row counts read in one statement, so every count comes
+    /// from the same snapshot. Filters match the corresponding `list_*` calls.
+    pub fn status_counts(&self) -> Result<StatusCounts> {
+        let count = |row: &Row<'_>, index: usize| -> rusqlite::Result<u64> {
+            let value: i64 = row.get(index)?;
+            u64::try_from(value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(index, Type::Integer, Box::new(error))
+            })
+        };
+        let counts = self.conn.query_row(
+            "SELECT
+                 (SELECT COUNT(*) FROM flows),
+                 (SELECT COUNT(*) FROM goals),
+                 (SELECT COUNT(*) FROM sessions),
+                 (SELECT COUNT(*) FROM executions),
+                 (SELECT COUNT(*) FROM generations),
+                 (SELECT COUNT(*) FROM provenance_edges),
+                 (SELECT COUNT(*) FROM models WHERE retired_at IS NULL),
+                 (SELECT COUNT(*) FROM ai_profiles),
+                 (SELECT COUNT(*) FROM ai_providers WHERE retired_at IS NULL),
+                 (SELECT COUNT(*) FROM inference_workloads WHERE state IN ('QUEUED', 'ADMITTED'))",
+            [],
+            |row| {
+                Ok(StatusCounts {
+                    flows: count(row, 0)?,
+                    goals: count(row, 1)?,
+                    sessions: count(row, 2)?,
+                    executions: count(row, 3)?,
+                    generations: count(row, 4)?,
+                    provenance_edges: count(row, 5)?,
+                    models: count(row, 6)?,
+                    profiles: count(row, 7)?,
+                    providers: count(row, 8)?,
+                    active_workloads: count(row, 9)?,
+                })
+            },
+        )?;
+        Ok(counts)
+    }
+
     /// Bootstrap or recover the unique General system Flow transactionally.
     /// A pre-existing General keeps its durable ID, including legacy IDs.
-    /// For a fresh database General has a deterministic ID. If no Flow is
-    /// foreground, General becomes the default; otherwise preserve the
-    /// user's active Flow and only repair an archived General.
+    /// For a fresh database General has a deterministic ID. An archived
+    /// General is repaired. Foregrounds are per owner (`flow_foreground`)
+    /// and are never touched here: a uid without a row sees General.
     pub fn ensure_general_flow(&mut self) -> Result<FlowId> {
         let tx = self
             .conn
@@ -484,6 +622,7 @@ impl Store {
             })?
         } else {
             let mut general = Flow::new("General", "system");
+            general.owner = Owner::System;
             general.id = FlowId::from_raw("flow-general");
             general.purpose = Some("The universal default context".to_owned());
             insert_flow_row(&tx, &general)?;
@@ -508,18 +647,12 @@ impl Store {
              WHERE id = ?1 AND state = 'ARCHIVED'",
             params![id.as_str()],
         )?;
-        let active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM flows WHERE state = 'FOREGROUND')",
-            [],
-            |row| row.get(0),
+        // General is the shared system Flow by definition (#225).
+        tx.execute(
+            "UPDATE flows SET owner_class = 'system', owner_uid = NULL
+             WHERE id = ?1 AND owner_class != 'system'",
+            params![id.as_str()],
         )?;
-        if !active {
-            tx.execute(
-                "UPDATE flows SET state = 'FOREGROUND',
-                 last_active = ?2, revision = revision + 1 WHERE id = ?1",
-                params![id.as_str(), Timestamp::now().as_millis()],
-            )?;
-        }
         tx.commit()?;
         Ok(id)
     }
@@ -533,6 +666,22 @@ impl Store {
         operation: &MutationOperation<'_>,
         write: impl FnOnce(&Connection) -> Result<()>,
     ) -> Result<String> {
+        let response = operation.response_payload;
+        self.run_once(operation, |conn| {
+            write(conn)?;
+            Ok(response.to_owned())
+        })
+    }
+
+    /// Like `insert_once`, but the response is produced by `write` inside the
+    /// transaction, for mutations whose result (such as an allocated version
+    /// number) is only known once the write runs. `response_payload` of the
+    /// operation is ignored.
+    fn run_once(
+        &mut self,
+        operation: &MutationOperation<'_>,
+        write: impl FnOnce(&Connection) -> Result<String>,
+    ) -> Result<String> {
         let id = operation.operation_id;
         if id.is_empty()
             || id.len() > 128
@@ -544,9 +693,7 @@ impl Store {
                 "operation_id must use 1..128 ASCII letters, numbers, ., _, :, or -".into(),
             ));
         }
-        if operation.request_payload.len() > 64 * 1024
-            || operation.response_payload.len() > 64 * 1024
-        {
+        if operation.request_payload.len() > 64 * 1024 {
             return Err(StorageError::InvalidOperation(
                 "idempotent operation payload exceeds 64 KiB".into(),
             ));
@@ -578,7 +725,12 @@ impl Store {
             tx.commit()?;
             return Ok(prior_response);
         }
-        write(&tx)?;
+        let response = write(&tx)?;
+        if response.len() > 64 * 1024 {
+            return Err(StorageError::InvalidOperation(
+                "idempotent operation payload exceeds 64 KiB".into(),
+            ));
+        }
         tx.execute(
             "INSERT INTO ipc_operations
              (actor, command, operation_id, request_payload, response_payload, created_at)
@@ -588,12 +740,12 @@ impl Store {
                 operation.command,
                 id,
                 operation.request_payload,
-                operation.response_payload,
+                response,
                 Timestamp::now().as_millis(),
             ],
         )?;
         tx.commit()?;
-        Ok(operation.response_payload.to_owned())
+        Ok(response)
     }
 
     /// Reserve an externally effective PTY operation BEFORE launching anything.
@@ -681,12 +833,47 @@ impl Store {
         }
     }
 
+    /// Durably record a spawn WITHOUT an operation_id before launching it
+    /// (#74), so restart recovery can find its cgroup even if the daemon,
+    /// guardian and cleanup watcher all die before the Session row commits.
+    /// It is not a retry identity: nothing can look it up, and it is released
+    /// once the Session row exists (`release_unkeyed_spawn`).
+    pub fn reserve_unkeyed_spawn(&mut self, actor: &str, session_id: &SessionId) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ipc_operations
+             (actor, command, operation_id, request_payload, response_payload, created_at)
+             VALUES (?1, 'session.spawn.unkeyed', ?2, '{}', ?2, ?3)",
+            params![actor, session_id.as_str(), Timestamp::now().as_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// The Session row now identifies the cgroup; drop the launch record.
+    pub fn release_unkeyed_spawn(&mut self, session_id: &SessionId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM ipc_operations
+             WHERE command = 'session.spawn.unkeyed' AND operation_id = ?1",
+            params![session_id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// After restart recovery has killed their cgroups, unkeyed launch
+    /// records carry no further meaning: no client can look them up.
+    pub fn clear_unkeyed_spawn_reservations(&mut self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM ipc_operations WHERE command = 'session.spawn.unkeyed'",
+            [],
+        )?)
+    }
+
     /// Includes reserved IDs without Session rows: the daemon may have died
     /// between launching a guardian and persisting the Session result.
+    /// Keyed reservations are kept forever; unkeyed ones until recovery.
     pub fn list_external_spawn_reservations(&self) -> Result<Vec<SessionId>> {
         let mut statement = self.conn.prepare(
             "SELECT response_payload FROM ipc_operations
-             WHERE command = 'session.spawn'",
+             WHERE command IN ('session.spawn', 'session.spawn.unkeyed')",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut ids = Vec::new();
@@ -733,6 +920,7 @@ impl Store {
             ));
         }
         self.insert_once(operation, |conn| {
+            check_goal_references(conn, goal)?;
             insert_goal_row(conn, goal)?;
             for edge in edges {
                 insert_provenance_row(conn, edge)?;
@@ -753,6 +941,7 @@ impl Store {
             ));
         }
         self.insert_once(operation, |conn| {
+            check_session_references(conn, session)?;
             insert_session_row(conn, session)?;
             for edge in edges {
                 insert_provenance_row(conn, edge)?;
@@ -810,15 +999,23 @@ impl Store {
         created_by: &str,
         toml: &str,
         summary: &str,
+        owner: Owner,
         operation: Option<MutationOperation<'_>>,
         edges: &[ProvenanceEdge],
     ) -> Result<String> {
         let now = Timestamp::now();
         let write = |conn: &Connection| -> Result<()> {
             conn.execute(
-                "INSERT INTO ai_profiles (id, name, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![id.as_str(), name, created_by, now.as_millis()],
+                "INSERT INTO ai_profiles (id, name, created_by, created_at, owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id.as_str(),
+                    name,
+                    created_by,
+                    now.as_millis(),
+                    owner.class(),
+                    owner.uid()
+                ],
             )?;
             conn.execute(
                 "INSERT INTO ai_profile_versions
@@ -844,156 +1041,6 @@ impl Store {
         }
     }
 
-    /// Append a new version; the caller has fully validated the TOML and the
-    /// name is immutable after creation (renames update the profile row).
-    pub fn append_profile_version(
-        &mut self,
-        id: &ProfileId,
-        toml: &str,
-        summary: &str,
-        appended_by: &str,
-        edges: &[ProvenanceEdge],
-    ) -> Result<u32> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = Timestamp::now();
-        let next: u32 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) + 1
-                 FROM ai_profile_versions WHERE profile_id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(1);
-        tx.execute(
-            "INSERT INTO ai_profile_versions
-                 (profile_id, version, toml, summary, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id.as_str(),
-                next,
-                toml,
-                summary,
-                appended_by,
-                now.as_millis()
-            ],
-        )?;
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(next)
-    }
-
-    pub fn rename_profile(
-        &mut self,
-        id: &ProfileId,
-        new_name: &str,
-        renamed_by: &str,
-    ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = tx.execute(
-            "UPDATE ai_profiles SET name = ?2 WHERE id = ?1",
-            params![id.as_str(), new_name],
-        )?;
-        if changed == 0 {
-            tx.commit()?;
-            return Err(StorageError::NotFound(format!("profile not found: {id}")));
-        }
-        insert_provenance_row(
-            &tx,
-            &ProvenanceEdge {
-                from: ObjectRef::from(id),
-                relation: crate::types::ProvenanceRelation::CausedBy,
-                to: ObjectRef::actor(format!("rename:{renamed_by}")).map_err(|error| {
-                    StorageError::Sqlite(rusqlite::Error::InvalidParameterName(error.to_string()))
-                })?,
-                created_at: Timestamp::now(),
-                note: Some("profile rename".to_owned()),
-            },
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn profile_row(&self, id: &ProfileId) -> Result<Option<(String, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT name, created_by, created_at FROM ai_profiles WHERE id = ?1",
-                params![id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    pub fn profile_by_name(&self, name: &str) -> Result<Option<(ProfileId, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT id, created_by, created_at FROM ai_profiles WHERE name = ?1",
-                params![name],
-                |row| {
-                    let id: ProfileId = parse_text(row.get::<_, String>(0)?, 0)?;
-                    Ok((id, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
-                },
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    pub fn list_profiles(&self) -> Result<Vec<(ProfileId, String, u32, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.name, COALESCE(MAX(v.version), 0), p.created_at
-             FROM ai_profiles p
-             LEFT JOIN ai_profile_versions v ON v.profile_id = p.id
-             GROUP BY p.id ORDER BY p.created_at",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let raw: String = row.get(0)?;
-            Ok((
-                parse_text::<ProfileId>(raw, 0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-            ))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    pub fn profile_version(
-        &self,
-        id: &ProfileId,
-        version: u32,
-    ) -> Result<Option<(String, String, String, i64)>> {
-        self.conn
-            .query_row(
-                "SELECT toml, summary, created_by, created_at
-                 FROM ai_profile_versions WHERE profile_id = ?1 AND version = ?2",
-                params![id.as_str(), version],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
-    /// Latest version tuple `(version, toml, summary)`.
-    pub fn profile_latest(&self, id: &ProfileId) -> Result<Option<(u32, String, String)>> {
-        self.conn
-            .query_row(
-                "SELECT version, toml, summary
-                 FROM ai_profile_versions
-                 WHERE profile_id = ?1 ORDER BY version DESC LIMIT 1",
-                params![id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(StorageError::from)
-    }
-
     /// Register a provider. Remote kinds never pass storage here; the daemon
     /// must refuse them against egress policy before calling this.
     #[allow(clippy::too_many_arguments)]
@@ -1011,9 +1058,11 @@ impl Store {
         let now = Timestamp::now();
         let write = |conn: &Connection| -> Result<()> {
             conn.execute(
+                // Providers are registered only through the Admin-classified
+                // provider.register, so they are system definitions (#225).
                 "INSERT INTO ai_providers
-                     (id, name, kind, endpoint, capabilities, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (id, name, kind, endpoint, capabilities, created_by, created_at, owner_class)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'system')",
                 params![
                     id.as_str(),
                     name,
@@ -1076,8 +1125,10 @@ impl Store {
                 "INSERT INTO inference_workloads
                      (id, profile_id, profile_name, model_id, background, priority,
                       state, reason, ceilings, created_by, created_at,
-                      admitted_at, stopped_at, completed_at, operation_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                      admitted_at, stopped_at, completed_at, operation_id,
+                      owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17)",
                 params![
                     workload.id.as_str(),
                     workload.profile_id.as_str(),
@@ -1094,6 +1145,8 @@ impl Store {
                     workload.stopped_at.map(|t| t.as_millis()),
                     workload.completed_at.map(|t| t.as_millis()),
                     workload.operation_id,
+                    workload.owner.class(),
+                    workload.owner.uid(),
                 ],
             )?;
             for edge in edges {
@@ -1114,103 +1167,18 @@ impl Store {
         }
     }
 
-    /// Count admission over all started (queued+admitted) workloads of a
-    /// profile for the concurrency ceiling check; owner = caller-relevant
-    /// filter by `created_by` when Some("")
-    pub fn count_active_workloads_for_profile(
-        &self,
-        id: &ProfileId,
-        created_by: Option<&str>,
-    ) -> Result<u32> {
-        self.conn
-            .query_row(
-                "SELECT COUNT(*) FROM inference_workloads
-             WHERE profile_id = ?1
-               AND state IN ('QUEUED', 'ADMITTED')
-               AND (?2 IS NULL OR created_by = ?2)",
-                params![id.as_str(), created_by],
-                |row| row.get(0),
-            )
-            .map_err(StorageError::from)
-    }
-
     pub fn get_workload(&self, id: &WorkloadId) -> Result<Option<WorkloadRecord>> {
         self.conn
             .query_row(
                 "SELECT id, profile_id, profile_name, model_id, background, priority,
                         state, reason, ceilings, created_by, created_at,
-                        admitted_at, stopped_at, completed_at, operation_id
+                        admitted_at, stopped_at, completed_at, operation_id, owner_class, owner_uid
                  FROM inference_workloads WHERE id = ?1",
                 params![id.as_str()],
                 map_workload,
             )
             .optional()
             .map_err(StorageError::from)
-    }
-
-    pub fn list_workloads(&self, created_by: Option<&str>) -> Result<Vec<WorkloadRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, profile_id, profile_name, model_id, background, priority,
-                    state, reason, ceilings, created_by, created_at,
-                    admitted_at, stopped_at, completed_at, operation_id
-             FROM inference_workloads
-             WHERE (?1 IS NULL OR created_by = ?1)
-             ORDER BY priority DESC, created_at",
-        )?;
-        let rows = stmt.query_map(params![created_by], map_workload)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Stop or complete a workload. The target state must be a terminal
-    /// transition from QUEUED or ADMITTED; anything else is a typed conflict.
-    pub fn transition_workload(
-        &mut self,
-        id: &WorkloadId,
-        target: WorkloadState,
-        edges: &[ProvenanceEdge],
-    ) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = Timestamp::now().as_millis();
-        let column = match target {
-            WorkloadState::Stopped => "stopped_at",
-            WorkloadState::Completed => "completed_at",
-            other => {
-                return Err(StorageError::InvalidOperation(format!(
-                    "invalid terminal workload transition to {other}"
-                )));
-            }
-        };
-        let changed = tx.execute(
-            &format!(
-                "UPDATE inference_workloads
-                 SET state = ?2, {column} = ?3
-                 WHERE id = ?1 AND state IN ('QUEUED', 'ADMITTED')"
-            ),
-            params![id.as_str(), target.to_string(), now],
-        )?;
-        if changed == 0 {
-            let exists: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM inference_workloads WHERE id = ?1",
-                    params![id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            tx.commit()?;
-            return match exists {
-                None => Err(StorageError::NotFound(format!("workload not found: {id}"))),
-                Some(_) => Err(StorageError::OperationConflict(format!(
-                    "workload {id} is not running for a {target} transition"
-                ))),
-            };
-        }
-        for edge in edges {
-            insert_provenance_row(&tx, edge)?;
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     /// Record one usage ledger entry; the workload must exist.
@@ -1227,8 +1195,8 @@ impl Store {
         tx.execute(
             "INSERT INTO inference_usage
                  (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
-                  cost_micros, created_by, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  cost_micros, created_by, created_at, owner_class, owner_uid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 usage.id.as_str(),
                 usage.workload_id.as_str(),
@@ -1239,6 +1207,8 @@ impl Store {
                 usage.cost_micros as i64,
                 usage.created_by,
                 usage.created_at.as_millis(),
+                usage.owner.class(),
+                usage.owner.uid(),
             ],
         )?;
         tx.commit()?;
@@ -1262,8 +1232,8 @@ impl Store {
             conn.execute(
                 "INSERT INTO inference_usage
                      (id, workload_id, model_id, tokens_in, tokens_out, latency_ms,
-                      cost_micros, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      cost_micros, created_by, created_at, owner_class, owner_uid)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     usage.id.as_str(),
                     usage.workload_id.as_str(),
@@ -1274,6 +1244,8 @@ impl Store {
                     usage.cost_micros as i64,
                     usage.created_by,
                     usage.created_at.as_millis(),
+                    usage.owner.class(),
+                    usage.owner.uid(),
                 ],
             )?;
             Ok(())
@@ -1393,7 +1365,7 @@ impl Store {
     pub fn get_flow(&self, id: &FlowId) -> Result<Option<Flow>> {
         self.conn
             .query_row(
-                "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision
+                "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid
                  FROM flows WHERE id = ?1",
                 params![id.as_str()],
                 map_flow,
@@ -1404,49 +1376,16 @@ impl Store {
 
     pub fn list_flows(&self) -> Result<Vec<Flow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision
+            "SELECT id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid
              FROM flows ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_flow)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Atomically move the foreground to one Flow in the shared state scope.
-    /// Missing or archived targets leave the current foreground unchanged.
-    pub fn activate_flow(&mut self, id: &FlowId) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let target: Option<String> = tx
-            .query_row(
-                "SELECT state FROM flows WHERE id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let target = target.ok_or_else(|| StorageError::NotFound(id.to_string()))?;
-        if target == "ARCHIVED" {
-            return Err(StorageError::NotFound(format!("archived flow: {id}")));
-        }
-        tx.execute(
-            "UPDATE flows SET state = 'ACTIVE', revision = revision + 1 WHERE state = 'FOREGROUND' AND id != ?1",
-            params![id.as_str()],
-        )?;
-        tx.execute(
-            "UPDATE flows SET state = 'FOREGROUND', last_active = ?2, revision = revision + 1 WHERE id = ?1",
-            params![id.as_str(), Timestamp::now().as_millis()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
+    /// Unscoped lifecycle change for internal and test use only; IPC handlers
+    /// use the owner-scoped [`Store::archive_flow_for`].
     pub fn set_flow_state(&self, id: &FlowId, state: FlowState) -> Result<()> {
-        if state == FlowState::Foreground {
-            return Err(StorageError::NotFound(
-                "use activate_flow for foreground transitions".to_owned(),
-            ));
-        }
-
         retry_on_busy(RetryConfig::default(), || {
             let changed = self.conn.execute(
                 "UPDATE flows SET state = ?2 WHERE id = ?1",
@@ -1472,6 +1411,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_goal_references(&tx, goal)?;
             insert_goal_row(&tx, goal)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1484,7 +1424,7 @@ impl Store {
     pub fn get_goal(&self, id: &GoalId) -> Result<Option<Goal>> {
         self.conn
             .query_row(
-                "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at
+                "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid
                  FROM goals WHERE id = ?1",
                 params![id.as_str()],
                 map_goal,
@@ -1495,7 +1435,7 @@ impl Store {
 
     pub fn list_goals(&self) -> Result<Vec<Goal>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at
+            "SELECT id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid
              FROM goals ORDER BY priority DESC, created_at",
         )?;
         let rows = stmt.query_map([], map_goal)?;
@@ -1530,6 +1470,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_session_references(&tx, session)?;
             insert_session_row(&tx, session)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1542,7 +1483,7 @@ impl Store {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         self.conn
             .query_row(
-                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
+                "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid
                  FROM sessions WHERE id = ?1",
                 params![id.as_str()],
                 map_session,
@@ -1553,7 +1494,7 @@ impl Store {
 
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at
+            "SELECT id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid
              FROM sessions ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_session)?;
@@ -1603,6 +1544,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            check_execution_references(&tx, exec)?;
             insert_execution_row(&tx, exec)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1615,7 +1557,7 @@ impl Store {
     pub fn get_execution(&self, id: &ExecutionId) -> Result<Option<Execution>> {
         self.conn
             .query_row(
-                "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at
+                "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid
                  FROM executions WHERE id = ?1",
                 params![id.as_str()],
                 map_execution,
@@ -1626,7 +1568,7 @@ impl Store {
 
     pub fn list_executions(&self) -> Result<Vec<Execution>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at
+            "SELECT id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid
              FROM executions ORDER BY started_at",
         )?;
         let rows = stmt.query_map([], map_execution)?;
@@ -1648,6 +1590,12 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(goal) = &generation.reason_goal {
+                scoped::require_same_owner_goal(&tx, generation.owner, goal)?;
+            }
+            if let Some(parent) = &generation.parent {
+                scoped::require_visible_parent_generation(&tx, generation.owner, parent)?;
+            }
             insert_generation_row(&tx, generation)?;
             for edge in edges {
                 insert_provenance_row(&tx, edge)?;
@@ -1660,7 +1608,7 @@ impl Store {
     pub fn get_generation(&self, id: &GenerationId) -> Result<Option<Generation>> {
         self.conn
             .query_row(
-                "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at
+                "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid
                  FROM generations WHERE id = ?1",
                 params![id.as_str()],
                 map_generation,
@@ -1671,7 +1619,7 @@ impl Store {
 
     pub fn list_generations(&self) -> Result<Vec<Generation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at
+            "SELECT id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid
              FROM generations ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], map_generation)?;
@@ -1709,6 +1657,18 @@ impl Store {
                 .is_some();
             if !exists {
                 return Err(StorageError::NotFound(id.to_string()));
+            }
+            // A private candidate never becomes the system STABLE (#225):
+            // it must be promoted, with an audit record, first.
+            let owner_class: String = tx.query_row(
+                "SELECT owner_class FROM generations WHERE id = ?1",
+                params![id.as_str()],
+                |row| row.get(0),
+            )?;
+            if owner_class != "system" {
+                return Err(StorageError::OperationConflict(format!(
+                    "generation {id} is not a system Generation; promote it first"
+                )));
             }
 
             tx.execute(
@@ -1753,10 +1713,32 @@ impl Store {
     }
 }
 
+/// Same-owner references, checked in the inserting transaction (#225).
+fn check_goal_references(conn: &Connection, goal: &Goal) -> Result<()> {
+    match &goal.parent_goal {
+        Some(parent) => scoped::require_same_owner_goal(conn, goal.owner, parent),
+        None => Ok(()),
+    }
+}
+
+fn check_session_references(conn: &Connection, session: &Session) -> Result<()> {
+    match &session.flow_id {
+        Some(flow) => scoped::require_usable_flow(conn, session.owner, flow),
+        None => Ok(()),
+    }
+}
+
+fn check_execution_references(conn: &Connection, exec: &Execution) -> Result<()> {
+    match &exec.goal_id {
+        Some(goal) => scoped::require_same_owner_goal(conn, exec.owner, goal),
+        None => Ok(()),
+    }
+}
+
 fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
     conn.execute(
-        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO flows (id, name, purpose, parent_flow, state, created_by, created_at, last_active, revision, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             flow.id.as_str(),
             flow.name,
@@ -1767,6 +1749,8 @@ fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
             flow.created_at.as_millis(),
             flow.last_active.map(|t| t.as_millis()),
             flow.revision,
+            flow.owner.class(),
+            flow.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1774,8 +1758,8 @@ fn insert_flow_row(conn: &Connection, flow: &Flow) -> Result<()> {
 
 fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
     conn.execute(
-        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO goals (id, parent_goal, objective, rationale, constraints, success_metrics, priority, status, created_by, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             goal.id.as_str(),
             goal.parent_goal.as_ref().map(GoalId::as_str),
@@ -1787,6 +1771,8 @@ fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
             goal.status.to_string(),
             goal.created_by,
             goal.created_at.as_millis(),
+            goal.owner.class(),
+            goal.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1794,8 +1780,8 @@ fn insert_goal_row(conn: &Connection, goal: &Goal) -> Result<()> {
 
 fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
     conn.execute(
-        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO sessions (id, flow_id, kind, pid, cwd, state, presentation_state, created_by, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             session.id.as_str(),
             session.flow_id.as_ref().map(FlowId::as_str),
@@ -1806,6 +1792,8 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
             session.presentation_state.to_string(),
             session.created_by,
             session.created_at.as_millis(),
+            session.owner.class(),
+            session.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1813,8 +1801,8 @@ fn insert_session_row(conn: &Connection, session: &Session) -> Result<()> {
 
 fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
     conn.execute(
-        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO executions (id, agent_id, goal_id, reason, command, exit_code, duration_ms, started_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             exec.id.as_str(),
             exec.agent_id.as_ref().map(AgentId::as_str),
@@ -1824,6 +1812,8 @@ fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
             exec.exit_code,
             exec.duration_ms,
             exec.started_at.as_millis(),
+            exec.owner.class(),
+            exec.owner.uid(),
         ],
     )?;
     Ok(())
@@ -1831,8 +1821,8 @@ fn insert_execution_row(conn: &Connection, exec: &Execution) -> Result<()> {
 
 fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<()> {
     conn.execute(
-        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO generations (id, parent, source_commit, system_manifest, reason_goal, experiment, status, created_at, owner_class, owner_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             generation.id.as_str(),
             generation.parent.as_ref().map(GenerationId::as_str),
@@ -1842,9 +1832,48 @@ fn insert_generation_row(conn: &Connection, generation: &Generation) -> Result<(
             generation.experiment.as_ref().map(|e| e.to_string()),
             generation.status.to_string(),
             generation.created_at.as_millis(),
+            generation.owner.class(),
+            generation.owner.uid(),
         ],
     )?;
     Ok(())
+}
+
+fn append_profile_version_row(
+    tx: &Connection,
+    id: &ProfileId,
+    toml: &str,
+    summary: &str,
+    appended_by: &str,
+    edges: &[ProvenanceEdge],
+) -> Result<u32> {
+    let now = Timestamp::now();
+    let next: u32 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1
+                 FROM ai_profile_versions WHERE profile_id = ?1",
+            params![id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(1);
+    tx.execute(
+        "INSERT INTO ai_profile_versions
+                 (profile_id, version, toml, summary, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id.as_str(),
+            next,
+            toml,
+            summary,
+            appended_by,
+            now.as_millis()
+        ],
+    )?;
+    for edge in edges {
+        insert_provenance_row(tx, edge)?;
+    }
+    Ok(next)
 }
 
 fn insert_provenance_row(conn: &Connection, edge: &ProvenanceEdge) -> Result<()> {
@@ -1957,6 +1986,7 @@ fn map_workload(row: &Row<'_>) -> rusqlite::Result<WorkloadRecord> {
         stopped_at: stopped_at.map(Timestamp::from_millis),
         completed_at: completed_at.map(Timestamp::from_millis),
         operation_id: row.get(14)?,
+        owner: map_owner(row)?,
     })
 }
 
@@ -2014,6 +2044,13 @@ fn map_provider(row: &Row<'_>) -> rusqlite::Result<ProviderRecord> {
     })
 }
 
+/// Owner columns, read by name so positional mappers stay unchanged.
+fn map_owner(row: &Row<'_>) -> rusqlite::Result<Owner> {
+    let class: String = row.get("owner_class")?;
+    let uid: Option<i64> = row.get("owner_uid")?;
+    Ok(Owner::from_columns(&class, uid))
+}
+
 fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
     let parent: Option<String> = row.get(3)?;
     let last_active: Option<i64> = row.get(7)?;
@@ -2028,6 +2065,7 @@ fn map_flow(row: &Row<'_>) -> rusqlite::Result<Flow> {
         created_at: Timestamp::from_millis(row.get(6)?),
         last_active: last_active.map(Timestamp::from_millis),
         revision: row.get(8)?,
+        owner: map_owner(row)?,
     })
 }
 
@@ -2051,6 +2089,7 @@ fn map_goal(row: &Row<'_>) -> rusqlite::Result<Goal> {
         status: parse_text(status, 7)?,
         created_by: row.get(8)?,
         created_at: Timestamp::from_millis(row.get(9)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2068,6 +2107,7 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<Session> {
         presentation_state: parse_text(presentation_state, 6)?,
         created_by: row.get(7)?,
         created_at: Timestamp::from_millis(row.get(8)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2083,6 +2123,7 @@ fn map_execution(row: &Row<'_>) -> rusqlite::Result<Execution> {
         exit_code: row.get(5)?,
         duration_ms: row.get(6)?,
         started_at: Timestamp::from_millis(row.get(7)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2100,6 +2141,7 @@ fn map_generation(row: &Row<'_>) -> rusqlite::Result<Generation> {
         experiment: experiment.map(|raw| parse_text(raw, 5)).transpose()?,
         status: parse_text(status, 6)?,
         created_at: Timestamp::from_millis(row.get(7)?),
+        owner: map_owner(row)?,
     })
 }
 
@@ -2118,8 +2160,22 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 
 #[cfg(test)]
 mod tests {
+    /// A Flow row as written before migration 0009 (no owner columns).
+    fn insert_legacy_flow(conn: &Connection, name: &str, state: &str, created_by: &str) {
+        conn.execute(
+            "INSERT INTO flows (id, name, state, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![FlowId::new().as_str(), name, state, created_by],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
     use super::*;
-    use crate::types::{ModelBackend, ProvenanceRelation};
+    use crate::types::{Caller, ModelBackend, ProvenanceRelation};
 
     #[test]
     fn sqlite_extended_constraints_do_not_conflate_conflict_and_integrity() {
@@ -2218,10 +2274,242 @@ mod tests {
         assert!(!generic_constraint.is_foreign_key_violation());
     }
 
+    fn sqlite_code_error(code: std::os::raw::c_int, message: Option<&str>) -> StorageError {
+        StorageError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            message.map(str::to_owned),
+        ))
+    }
+
+    #[test]
+    fn ipc_classification_covers_every_storage_error_family() {
+        use crate::ipc::ErrorCode;
+        let cases = [
+            (StorageError::NotFound("x".into()), ErrorCode::NotFound),
+            (
+                StorageError::PermissionDenied("x".into()),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                StorageError::InvalidOperation("x".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                StorageError::ForeignKeyViolation("x".into()),
+                ErrorCode::InvalidArgument,
+            ),
+            (
+                StorageError::OperationConflict("x".into()),
+                ErrorCode::Conflict,
+            ),
+            (
+                StorageError::UniqueViolation("x".into()),
+                ErrorCode::Conflict,
+            ),
+            (
+                StorageError::Serde(serde_json::from_str::<u8>("{").unwrap_err()),
+                ErrorCode::Internal,
+            ),
+            (
+                StorageError::Io(std::io::Error::other("disk")),
+                ErrorCode::Internal,
+            ),
+            (
+                StorageError::Sqlite(rusqlite::Error::QueryReturnedNoRows),
+                ErrorCode::Internal,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.ipc_error_code(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn ipc_classification_uses_sqlite_codes_not_message_text() {
+        use crate::ipc::ErrorCode;
+        let transient = [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_BUSY_SNAPSHOT,
+            rusqlite::ffi::SQLITE_BUSY_RECOVERY,
+            rusqlite::ffi::SQLITE_BUSY_TIMEOUT,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+        ];
+        for code in transient {
+            assert_eq!(
+                sqlite_code_error(code, None).ipc_error_code(),
+                ErrorCode::Unavailable,
+                "code {code}"
+            );
+        }
+
+        // Damage, defects and environment failures are never retryable,
+        // even when the diagnostic text mimics a transient or typed error.
+        let permanent = [
+            rusqlite::ffi::SQLITE_CORRUPT,
+            rusqlite::ffi::SQLITE_NOTADB,
+            rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_IOERR,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+            rusqlite::ffi::SQLITE_MISMATCH,
+            rusqlite::ffi::SQLITE_CONSTRAINT,
+            rusqlite::ffi::SQLITE_CONSTRAINT_CHECK,
+            rusqlite::ffi::SQLITE_CONSTRAINT_NOTNULL,
+            rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER,
+        ];
+        for code in permanent {
+            assert_eq!(
+                sqlite_code_error(code, Some("database is locked; UNIQUE constraint failed"))
+                    .ipc_error_code(),
+                ErrorCode::Internal,
+                "code {code}"
+            );
+        }
+
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE, None).ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY, None).ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            sqlite_code_error(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY, None).ipc_error_code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            StorageError::NotFound("database is locked".into()).ipc_error_code(),
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn ipc_classification_of_real_sqlite_failures() {
+        use crate::ipc::ErrorCode;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A second connection holding the writer lock yields a real BUSY.
+        let db = dir.path().join("contended.db");
+        let holder = Connection::open(&db).expect("open holder");
+        holder
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE t (id INTEGER PRIMARY KEY);
+                 BEGIN IMMEDIATE;
+                 INSERT INTO t (id) VALUES (1);",
+            )
+            .expect("hold writer lock");
+        let contender = Connection::open(&db).expect("open contender");
+        contender
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("zero busy timeout");
+        let busy = StorageError::from(
+            contender
+                .execute("INSERT INTO t (id) VALUES (2)", [])
+                .unwrap_err(),
+        );
+        assert_eq!(busy.ipc_error_code(), ErrorCode::Unavailable, "{busy}");
+        holder.execute_batch("COMMIT;").expect("release lock");
+        contender
+            .execute("INSERT INTO t (id) VALUES (2)", [])
+            .expect("write recovers after lock release");
+
+        // A file that is not a database must not look transient.
+        let garbage = dir.path().join("garbage.db");
+        std::fs::write(&garbage, vec![0x5a_u8; 8192]).expect("write garbage");
+        let error = Store::open(&garbage)
+            .and_then(|mut store| store.migrate().map(|_| ()))
+            .expect_err("garbage file must not open as a database");
+        assert_eq!(error.ipc_error_code(), ErrorCode::Internal, "{error}");
+
+        // Real constraint failures through a migrated-style connection.
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE child (
+                 id INTEGER PRIMARY KEY,
+                 parent_id INTEGER NOT NULL REFERENCES parent(id),
+                 score INTEGER NOT NULL CHECK(score > 0)
+             );
+             INSERT INTO parent (id) VALUES (1);
+             INSERT INTO child (id, parent_id, score) VALUES (1, 1, 1);",
+        )
+        .expect("create tables");
+        let classify = |sql: &str| StorageError::from(conn.execute(sql, []).unwrap_err());
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (1, 1, 1)").ipc_error_code(),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (2, 999, 1)")
+                .ipc_error_code(),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            classify("INSERT INTO child (id, parent_id, score) VALUES (3, 1, 0)").ipc_error_code(),
+            ErrorCode::Internal
+        );
+    }
+
     fn migrated_store() -> Store {
         let mut store = Store::open_in_memory().expect("open store");
         store.migrate().expect("migrate");
         store
+    }
+
+    #[test]
+    fn status_counts_match_domain_listings() {
+        let mut store = migrated_store();
+        assert_eq!(
+            store.status_counts().expect("empty counts"),
+            StatusCounts::default()
+        );
+
+        store.ensure_general_flow().expect("general flow");
+        store
+            .insert_goal(&Goal::new("count me", "test"))
+            .expect("insert goal");
+        let kept = example_model();
+        let mut retired = example_model();
+        retired.name = "retired-model".into();
+        store
+            .insert_model_with_provenance(&kept, &[])
+            .expect("insert model");
+        store
+            .insert_model_with_provenance(&retired, &[])
+            .expect("insert retired model");
+        store
+            .retire_model(&retired.id, "uid:1000")
+            .expect("retire model");
+
+        let counts = store.status_counts().expect("counts");
+        assert_eq!(counts.flows, store.list_flows().unwrap().len() as u64);
+        assert_eq!(counts.goals, store.list_goals().unwrap().len() as u64);
+        assert_eq!(counts.models, store.list_models().unwrap().len() as u64);
+        assert_eq!(counts.models, 1, "retired models are not counted");
+        assert_eq!(counts.sessions, store.list_sessions().unwrap().len() as u64);
+        assert_eq!(
+            counts.providers,
+            store.list_providers().unwrap().len() as u64
+        );
+        assert_eq!(counts.flows, 1);
+        assert_eq!(counts.goals, 1);
+    }
+
+    #[test]
+    fn status_counts_fail_on_damaged_schema() {
+        let store = migrated_store();
+        store
+            .conn
+            .execute_batch("DROP TABLE provenance_edges;")
+            .expect("drop table");
+        let error = store
+            .status_counts()
+            .expect_err("missing table must not report counts");
+        assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
     }
 
     fn example_model() -> ModelRecord {
@@ -2318,6 +2606,7 @@ mod tests {
                 "uid:1000",
                 "capability_tier = 'advanced'\n",
                 "{}",
+                Owner::User(1000),
                 Some(MutationOperation {
                     actor: "uid:1000",
                     command: "profile.create",
@@ -2335,6 +2624,7 @@ mod tests {
                 "uid:1000",
                 "capability_tier = 'advanced'\n",
                 "{}",
+                Owner::User(1000),
                 Some(MutationOperation {
                     actor: "uid:1000",
                     command: "profile.create",
@@ -2353,6 +2643,7 @@ mod tests {
             "uid:1000",
             "fallback = 'queue'\n",
             "{}",
+            Owner::User(1000),
             None,
             &[],
         );
@@ -2370,25 +2661,33 @@ mod tests {
                 "uid:1000",
                 "fallback = 'ask'\n",
                 "{}",
+                Owner::User(1000),
                 None,
                 &[],
             )
             .unwrap();
+        let owner = Caller::new(1000);
         let v2 = store
-            .append_profile_version(&id, "fallback = 'queue'\n", "{}", "uid:1000", &[])
+            .append_profile_version_for(owner, &id, "fallback = 'queue'\n", "{}", "uid:1000", &[])
             .unwrap();
         assert_eq!(v2, 2);
-        let (latest, latest_toml, _) = store.profile_latest(&id).unwrap().unwrap();
+        let (latest, latest_toml, _) = store.profile_latest_for(owner, &id).unwrap().unwrap();
         assert_eq!(latest, 2);
         assert!(latest_toml.contains("queue"));
-        store.rename_profile(&id, "renamed", "uid:1000").unwrap();
-        let (name, _, _) = store.profile_row(&id).unwrap().unwrap();
-        assert_eq!(name, "renamed");
-        let missing = store.rename_profile(&ProfileId::from_raw("profile-none"), "x", "uid:1000");
+        store
+            .rename_profile_for(owner, &id, "renamed", "uid:1000")
+            .unwrap();
+        let view = store.profile_for(owner, &id).unwrap().unwrap();
+        assert_eq!(view.name, "renamed");
+        let missing =
+            store.rename_profile_for(owner, &ProfileId::from_raw("profile-none"), "x", "uid:1000");
         assert!(matches!(missing, Err(StorageError::NotFound(_))));
-        let (by_name_id, _, _) = store.profile_by_name("renamed").unwrap().unwrap();
-        assert_eq!(by_name_id, id);
-        assert_eq!(store.list_profiles().unwrap().len(), 1);
+        let by_name = store
+            .profile_base_for(Owner::User(1000), "renamed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_name.id, id);
+        assert_eq!(store.profiles_for(owner).unwrap().len(), 1);
     }
 
     #[test]
@@ -2420,6 +2719,308 @@ mod tests {
         let second = store.migrate().expect("second migrate");
         assert!(second.is_empty(), "second migrate should be a no-op");
         assert_eq!(store.applied_migrations().unwrap().len(), MIGRATIONS.len());
+    }
+
+    #[test]
+    fn migrate_refuses_a_schema_from_a_newer_binary_without_changing_it() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', 0)",
+                params![supported + 1],
+            )
+            .unwrap();
+        let before = store.applied_migrations().unwrap().len();
+        let error = store.migrate().expect_err("newer schema must be refused");
+        assert!(matches!(
+            error,
+            StorageError::SchemaNewerThanBinary { found, supported: s }
+                if found == supported + 1 && s == supported
+        ));
+        assert!(error.to_string().contains("restore the pre-upgrade backup"));
+        assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
+        assert_eq!(store.applied_migrations().unwrap().len(), before);
+    }
+
+    /// A database as installed before ownership: migrations 1..=8 applied.
+    fn pre_ownership_store() -> Store {
+        let store = Store::open_in_memory().expect("open store");
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        for migration in &MIGRATIONS[..8] {
+            store.conn.execute_batch(migration.sql).unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO schema_migrations VALUES (?1, ?2, 1)",
+                    params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        store
+    }
+
+    fn owner_of(conn: &Connection, table: &str, id: &str) -> (String, Option<i64>) {
+        conn.query_row(
+            &format!("SELECT owner_class, owner_uid FROM {table} WHERE id = ?1"),
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// #225: the backfill keeps only well-formed `uid:<n>` creators, marks
+    /// General as system, and leaves every legacy or malformed label
+    /// unresolved. Nothing is reassigned to another uid.
+    #[test]
+    fn ownership_backfill_is_conservative() {
+        let mut store = pre_ownership_store();
+        let c = &store.conn;
+        let flow = |id: &str, name: &str, created_by: &str| {
+            c.execute(
+                "INSERT INTO flows (id, name, state, created_by, created_at)
+                 VALUES (?1, ?2, 'ACTIVE', ?3, 1)",
+                params![id, name, created_by],
+            )
+            .unwrap();
+        };
+        flow("flow-general", "General", "system");
+        flow("flow-alice", "alice", "uid:998");
+        flow("flow-root", "root", "uid:0");
+        flow("flow-legacy", "legacy", "user");
+        for (i, bad) in [
+            "uid:",
+            "uid:12abc",
+            "uid:-1",
+            "uid: 7",
+            "uid:99999999999",
+            "uid:4294967295",
+            "UID:5",
+            "uid:5\n",
+            "agent:planner",
+            "",
+        ]
+        .iter()
+        .enumerate()
+        {
+            flow(&format!("flow-bad{i}"), &format!("bad{i}"), bad);
+        }
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1), ('goal-l', 'o', 'ACTIVE', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO executions (id, goal_id, started_at) VALUES
+             ('exec-a', 'goal-a', 1), ('exec-l', 'goal-l', 1), ('exec-none', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sessions (id, kind, state, created_by, created_at)
+             VALUES ('session-a', 'k', 'RUNNING', 'uid:998', 1),
+                    ('session-l', 'k', 'RUNNING', 'user', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO generations (id, status, created_at) VALUES
+             ('gen-cand', 'CANDIDATE', 1), ('gen-test', 'TESTED', 1),
+             ('gen-rej', 'REJECTED', 1), ('gen-stable', 'STABLE', 1),
+             ('gen-old', 'SUPERSEDED', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_providers (id, name, kind, capabilities, created_by, created_at)
+             VALUES ('provider-1', 'p', 'local-unix', '[]', 'uid:998', 1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO ai_profiles (id, name, created_by, created_at)
+             VALUES ('profile-a', 'a', 'uid:998', 1), ('profile-l', 'l', 'user', 1)",
+            [],
+        )
+        .unwrap();
+
+        let applied = store.migrate().unwrap();
+        assert_eq!(
+            applied.last().map(|m| m.version),
+            MIGRATIONS.last().map(|m| m.version)
+        );
+        let c = &store.conn;
+        let user = |uid| ("user".to_owned(), Some(uid));
+        let unresolved = ("unresolved".to_owned(), None);
+        assert_eq!(
+            owner_of(c, "flows", "flow-general"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "flows", "flow-alice"), user(998));
+        assert_eq!(owner_of(c, "flows", "flow-root"), user(0));
+        assert_eq!(owner_of(c, "flows", "flow-legacy"), unresolved);
+        for i in 0..10 {
+            assert_eq!(
+                owner_of(c, "flows", &format!("flow-bad{i}")),
+                unresolved,
+                "bad{i}"
+            );
+        }
+        assert_eq!(owner_of(c, "goals", "goal-a"), user(998));
+        assert_eq!(owner_of(c, "goals", "goal-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-a"), user(998));
+        assert_eq!(owner_of(c, "executions", "exec-l"), unresolved);
+        assert_eq!(owner_of(c, "executions", "exec-none"), unresolved);
+        assert_eq!(owner_of(c, "sessions", "session-a"), user(998));
+        assert_eq!(owner_of(c, "sessions", "session-l"), unresolved);
+        // Existing candidates are never silently published as system records.
+        for id in ["gen-cand", "gen-test", "gen-rej"] {
+            assert_eq!(owner_of(c, "generations", id), unresolved, "{id}");
+        }
+        for id in ["gen-stable", "gen-old"] {
+            assert_eq!(
+                owner_of(c, "generations", id),
+                ("system".to_owned(), None),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            owner_of(c, "ai_providers", "provider-1"),
+            ("system".to_owned(), None)
+        );
+        assert_eq!(owner_of(c, "ai_profiles", "profile-a"), user(998));
+        assert_eq!(owner_of(c, "ai_profiles", "profile-l"), unresolved);
+        // Creator audit text is untouched, and no row lost its identity.
+        let created_by: String = c
+            .query_row(
+                "SELECT created_by FROM flows WHERE id = 'flow-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_by, "user");
+        assert_eq!(count(c, "SELECT COUNT(*) FROM flows"), 14);
+    }
+
+    /// A write path that forgets the owner fails closed, and the owner
+    /// columns reject inconsistent combinations at the SQLite boundary.
+    #[test]
+    fn owner_columns_fail_closed_and_reject_inconsistent_values() {
+        let store = migrated_store();
+        let c = &store.conn;
+        c.execute(
+            "INSERT INTO goals (id, objective, status, created_by, created_at)
+             VALUES ('goal-x', 'o', 'ACTIVE', 'uid:5', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            owner_of(c, "goals", "goal-x"),
+            ("unresolved".to_owned(), None)
+        );
+        for (class, column_value) in [
+            ("user", "NULL"),
+            ("system", "5"),
+            ("unresolved", "5"),
+            ("admin", "NULL"),
+            ("user", "-1"),
+            ("user", "4294967295"),
+        ] {
+            let result = c.execute(
+                &format!(
+                    "INSERT INTO goals (id, objective, status, created_by, created_at,
+                                        owner_class, owner_uid)
+                     VALUES ('goal-{class}{column_value}', 'o', 'ACTIVE', 'x', 1, '{class}', {column_value})"
+                ),
+                [],
+            );
+            assert!(result.is_err(), "{class} {column_value} must be rejected");
+        }
+    }
+
+    /// An interrupted migration leaves no partial state: a failure in the
+    /// middle of 0009 rolls back every earlier ALTER and its version record.
+    #[test]
+    fn failed_ownership_migration_leaves_no_partial_state() {
+        let mut store = pre_ownership_store();
+        store
+            .conn
+            .execute(
+                "INSERT INTO goals (id, objective, status, created_by, created_at)
+                 VALUES ('goal-a', 'o', 'ACTIVE', 'uid:998', 1)",
+                [],
+            )
+            .unwrap();
+        // Sabotage the middle of the migration: `sessions` already has the
+        // column, so ALTER TABLE sessions ADD COLUMN owner_class fails after
+        // flows and goals were altered.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions ADD COLUMN owner_class TEXT;")
+            .unwrap();
+        assert!(store.migrate().is_err());
+        let c = &store.conn;
+        assert_eq!(
+            count(
+                c,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+            ),
+            0
+        );
+        for table in ["flows", "goals"] {
+            let columns = count(
+                c,
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name LIKE 'owner%'"
+                ),
+            );
+            assert_eq!(columns, 0, "{table} kept a partial ownership schema");
+        }
+        assert_eq!(count(c, "SELECT COUNT(*) FROM goals"), 1);
+        // Repairing the cause lets the same database migrate cleanly later.
+        store
+            .conn
+            .execute_batch("ALTER TABLE sessions DROP COLUMN owner_class;")
+            .unwrap();
+        store.migrate().unwrap();
+        assert_eq!(
+            owner_of(&store.conn, "goals", "goal-a"),
+            ("user".to_owned(), Some(998))
+        );
+    }
+
+    /// Restart: ownership survives reopening the file, and re-running the
+    /// migrations neither duplicates nor changes it.
+    #[test]
+    fn ownership_survives_restart_and_repeated_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let goal = {
+            let mut store = Store::open(&path).unwrap();
+            store.migrate().unwrap();
+            store.ensure_general_flow().unwrap();
+            let mut goal = Goal::new("owned", "uid:998");
+            goal.owner = Owner::User(998);
+            store.insert_goal(&goal).unwrap();
+            goal
+        };
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.migrate().unwrap().is_empty());
+        assert_eq!(
+            store.get_goal(&goal.id).unwrap().unwrap().owner,
+            Owner::User(998)
+        );
+        let general_id = store.ensure_general_flow().unwrap();
+        let general = store.get_flow(&general_id).unwrap().unwrap();
+        assert_eq!(general.owner, Owner::System);
     }
 
     #[test]
@@ -2480,7 +3081,7 @@ mod tests {
             .expect("insert already-normalized duplicate");
 
         let applied = store.migrate().expect("apply remaining migrations");
-        assert_eq!(applied.len(), 7);
+        assert_eq!(applied.len(), MIGRATIONS.len() - 1);
         assert_eq!(applied[0].version, 2);
         assert_eq!(applied[1].version, 3);
         assert_eq!(applied[2].version, 4);
@@ -2554,85 +3155,33 @@ mod tests {
     }
 
     #[test]
-    fn database_rejects_second_foreground_from_separate_connection() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("state.db");
-        let mut first = Store::open(&path).expect("open first");
-        first.migrate().expect("migrate");
-        let second = Store::open(&path).expect("open second");
-        let a = Flow::new("A", "test");
-        let b = Flow::new("B", "test");
-        first.insert_flow(&a).expect("insert A");
-        first.insert_flow(&b).expect("insert B");
-
-        first.activate_flow(&a.id).expect("activate A");
-        let rejected = second.conn.execute(
-            "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
-            params![b.id.as_str()],
-        );
-        assert!(
-            rejected.is_err(),
-            "unique index must reject second foreground"
-        );
+    fn foreground_is_not_a_flow_state_after_0010() {
+        let store = migrated_store();
+        let mut flow = Flow::new("A", "uid:1000");
+        flow.owner = Owner::User(1000);
+        store.insert_flow(&flow).unwrap();
+        assert!(store
+            .conn
+            .execute(
+                "UPDATE flows SET state = 'FOREGROUND' WHERE id = ?1",
+                params![flow.id.as_str()],
+            )
+            .is_err());
+        assert!(store
+            .conn
+            .execute(
+                "INSERT INTO flows (id, name, state, created_by, created_at)
+                 VALUES ('flow-x', 'X', 'FOREGROUND', 'x', 1)",
+                [],
+            )
+            .is_err());
         assert_eq!(
-            first.get_flow(&a.id).unwrap().unwrap().state,
-            FlowState::Foreground
+            count(
+                &store.conn,
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_flows_single_foreground'"
+            ),
+            0
         );
-        assert_ne!(
-            first.get_flow(&b.id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
-
-        let mut second = second;
-        second.activate_flow(&b.id).expect("atomic switch to B");
-        assert_eq!(
-            first.get_flow(&b.id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
-        assert_eq!(
-            first.get_flow(&a.id).unwrap().unwrap().state,
-            FlowState::Active
-        );
-    }
-
-    #[test]
-    fn concurrent_connections_serialize_flow_activation() {
-        use std::sync::{Arc, Barrier};
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("state.db");
-        let mut setup = Store::open(&path).unwrap();
-        setup.migrate().unwrap();
-        let first = Flow::new("First", "test");
-        let second = Flow::new("Second", "test");
-        setup.insert_flow(&first).unwrap();
-        setup.insert_flow(&second).unwrap();
-        let barrier = Arc::new(Barrier::new(2));
-        let handles: Vec<_> = [first.id.clone(), second.id.clone()]
-            .into_iter()
-            .map(|id| {
-                let path = path.clone();
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    let mut store = Store::open(path).expect("open concurrent writer");
-                    barrier.wait();
-                    store.activate_flow(&id).expect("serialized activation");
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("activation thread");
-        }
-        let reloaded = Store::open(&path).unwrap();
-        let flows = reloaded.list_flows().unwrap();
-        assert_eq!(
-            flows
-                .iter()
-                .filter(|flow| flow.state == FlowState::Foreground)
-                .count(),
-            1
-        );
-        assert_eq!(flows.iter().filter(|flow| flow.revision > 1).count(), 2);
     }
 
     #[test]
@@ -2640,20 +3189,16 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
-        let mut a = Flow::new("A", "test");
-        let mut b = Flow::new("B", "test");
-        a.state = FlowState::Foreground;
-        b.state = FlowState::Foreground;
-        store.insert_flow(&a).unwrap();
-        store.insert_flow(&b).unwrap();
+        // Pre-0009 rows have no owner columns.
+        for name in ["A", "B"] {
+            insert_legacy_flow(&store.conn, name, "FOREGROUND", "test");
+        }
         assert!(store.conn.execute_batch(MIGRATIONS[2].sql).is_err());
         assert_eq!(
-            store
-                .list_flows()
-                .unwrap()
-                .iter()
-                .filter(|flow| flow.state == FlowState::Foreground)
-                .count(),
+            count(
+                &store.conn,
+                "SELECT COUNT(*) FROM flows WHERE state = 'FOREGROUND'"
+            ),
             2,
             "failed index migration must not silently change legacy Flow state"
         );
@@ -2663,15 +3208,16 @@ mod tests {
     fn general_bootstrap_is_stable_across_restart_and_connections() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
+        let caller = crate::types::Caller::new(1000);
         let original = {
             let mut store = Store::open(&path).unwrap();
             store.migrate().unwrap();
             let id = store.ensure_general_flow().unwrap();
             assert_eq!(id.as_str(), "flow-general");
-            assert_eq!(
-                store.get_flow(&id).unwrap().unwrap().state,
-                FlowState::Foreground
-            );
+            let general = store.get_flow(&id).unwrap().unwrap();
+            assert_eq!(general.state, FlowState::Active);
+            assert_eq!(general.owner, Owner::System);
+            assert_eq!(store.foreground_flow_for(caller).unwrap().flow.id, id);
             id
         };
         let mut second = Store::open(&path).unwrap();
@@ -2686,13 +3232,15 @@ mod tests {
                 .count(),
             1
         );
-        let other = Flow::new("Other", "test");
+        let mut other = Flow::new("Other", "uid:1000");
+        other.owner = Owner::User(1000);
         second.insert_flow(&other).unwrap();
-        second.activate_flow(&other.id).unwrap();
+        second.activate_flow_for(caller, &other.id).unwrap();
+        // Restart bootstrap never resets anyone's foreground.
         assert_eq!(second.ensure_general_flow().unwrap(), original);
         assert_eq!(
-            second.get_flow(&other.id).unwrap().unwrap().state,
-            FlowState::Foreground
+            second.foreground_flow_for(caller).unwrap().flow.id,
+            other.id
         );
     }
 
@@ -2704,10 +3252,10 @@ mod tests {
         let legacy_id = general.id.clone();
         store.insert_flow(&general).unwrap();
         assert_eq!(store.ensure_general_flow().unwrap(), legacy_id);
-        assert_eq!(
-            store.get_flow(&legacy_id).unwrap().unwrap().state,
-            FlowState::Foreground
-        );
+        let recovered = store.get_flow(&legacy_id).unwrap().unwrap();
+        assert_eq!(recovered.state, FlowState::Active);
+        // The canonical General is always the shared system Flow.
+        assert_eq!(recovered.owner, Owner::System);
     }
 
     #[test]
@@ -2735,10 +3283,10 @@ mod tests {
         store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[1].sql).unwrap();
         store.conn.execute_batch(MIGRATIONS[2].sql).unwrap();
-        store.insert_flow(&Flow::new("General", "system")).unwrap();
-        store.insert_flow(&Flow::new("General", "system")).unwrap();
+        insert_legacy_flow(&store.conn, "General", "ACTIVE", "system");
+        insert_legacy_flow(&store.conn, "General", "ACTIVE", "system");
         assert!(store.conn.execute_batch(MIGRATIONS[3].sql).is_err());
-        assert_eq!(store.list_flows().unwrap().len(), 2);
+        assert_eq!(count(&store.conn, "SELECT COUNT(*) FROM flows"), 2);
     }
 
     #[test]
@@ -2808,6 +3356,7 @@ mod tests {
     fn session_runtime_and_presentation_round_trip_independently() {
         let store = migrated_store();
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "local-pty".to_owned(),
@@ -2873,6 +3422,7 @@ mod tests {
     fn invalid_persisted_session_state_is_not_silently_accepted() {
         let store = migrated_store();
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: None,
             kind: "local-pty".to_owned(),
@@ -2919,9 +3469,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("state.db");
 
-        let flow = Flow::new("Persistent", "test");
-        let goal = Goal::new("Persist the domain graph", "test");
+        let mut flow = Flow::new("Persistent", "test");
+        flow.owner = crate::types::Owner::User(1000);
+        let mut goal = Goal::new("Persist the domain graph", "test");
+        goal.owner = crate::types::Owner::User(1000);
         let session = Session {
+            owner: crate::types::Owner::User(1000),
             id: SessionId::new(),
             flow_id: Some(flow.id.clone()),
             kind: "local-pty".to_owned(),
@@ -2933,6 +3486,7 @@ mod tests {
             created_at: Timestamp::now(),
         };
         let execution = Execution {
+            owner: crate::types::Owner::User(1000),
             id: ExecutionId::new(),
             agent_id: None,
             goal_id: Some(goal.id.clone()),
@@ -2943,6 +3497,7 @@ mod tests {
             started_at: Timestamp::now(),
         };
         let generation = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("deadbeef".to_owned()),
@@ -3032,6 +3587,7 @@ mod tests {
     fn generation_activation_keeps_exactly_one_stable_generation() {
         let mut store = migrated_store();
         let first = Generation {
+            owner: crate::types::Owner::System,
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("first".to_owned()),
@@ -3042,6 +3598,7 @@ mod tests {
             created_at: Timestamp::now(),
         };
         let second = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: Some(first.id.clone()),
             source_commit: Some("second".to_owned()),
@@ -3054,6 +3611,18 @@ mod tests {
         store.insert_generation(&first).expect("insert first");
         store.insert_generation(&second).expect("insert second");
 
+        // A private candidate must be promoted (audited) before activation.
+        assert!(matches!(
+            store.activate_generation(&second.id),
+            Err(StorageError::OperationConflict(_))
+        ));
+        assert_eq!(
+            store.get_generation(&first.id).unwrap().unwrap().status,
+            GenerationStatus::Stable
+        );
+        store
+            .promote_generation(Caller::new(0), &second.id, "release candidate")
+            .expect("promote second");
         store
             .activate_generation(&second.id)
             .expect("activate second");
@@ -3084,6 +3653,7 @@ mod tests {
     fn missing_generation_activation_does_not_supersede_current_stable() {
         let mut store = migrated_store();
         let stable = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: Some("stable".to_owned()),
@@ -3112,6 +3682,7 @@ mod tests {
     fn invalid_persisted_generation_reference_is_not_silently_accepted() {
         let store = migrated_store();
         let generation = Generation {
+            owner: crate::types::Owner::User(1000),
             id: GenerationId::new(),
             parent: None,
             source_commit: None,
@@ -3139,6 +3710,7 @@ mod tests {
     fn invalid_persisted_execution_reference_is_not_silently_accepted() {
         let store = migrated_store();
         let execution = Execution {
+            owner: crate::types::Owner::User(1000),
             id: ExecutionId::new(),
             agent_id: None,
             goal_id: None,

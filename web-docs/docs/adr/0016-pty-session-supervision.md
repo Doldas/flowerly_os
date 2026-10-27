@@ -1,7 +1,9 @@
 # 0016: Supervised Linux PTY Session Ownership
 
 Date: 2026-10-13  
-Status: Proposed (review required; does not replace RFC 0003 yet)
+Status: Accepted (owner decision, 2026-10-25, #73). The unchecked
+verification items below remain release gates for #50, #72 and 0.0.4;
+acceptance of the design does not certify the release.
 
 ## Context
 
@@ -10,7 +12,7 @@ reattach without losing its child process or Session identity. Persisting
 a Session row or PID alone is not process supervision. The IPC services
 also cannot hold a SQLite mutex across terminal reads and writes.
 
-## Proposed decision
+## Decision
 
 Each Linux `sessiond` process owns an in-memory registry of supervised
 Sessions. A separate bounded **guardian subprocess** per Session owns the
@@ -22,8 +24,11 @@ fault response and PTY FD lifetime, consistent with ADR-0013.
   from caller-supplied JSON. The guardian verifies its controlling
   `sessiond` UID **and PID** through `SO_PEERCRED` on every request.
 - `session.spawn` only accepts allowlisted shells; it persists RUNNING
-  after the real child is started. No caller PID or external-operation
-  idempotency key is accepted.
+  after the real child is started. No caller PID is accepted. An optional
+  `operation_id` gives at-most-once admission, not replay (PR #156; policy
+  in [IPC mutation outcomes](../ipc-mutation-outcomes.md#sessionspawn-idempotency-policy-74)).
+  Every launch, keyed or not, is durably recorded before the guardian
+  starts, so restart recovery can always find its cgroup (#74).
 - `session.spawn` returns a random, ephemeral control token not present
   in `session.list`. It is required to attach, read terminal output or
   terminate the owned shell. Without it, status exposes liveness only,
@@ -91,14 +96,16 @@ on restart rather than falsely promising transparent adoption.
       required PR checks green.
 - [x] PR #77 malformed IPC and child-limit hardening merged with its
       Linux regression coverage.
-- [ ] Review draft PR #78's production delegated cgroup supervision,
-      authenticated follow and unattended-exit reconciliation.
+- [x] PR #78 production delegated cgroup supervision, authenticated
+      follow and unattended-exit reconciliation merged.
 - [ ] Prove **cgroup-equivalent** containment of detached descendants and
       enforce process, memory, CPU and FD quotas under hostile workloads.
-- [ ] Prove deliberate multi-client races, slow readers and failure
-      recovery/cleanup; audit same-UID authority and token leakage.
-- [ ] Pass complete Arch guest/VM validation at the intended source SHA
-      and obtain explicit owner review of the decision.
+- [x] Prove deliberate multi-client races, slow readers and failure
+      recovery/cleanup; audit same-UID authority and token leakage
+      (long-poll contract #215, writer-lease expiry tests #219, same-UID
+      limits in `pty-production-supervision.md`).
+- [x] Explicit owner review of the decision (accepted 2026-10-25, #73).
+- [ ] Pass complete Arch guest/VM validation at the intended source SHA.
 
-Do not change the status to Accepted, close issue #50 or certify 0.0.4
-until those conditions pass. Related issues: #31, #50, #72, #73, #74.
+Do not close issue #50 or certify 0.0.4 until the remaining unchecked
+conditions pass. Related issues: #31, #50, #72, #73, #74.

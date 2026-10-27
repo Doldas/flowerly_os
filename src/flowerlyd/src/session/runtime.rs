@@ -1,6 +1,7 @@
 use super::*;
 use flowerly_core::ipc::{Envelope, Payload};
 use flowerly_core::storage::Store;
+use flowerly_core::types::Caller;
 use flowerly_core::ServiceConfig;
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +21,7 @@ impl SessionRuntime {
                 tracing::warn!(reason, "PTY delegation unavailable; spawning disabled");
             }
             {
-                let db = store
+                let mut db = store
                     .lock()
                     .map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
                 // Reservations are committed before the guardian is launched.
@@ -62,6 +63,12 @@ impl SessionRuntime {
                         )?;
                     }
                 }
+                // Their cgroups were killed above; without delegation nothing
+                // was proven, so keep the records for a later recovery.
+                if let Ok(Some(_)) = &cgroup_root {
+                    db.clear_unkeyed_spawn_reservations()
+                        .context("clearing recovered unkeyed spawn records")?;
+                }
             }
             let supervisor = Arc::new(pty::Supervisor::new(
                 config.runtime_dir.clone(),
@@ -95,14 +102,19 @@ impl SessionRuntime {
         }
     }
 
-    pub(crate) fn handle(&self, store: &Arc<Mutex<Store>>, request: &Envelope) -> Envelope {
+    pub(crate) fn handle(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        request: &Envelope,
+        caller: Caller,
+    ) -> Envelope {
         #[cfg(target_os = "linux")]
         if let Payload::Command { name, args } = &request.payload {
             if self.supervisor.routes(name, args) {
-                return self.supervisor.handle(store, request);
+                return self.supervisor.handle(store, request, caller);
             }
         }
-        super::handle_command(store, request)
+        super::handle_command(store, request, caller)
     }
 }
 impl Drop for SessionRuntime {

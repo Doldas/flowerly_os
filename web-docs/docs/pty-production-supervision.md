@@ -86,6 +86,51 @@ the daemon serializes mutations to the same Session. This is a bounded
 long-poll transport, **not a perpetual push socket** or a remote
 enterprise-delegation mechanism.
 
+Long-poll is the 0.0.4 subscriber transport (maintainer decision, #73). Its
+contract, enforced by `test_long_poll_contract` in `test-pty-adversarial.py`:
+
+- A follower that disconnects and resumes from its last cursor on a new
+  connection loses nothing still inside the replay window.
+- A cursor that fell out of the window returns `truncated: true` with at most
+  64 KiB, and the reader continues from the returned cursor.
+- A cursor past the end of output, or a negative one, is `invalid_argument`.
+  It is a caller error, never a retryable `unavailable`. The guardian marks
+  caller mistakes with a structured `code`; `exited`, `backpressure` and lost
+  supervision stay `unavailable`.
+- Clients that request a large read and never drain their socket do not
+  stall the writer, heartbeats or other followers.
+- Concurrent writes by the single lease owner are each accepted whole.
+- Terminating while followers are blocked returns every follower within its
+  bounded wait; later follows are `unavailable`.
+
+Writer lease rules (unit-tested with synthetic clocks in `session/pty.rs`):
+an attach is refused while a live lease exists. The lease lapses exactly
+`WRITER_LEASE` (60 s) after its last successful renewal. Every authorized
+write, resize, detach or heartbeat renews it; an expired, revoked or forged
+token never renews it. A new attach after expiry issues a new token, and
+the old one stays revoked.
+
+### Same-UID isolation limits
+
+Control and attachment tokens are ephemeral in-memory capabilities: they
+are returned once by `spawn`/`attach` and never persisted. Other IPC
+clients cannot read another Session's output or write to it without the
+token, even with the same UID. That is the boundary the adversarial tests
+prove. It is **not** a boundary against an arbitrary same-UID process: such a
+process can `ptrace` or signal the guardian and the shell, read the
+client's memory or environment, or talk to the guardian socket in the
+runtime directory, because Linux gives the same UID that authority. Real
+separation between principals needs distinct UIDs. Tokens prevent
+confused-deputy mistakes between cooperating clients; they do not contain a
+hostile same-UID process.
+
+Since #222, every PTY command (`session.spawn`, `attach`, `read`, `follow`,
+`write`, `resize`, `status` and the rest) is limited to peers running as the
+service account, even for `flowerly-admin` members. A shell runs with the
+service account's authority over `state.db`, so other UIDs must not drive
+one until shells can be launched as the requesting user. See
+[command authorization](command-authorization.md).
+
 A periodic reconciliation task observes child exit through the guardian,
 persists an Exited/Detached Session even without client polling, and
 eventually reaps completed guardians. When the guardian itself dies,
@@ -244,17 +289,18 @@ typed `unavailable` rather than succeed. The concurrent-client test
 requires either successful completion before termination or precisely
 `unavailable` afterward, with a bounded response time; unrelated errors
 are rejected.
-The shared IPC listener intentionally does not unlink any preexisting
-Unix socket when binding. An abrupt daemon SIGKILL leaves a stale pathname;
-a second daemon must fail closed with address-in-use rather than remove
-a potentially live or foreign socket. The black-box crash test now proves
-that refusal, performs a narrowly scoped simulated operator recovery
-only after verifying the old daemon is gone, the runtime directory is
-owner-only, the path is a same-owner socket, its listener rejects
-connections, and its inode is unchanged, and then retries the daemon.
-Normal production operators must coordinate daemon shutdown and socket
-ownership before any manual cleanup; this test-only recovery helper is
-not an automatic service-side unlink policy.
+The shared IPC listener never blindly unlinks a preexisting pathname.
+Every server first takes an exclusive `flock` on `<socket>.lock` and holds it
+for its lifetime; a second instance fails closed while the lock is held.
+An abrupt daemon SIGKILL releases the lock but leaves the socket pathname.
+The restarted daemon removes it only after verifying, under the lock, that
+the path is a same-owner Unix socket (not a symlink or regular file), that a
+connect is refused (no listener) and that its inode did not change during
+verification. A live listener, foreign owner, non-socket, symlinked socket
+or lock, or a lock file accessible to other users is refused. The black-box
+crash test now requires this automatic verified recovery. The lock does not
+protect against a non-cooperating process that binds the path without
+taking the lock.
 
 It verifies original kernel process identities cease, stale durable
 Session capabilities do not resurrect ownership, and a fresh Session

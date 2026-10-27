@@ -7,11 +7,11 @@ use super::{
     ObjectRef, ProfileId, ProviderId, SessionId, Timestamp, UsageId, WorkloadId,
 };
 
+/// Lifecycle of a Flow row. Which Flow is a caller's foreground is not a
+/// lifecycle state: it is per owner (`flow_foreground`, #225).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FlowState {
-    Foreground,
-
     Active,
 
     Quiescent,
@@ -22,8 +22,7 @@ pub enum FlowState {
 }
 
 impl FlowState {
-    pub const ALL: [FlowState; 5] = [
-        FlowState::Foreground,
+    pub const ALL: [FlowState; 4] = [
         FlowState::Active,
         FlowState::Quiescent,
         FlowState::Hibernated,
@@ -39,7 +38,6 @@ impl FlowState {
 impl fmt::Display for FlowState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            FlowState::Foreground => "FOREGROUND",
             FlowState::Active => "ACTIVE",
             FlowState::Quiescent => "QUIESCENT",
             FlowState::Hibernated => "HIBERNATED",
@@ -54,7 +52,6 @@ impl FromStr for FlowState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().as_str() {
-            "FOREGROUND" => Ok(FlowState::Foreground),
             "ACTIVE" => Ok(FlowState::Active),
             "QUIESCENT" => Ok(FlowState::Quiescent),
             "HIBERNATED" => Ok(FlowState::Hibernated),
@@ -80,6 +77,11 @@ pub struct Flow {
 
     pub created_at: Timestamp,
 
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
+
     pub last_active: Option<Timestamp>,
 
     pub revision: u32,
@@ -89,6 +91,7 @@ impl Flow {
     #[must_use]
     pub fn new(name: impl Into<String>, created_by: impl Into<String>) -> Self {
         Self {
+            owner: super::Owner::Unresolved,
             id: FlowId::new(),
             name: name.into(),
             purpose: None,
@@ -169,12 +172,18 @@ pub struct Goal {
     pub created_by: String,
 
     pub created_at: Timestamp,
+
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
 }
 
 impl Goal {
     #[must_use]
     pub fn new(objective: impl Into<String>, created_by: impl Into<String>) -> Self {
         Self {
+            owner: super::Owner::Unresolved,
             id: GoalId::new(),
             parent_goal: None,
             objective: objective.into(),
@@ -274,6 +283,11 @@ pub struct Session {
     pub created_by: String,
 
     pub created_at: Timestamp,
+
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +307,11 @@ pub struct Execution {
     pub duration_ms: Option<i64>,
 
     pub started_at: Timestamp,
+
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -354,6 +373,11 @@ pub struct Generation {
     pub status: GenerationStatus,
 
     pub created_at: Timestamp,
+
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
 }
 
 /// Execution substrate a model was actually measured on. Honest labeling:
@@ -564,6 +588,11 @@ pub struct WorkloadRecord {
 
     pub created_at: Timestamp,
 
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
+
     pub admitted_at: Option<Timestamp>,
 
     pub stopped_at: Option<Timestamp>,
@@ -594,6 +623,11 @@ pub struct UsageRecord {
     pub created_by: String,
 
     pub created_at: Timestamp,
+
+    /// Authoritative owner (#225); `created_by` is audit text. Never
+    /// serialized, and deserializes as `Unresolved` (fail closed).
+    #[serde(skip)]
+    pub owner: super::Owner,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
