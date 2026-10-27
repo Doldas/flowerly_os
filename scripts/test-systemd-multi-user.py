@@ -139,7 +139,18 @@ class Host:
 
     def restart(self):
         sh("systemctl", "daemon-reload")
-        sh("systemctl", "restart", "flowerlyd")
+        # The suite restarts flowerlyd six times; on a fast runner that can
+        # fall inside systemd's default start limit (5 starts per 10 s) and
+        # fail with start-limit-hit. Each restart here is deliberate, so clear
+        # the counter first; the shipped unit's own start limit is unchanged.
+        sh("systemctl", "reset-failed", "flowerlyd", check=False)
+        started = sh("systemctl", "restart", "flowerlyd", check=False)
+        if started.returncode != 0:
+            status = sh("systemctl", "status", "--no-pager", "flowerlyd", check=False).stdout
+            journal = sh("journalctl", "-u", "flowerlyd", "-n", "60", "--no-pager",
+                         check=False).stdout
+            raise AssertionError(f"systemctl restart flowerlyd failed ({started.returncode}): "
+                                 f"{started.stderr}\n{status}\n{journal}")
         for _ in range(300):
             if SOCKET.exists():
                 try:
