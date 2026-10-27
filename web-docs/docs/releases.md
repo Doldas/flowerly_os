@@ -4,6 +4,35 @@ Flowerly OS uses semantic-ish pre-1.0 versioning. Pre-1.0 does **not** mean
 careless: every release is tagged, described and backed by evidence, and known
 limitations are stated explicitly rather than hidden.
 
+## Promotion vs publication — verified 0.0.4 state (2026-10-27)
+
+**Release implementation has been promoted; version 0.0.4 has not been published.**
+The accepted release-branch candidate `6b7f363` passed real Arch-guest
+push CI [40507915398](https://github.com/Doldas/flowerly_os/actions/runs/40507915398)
+and dispatch [40507977240](https://github.com/Doldas/flowerly_os/actions/runs/40507977240).
+Promotion PR #206 was squash-merged into `master` as
+`2d719551ff5a14a9231f51a323d3a7c6f57bbd88`, preserving the required
+linear history. The tree was verified to match the accepted candidate.
+
+Subsequent `release/2` work reconciled ancestry (#250) and fixed a test-only
+systemd restart limit flake (#251), IPC test client short reads (#253), and
+promotion validation / required policy-check reporting (#254). After these
+changes `release/2` was observed at `c19f9e1`, with draft promotion PR
+#255. A new master promotion requires exact-SHA release push CI, executed
+Arch acceptance, security, CodeQL, mandatory PR checks and explicit maintainer
+authorization; the previous candidate evidence does not cover later commits.
+
+**Neither a tag nor a GitHub Release is authorized merely by promotion.**
+Before `v0.0.4` publication, obtain a separate maintainer decision and
+verify the tagged source, its current acceptance evidence, release notes and
+build manifests. Document the shipped systemd unit's absent `Delegate=`
+(default PTY spawning disabled), service-account-only admission by default,
+optional multi-user drop-in, and upgrade/rollback requirements.
+
+See [completion plan](release-0.0.4-completion-plan.md) and
+[engineering handoff](engineering-handoff-2026-10-27.md) for the current
+administrative backlog and incident evidence.
+
 ## Version model
 
 - `0.0.x` — foundational internal capability. Sprints that build the substrate:
