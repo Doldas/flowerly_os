@@ -115,3 +115,59 @@ fn concurrent_same_actor_operation_only_creates_one_flow() {
     let store = Store::open(db).expect("read");
     assert_eq!(store.list_flows().expect("list").len(), 1);
 }
+
+#[test]
+fn unkeyed_spawn_records_are_recoverable_but_never_a_retry_identity() {
+    use flowerly_core::types::SessionId;
+    let dir = tempfile::tempdir().expect("dir");
+    let db = dir.path().join("state.db");
+    let mut store = Store::open(&db).expect("open");
+    store.migrate().expect("migrate");
+
+    let keyed = SessionId::new();
+    let crashed = SessionId::new();
+    let completed = SessionId::new();
+    assert!(store
+        .reserve_external_spawn("uid:1000", "spawn-1", r#"{"shell":"/bin/sh"}"#, &keyed)
+        .expect("keyed"));
+    store
+        .reserve_unkeyed_spawn("uid:1000", &crashed)
+        .expect("crashed");
+    store
+        .reserve_unkeyed_spawn("uid:1000", &completed)
+        .expect("completed");
+    store.release_unkeyed_spawn(&completed).expect("release");
+
+    // A restart (new connection) sees every launch whose cgroup may survive.
+    drop(store);
+    let mut store = Store::open(&db).expect("reopen");
+    let mut listed = store.list_external_spawn_reservations().expect("list");
+    listed.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let mut expected = vec![keyed.clone(), crashed.clone()];
+    expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(listed, expected);
+
+    // An unkeyed record is not reachable as an operation_id lookup.
+    assert_eq!(
+        store
+            .lookup_external_spawn("uid:1000", crashed.as_str())
+            .expect("lookup"),
+        None
+    );
+
+    // Recovery clears unkeyed records only; the keyed reservation is kept
+    // forever so a late retry still cannot launch a second shell.
+    assert_eq!(store.clear_unkeyed_spawn_reservations().expect("clear"), 1);
+    assert_eq!(
+        store.list_external_spawn_reservations().expect("list"),
+        vec![keyed.clone()]
+    );
+    assert!(!store
+        .reserve_external_spawn(
+            "uid:1000",
+            "spawn-1",
+            r#"{"shell":"/bin/sh"}"#,
+            &SessionId::new()
+        )
+        .expect("retry"));
+}

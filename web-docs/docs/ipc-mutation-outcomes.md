@@ -74,6 +74,58 @@ after an ambiguous response, and do **not** submit the same effect again
 under a new key until it has been explicitly reconciled. No guarantee is made
 about adopting old file descriptors or replaying capabilities across crashes.
 
+### `session.spawn` idempotency policy (#74)
+
+This is the single, precise contract. It reuses the durable operation-key
+registry (`ipc_operations`, migration 0005) and its key rules; it adds no
+second idempotency model.
+
+1. **Key and binding.** The key is `(trusted actor, "session.spawn",
+   operation_id)`, with the same `operation_id` syntax as the SQLite create
+   commands. It is bound to the normalized `shell`, `created_by` and
+   `flow_id`. The actor is the kernel-attested owner of the runtime
+   directory, never a request field.
+2. **At-most-once admission, not replay.** The first request reserves the key
+   and an immutable Session ID in an IMMEDIATE transaction **before**
+   `Command::spawn`. A repeated key never launches anything, never replays the
+   first response and never re-issues its control token. It returns
+   `unavailable` ("prior attempt has an unknown external outcome"); this
+   holds after a restart too. Changed arguments return `conflict`. Unlike
+   SQLite create keys, which replay a stored result, a spawn key cannot replay,
+   because its result is a live process and a secret token.
+3. **No expiry.** Spawn keys are never pruned: forgetting one could let a late
+   retry start a second shell.
+4. **Reconciliation.** `session.spawn.lookup` reports `session_recorded`,
+   `guardian_supervised` and `external_outcome` (`supervised` or `unknown`),
+   always with `retry_safe: false`. A client that sees `unknown` must treat
+   the effect as possibly having happened, and may start a new Session only
+   under a **new** key, as an explicit decision.
+5. **Unkeyed spawns** stay legacy and non-idempotent: a timeout means outcome
+   unknown, and nothing can be looked up. They are still recorded durably
+   before launch (`session.spawn.unkeyed`, not a retry identity). The record
+   is released when the Session row commits and cleared by restart recovery,
+   so the cgroup of every launch can be found.
+6. **Crash recovery.** On startup with delegated cgroup v2, `flowerlyd` kills
+   the exact `pty-<Session ID>` cgroup of every recorded launch and of every
+   PTY Session row, marks RUNNING PTY Sessions `suspended`/`detached`, and
+   removes empty `management-*` groups left by earlier instances. It never
+   signals a bare PID and never adopts an old guardian. Without delegation,
+   spawning is disabled and recovery cannot prove cleanup; records are kept.
+
+The kernel-level evidence is `scripts/test-pty-daemon-recovery.py`. It runs the
+real `flowerlyd` in a `Delegate=yes` unit, with the shell under a distinct UID,
+in the Arch guest. It covers:
+
+- `flowerlyd` SIGKILL with keyed and unkeyed Sessions and setsid descendants;
+- SIGKILL between guardian launch and the Session row, with the insert held
+  behind a real SQLite write lock;
+- total supervision loss: watcher, guardian and daemon SIGKILLed together;
+- concurrent duplicate-key spawns, terminate and restart.
+
+Before #74, the last combination with no key leaked a live setsid process in a
+cgroup that no record named. The suite reproduced that leak and the empty
+`management-*` groups that accumulated on every restart.
+
 ## Required evidence before closing #63
 
 - A deterministic test makes a handler continue and commit after the caller has timed out, using a real durable SQLite database, then demonstrates a naive retry's duplicate effect.
