@@ -54,6 +54,15 @@ pub enum StorageError {
     /// see (for example archiving the shared General Flow).
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+
+    /// The database was migrated by a newer binary. Running older code on it
+    /// would bypass invariants it does not know about (for example per-owner
+    /// data), so the store refuses to open for use.
+    #[error(
+        "database schema version {found} is newer than this binary supports ({supported}); \
+         restore the pre-upgrade backup or install the newer release"
+    )]
+    SchemaNewerThanBinary { found: i64, supported: i64 },
 }
 
 impl StorageError {
@@ -115,7 +124,9 @@ impl StorageError {
             Self::Sqlite(_) if self.is_busy() => ErrorCode::Unavailable,
             Self::Sqlite(_) if self.is_unique_violation() => ErrorCode::Conflict,
             Self::Sqlite(_) if self.is_foreign_key_violation() => ErrorCode::InvalidArgument,
-            Self::Sqlite(_) | Self::Serde(_) | Self::Io(_) => ErrorCode::Internal,
+            Self::Sqlite(_) | Self::Serde(_) | Self::Io(_) | Self::SchemaNewerThanBinary { .. } => {
+                ErrorCode::Internal
+            }
         }
     }
 }
@@ -472,6 +483,18 @@ impl Store {
                  applied_at INTEGER NOT NULL
              );",
         )?;
+
+        // Refuse a rollback onto a newer schema before touching anything (an
+        // older binary would otherwise run on tables it does not understand).
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+        let found: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        if found > supported {
+            return Err(StorageError::SchemaNewerThanBinary { found, supported });
+        }
 
         let mut applied = Vec::new();
         for migration in MIGRATIONS {
@@ -2696,6 +2719,29 @@ mod tests {
         let second = store.migrate().expect("second migrate");
         assert!(second.is_empty(), "second migrate should be a no-op");
         assert_eq!(store.applied_migrations().unwrap().len(), MIGRATIONS.len());
+    }
+
+    #[test]
+    fn migrate_refuses_a_schema_from_a_newer_binary_without_changing_it() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', 0)",
+                params![supported + 1],
+            )
+            .unwrap();
+        let before = store.applied_migrations().unwrap().len();
+        let error = store.migrate().expect_err("newer schema must be refused");
+        assert!(matches!(
+            error,
+            StorageError::SchemaNewerThanBinary { found, supported: s }
+                if found == supported + 1 && s == supported
+        ));
+        assert!(error.to_string().contains("restore the pre-upgrade backup"));
+        assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
+        assert_eq!(store.applied_migrations().unwrap().len(), before);
     }
 
     /// A database as installed before ownership: migrations 1..=8 applied.
