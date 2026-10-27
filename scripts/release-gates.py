@@ -91,8 +91,8 @@ def validate(root=ROOT):
         raise ValueError("pr-validation: release-only PR trigger required")
     if "branches: [master]" in pr:
         raise ValueError("pr-validation must not run for master promotions")
-    if not all(f"startsWith(github.head_ref, '{prefix}/')" in pr for prefix in ("feature", "bugfix", "docs")):
-        raise ValueError("pr-validation must select development branches")
+    if "const developmentHead = /^(feature|bugfix|fix|docs)\\/.+/;" not in pr:
+        raise ValueError("pr-validation must validate allowed development branches")
     if ("branches: [master]" not in promotion
             or "wait-release-promotion.py" not in promotion
             or "name: Validate branch policy and issue link" not in promotion):
