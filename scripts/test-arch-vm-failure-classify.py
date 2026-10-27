@@ -53,6 +53,22 @@ class Classification(unittest.TestCase):
         self.assertIn("guest_crash_line=[ 900.0] Kernel panic - not syncing", text)
         self.assertNotIn("\x1b", text)
 
+    def test_clean_shutdown_watchdog_notice_is_not_a_crash(self):
+        # Seen in the real 154da3d run: poweroff prints this, plus OSC/CSI noise.
+        serial = ("[  273.881246] watchdog: watchdog0: watchdog did not stop!\n"
+                  "\x1b]3008;end=007d21dc\x1b\\[  274.2] watchdog: watchdog0: watchdog did not stop!\n"
+                  "\x1b[18t\x1b7\x1b[32766;32766H\x1b[6n\x1b8[ 275.7] reboot: Power down\n")
+        text = run(serial, ssh_status=1)
+        self.assertEqual(category(text), "test_failure")
+        self.assertNotIn("guest_crash_line", text)
+        lockup = "[ 99.0] watchdog: BUG: soft lockup - CPU#1 stuck for 22s!\n"
+        self.assertEqual(category(run(lockup, ssh_status=1)), "guest_crash")
+
+    def test_terminal_escapes_are_removed_from_evidence(self):
+        text = run("\x1b]3008;start=abc\x1b\\\x1b[0;31m[ 1.0] Kernel panic - x\x1b[0m\n")
+        line = next(l for l in text.splitlines() if l.startswith("guest_crash_line="))
+        self.assertEqual(line, "guest_crash_line=[ 1.0] Kernel panic - x")
+
     def test_unreachable_live_guest_is_a_crash(self):
         self.assertEqual(category(run(ssh_status=255, guest_reachable="no")), "guest_crash")
 

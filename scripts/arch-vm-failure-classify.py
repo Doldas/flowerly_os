@@ -27,8 +27,12 @@ import re
 from pathlib import Path
 
 GUEST_OOM = re.compile(r"Out of memory: Killed process|invoked oom-killer|oom-kill:")
-GUEST_CRASH = re.compile(r"Kernel panic|BUG: |soft lockup|hard LOCKUP|watchdog: |"
-                         r"general protection fault|Oops:|hung_task")
+# "watchdog: BUG: soft lockup" is a crash; the shutdown notice "watchdog:
+# watchdog0: watchdog did not stop!" (seen on every clean poweroff) is not.
+GUEST_CRASH = re.compile(r"Kernel panic|BUG: |soft lockup|hard LOCKUP|"
+                         r"general protection fault|Oops:|blocked for more than")
+# Terminal control sequences: OSC (ESC ] ... BEL or ESC \\) and CSI.
+ESCAPES = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
 PRINTABLE = re.compile(r"[^\x20-\x7e]")
 
 
@@ -39,7 +43,7 @@ def serial_matches(path, limit=20):
         return [], []
     oom, crash = [], []
     for line in lines:
-        clean = PRINTABLE.sub("", re.sub(r"\x1b\[[0-9;]*m", "", line))[:200]
+        clean = PRINTABLE.sub("", ESCAPES.sub("", line)).strip()[:200]
         if GUEST_OOM.search(clean):
             oom.append(clean)
         elif GUEST_CRASH.search(clean):
