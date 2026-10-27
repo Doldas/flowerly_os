@@ -72,7 +72,7 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             pr = root / ".github/workflows/release-promotion-validation.yml"
-            pr.write_text(pr.read_text().replace("verify-master", "verify-later"))
+            pr.write_text(pr.read_text().replace("wait-release-promotion.py", "verify-later.py"))
             with self.assertRaisesRegex(ValueError, "exact-SHA master evidence"):
                 gates.validate(root)
 
