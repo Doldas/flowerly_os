@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Offline fixtures for arch-vm-failure-classify.py (#184)."""
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+SCRIPT = Path(__file__).with_name("arch-vm-failure-classify.py")
+spec = importlib.util.spec_from_file_location("classify", SCRIPT)
+classify = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(classify)
+
+BOOT = "4c1e0f6a-1111-4222-8333-944455556666"
+
+
+def run(serial="", **overrides):
+    arguments = {"exit-status": 1, "stage": "verify", "ssh-status": 1, "qemu": "alive",
+                 "guest-reachable": "yes", "oom-kill-start": 0, "oom-kill-end": 0,
+                 "boot-id-start": BOOT, "boot-id-end": BOOT}
+    arguments.update({key.replace("_", "-"): value for key, value in overrides.items()})
+    with tempfile.TemporaryDirectory() as directory:
+        report = Path(directory)
+        (report / "qemu-serial.log").write_text(serial)
+        argv = ["--report-dir", str(report)]
+        for key, value in arguments.items():
+            if value is not None:
+                argv += [f"--{key}", str(value)]
+        assert classify.main(argv) == 0
+        return (report / "failure-classification.txt").read_text()
+
+
+def category(text):
+    return text.splitlines()[0].split("=", 1)[1]
+
+
+class Classification(unittest.TestCase):
+    def test_success(self):
+        self.assertEqual(category(run(exit_status=0, ssh_status=0)), "success")
+
+    def test_host_reboot_wins(self):
+        self.assertEqual(category(run(boot_id_end="0" * 36, qemu="absent")), "host_reboot")
+
+    def test_host_oom_needs_qemu_gone_and_cgroup_oom_kill(self):
+        self.assertEqual(category(run(qemu="absent", oom_kill_end=1, ssh_status=255)), "host_oom")
+        self.assertEqual(category(run(qemu="no_pidfile", ssh_status=255)), "qemu_failure")
+
+    def test_guest_oom_and_crash_from_serial(self):
+        oom = "[ 812.1] Out of memory: Killed process 4242 (cargo) total-vm:1kB\n"
+        self.assertEqual(category(run(oom, ssh_status=255, guest_reachable="no")), "guest_oom")
+        panic = "\x1b[0;31m[ 900.0] Kernel panic - not syncing: Fatal exception\x1b[0m\n"
+        text = run(panic, ssh_status=255, guest_reachable="no")
+        self.assertEqual(category(text), "guest_crash")
+        self.assertIn("guest_crash_line=[ 900.0] Kernel panic - not syncing", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_unreachable_live_guest_is_a_crash(self):
+        self.assertEqual(category(run(ssh_status=255, guest_reachable="no")), "guest_crash")
+
+    def test_ssh_interruption_and_test_failure(self):
+        self.assertEqual(category(run(ssh_status=255)), "ssh_interruption")
+        self.assertEqual(category(run(ssh_status=1)), "test_failure")
+
+    def test_failure_before_the_vm_is_not_blamed_on_qemu(self):
+        self.assertEqual(category(run(stage="before-vm", qemu="no_pidfile", ssh_status=None,
+                                      guest_reachable="unknown")), "unknown")
+
+    def test_serial_evidence_is_bounded_and_printable(self):
+        serial = "".join(f"[ {i}.0] Out of memory: Killed process {i} \x07\x00 {'x' * 400}\n"
+                         for i in range(50))
+        text = run(serial)
+        kept = [line for line in text.splitlines() if line.startswith("guest_oom_line=")]
+        self.assertEqual(len(kept), 20)
+        self.assertTrue(all(len(line) <= len("guest_oom_line=") + 200 for line in kept))
+        self.assertTrue(all(32 <= ord(ch) < 127 for line in kept for ch in line))
+
+
+if __name__ == "__main__":
+    unittest.main()
