@@ -67,3 +67,22 @@ commit is not an ancestor of `release/2`.
 To avoid repeating this, the future promotion of #206 into `master` should
 also use a merge commit, not a squash, so `release/2` stays a descendant of
 `master`. That choice belongs to the maintainer.
+
+## Repeat reconciliation — 2026-10-27 (0.0.4 promotion)
+
+PR #206 was promoted to `master` as the squash commit
+`2d719551ff5a14a9231f51a323d3a7c6f57bbd88` (2026-10-27). That commit has a
+single parent, as the linear-history rule on `master` requires, and is not an
+ancestor of `release/2`.
+
+- Verified: the tree of `2d71955` is **identical** to the tested candidate
+  `6b7f363` (`7b25fd5306832ab30dfe283e445d3a4612e1bedf`).
+- This reconciliation is again a `-s ours` merge. Its first parent is
+  `release/2` `6b7f363` and its second parent is `master` `2d71955`. It keeps
+  the complete `release/2` tree and adds only this note.
+- Merge it into `release/2` with **"Create a merge commit"**, never squash or
+  rebase. Then verify
+  `git merge-base --is-ancestor origin/master origin/release/2`.
+
+From now on, every promotion into `master` uses **squash**, because of the
+linear-history rule, and is followed by this reconciliation into `release/2`.
