@@ -33,6 +33,12 @@ jobs:
       - name: Regression-test workflow action pin policy
         run: python3 scripts/test-workflow-action-pins-regression.py
 
+      - name: Ensure workflow tokens are least-privilege
+        run: python3 scripts/test-workflow-permissions.py
+
+      - name: Regression-test workflow token permission policy
+        run: python3 scripts/test-workflow-permissions-regression.py
+
       - name: Security alert inventory redaction regression
         run: python3 scripts/test-security-alert-inventory.py
 
