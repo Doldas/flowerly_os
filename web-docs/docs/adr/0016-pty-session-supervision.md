@@ -26,7 +26,7 @@ fault response and PTY FD lifetime, consistent with ADR-0013.
 - `session.spawn` only accepts allowlisted shells; it persists RUNNING
   after the real child is started. No caller PID is accepted. An optional
   `operation_id` gives at-most-once admission, not replay (PR #156; policy
-  in [IPC mutation outcomes](../ipc-mutation-outcomes.md#session-spawn-idempotency-policy-74)).
+  in [IPC mutation outcomes](../ipc-mutation-outcomes.md#sessionspawn-idempotency-policy-74)).
   Every launch, keyed or not, is durably recorded before the guardian
   starts, so restart recovery can always find its cgroup (#74).
 - `session.spawn` returns a random, ephemeral control token not present
