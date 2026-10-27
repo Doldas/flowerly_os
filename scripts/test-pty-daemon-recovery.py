@@ -40,6 +40,19 @@ import uuid
 PTY_GROUP = re.compile(r"pty-session-[0-9a-f]{32}")
 
 
+def recv_exact(connection, size):
+    """Read one complete length-framed IPC field, including short socket reads."""
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = connection.recv(size - len(chunks))
+        if not chunk:
+            raise ConnectionError(
+                f"Truncated IPC response: received {len(chunks)}/{size} bytes"
+            )
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
 def request(path, name, arguments, timeout=12):
     identifier = str(uuid.uuid4())
     payload = json.dumps({"version": 1, "id": identifier, "type": "command",
@@ -48,9 +61,8 @@ def request(path, name, arguments, timeout=12):
         connection.settimeout(timeout)
         connection.connect(str(path))
         connection.sendall(struct.pack("<I", len(payload)) + payload)
-        header = connection.recv(4, socket.MSG_WAITALL)
-        assert len(header) == 4, "flowerlyd IPC response truncated"
-        body = connection.recv(struct.unpack("<I", header)[0], socket.MSG_WAITALL)
+        header = recv_exact(connection, 4)
+        body = recv_exact(connection, struct.unpack("<I", header)[0])
     result = json.loads(body)
     assert result["id"] == identifier, result
     return result
