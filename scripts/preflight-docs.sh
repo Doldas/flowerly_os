@@ -20,5 +20,6 @@ python3 scripts/test-probe-arch-qemu-boot.py
 python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
 bash scripts/test-arch-vm-disk.sh
+python3 scripts/test-arch-vm-failure-classify.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."

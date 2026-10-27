@@ -33,6 +33,27 @@ flowerly_arch_vm_validate_disk_gb "$VM_DISK_GB"
 mkdir -p "$CACHE_DIR"
 rm -rf "$REPORT_DIR"
 mkdir -p "$REPORT_DIR"
+
+# #184: numeric host facts at the start, so the end of the run (or the next
+# run, after a host reset killed this one) can tell what happened.
+oom_kill_count() {
+    awk '$1 == "oom_kill" { print $2; found = 1 } END { if (!found) print 0 }' \
+        /sys/fs/cgroup/memory.events 2>/dev/null || echo 0
+}
+boot_id_start="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+oom_kill_start="$(oom_kill_count)"
+stage="before-vm"
+guest_ssh_status=""
+{
+    printf 'test_sha=%s\n' "$TEST_SHA"
+    printf 'run_started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'host_boot_id=%s\n' "$boot_id_start"
+    printf 'host_boot_time_utc=%s\n' "$(date -u -d "@$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+    printf 'host_cpus=%s\n' "$(nproc 2>/dev/null || true)"
+    grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null || true
+    printf 'runner_cgroup_oom_kill=%s\n' "$oom_kill_start"
+    printf 'kvm_device=%s\n' "$([[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] && echo usable || echo unavailable)"
+} > "$REPORT_DIR/host-resource-start.txt" 2>/dev/null || true
 rm -f "$WORK_DIR/qemu.pid" "$WORK_DIR/overlay.qcow2" "$WORK_DIR/seed.img"
 rm -rf "$WORK_DIR/repo-export"
 mkdir -p "$WORK_DIR/repo-export"
@@ -190,6 +211,8 @@ fi
 
 resource_monitor_pid=""
 cleanup() {
+    # First statement: anything earlier would overwrite the script's status.
+    local exit_status=$?
     # Stop the background monitor before collecting final resource counters.
     if [[ -n "$resource_monitor_pid" ]]; then
         kill "$resource_monitor_pid" 2>/dev/null || true
@@ -197,7 +220,21 @@ cleanup() {
     fi
     # Preserve non-secret host resource evidence even if guest SSH/report retrieval fails.
     # Do not read kernel journals or guest credentials into CI artifacts.
-    local exit_status=$?
+    local qemu_state=no_pidfile guest_reachable=unknown
+    if [[ -f "$pidfile" ]]; then
+        qemu_state=absent
+        local running_pid
+        running_pid="$(cat "$pidfile" 2>/dev/null || true)"
+        if [[ "$running_pid" =~ ^[0-9]+$ ]] && kill -0 "$running_pid" 2>/dev/null; then
+            qemu_state=alive
+        fi
+    fi
+    if [[ "$exit_status" -ne 0 && "$qemu_state" == alive && -n "${guest:-}" ]]; then
+        guest_reachable=no
+        if timeout 20 ssh "${ssh_opts[@]}" "$guest" true >/dev/null 2>&1; then
+            guest_reachable=yes
+        fi
+    fi
     {
         printf 'test_sha=%s\n' "$TEST_SHA"
         printf 'exit_status=%s\n' "$exit_status"
@@ -220,7 +257,15 @@ cleanup() {
             echo 'host_cgroup_memory_events:'
             cat /sys/fs/cgroup/memory.events
         fi
+        printf 'failed_stage=%s\n' "$stage"
     } > "$REPORT_DIR/host-resource-exit.txt" 2>/dev/null || true
+    python3 "$ROOT/scripts/arch-vm-failure-classify.py" --report-dir "$REPORT_DIR" \
+        --exit-status "$exit_status" --stage "$stage" \
+        ${guest_ssh_status:+--ssh-status "$guest_ssh_status"} \
+        --qemu "$qemu_state" --guest-reachable "$guest_reachable" \
+        --oom-kill-start "$oom_kill_start" --oom-kill-end "$(oom_kill_count)" \
+        --boot-id-start "$boot_id_start" \
+        --boot-id-end "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)" || true
     if [[ -f "$pidfile" ]]; then
         pid="$(cat "$pidfile" 2>/dev/null || true)"
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
@@ -234,6 +279,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+stage="boot"
 
 # Capture resource pressure *before* any guest disconnection, not only at exit.
 # The collector is observational and never changes a release acceptance result.
@@ -290,6 +336,7 @@ wait_for_ssh() {
 
 wait_for_ssh "initial boot"
 ssh "${ssh_opts[@]}" "$guest" 'cloud-init status --wait'
+stage="upgrade"
 
 # Fail before a large pacman transaction if cloud-init did not expand the
 # partition/filesystem. Save this diagnostic even if the guest fails preflight.
@@ -306,6 +353,7 @@ ssh "${ssh_opts[@]}" "$guest" \
     'sudo pacman -Syu --noconfirm --needed base-devel git just ripgrep rustup python'
 
 echo "rebooting so tests execute on the kernel installed by the full upgrade"
+stage="reboot"
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl reboot' || true
 
 # Give sshd time to disappear before accepting a successful reconnect.
@@ -329,11 +377,14 @@ printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
     'cat > "$HOME/flowerly_os/.flowerly-tested-commit"'
 
 echo "running complete Flowerly verification inside Arch VM"
+stage="verify"
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
     'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
     2>&1 | tee "$REPORT_DIR/guest-execution.log"
 guest_status=("${PIPESTATUS[@]}")
+guest_ssh_status="${guest_status[0]}"
+stage="report"
 set -e
 
 if ! scp "${scp_opts[@]}" \
@@ -361,6 +412,7 @@ fi
 } >"$REPORT_DIR/host-metadata.txt"
 
 echo "requesting clean guest shutdown"
+stage="shutdown"
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl poweroff' || true
 if [[ -f "$pidfile" ]]; then
     pid="$(cat "$pidfile" 2>/dev/null || true)"

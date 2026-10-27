@@ -208,3 +208,34 @@ Pre-1.0 releases may contain incomplete features, but failures must be explicit.
 Do not market unfinished capabilities as already implemented; mark things
 Implemented, In progress, Planned or Research as in
 [architecture.md](architecture.md).
+
+## Upgrade and rollback (0.0.3 → 0.0.4)
+
+Verified on 2026-10-27 with real binaries built from `master` (`c7d6ef9`,
+schema 8) and `release/2` (schema 13), against a database holding a Flow and
+a Goal created by the old binary:
+
+1. **Back up first**, with the service stopped:
+   `systemctl stop flowerlyd && sqlite3 /var/lib/flowerly/state.db ".backup /var/lib/flowerly/pre-0.0.4.db"`.
+   This uses SQLite's backup API; never copy a live database together with its WAL file by hand.
+2. **Upgrade**: install the new package and start the service. Migrations
+   9–13 (ownership, per-owner foreground, Generation, Compute and audit
+   ownership) run once, at start. The old Flow and Goal stay visible to the
+   service account. Install the new `flowerlyd.service`; the multi-user
+   drop-in stays inactive until an administrator installs it.
+3. **Rollback**: stop the service, restore the backup over `state.db`, remove
+   `state.db-wal` and `state.db-shm`, install the previous package and start
+   it. Verified: the old binary starts on the restored schema 8 with its
+   data. **Anything written after the upgrade is lost** in a rollback.
+
+Do not start an older binary on a migrated database:
+
+- The 0.0.3 binary has no schema-version guard. On a schema-13 database it
+  happens to fail closed: a migration-10 trigger rejects its General-Flow
+  setup with "FOREGROUND is per owner". That refusal is an accident of the
+  schema, not a guarantee.
+- From 0.0.4 on, `Store::migrate` refuses any database whose recorded
+  migrations are newer than the binary supports. The binary then exits with
+  "database schema version N is newer than this binary supports (M); restore
+  the pre-upgrade backup or install the newer release", and the database is
+  left unchanged.
