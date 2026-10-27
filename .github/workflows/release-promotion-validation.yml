@@ -14,9 +14,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-promotion-source:
+    name: Validate branch policy and issue link
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release promotion metadata
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REF" == master && "$HEAD_REF" =~ ^release/[1-9][0-9]*$ ]] || { echo '::error::Promotion must come from release/N into master'; exit 1; }
+          [[ "$PR_BODY" =~ \#[0-9]+ ]] || { echo '::error::Promotion PR must reference an issue'; exit 1; }
+
   verify-release-promotion:
     name: Verify release promotion exact-SHA Arch acceptance
     runs-on: ubuntu-latest
+    timeout-minutes: 115
     steps:
       - name: Checkout release promotion source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -29,4 +45,4 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 scripts/branch-forward.py verify-master --head "$HEAD_REF" --sha "$HEAD_SHA"
+          python3 scripts/wait-release-promotion.py "$HEAD_REF" "$HEAD_SHA"

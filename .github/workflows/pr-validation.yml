@@ -17,10 +17,6 @@ concurrency:
 jobs:
   validate-pr-policy:
     name: Validate branch policy and issue link
-    if: >-
-      startsWith(github.head_ref, 'feature/') ||
-      startsWith(github.head_ref, 'bugfix/') ||
-      startsWith(github.head_ref, 'docs/')
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR metadata as data
@@ -32,7 +28,7 @@ jobs:
             const base = pr.base.ref;
             const body = pr.body || "";
 
-            const developmentHead = /^(feature|bugfix|docs)\/.+/;
+            const developmentHead = /^(feature|bugfix|fix|docs)\/.+/;
             const releaseBranch = /^release\/([1-9]\d*)$/;
 
             if (!releaseBranch.test(base)) {
@@ -41,7 +37,7 @@ jobs:
             }
             if (!developmentHead.test(head)) {
               core.setFailed(
-                `PRs to ${base} must originate from feature/*, bugfix/* or docs/*; got ${head}`
+                `PRs to ${base} must originate from feature/*, bugfix/*, fix/* or docs/*; got ${head}`
               );
               return;
             }

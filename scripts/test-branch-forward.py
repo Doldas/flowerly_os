@@ -67,7 +67,7 @@ class Tests(unittest.TestCase):
     def test_direction_guards(self):
         for head, base in [("release/2", "release/3"), ("release/3", "master"),
                            ("feature/x", "release/2"), ("bugfix/x", "release/3"),
-                           ("docs/x", "release/2")]:
+                           ("docs/x", "release/2"), ("fix/x", "release/2")]:
             self.assertTrue(policy.permitted(head, base))
         for head, base in [("release/3", "release/2"), ("release/2", "release/4"),
                            ("master", "release/3"), ("feature/x", "master"),
