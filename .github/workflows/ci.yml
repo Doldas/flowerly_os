@@ -280,6 +280,9 @@ jobs:
       - name: Arch VM sparse disk growth and guest preflight regression
         run: bash ./scripts/test-arch-vm-disk.sh
 
+      - name: Arch VM failure classification regression (#184)
+        run: python3 ./scripts/test-arch-vm-failure-classify.py
+
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24
         with:
