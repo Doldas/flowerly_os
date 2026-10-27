@@ -61,6 +61,7 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
     if host.dev() != delegated.dev() || !root.join("cgroup.controllers").is_file() {
         anyhow::bail!("PTY supervision requires a real delegated Linux cgroup v2 root");
     }
+    remove_stale_management_groups(&root);
     let management = format!("management-{}", uuid::Uuid::new_v4().simple());
     std::fs::create_dir(root.join(&management))
         .context("creating PTY supervisor management cgroup")?;
@@ -75,6 +76,45 @@ fn prepare_cgroup_root() -> anyhow::Result<Option<DelegatedCgroupRoot>> {
         path: root,
         management,
     }))
+}
+
+/// A SIGKILLed instance leaves its `management-<uuid>` group behind, briefly
+/// holding its exiting guardians and cleanup watchers. rmdir succeeds only on
+/// an empty cgroup, so a live instance's group (it contains that daemon) is
+/// never removed; it is retried for at most 2 s.
+#[cfg(target_os = "linux")]
+fn remove_stale_management_groups(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(suffix) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("management-"))
+        else {
+            continue;
+        };
+        if suffix.len() != 32 || !suffix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        for attempt in 0..100 {
+            match std::fs::remove_dir(entry.path()) {
+                Ok(()) => break,
+                Err(error) if error.raw_os_error() == Some(16) && attempt < 99 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    tracing::warn!(group = %entry.path().display(), %error,
+                        "stale PTY management cgroup not removed");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

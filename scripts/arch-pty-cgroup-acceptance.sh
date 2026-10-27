@@ -32,11 +32,23 @@ if [[ "${1:-}" == "--system" ]]; then
     printf '%s\\n' "Distinct non-root shell UID is required for production acceptance" >&2
     exit 1
   fi
+  # Optional 4th argument: a flowerlyd binary directory. The delegated unit
+  # then runs the #74 daemon crash/restart matrix instead of the guardian
+  # acceptance. It must be absolute and not writable by the manager account.
+  daemon_bin="${4:-}"
+  if [[ -n "$daemon_bin" ]]; then
+    if [[ "$daemon_bin" != /* || ! -x "$daemon_bin/flowerlyd" ]] \
+        || runuser -u "$2" -- test -w "$daemon_bin"; then
+      printf '%s\n' "Daemon matrix needs an absolute, manager-read-only flowerlyd directory" >&2
+      exit 1
+    fi
+  fi
   exec systemd-run --system --wait --collect --pipe \
     --property=Delegate=yes --property="User=$2" \
     --property="AmbientCapabilities=CAP_SETUID CAP_SETGID" \
     --property=NoNewPrivileges=no \
     --setenv="FLOWERLY_PTY_SHELL_UID=$(id -u "$3")" \
+    --setenv="FLOWERLY_PTY_DAEMON_BIN=$daemon_bin" \
     --property="WorkingDirectory=$PWD" \
     /bin/bash "$PWD/scripts/arch-pty-cgroup-acceptance.sh" --delegated
 fi
@@ -66,4 +78,7 @@ if [[ "${1:-}" == "--delegated" ]]; then
 fi
 
 export FLOWERLY_PTY_ISOLATION=required
+if [[ -n "${FLOWERLY_PTY_DAEMON_BIN:-}" ]]; then
+  exec python3 scripts/test-pty-daemon-recovery.py "$FLOWERLY_PTY_DAEMON_BIN"
+fi
 python3 scripts/test-pty-cgroup.py

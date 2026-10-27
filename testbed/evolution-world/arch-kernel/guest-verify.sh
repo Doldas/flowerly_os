@@ -110,10 +110,18 @@ fi
 sudo install -d -m 0755 "$acceptance_root/scripts"
 sudo install -m 0644 scripts/arch-pty-cgroup-acceptance.sh \
     scripts/test-pty-cgroup.py scripts/pty-guardian.py \
+    scripts/test-pty-daemon-recovery.py \
     "$acceptance_root/scripts"
+# Root-owned copy: the manager account must not be able to replace it.
+sudo install -d -m 0755 "$acceptance_root/bin"
+sudo install -m 0755 target/release/flowerlyd "$acceptance_root/bin/flowerlyd"
 (
     cd "$acceptance_root"
     sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user"
+    echo
+    echo "== #74 flowerlyd crash/restart matrix with delegated cgroup v2 =="
+    sudo bash scripts/arch-pty-cgroup-acceptance.sh --system "$acceptance_user" "$shell_user" \
+        "$acceptance_root/bin"
 )
 
 echo

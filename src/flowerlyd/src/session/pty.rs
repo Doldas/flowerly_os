@@ -395,6 +395,16 @@ impl Supervisor {
                 .map_err(|error| (error.code, error.message))?
         };
         let session_id = SessionId::new();
+        if operation_id.is_none() {
+            // Every launch is durably recorded before Command::spawn (#74):
+            // restart recovery must find this cgroup even if the Session row
+            // never commits.
+            store
+                .lock()
+                .map_err(|_| internal("store lock poisoned"))?
+                .reserve_unkeyed_spawn(&self.principal()?, &session_id)
+                .map_err(|error| (super::storage_error_code(&error), error.to_string()))?;
+        }
         if let Some(operation_id) = operation_id {
             let payload = json!({
                 "shell": shell,
@@ -501,10 +511,17 @@ impl Supervisor {
             created_at: Timestamp::now(),
             note: None,
         };
-        let insertion = store
-            .lock()
-            .map_err(|_| internal("store lock poisoned"))?
-            .insert_session_with_provenance(&session, &[provenance]);
+        let insertion = {
+            let mut db = store.lock().map_err(|_| internal("store lock poisoned"))?;
+            db.insert_session_with_provenance(&session, &[provenance])
+                .and_then(|()| {
+                    if operation_id.is_none() {
+                        db.release_unkeyed_spawn(&session_id)
+                    } else {
+                        Ok(())
+                    }
+                })
+        };
         if let Err(error) = insertion {
             return Err((super::storage_error_code(&error), error.to_string()));
         }

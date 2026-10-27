@@ -810,12 +810,47 @@ impl Store {
         }
     }
 
+    /// Durably record a spawn WITHOUT an operation_id before launching it
+    /// (#74), so restart recovery can find its cgroup even if the daemon,
+    /// guardian and cleanup watcher all die before the Session row commits.
+    /// It is not a retry identity: nothing can look it up, and it is released
+    /// once the Session row exists (`release_unkeyed_spawn`).
+    pub fn reserve_unkeyed_spawn(&mut self, actor: &str, session_id: &SessionId) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO ipc_operations
+             (actor, command, operation_id, request_payload, response_payload, created_at)
+             VALUES (?1, 'session.spawn.unkeyed', ?2, '{}', ?2, ?3)",
+            params![actor, session_id.as_str(), Timestamp::now().as_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// The Session row now identifies the cgroup; drop the launch record.
+    pub fn release_unkeyed_spawn(&mut self, session_id: &SessionId) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM ipc_operations
+             WHERE command = 'session.spawn.unkeyed' AND operation_id = ?1",
+            params![session_id.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// After restart recovery has killed their cgroups, unkeyed launch
+    /// records carry no further meaning: no client can look them up.
+    pub fn clear_unkeyed_spawn_reservations(&mut self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM ipc_operations WHERE command = 'session.spawn.unkeyed'",
+            [],
+        )?)
+    }
+
     /// Includes reserved IDs without Session rows: the daemon may have died
     /// between launching a guardian and persisting the Session result.
+    /// Keyed reservations are kept forever; unkeyed ones until recovery.
     pub fn list_external_spawn_reservations(&self) -> Result<Vec<SessionId>> {
         let mut statement = self.conn.prepare(
             "SELECT response_payload FROM ipc_operations
-             WHERE command = 'session.spawn'",
+             WHERE command IN ('session.spawn', 'session.spawn.unkeyed')",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut ids = Vec::new();

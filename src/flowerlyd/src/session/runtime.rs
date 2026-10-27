@@ -21,7 +21,7 @@ impl SessionRuntime {
                 tracing::warn!(reason, "PTY delegation unavailable; spawning disabled");
             }
             {
-                let db = store
+                let mut db = store
                     .lock()
                     .map_err(|_| anyhow::anyhow!("state lock poisoned"))?;
                 // Reservations are committed before the guardian is launched.
@@ -62,6 +62,12 @@ impl SessionRuntime {
                             SessionPresentationState::Detached,
                         )?;
                     }
+                }
+                // Their cgroups were killed above; without delegation nothing
+                // was proven, so keep the records for a later recovery.
+                if let Ok(Some(_)) = &cgroup_root {
+                    db.clear_unkeyed_spawn_reservations()
+                        .context("clearing recovered unkeyed spawn records")?;
                 }
             }
             let supervisor = Arc::new(pty::Supervisor::new(
