@@ -21,9 +21,7 @@ for `v0.0.4` tagging and release publication; no CI override.
 - #187 remains open for individual Scorecard findings and maintainer
   repository-setting decisions. #249 remains open for disabled
   Projects-sync automation and missing scoped token.
-- #31 and #8 remain open until final release acceptance and explicit
-  publication approval; #50 is the PTY design parent, with ADR-0016
-  accepted and descendant checks #72/#73/#74 proven.
+- #31 and #8 remain open until final release acceptance and explicit\n  publication approval; #50 has been closed after ADR-0016 acceptance and\n  descendant checks #72/#73/#74 were proven.
 
 ## Incident timeline and distinction
 
@@ -38,15 +36,10 @@ for `v0.0.4` tagging and release publication; no CI override.
 ## Milestone and project-board reconciliation
 
 GitHub Projects v2 owner board: `https://github.com/users/Doldas/projects/7`.
-The installed GitHub connector does not expose an authorized Projects or
-milestone-list/update endpoint (beyond assigning an existing milestone to
-individual issues). Therefore **board field values and milestone dates have
-not been asserted as updated**. Work remaining for a credentialed maintainer:
+Milestone **0.0.4 Flows and Sessions** (#4) was identified via existing\nissue #225. Issues #8, #31, #50, #112, #187 and completed 0.0.4 children\n#53, #55, #56, #62, #63, #72, #73, #74, #184, #237 and #240\nwere assigned to that milestone and verified against issue status. #50 was\nclosed as the completed PTY architecture parent. The installed GitHub connector\ndoes not expose an authorized Projects v2 mutation endpoint or milestone\nmetadata editing endpoint. Therefore **board fields and milestone dates have\nnot been asserted as updated**. Work remaining for a credentialed maintainer:
 
-1. Inventory all milestones with open/closed counts, due dates and scope.
-2. Ensure the 0.0.4 release tracker #8, architecture #31/#50, security
-   #187, automation #112, and Projects #249 have correct milestone
-   allocation; keep future #3/#4 on their intended 0.0.6/0.0.8 milestones.
+1. Review milestone #4 counts and due date, and audit other milestones for\n   misplaced work; issue-level 0.0.4 assignments were reconciled.
+2. Evaluate whether Projects infrastructure #249 belongs in 0.0.4 or a\n   maintenance milestone (it was deliberately left unassigned); future\n   #3/#4 remain on 0.0.6/0.0.8 milestones.
 3. Synchronize the board's Sprint, Release, Status and review fields
    from the actual issues and merged PRs, preserving unresolved alerts.
 4. Fix #249's event filter and add a scoped project-write credential before
