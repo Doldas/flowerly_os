@@ -48,7 +48,7 @@ class FrameReadTests(unittest.TestCase):
 
     def test_truncated_header_is_rejected(self):
         sender, receiver = socket.socketpair()
-        sender.sendall(b"\\x01\\x02")
+        sender.sendall(b"\x01\x02")
         sender.close()
         try:
             with self.assertRaisesRegex(ConnectionError, "received 2/4 bytes"):

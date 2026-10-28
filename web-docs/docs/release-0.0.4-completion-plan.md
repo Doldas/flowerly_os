@@ -1,6 +1,17 @@
 # 0.0.4 completion plan and session handoff
 
-Status: **0.0.4 implementation promoted to master, but release tag/publication not approved.**\nLast reconciled: 2026-10-27. Promotion PR #206 was squash-merged to master at\n`2d719551ff5a14a9231f51a323d3a7c6f57bbd88` from verified candidate `6b7f363`.\nAfter ancestry reconciliation (#250), systemd acceptance repair (#251), IPC test framing\nrepair (#253), and CI policy/race repair (#254), `release/2` advanced to\n`c19f9e1f76057345fbac6513bb8d63d10d4ea0e2`. A NEW draft promotion PR\n#255 tracks only subsequent changes; **do not promote it or tag a release\nwithout separate owner approval**. PR head and CI state may change: verify on GitHub.\nHistorical NO-GO notes below predate the exact-SHA evidence and are not the current status.\n\nAuthoritative trackers: roadmap [#8](https://github.com/Doldas/flowerly_os/issues/8),
+Status: **v0.0.4 published 2026-10-28.**
+Annotated tag `v0.0.4` points at `master`
+`b13ce02b0eb1fd88471b17b8dc60a7ea962c630c`. The tag release workflow
+[40753771279](https://github.com/Doldas/flowerly_os/actions/runs/40753771279)
+passed the final fully upgraded Arch VM gate, `just verify`, the release build
+and publication: [release notes](https://github.com/Doldas/flowerly_os/releases/tag/v0.0.4).
+Remaining open items are administrative/security: #187 (Scorecard alerts and the
+owner ruleset bypass), #112 (release forwarding), and #249/#257 (Projects
+metadata). Known limitations: the shipped unit has no `Delegate=` (PTY spawning
+disabled by default) and the Cargo workspace version still reports `0.0.1`.
+
+Authoritative trackers: roadmap [#8](https://github.com/Doldas/flowerly_os/issues/8),
 hardening gates [#31](https://github.com/Doldas/flowerly_os/issues/31).
 Issues and code win over this page; re-verify branch SHA, PR state and CI
 before acting (see `AGENTS.md`).
@@ -90,15 +101,26 @@ and any reference to PR #206 as open.
   persistent PTY spawning is disabled by default. Multi-user access is
   opt-in. Arch delegated tests do not change the shipped defaults.
 
-### Remaining release administration / acceptance
+### Post-publication follow-up
 
-1. Verify **exact current** `release/2` SHA has successful push CI with
-   executed Arch acceptance and current CodeQL/security checks.
-2. Review promotion PR #255 and branch rules; no automatic master promotion.
-3. Resolve/update #187 security settings, #249 Projects integration, and
-   reconcile issue #8 / #31 / #50 closure only against their current evidence.
-4. Review milestone assignments and project-board fields through an authorized
-   GitHub Projects/milestones API or maintainer UI. This GitHub connector has
-   not demonstrated milestone/Projects write access; do not infer completion.
-5. Explicit maintainer approval required before creating the `v0.0.4` tag or
-   publishing the GitHub Release.
+1. **Done:** `v0.0.4` was tagged and published from
+   `b13ce02b0eb1fd88471b17b8dc60a7ea962c630c`; exact-tree CI, security, CodeQL,
+   nightly Arch and the tag Arch gate all passed.
+2. **Open:** #187 — resolve or explicitly accept the remaining OpenSSF Scorecard
+   findings and decide on the owner ruleset bypass. Nothing was dismissed.
+3. **Open:** #112 release forwarding and #249/#257 Projects board/milestone
+   automation.
+4. **Next release:** bump the Cargo workspace version and provide a reviewed
+   delegated PTY systemd configuration before claiming default PTY spawning.
+
+## Publication log — 2026-10-28
+
+- Created annotated tag `v0.0.4` on the approved `master` commit
+  `b13ce02b0eb1fd88471b17b8dc60a7ea962c630c`; no tag existed before.
+- Release workflow [40753771279](https://github.com/Doldas/flowerly_os/actions/runs/40753771279):
+  final Arch kernel validation passed in 37m05s, `just verify` and the release
+  build passed, and the GitHub Release was published.
+- Published assets `flowerlyd`, `evolutiond`, `providerd`, `agenticctl` and
+  `SHA256SUMS`; checksums were independently re-downloaded and verified.
+- Release notes were replaced with the accurate v0.0.4 section, exact SHA,
+  evidence links and known limitations.

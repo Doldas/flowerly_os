@@ -46,6 +46,19 @@ Missing API access is not evidence of zero alerts.
 
 The scripts neither dismiss alerts nor bypass release protection.
 
+## Published snapshot 2026-10-28 (`master`, v0.0.4)
+
+Open alerts: **5 Code Scanning (all OpenSSF Scorecard), 0 Dependabot,
+0 Secret Scanning.** No CodeQL, cargo-audit or cargo-deny findings are open.
+The four earlier alerts are no longer open after promotion and the subsequent
+Scorecard analyses.
+
+The remaining set is BranchProtection (high), CodeReview (high), Maintained
+(high), Fuzzing (medium) and CIIBestPractices (low). The owner bypass is still
+present on both rulesets. v0.0.4 was published with this open set; #187 stays
+open and no alert is dismissed. This snapshot is not a claim that the alerts
+are resolved.
+
 ## Triage snapshot 2026-10-27 (`release/2`)
 
 Open alerts: **9 Code Scanning (all OpenSSF Scorecard), 0 Dependabot,
