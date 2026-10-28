@@ -8,7 +8,7 @@ import sys
 from urllib import error, parse, request
 
 RELEASE = re.compile(r"^release/([1-9][0-9]*)$")
-DEV = re.compile(r"^(feature|bugfix|docs)/.+$")
+DEV = re.compile(r"^(feature|bugfix|fix|docs)/.+$")
 ARCH = "Release PTY kernel cgroup, escaped descendant and Arch guest acceptance"
 ISSUE = 112
 

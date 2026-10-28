@@ -91,14 +91,18 @@ def validate(root=ROOT):
         raise ValueError("pr-validation: release-only PR trigger required")
     if "branches: [master]" in pr:
         raise ValueError("pr-validation must not run for master promotions")
-    if not all(f"startsWith(github.head_ref, '{prefix}/')" in pr for prefix in ("feature", "bugfix", "docs")):
-        raise ValueError("pr-validation must select development branches")
-    if "branches: [master]" not in promotion or "verify-master" not in promotion:
+    if "const developmentHead = /^(feature|bugfix|fix|docs)\\/.+/;" not in pr:
+        raise ValueError("pr-validation must validate allowed development branches")
+    if ("branches: [master]" not in promotion
+            or "wait-release-promotion.py" not in promotion
+            or "name: Validate branch policy and issue link" not in promotion):
         raise ValueError("exact-SHA master evidence gate missing")
     if "name: rust" not in ci or "name: docs" not in ci:
         raise ValueError("CI must report rust and docs check names")
     if "name: Validate branch policy and issue link" not in pr:
         raise ValueError("PR validation check was renamed")
+    if re.search(r"(?m)^    if:", pr):
+        raise ValueError("required PR branch policy check must never be skipped")
     forward = workflow("branch-forward.yml")
     if "FLOWERLY_FORWARD_BOT_TOKEN" not in forward or "branch-forward.py reconcile" not in forward:
         raise ValueError("bot branch propagation workflow missing or unprotected")
