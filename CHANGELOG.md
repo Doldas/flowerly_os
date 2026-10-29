@@ -5,7 +5,20 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
-### Distribution-first architecture transition (integration; not release-certified)
+No unreleased changes yet.
+
+## 0.0.4 — Flows and Sessions (2026-10-28)
+
+Published as annotated tag `v0.0.4` on `master`
+`b13ce02b0eb1fd88471b17b8dc60a7ea962c630c`.
+[Release notes](https://github.com/Doldas/flowerly_os/releases/tag/v0.0.4) ·
+[release workflow](https://github.com/Doldas/flowerly_os/actions/runs/40753771279).
+
+Known limitations: the shipped systemd unit has no `Delegate=`, so PTY spawning
+stays disabled by default. The Cargo workspace version remains `0.0.1` and the
+binaries self-report `0.0.1`; this release is identified by the tag.
+
+### Distribution-first architecture transition
 
 - Unified Flowerly state handlers under `src/flowerlyd` with bounded Tokio work queues.
 - Combined types, SQLite migrations and IPC framing in `flowerly-core`.
@@ -61,4 +74,5 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 - Initial repository structure, license, and default branch `main`.
 
-[Unreleased]: https://github.com/Doldas/flowerly_os
+[Unreleased]: https://github.com/Doldas/flowerly_os/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/Doldas/flowerly_os/releases/tag/v0.0.4
