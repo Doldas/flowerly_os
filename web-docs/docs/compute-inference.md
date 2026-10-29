@@ -1,5 +1,9 @@
 # Reference inference provider (RFC 0004 tranche 4)
 
+An [opt-in OpenAI-compatible external API probe](openai-compatible-provider-probe.md)
+is available for offline/mock and operator-authorized manual testing. It is **not**
+connected to providerd and does not relax ADR-0020's remote-egress prohibition.
+
 Status: **prototype surface, fourth tranche of RFC 0004**; completes the local
 provider execution contract under [ADR-0020](adr/0020-ai-compute-layer-is-a-module.md)
 and [ADR-0021](adr/0021-provider-fault-isolation.md). No real models are
