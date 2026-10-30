@@ -596,6 +596,10 @@ the test user's own gid.
 | `workload.usage_brief` | User | read |
 | `inference.capabilities` | User | read |
 | `inference.request` | User | own admitted workload |
+| `inference.result` | User | own remote attempt |
+| `inference.consent_grant` | User | own consent |
+| `inference.consent_revoke` | User | own consent |
+| `inference.consent_list` | User | own consent |
 
 Not routed by `flowerlyd`, so outside this table: `evolutiond`'s
 `evolution.run_experiment` (execution disabled) and the `providerd` plugin

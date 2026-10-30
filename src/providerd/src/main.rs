@@ -25,9 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use clap::Parser;
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::{Envelope, ErrorCode, Payload, PeerIdentity};
 use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_authorized_service,
+    run_service, ServiceConfig,
 };
 use serde_json::Value;
 
@@ -95,11 +96,22 @@ async fn main() -> anyhow::Result<()> {
             println!("providerd self-test ok: remote backend configuration and credential loaded (no network request made)");
             return Ok(());
         }
+        // Owner Q1: the remote backend runs as its own account; flowerlyd
+        // connects through the configured users group (for example
+        // `flowerly-provider-clients`), never as the provider's own uid.
+        let policy = config
+            .access_policy()
+            .context("resolving the provider socket's client group")?;
         let status = backend.self_describe();
-        let handler = move |request: &Envelope| backend.handle(request);
-        return run_service(config, status, Arc::new(handler))
-            .await
-            .context("providerd terminated");
+        let handler = move |request: &Envelope, _peer: &PeerIdentity| backend.handle(request);
+        return run_authorized_service(
+            config,
+            policy,
+            Arc::new(move |_peer: &PeerIdentity| status.clone()),
+            Arc::new(handler),
+        )
+        .await
+        .context("providerd terminated");
     }
 
     if cli.self_test {

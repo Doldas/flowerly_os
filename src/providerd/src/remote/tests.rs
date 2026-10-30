@@ -18,10 +18,12 @@ use super::Backend;
 
 const SENTINEL: &str = "sk-flowerly-SENTINEL-0123456789abcdef";
 const MODEL: &str = "gpt-oss:20b";
-const LOOPBACK: AddressPolicy = AddressPolicy {
-    allow_private: false,
-    allow_loopback: true,
-};
+fn loopback() -> AddressPolicy {
+    AddressPolicy {
+        private_allowlist: Vec::new(),
+        allow_loopback: true,
+    }
+}
 
 // --- captured logs -------------------------------------------------------
 
@@ -432,7 +434,7 @@ fn error_of(status: &Value) -> (&str, &str, &str) {
 async fn discovery_and_inference_succeed_with_reported_usage() {
     let ca = Ca::new("flowerly test CA");
     let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
 
     let discovered = ipc(&backend, "provider.discover", serde_json::json!({}))
         .await
@@ -486,7 +488,7 @@ async fn open_webui_style_uses_its_api_paths() {
         config,
         ApiKey::new(SENTINEL.to_owned()).unwrap(),
         ca.roots(),
-        LOOPBACK,
+        loopback(),
         tokio::runtime::Handle::current(),
     )
     .unwrap();
@@ -505,7 +507,7 @@ async fn a_missing_or_mismatched_model_fails_closed() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-missing", "hi").await;
     assert_eq!(status["state"], "failed");
     assert_eq!(
@@ -524,7 +526,7 @@ async fn a_missing_or_mismatched_model_fails_closed() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-mismatch", "hi").await;
     assert_eq!(error_of(&status), ("conflict", "model_mismatch", "sent"));
     assert!(
@@ -547,7 +549,7 @@ async fn rejected_credentials_open_the_circuit_without_retrying() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-401", "hi").await;
     assert_eq!(
         error_of(&status),
@@ -567,7 +569,7 @@ async fn rejected_credentials_open_the_circuit_without_retrying() {
         openai(&[MODEL], |_| Reply::Json(403, serde_json::json!({}))),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-403", "hi").await;
     assert_eq!(
         error_of(&status),
@@ -588,7 +590,7 @@ async fn rate_limits_and_server_errors_are_typed_and_never_retried() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-429", "hi").await;
     assert_eq!(error_of(&status), ("unavailable", "rate_limited", "sent"));
     assert_eq!(status["error"]["retry_after_ms"], 7000);
@@ -599,7 +601,7 @@ async fn rate_limits_and_server_errors_are_typed_and_never_retried() {
         openai(&[MODEL], |_| Reply::Json(502, serde_json::json!({}))),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-5xx", "hi").await;
     assert_eq!(status["state"], "unknown", "a 5xx may have executed");
     assert_eq!(
@@ -622,7 +624,7 @@ async fn refused_connections_and_timeouts_are_distinguished() {
         &format!("https://localhost:{port}"),
         "",
         ca.roots(),
-        LOOPBACK,
+        loopback(),
     );
     let status = run(&backend, "req-refused", "hi").await;
     assert_eq!(error_of(&status), ("unavailable", "connect", "not_sent"));
@@ -636,7 +638,7 @@ async fn refused_connections_and_timeouts_are_distinguished() {
         &mock.base(),
         "request_timeout_ms = 400\n",
         ca.roots(),
-        LOOPBACK,
+        loopback(),
     );
     let status = run(&backend, "req-timeout", "hi").await;
     assert_eq!(status["state"], "unknown");
@@ -652,7 +654,7 @@ async fn tls_failures_send_nothing_and_never_downgrade() {
         ("wrong hostname", trusted.server_config(&["other.example"])),
     ] {
         let mock = Mock::start(server, ready()).await;
-        let backend = backend_for(&mock.base(), "", trusted.roots(), LOOPBACK);
+        let backend = backend_for(&mock.base(), "", trusted.roots(), loopback());
         let status = run(&backend, "req-tls", "hi").await;
         assert_eq!(
             error_of(&status),
@@ -686,7 +688,7 @@ async fn redirects_are_refused_and_never_followed() {
         }
     });
     let mock = Mock::start(ca.server_config(&["localhost"]), behavior).await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-redirect", "hi").await;
     assert_eq!(
         error_of(&status),
@@ -748,7 +750,7 @@ async fn oversized_malformed_and_tool_call_responses_are_rejected() {
     ];
     for (case, behavior, class) in cases {
         let mock = Mock::start(ca.server_config(&["localhost"]), behavior).await;
-        let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+        let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
         let status = run(&backend, "req-bad", "hi").await;
         assert_eq!(status["state"], "failed", "{case}: {status}");
         assert_eq!(error_of(&status).1, class, "{case}");
@@ -760,7 +762,12 @@ async fn oversized_malformed_and_tool_call_responses_are_rejected() {
 async fn request_limits_are_enforced_before_any_network_use() {
     let ca = Ca::new("flowerly test CA");
     let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
-    let backend = backend_for(&mock.base(), "max_tokens_cap = 256\n", ca.roots(), LOOPBACK);
+    let backend = backend_for(
+        &mock.base(),
+        "max_tokens_cap = 256\n",
+        ca.roots(),
+        loopback(),
+    );
     for (case, args) in [
         (
             "prompt",
@@ -814,7 +821,7 @@ async fn request_limits_are_enforced_before_any_network_use() {
         )
     });
     let mock = Mock::start(ca.server_config(&["localhost"]), long).await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-long", "hi").await;
     assert_eq!(status["result"]["truncated"], true);
     assert_eq!(
@@ -833,7 +840,7 @@ async fn missing_usage_is_recorded_as_unknown() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-nousage", "hi").await;
     assert_eq!(
         status["result"]["usage"],
@@ -845,15 +852,17 @@ async fn missing_usage_is_recorded_as_unknown() {
 async fn duplicate_submissions_execute_once_and_reuse_conflicts() {
     let ca = Ca::new("flowerly test CA");
     let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let first = run(&backend, "req-dup", "hi").await;
+    assert_eq!(first["result"]["text"], "flowerly-ready");
     let again = ipc(&backend, "provider.submit", submit_args("req-dup", "hi"))
         .await
         .unwrap();
     assert_eq!(
-        first, again,
+        again["state"], "succeeded",
         "a duplicate submit did not return the retained job"
     );
+    assert_eq!(again["result"]["usage"], first["result"]["usage"]);
     assert_eq!(mock.chat_requests(), 1, "a duplicate submit executed again");
     let conflict = ipc(
         &backend,
@@ -877,7 +886,7 @@ async fn cancelling_after_send_reports_an_unknown_outcome() {
         openai(&[MODEL], |_| Reply::Hang),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     submit(&backend, "req-cancel", "hi").await;
     for _ in 0..200 {
         if mock.chat_requests() == 1 {
@@ -908,7 +917,12 @@ async fn concurrency_is_bounded_without_queueing() {
         openai(&[MODEL], |_| Reply::Hang),
     )
     .await;
-    let backend = backend_for(&mock.base(), "max_concurrency = 1\n", ca.roots(), LOOPBACK);
+    let backend = backend_for(
+        &mock.base(),
+        "max_concurrency = 1\n",
+        ca.roots(),
+        loopback(),
+    );
     submit(&backend, "req-a", "hi").await;
     let refused = ipc(&backend, "provider.submit", submit_args("req-b", "hi"))
         .await
@@ -937,12 +951,12 @@ async fn a_restarted_provider_reports_lost_jobs_as_unknown_and_recovers() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     assert_eq!(run(&backend, "req-outage", "hi").await["state"], "unknown");
 
     // A new process has no record of the old job: its outcome is unknown.
     drop(backend);
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let lost = ipc(
         &backend,
         "provider.poll",
@@ -962,12 +976,9 @@ async fn a_restarted_provider_reports_lost_jobs_as_unknown_and_recovers() {
 async fn no_egress_outside_the_address_policy() {
     let ca = Ca::new("flowerly test CA");
     let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
-    let strict = AddressPolicy {
-        allow_private: false,
-        allow_loopback: false,
-    };
+    let strict = AddressPolicy::default();
     // localhost resolves only to loopback, which the production policy refuses.
-    let backend = backend_for(&mock.base(), "", ca.roots(), strict);
+    let backend = backend_for(&mock.base(), "", ca.roots(), strict.clone());
     let status = run(&backend, "req-egress", "hi").await;
     assert_eq!(
         error_of(&status),
@@ -1003,7 +1014,7 @@ async fn model_output_is_returned_as_inert_data() {
         }),
     )
     .await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-hostile", "hi").await;
     let result = status["result"].as_object().unwrap();
     let mut keys: Vec<&str> = result.keys().map(String::as_str).collect();
@@ -1044,7 +1055,7 @@ async fn the_key_never_appears_in_results_errors_or_logs() {
         }
     });
     let mock = Mock::start(ca.server_config(&["localhost"]), echo).await;
-    let backend = backend_for(&mock.base(), "", ca.roots(), LOOPBACK);
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
     let status = run(&backend, "req-leak", "hi").await;
     assert_eq!(status["state"], "unknown");
     // ipc() already checked every response; check Debug output and logs.
@@ -1052,4 +1063,60 @@ async fn the_key_never_appears_in_results_errors_or_logs() {
     let logs = String::from_utf8_lossy(&LOGS.lock().unwrap()).to_string();
     assert!(!logs.is_empty(), "log capture is not active");
     assert_no_secret("logs", &logs);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_text_is_delivered_once_by_default() {
+    let ca = Ca::new("flowerly test CA");
+    let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
+    let first = run(&backend, "req-once", "hi").await;
+    assert_eq!(first["result"]["text"], "flowerly-ready");
+    let args = serde_json::json!({"request_id": "req-once", "created_by": "uid:1001"});
+    let again = ipc(&backend, "provider.poll", args).await.unwrap();
+    assert_eq!(again["state"], "succeeded");
+    assert!(
+        again["result"].get("text").is_none(),
+        "text retained after delivery: {again}"
+    );
+    assert_eq!(again["result"]["text_released"], true);
+    // Metadata survives the release; nothing was re-executed.
+    assert_eq!(again["result"]["usage"]["tokens_out"], 3);
+    assert_eq!(again["result"]["model_used"], MODEL);
+    assert_eq!(mock.chat_requests(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opt_in_replay_window_redelivers_until_it_expires() {
+    let ca = Ca::new("flowerly test CA");
+    let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
+    let too_long = serde_json::json!({"request_id": "r", "prompt": "hi", "replay_seconds": 901});
+    assert_eq!(
+        ipc(&backend, "provider.submit", too_long)
+            .await
+            .unwrap_err()
+            .0,
+        ErrorCode::InvalidArgument
+    );
+
+    let mut args = submit_args("req-replay", "hi");
+    args["replay_seconds"] = 1.into();
+    ipc(&backend, "provider.submit", args).await.unwrap();
+    let first = settle(&backend, "req-replay").await;
+    assert_eq!(first["result"]["text"], "flowerly-ready");
+    let poll = serde_json::json!({"request_id": "req-replay", "created_by": "uid:1001"});
+    let within = ipc(&backend, "provider.poll", poll.clone()).await.unwrap();
+    assert_eq!(
+        within["result"]["text"], "flowerly-ready",
+        "not replayed inside the window"
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let expired = ipc(&backend, "provider.poll", poll).await.unwrap();
+    assert!(
+        expired["result"].get("text").is_none(),
+        "replayed after the window: {expired}"
+    );
+    assert_eq!(expired["result"]["text_released"], true);
+    assert_eq!(mock.chat_requests(), 1, "replay re-executed");
 }

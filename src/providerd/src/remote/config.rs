@@ -75,8 +75,9 @@ struct RawRemote {
     connect_timeout_ms: Option<u64>,
     request_timeout_ms: Option<u64>,
     max_concurrency: Option<u32>,
+    /// Owner Q2: private destinations are refused unless pinned here.
     #[serde(default)]
-    allow_private_addresses: bool,
+    private_destination_cidrs: Vec<String>,
 }
 
 /// Validated remote backend configuration.
@@ -92,7 +93,8 @@ pub struct RemoteConfig {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
     pub max_concurrency: u32,
-    pub allow_private_addresses: bool,
+    /// Administrator-approved private destination blocks (default none).
+    pub private_allowlist: Vec<super::net::Cidr>,
 }
 
 impl RemoteConfig {
@@ -145,6 +147,14 @@ impl RemoteConfig {
             2,
             "max_concurrency",
         )? as u32;
+        if raw.private_destination_cidrs.len() > 8 {
+            return Err("`private_destination_cidrs` may list at most 8 blocks".to_owned());
+        }
+        let private_allowlist = raw
+            .private_destination_cidrs
+            .iter()
+            .map(|block| super::net::Cidr::parse_private(block))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             origin,
             host,
@@ -155,7 +165,7 @@ impl RemoteConfig {
             connect_timeout,
             request_timeout,
             max_concurrency,
-            allow_private_addresses: raw.allow_private_addresses,
+            private_allowlist,
         })
     }
 
@@ -358,7 +368,12 @@ mod tests {
         assert_eq!(parsed.api_style.chat_path(), "/api/chat/completions");
         assert_eq!(parsed.max_tokens_cap, 1024);
         assert_eq!(parsed.max_concurrency, 2);
-        assert!(!parsed.allow_private_addresses);
+        assert!(parsed.private_allowlist.is_empty());
+        let pinned = RemoteConfig::parse(&format!(
+            "{base}private_destination_cidrs = [\"192.168.1.50/32\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(pinned.private_allowlist.len(), 1);
         for extra in [
             "max_tokens_cap = 5000\n",
             "request_timeout_ms = 999999\n",
@@ -366,6 +381,9 @@ mod tests {
             "max_concurrency = 0\n",
             "verify_tls = false\n",
             "proxy = \"http://p\"\n",
+            "allow_private_addresses = true\n",
+            "private_destination_cidrs = [\"10.0.0.0/8\"]\n",
+            "private_destination_cidrs = [\"169.254.169.254/32\"]\n",
         ] {
             assert!(
                 RemoteConfig::parse(&format!("{base}{extra}")).is_err(),
@@ -379,6 +397,16 @@ mod tests {
             );
             assert!(RemoteConfig::parse(&text).is_err(), "{credential} accepted");
         }
+    }
+
+    #[test]
+    fn the_deployment_template_parses_without_private_exceptions() {
+        let template =
+            include_str!("../../../../distro/templates/remote-inference/provider-remote.toml")
+                .replace("<instance>", "gamitron");
+        let parsed = RemoteConfig::parse(&template).unwrap();
+        assert!(parsed.private_allowlist.is_empty());
+        assert_eq!(parsed.credential, "gamitron.key");
     }
 
     #[test]

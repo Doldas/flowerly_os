@@ -48,6 +48,12 @@ struct Cli {
     runtime_dir: Option<PathBuf>,
     #[arg(long)]
     self_test: bool,
+    /// Administrator policy enabling remote inference (ADR-0022). Remote
+    /// inference stays disabled when this is absent, the file is missing,
+    /// or it is not a root- or service-owned, non-writable regular file.
+    /// Deliberately a command-line flag only, never an environment variable.
+    #[arg(long)]
+    remote_providers: Option<PathBuf>,
 }
 
 struct Job {
@@ -315,6 +321,19 @@ async fn main() -> Result<()> {
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
     compute::init_runtime_dir(config.runtime_dir.clone());
+    let remote_gate =
+        flowerly_core::remote_policy::RemoteGate::load(cli.remote_providers.as_deref());
+    match &remote_gate {
+        flowerly_core::remote_policy::RemoteGate::Disabled { reason } => {
+            tracing::info!(%reason, "remote inference gate");
+        }
+        flowerly_core::remote_policy::RemoteGate::Enabled(policy) => tracing::warn!(
+            providers = policy.providers.len(),
+            replay_seconds = policy.response_replay_seconds,
+            "remote inference ENABLED by administrator policy; prompts may leave this machine with user consent"
+        ),
+    }
+    compute::set_remote_gate(remote_gate);
     let store: SharedStore = Arc::new(Mutex::new(db));
     let session = session::SessionRuntime::start(&config, &store)?;
     let router = Arc::new(Router {

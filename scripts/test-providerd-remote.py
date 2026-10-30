@@ -51,18 +51,6 @@ def request(socket_path, name, args):
     return reply
 
 
-def shutdown(socket_path):
-    message = json.dumps({"version": 1, "id": str(uuid.uuid4()), "type": "shutdown"}).encode()
-    try:
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(8)
-            client.connect(str(socket_path))
-            client.sendall(struct.pack("<I", len(message)) + message)
-            recv_exact(client, struct.unpack("<I", recv_exact(client, 4))[0])
-    except OSError:
-        pass
-
-
 def config_text(api_base, extra=""):
     return (
         "[remote]\n"
@@ -158,12 +146,15 @@ def main(bin_dir):
             assert data["error"]["class"] == "address_refused", data
             assert data["error"]["outcome"] == "not_sent", data
         finally:
-            shutdown(sock)
+            # IPC shutdown needs the admin group in remote mode; use SIGTERM
+            # as the service manager does, and require a clean exit.
+            proc.terminate()
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+                raise AssertionError("providerd ignored SIGTERM")
         assert SENTINEL not in log.read_text(), "providerd log leaked the key"
     print("providerd remote backend black box: fail-closed startup, address policy, typed outcomes, no key leakage")
 

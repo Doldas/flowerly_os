@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod remote;
 pub mod repository;
 pub mod scoped;
 
@@ -407,6 +408,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "generation_ownership_admin_audit",
         sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "remote_inference",
+        sql: include_str!("../../migrations/0014_remote_inference.sql"),
     },
 ];
 

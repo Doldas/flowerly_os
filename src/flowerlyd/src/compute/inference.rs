@@ -36,8 +36,8 @@ use super::{profiles, CommandFailure, CommandResult, SharedStore};
 
 /// Bounded prompt passthrough; providerd enforces the same bound and
 /// refuses duplicates, but the runtime keeps requests small by contract.
-const MAX_PROMPT_BYTES: usize = 16 * 1024;
-const MAX_TOKENS: u64 = 4096;
+pub(super) const MAX_PROMPT_BYTES: usize = 16 * 1024;
+pub(super) const MAX_TOKENS: u64 = 4096;
 const DEFAULT_PROVIDER_SOCKET: &str = "providerd.sock";
 
 /// The supervisor's runtime directory, initialized at startup so the
@@ -65,7 +65,14 @@ pub(crate) fn run_inference(
     caller: Caller,
 ) -> CommandResult {
     match name {
+        "inference.request" if super::remote::is_remote_request(store, args)? => {
+            super::remote::request(store, args, caller)
+        }
         "inference.request" => request(store, args, caller),
+        "inference.result" => super::remote::result(store, args, caller),
+        "inference.consent_grant" | "inference.consent_revoke" | "inference.consent_list" => {
+            super::remote::consent(store, name, args, caller)
+        }
         "inference.capabilities" => capabilities(store, args),
         other => Err(CommandFailure::invalid(format!(
             "compute: unknown command `{other}`"
@@ -73,14 +80,14 @@ pub(crate) fn run_inference(
     }
 }
 
-fn lock(store: &SharedStore) -> Result<MutexGuard<'_, Store>, CommandFailure> {
+pub(super) fn lock(store: &SharedStore) -> Result<MutexGuard<'_, Store>, CommandFailure> {
     store.lock().map_err(|_| CommandFailure {
         code: flowerly_core::ipc::ErrorCode::Internal,
         message: "storage lock poisoned".to_owned(),
     })
 }
 
-fn valid_request_id(raw: &str) -> bool {
+pub(super) fn valid_request_id(raw: &str) -> bool {
     !raw.is_empty()
         && raw.len() <= 128
         && raw
@@ -99,7 +106,7 @@ fn validate_operation(args: &Value) -> Result<(), CommandFailure> {
 }
 
 /// One of the caller's own workloads; another uid's is `not_found`.
-fn load_workload(
+pub(super) fn load_workload(
     store: &Store,
     args: &Value,
     caller: Caller,
@@ -169,6 +176,7 @@ fn capabilities(store: &SharedStore, args: &Value) -> CommandResult {
             })
             .collect::<Vec<_>>(),
         "promise": "reference-provider-only",
+        "remote": super::remote::capabilities(),
     }))
 }
 
@@ -181,7 +189,7 @@ fn actor_from(args: &Value) -> String {
 
 /// Build the honest outage response for the profile's explicit fallback
 /// policy. Nothing is retried silently and no state changes.
-fn outage_outcome(message: String, fallback: FallbackBehavior) -> CommandResult {
+pub(super) fn outage_outcome(message: String, fallback: FallbackBehavior) -> CommandResult {
     match fallback {
         FallbackBehavior::Ask => Ok(serde_json::json!({
             "executed": false,

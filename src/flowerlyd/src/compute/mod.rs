@@ -54,8 +54,10 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope, caller: Ca
 mod admission;
 mod inference;
 mod profiles;
+mod remote;
 
 pub(crate) use inference::init_runtime_dir;
+pub(crate) use remote::set_gate as set_remote_gate;
 
 #[derive(Debug)]
 pub(crate) struct CommandFailure {

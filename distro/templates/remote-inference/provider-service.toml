@@ -1,0 +1,5 @@
+# /etc/flowerly/providers/<instance>.service.toml (root:root 0644)
+name = "<instance>"
+runtime_dir = "/run/flowerly-provider"
+# Only the service account and this group may connect (owner Q1).
+users_group = "flowerly-provider-clients"
