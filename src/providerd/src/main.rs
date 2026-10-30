@@ -1,6 +1,12 @@
-// Flowerly OS reference local inference provider.
+// Flowerly OS inference provider process.
 //
-// Contract claims (RFC 0004 interface 2, tranche 4):
+// Two backends, one per process:
+// - the synthetic echo reference backend (default), described below;
+// - the opt-in OpenAI-compatible remote backend (`--remote-config`, see
+//   `remote`), the only code in Flowerly that opens network connections
+//   (ADR-0022, proposed).
+//
+// Echo backend contract claims (RFC 0004 interface 2, tranche 4):
 // - Fault-isolated: a separate process so a provider outage cannot corrupt
 //   or block the Flowerly runtime.
 // - Fail-closed: single-user local Unix socket only (the crate-provided
@@ -11,6 +17,7 @@
 // - Synthetic only: deterministic bounded echo output. This process does
 //   NOT claim to run real models and never writes durable state.
 mod generate;
+mod remote;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,6 +42,11 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     self_test: bool,
+    /// Serve the opt-in OpenAI-compatible remote backend described by this
+    /// administrator-owned TOML file instead of the synthetic echo backend.
+    /// The API key is read from the systemd credentials directory only.
+    #[arg(long)]
+    remote_config: Option<PathBuf>,
 }
 
 /// In-flight generation requests per trusted actor label, enforcing the
@@ -74,6 +86,21 @@ async fn main() -> anyhow::Result<()> {
         None => ServiceConfig::for_service("providerd"),
     };
     init_tracing(&config.name, config.log_format);
+
+    if let Some(path) = cli.remote_config {
+        // Fails closed on a bad config, missing credential or empty trust
+        // store; makes no network request before the first IPC command.
+        let backend = remote::Backend::from_config_file(&path).map_err(anyhow::Error::msg)?;
+        if cli.self_test {
+            println!("providerd self-test ok: remote backend configuration and credential loaded (no network request made)");
+            return Ok(());
+        }
+        let status = backend.self_describe();
+        let handler = move |request: &Envelope| backend.handle(request);
+        return run_service(config, status, Arc::new(handler))
+            .await
+            .context("providerd terminated");
+    }
 
     if cli.self_test {
         generate::self_test().map_err(anyhow::Error::msg)?;

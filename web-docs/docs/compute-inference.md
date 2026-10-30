@@ -55,6 +55,70 @@ The provider response **cannot grant the workload any OS authority**; it is
 data. Flow/Session state is never modified on this path. Cost is recorded at
 zero for the reference provider; real providers supply accounting later.
 
+## Opt-in OpenAI-compatible backend (not reachable from flowerlyd)
+
+`providerd --remote-config <file>` serves an OpenAI-compatible HTTPS backend
+instead of the echo backend. It implements the provider half of the
+**proposed** ADR-0022 (#265, tracked in #263). flowerlyd still refuses to
+register any remote provider kind, so no Flowerly workload can reach it
+until that ADR is accepted and its administrator, profile and consent gates
+are wired.
+
+The administrator-owned configuration (unknown fields are refused, and
+limits can only be lowered):
+
+```toml
+[remote]
+api_base = "https://inference.example.org"   # https origin only
+api_style = "openai"            # /v1/*; or "open-webui" for /api/*
+models = ["gpt-oss:20b"]        # allowlist; checked against discovery
+credential = "inference.key"    # name inside $CREDENTIALS_DIRECTORY
+max_tokens_cap = 1024           # <= 4096
+connect_timeout_ms = 5000       # <= 5000
+request_timeout_ms = 60000      # <= 120000
+max_concurrency = 2             # <= 16
+allow_private_addresses = false # true only for a self-hosted LAN server
+```
+
+The API key is read only from systemd credentials
+(`LoadCredentialEncrypted=` or `LoadCredential=`); there is no
+environment, argument or config-file path for it. `providerd
+--remote-config <file> --self-test` validates the configuration, the
+credential and the system trust store without making any request.
+
+| Command | Behaviour |
+| --- | --- |
+| `provider.discover` | live `/models` call (≤ 8 s); returns the allowlisted models the server lists |
+| `provider.submit` | validates, then returns `pending` at once; idempotent per `(created_by, request_id)` |
+| `provider.poll` | `pending`, `succeeded`, `failed` or `unknown`, with error `class` and `outcome` |
+| `provider.cancel` | best-effort; after the request was sent the outcome is `unknown` |
+| `provider.generate` | refused: the remote backend is asynchronous only |
+
+Each failure carries `outcome`. `not_sent` (DNS, connect, TLS,
+address policy, discovery, local limits) is safe to retry. `sent` means
+the server answered (401/403, 404, 429, redirect, invalid or tool-call
+responses, model mismatch). `unknown` (5xx, timeout after send, transport
+loss, cancellation after send, lost in a restart) may have executed and
+been billed, and is never retried by the provider.
+
+Fail-closed properties covered by tests:
+
+- TLS against the system trust store only. `SSL_CERT_FILE`/`SSL_CERT_DIR`
+  refuse startup, and no flag disables verification.
+- Redirects are never followed, and the proxy environment is ignored.
+- Only the configured host is resolved. Loopback, link-local, metadata,
+  documentation and (without opt-in) private addresses are refused inside
+  the resolver that the connection uses.
+- A 401/403 opens a circuit until restart.
+- Response body ≤ 1 MiB; returned text ≤ 32 KiB (`truncated` flagged).
+- Usage is `provider_reported` or `unknown`, never estimated.
+- A response naming a different model fails as `model_mismatch` with the
+  text withheld.
+- Tool or function calls are refused.
+- The key never appears in replies, errors or logs.
+
+Model output is returned as an inert string and grants nothing.
+
 ## Security boundaries
 
 - The provider is remote-hostile by construction: local socket only, single
