@@ -286,11 +286,19 @@ The encrypted key stays for the operator to remove:
 - Membership of the socket group is still the authority to spend the
   key. Never add a human user to it.
 
-### Socket access model (proposed; needs explicit owner acceptance)
+### Socket access model
 
-This is the authority model the implementation enforces. It is listed
-here so the owner can accept or reject it explicitly; it is **not**
-accepted by ADR-0022's acceptance or by any test result.
+**Status: architecture accepted by the owner on 2026-10-30, with the
+limitations below** ([ADR-0022](adr/0022-remote-inference-egress-policy.md#socket-access-architecture-accepted-2026-10-30-architecture-only)).
+
+This is **architecture acceptance only**:
+- the OS security boundary and the unit's confinement are **not**
+  accepted;
+- operational use, deployment and release are **not** accepted.
+
+Real Arch Linux/KVM security-boundary validation is required before
+operational acceptance. Until then the model is the design the
+implementation enforces, not a validated boundary.
 
 1. **Provider-level authority.** Any process that the kernel reports at
    `connect` as uid `flowerly-provider`, or as holding
