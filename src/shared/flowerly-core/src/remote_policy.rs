@@ -356,7 +356,10 @@ mod tests {
         // A file owned by neither root nor the service account is refused.
         let metadata = std::fs::metadata(&path).unwrap();
         if metadata.uid() != 0 {
-            assert!(check_metadata(&metadata, Some(metadata.uid() + 1)).is_err());
+            let refusal = check_metadata(&metadata, Some(metadata.uid() + 1)).unwrap_err();
+            // The refusal is logged: it must not disclose the owner's uid.
+            assert!(!refusal.contains(&metadata.uid().to_string()));
+            assert!(refusal.contains("neither root nor the service account"));
             assert!(check_metadata(&metadata, Some(metadata.uid())).is_ok());
         }
     }
