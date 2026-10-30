@@ -69,6 +69,10 @@ zero for the reference provider; real providers supply accounting later.
 
 - No real model execution, streaming, or GPU inference exists; the reference
   output is bounded synthetic echo.
+- Remote providers are refused unless an administrator enables them under
+  [ADR-0022](adr/0022-remote-inference-egress-policy.md) (#263):
+  administrator, profile and per-user consent gates, with egress confined
+  to one provider process.
 - `providerd` is dev/CI infrastructure and not part of the distribution
   image manifest.
 - Rate limiting is per actor in-flight concurrency (4) only; no scheduling,
