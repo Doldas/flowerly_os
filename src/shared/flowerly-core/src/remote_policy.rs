@@ -226,10 +226,7 @@ fn check_metadata(metadata: &std::fs::Metadata, service_uid: Option<u32>) -> Res
         return Err("not a regular file".to_owned());
     }
     if metadata.uid() != 0 && Some(metadata.uid()) != service_uid {
-        return Err(format!(
-            "owned by uid {}, not root or the service account",
-            metadata.uid()
-        ));
+        return Err("owned by neither root nor the service account".to_owned());
     }
     if metadata.mode() & 0o022 != 0 {
         return Err(format!(
