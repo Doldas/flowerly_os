@@ -142,6 +142,9 @@ pub struct Backend {
     /// retried against the server.
     auth_failed: AtomicBool,
     discovery: Mutex<Option<(Instant, Vec<String>)>>,
+    /// Discovery-only preflight (`--discover-only`): `provider.submit` is
+    /// refused before anything is sent, so no prompt can leave the host.
+    discover_only: AtomicBool,
 }
 
 impl std::fmt::Debug for Backend {
@@ -191,7 +194,14 @@ impl Backend {
             jobs: Mutex::new(HashMap::new()),
             auth_failed: AtomicBool::new(false),
             discovery: Mutex::new(None),
+            discover_only: AtomicBool::new(false),
         }))
+    }
+
+    /// Restrict this instance to model discovery for the rest of its life.
+    /// One-way: nothing turns submission back on.
+    pub fn restrict_to_discovery(&self) {
+        self.discover_only.store(true, Ordering::SeqCst);
     }
 
     pub fn self_describe(&self) -> Value {
@@ -205,6 +215,7 @@ impl Backend {
             "streaming": false,
             "asynchronous": true,
             "commands": ["provider.discover", "provider.submit", "provider.poll", "provider.cancel"],
+            "discover_only": self.discover_only.load(Ordering::SeqCst),
             "max_prompt_bytes": MAX_PROMPT_BYTES,
             "max_tokens_per_request": self.config.max_tokens_cap,
             "max_response_bytes": MAX_RESPONSE_BYTES,
@@ -230,6 +241,12 @@ impl Backend {
         };
         let result = match name.as_str() {
             "provider.discover" => self.discover_command(),
+            "provider.submit" if self.discover_only.load(Ordering::SeqCst) => Err(Failure::new(
+                ErrorCode::PermissionDenied,
+                "discover_only",
+                Outcome::NotSent,
+                "this provider instance runs in discovery-only preflight mode and accepts no prompt",
+            )),
             "provider.submit" => self.submit(args),
             "provider.poll" => self.poll(args),
             "provider.cancel" => self.cancel(args),

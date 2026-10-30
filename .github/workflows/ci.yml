@@ -130,6 +130,9 @@ jobs:
       - name: Remote inference gates, consent and secret isolation end to end (#263)
         run: python3 ./scripts/test-remote-inference-gates.py target/release
 
+      - name: Remote provider operator procedure and unit contract, offline (#263)
+        run: python3 ./scripts/test-remote-provider-operator.py target/release
+
       - name: Admin commands and IPC shutdown require an explicit admin group
         run: python3 ./scripts/test-admin-authorization.py target/release
 

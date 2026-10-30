@@ -70,7 +70,10 @@ from two parts:
   root or the service account and not group- or world-writable).
 
 Deployment templates, none of them installed or shipped, are in
-`distro/templates/remote-inference/`.
+`distro/templates/remote-inference/`. The operator procedure for one
+provider instance (discovery-only preflight, single-prompt acceptance,
+evidence, emergency disable, rollback) is
+[Remote Inference Operations](remote-inference-operations.md).
 
 ### Gates, checked before anything is sent
 

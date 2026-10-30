@@ -477,6 +477,45 @@ async fn discovery_and_inference_succeed_with_reported_usage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discover_only_mode_never_sends_a_prompt() {
+    let ca = Ca::new("flowerly test CA");
+    let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
+    backend.restrict_to_discovery();
+
+    let discovered = ipc(&backend, "provider.discover", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(discovered["models_available"], serde_json::json!([MODEL]));
+    assert_eq!(discovered["discover_only"], true);
+
+    let (code, message) = ipc(
+        &backend,
+        "provider.submit",
+        submit_args("req-preflight", "Reply with exactly: flowerly-ready"),
+    )
+    .await
+    .expect_err("submission refused");
+    assert_eq!(code, ErrorCode::PermissionDenied);
+    assert!(
+        message.contains("discover_only; outcome not_sent"),
+        "{message}"
+    );
+    let (code, _) = ipc(
+        &backend,
+        "provider.poll",
+        serde_json::json!({"request_id": "req-preflight", "created_by": "uid:1001"}),
+    )
+    .await
+    .expect_err("no job was created");
+    assert_eq!(code, ErrorCode::NotFound);
+    assert!(
+        mock.requests().iter().all(|r| r.path == "/v1/models"),
+        "a discovery-only instance sent more than discovery"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn open_webui_style_uses_its_api_paths() {
     let ca = Ca::new("flowerly test CA");
     let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;

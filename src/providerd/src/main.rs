@@ -48,6 +48,10 @@ struct Cli {
     /// The API key is read from the systemd credentials directory only.
     #[arg(long)]
     remote_config: Option<PathBuf>,
+    /// With `--remote-config`: serve model discovery only and refuse every
+    /// prompt (the operator's preflight before a live acceptance request).
+    #[arg(long, requires = "remote_config")]
+    discover_only: bool,
 }
 
 /// In-flight generation requests per trusted actor label, enforcing the
@@ -95,6 +99,10 @@ async fn main() -> anyhow::Result<()> {
         if cli.self_test {
             println!("providerd self-test ok: remote backend configuration and credential loaded (no network request made)");
             return Ok(());
+        }
+        if cli.discover_only {
+            backend.restrict_to_discovery();
+            tracing::info!("remote backend restricted to discovery: provider.submit is refused");
         }
         // Owner Q1: the remote backend runs as its own account; flowerlyd
         // connects through the configured users group (for example
