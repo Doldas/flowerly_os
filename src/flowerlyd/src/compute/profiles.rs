@@ -650,7 +650,10 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                     )));
                 }
             };
-            if kind != LOCAL_PROVIDER_KIND {
+            let remote = kind == super::remote::REMOTE_PROVIDER_KIND;
+            if remote {
+                super::remote::check_registration(name_arg, args)?;
+            } else if kind != LOCAL_PROVIDER_KIND {
                 return Err(super::CommandFailure {
                     code: ErrorCode::PermissionDenied,
                     message: format!(
@@ -708,7 +711,14 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                 to: ObjectRef::actor(&actor)
                     .map_err(|error| super::CommandFailure::invalid(error.to_string()))?,
                 created_at: Timestamp::now(),
-                note: Some("registered local inference provider".to_owned()),
+                note: Some(
+                    if remote {
+                        "registered remote inference provider (ADR-0022 gates)"
+                    } else {
+                        "registered local inference provider"
+                    }
+                    .to_owned(),
+                ),
             }];
             let intended_response = serde_json::json!({ "id": id.as_str(), "kind": kind });
             // An exact retry replays the recorded response (the first
@@ -798,6 +808,8 @@ pub(crate) fn run_provider(store: &mut Store, name: &str, args: &Value) -> Comma
                 "capabilities": provider.capabilities,
                 "created_by": provider.created_by,
                 "created_at": provider.created_at.as_millis(),
+                // Where prompts go, for an enabled remote provider.
+                "destination": super::remote::destination_of(&provider),
             }))
         }
         other => Err(super::CommandFailure::invalid(format!(

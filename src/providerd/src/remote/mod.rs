@@ -48,6 +48,8 @@ const DISCOVERY_TTL: Duration = Duration::from_secs(5 * 60);
 /// 10 s IPC request deadline.
 const DISCOVER_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+/// Upper bound of the opt-in, memory-only response replay window.
+pub const MAX_REPLAY: Duration = Duration::from_secs(900);
 
 /// Whether the provider may have executed (and billed) the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +123,10 @@ struct Job {
     sent: Arc<AtomicBool>,
     status: JobStatus,
     abort: Option<tokio::task::AbortHandle>,
+    /// How long generated text stays available for re-delivery after its
+    /// first delivery (owner Q4: zero, i.e. deliver once, by default).
+    replay: Duration,
+    delivered: Option<Instant>,
 }
 
 type JobKey = (String, String);
@@ -156,7 +162,7 @@ impl Backend {
         let key = ApiKey::from_credentials_dir(&config.credential)?;
         let roots = net::system_roots()?;
         let policy = AddressPolicy {
-            allow_private: config.allow_private_addresses,
+            private_allowlist: config.private_allowlist.clone(),
             allow_loopback: false,
         };
         Self::new(
@@ -205,8 +211,10 @@ impl Backend {
             "max_text_bytes": config::MAX_TEXT_BYTES,
             "max_concurrency": self.config.max_concurrency,
             "max_in_flight_per_actor": MAX_IN_FLIGHT_PER_ACTOR,
+            "response_retention": "memory only; delivered once unless replay_seconds is set",
+            "max_replay_seconds": MAX_REPLAY.as_secs(),
             "request_timeout_ms": self.config.request_timeout.as_millis() as u64,
-            "promise": "opt-in-remote (ADR-0022; not reachable from flowerlyd)",
+            "promise": "opt-in-remote (ADR-0022; reached only through flowerlyd's administrator, profile and consent gates)",
         })
     }
 
@@ -306,6 +314,19 @@ impl Backend {
                 .filter(|raw| (1..=cap).contains(raw))
                 .ok_or_else(|| invalid(format!("`max_tokens` must be 1..={cap}")))?,
         };
+        let replay = match args.get("replay_seconds") {
+            None | Some(Value::Null) => Duration::ZERO,
+            Some(value) => value
+                .as_u64()
+                .filter(|raw| *raw <= MAX_REPLAY.as_secs())
+                .map(Duration::from_secs)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "`replay_seconds` must be 0..={}",
+                        MAX_REPLAY.as_secs()
+                    ))
+                })?,
+        };
         let model = match args.get("model") {
             None | Some(Value::Null) => self.config.models[0].clone(),
             Some(Value::String(model)) if self.config.models.contains(model) => model.clone(),
@@ -318,7 +339,7 @@ impl Backend {
 
         let mut jobs = self.jobs.lock().map_err(|_| poisoned())?;
         let key = (actor.clone(), request_id.clone());
-        if let Some(job) = jobs.get(&key) {
+        if let Some(job) = jobs.get_mut(&key) {
             if job.digest != digest {
                 return Err(Failure::new(
                     ErrorCode::Conflict,
@@ -327,7 +348,7 @@ impl Backend {
                     "request_id was already used with different arguments",
                 ));
             }
-            return Ok(status_json(&request_id, job));
+            return Ok(observe(&request_id, job));
         }
         if self.auth_failed.load(Ordering::SeqCst) {
             return Err(Failure::new(
@@ -382,6 +403,8 @@ impl Backend {
                 sent,
                 status: JobStatus::Pending,
                 abort: Some(task.abort_handle()),
+                replay,
+                delivered: None,
             },
         );
         Ok(serde_json::json!({"request_id": request_id, "state": "pending", "sent": false}))
@@ -389,9 +412,9 @@ impl Backend {
 
     fn poll(&self, args: &Value) -> Result<Value, Failure> {
         let key = (actor(args), request_id(args)?);
-        let jobs = self.jobs.lock().map_err(|_| poisoned())?;
-        match jobs.get(&key) {
-            Some(job) => Ok(status_json(&key.1, job)),
+        let mut jobs = self.jobs.lock().map_err(|_| poisoned())?;
+        match jobs.get_mut(&key) {
+            Some(job) => Ok(observe(&key.1, job)),
             None => Err(unknown_request()),
         }
     }
@@ -820,6 +843,37 @@ fn prune(jobs: &mut HashMap<JobKey, Job>) {
             .is_none_or(|finished| finished.elapsed() < COMPLETED_JOB_TTL)
             && job.created.elapsed() < COMPLETED_JOB_TTL + config::MAX_REQUEST_TIMEOUT
     });
+}
+
+/// The status a caller observes, applying the response-retention rule
+/// (owner Q4). Generated text lives only in this process's memory: it is
+/// returned on first delivery, re-delivered only inside the job's opt-in
+/// replay window, and then released, leaving metadata (model, usage,
+/// latency) and `text_released: true`. Undelivered results are pruned with
+/// the job after `COMPLETED_JOB_TTL`.
+fn observe(request_id: &str, job: &mut Job) -> Value {
+    let expired = job
+        .delivered
+        .is_some_and(|delivered| delivered.elapsed() >= job.replay);
+    if expired {
+        release(job);
+    }
+    let status = status_json(request_id, job);
+    if matches!(job.status, JobStatus::Done(Ok(_))) && job.delivered.is_none() {
+        job.delivered = Some(Instant::now());
+        if job.replay.is_zero() {
+            release(job);
+        }
+    }
+    status
+}
+
+fn release(job: &mut Job) {
+    if let JobStatus::Done(Ok(Value::Object(result))) = &mut job.status {
+        if result.remove("text").is_some() {
+            result.insert("text_released".to_owned(), Value::Bool(true));
+        }
+    }
 }
 
 fn status_json(request_id: &str, job: &Job) -> Value {

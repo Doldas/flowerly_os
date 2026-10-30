@@ -55,13 +55,67 @@ The provider response **cannot grant the workload any OS authority**; it is
 data. Flow/Session state is never modified on this path. Cost is recorded at
 zero for the reference provider; real providers supply accounting later.
 
-## Opt-in OpenAI-compatible backend (not reachable from flowerlyd)
+## Remote inference (ADR-0022, disabled by default)
 
-`providerd --remote-config <file>` serves an OpenAI-compatible HTTPS backend
-instead of the echo backend. It implements the provider half of
-ADR-0022 (tracked in #263). flowerlyd still refuses to register any remote
-provider kind, so no Flowerly workload can reach it until the ADR's
-administrator, profile and consent gates are wired (#267).
+Remote inference is **off** unless an administrator enables it, and even
+then a prompt leaves the machine only with the user's consent. It is built
+from two parts:
+
+- `providerd --remote-config <file>`: an OpenAI-compatible HTTPS backend,
+  the only Flowerly process allowed network access. It runs under its own
+  `flowerly-provider` account (owner Q1) and admits only the
+  `flowerly-provider-clients` group.
+- flowerlyd's gates, enabled by `flowerlyd --remote-providers <file>`
+  (command line only; the file must be a regular, non-symlink file owned by
+  root or the service account and not group- or world-writable).
+
+Deployment templates, none of them installed or shipped, are in
+`distro/templates/remote-inference/`.
+
+### Gates, checked before anything is sent
+
+| # | Gate | Refusal |
+| --- | --- | --- |
+| 1 | the administrator policy lists the registered provider | `permission_denied` |
+| 2 | the request says `remote: true` | `permission_denied` |
+| 3 | the workload's profile has `locality = "approved-remote-opt-in"` | `permission_denied` |
+| 4 | the workload's model is on the provider's allowlist | `permission_denied` |
+| 5 | the caller holds an active consent grant for this provider **and** destination | `permission_denied` |
+| 6 | the caller has fewer open attempts than the policy's limit | `unavailable` |
+| 7 | the provider process reports the same destination over IPC | attempt `failed`, `not_sent` |
+
+Consent (owner Q3) comes from `inference.consent_grant {provider_id,
+destination, days ≤ 30}`. The caller must name the configured destination.
+Grants are listed by `inference.consent_list` and revoked at once by
+`inference.consent_revoke {consent_id | provider_id}`. A grant covers one
+user, one provider and one destination; changing the provider or the
+configured destination leaves no matching grant.
+
+### Attempts, outcomes and retention
+
+`inference.request` to a remote provider records a durable attempt
+(`submitting`) before submitting, then returns `{executed: false, attempt}`.
+`inference.result {attempt_id}` polls it. The states are:
+
+- `pending` while the provider works;
+- `succeeded`, with the text while it is still held;
+- `failed`, with `outcome` `not_sent` (safe to retry) or `sent`;
+- `unknown`: the request may have executed and been billed.
+
+An `operation_id` names exactly one attempt: a retry reports it and never
+submits again, unknown outcomes included. A `not_sent` refusal applies the
+profile's fallback policy; an `unknown` outcome never does.
+
+Owner Q4: attempts store metadata only (model, destination, outcome, error
+class, usage as reported or unknown, latency). No prompt and no generated
+text is ever written to the database. The text lives in the provider's
+memory and is delivered once. The administrator may set
+`response_replay_seconds` (≤ 900) to allow re-delivery for that long after
+the first. Afterwards `inference.result` returns `response_available:
+false` with the accounting metadata, and the request is never regenerated.
+Cost is reported as unknown (`null`).
+
+### Provider backend
 
 The administrator-owned configuration (unknown fields are refused, and
 limits can only be lowered):
@@ -76,7 +130,7 @@ max_tokens_cap = 1024           # <= 4096
 connect_timeout_ms = 5000       # <= 5000
 request_timeout_ms = 60000      # <= 120000
 max_concurrency = 2             # <= 16
-allow_private_addresses = false # true only for a self-hosted LAN server
+# private_destination_cidrs = ["192.168.1.50/32"]  # owner-approved, pinned
 ```
 
 The API key is read only from systemd credentials
@@ -130,6 +184,15 @@ Model output is returned as an inert string and grants nothing.
 
 ## Honest limitations
 
+- Remote inference has not been run against a live server. All of its
+  evidence is offline (mock HTTPS server, fake provider, real processes
+  against a refused destination).
+- Remote usage lives in the attempt records only. `workload.usage_brief`
+  totals do not include it yet, and cost is unknown.
+- Workload admission still checks the model's measured local memory, even
+  for a model that only runs remotely.
+- Revoking consent stops new prompts at once but cannot recall an attempt
+  that was already submitted.
 - No real model execution, streaming, or GPU inference exists; the reference
   output is bounded synthetic echo.
 - Remote providers are refused unless an administrator enables them under
