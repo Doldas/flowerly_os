@@ -26,9 +26,30 @@ decision is made before the first change. `install` refuses when:
 - the provider account is a member of any other group.
 
 What it created is recorded in a root-only ledger,
-`/var/lib/flowerly-provider-operator/`. Each entry is written **before**
-the change it records, so an interrupted install leaves a ledger that
-`rollback` (and then `rollback-shared`) completes.
+`/var/lib/flowerly-provider-operator/`. Rollback removes only what the
+ledger proves `install` created, even after an interruption. If another
+installation creates an identical file or the same account in the
+meantime, rollback still leaves it alone:
+
+- **Files** are created in five steps:
+  1. a `pending` ledger entry is written;
+  2. a staged copy `.<name>.flowerly-new` is written next to the target;
+  3. the staged copy is hard-linked to the target, which fails if the
+     target exists, so nothing is ever replaced;
+  4. the entry becomes `file`;
+  5. the staged copy is removed.
+
+  A `file` entry proves the link succeeded. For a `pending` entry, the
+  target counts as created by this tool only if it is the **same inode**
+  as the staged copy. Nobody else can produce that, so an identical file
+  of another installation is always kept.
+- **Accounts and groups** that did not exist before are recorded
+  `pending-user` or `pending-group` before `systemd-sysusers` runs, and
+  confirmed after it. An account whose entry is still pending after an
+  interruption cannot be told apart from one someone else created
+  meanwhile. Rollback therefore **reports it and never deletes it**. The
+  operator checks that it is unused and removes it by hand. That window
+  lies between `systemd-sysusers` and the confirmation.
 
 Every subcommand except `render` holds one exclusive lock,
 `/run/flowerly-provider-operator.lock` (`flock`), for its whole run. A
@@ -232,8 +253,16 @@ remove anything belonging to another instance or installation.
    exists.
 
 The offline contract test interrupts install and rollback after every
-single change they make and checks that this restores the pre-install
-state byte for byte, deleting each account and group at most once.
+single change they make and checks two things:
+
+- **Recovery:** the steps above restore the pre-install state byte for
+  byte and delete each account and group at most once. Where an account
+  is reported instead of deleted, the test removes it by hand as the
+  operator would, then compares.
+- **Other installations are spared:** after each interrupted install,
+  another installation creates byte-identical files and the same
+  accounts wherever this install had not. The test checks that recovery
+  removes or changes **none** of them.
 
 The encrypted key stays for the operator to remove:
 `sudo rm /etc/credstore.encrypted/<instance>.key`.
@@ -257,6 +286,30 @@ The encrypted key stays for the operator to remove:
 - Membership of the socket group is still the authority to spend the
   key. Never add a human user to it.
 
+### Socket access model (proposed; needs explicit owner acceptance)
+
+This is the authority model the implementation enforces. It is listed
+here so the owner can accept or reject it explicitly; it is **not**
+accepted by ADR-0022's acceptance or by any test result.
+
+1. **Provider-level authority.** Any process that the kernel reports at
+   `connect` as uid `flowerly-provider`, or as holding
+   `flowerly-provider-clients` among its effective groups
+   (`SO_PEERCRED` plus `SO_PEERGROUPS`), may make the provider spend the
+   remote key. That includes root while it holds the group.
+2. **No consent at the socket.** Group membership authenticates a
+   process, not a user, and is not evidence of any user's consent.
+3. **Per-user consent only in flowerlyd.** It is checked against the
+   uid of flowerlyd's own kernel-attested peer. So are the administrator
+   gate and the profile gate. All three exist only in flowerlyd.
+4. **Who holds the group.** The only intended member is `flowerly`,
+   once gates are enabled. The provider refuses any extra group of its
+   own (`--require-isolated-identity`). `install`, `preflight` and
+   `accept` refuse any other member, but nothing re-checks membership
+   continuously.
+5. **Not protected against root.** A root process can join the group
+   and spend the key. Root is outside this model's protection.
+
 ## Not covered
 
 - Enabling flowerlyd's gates (`--remote-providers`, the flowerlyd drop-in,
@@ -264,8 +317,39 @@ The encrypted key stays for the operator to remove:
   separate step needing its own approval.
 - Pinning `IPAddressAllow=` to the destination's addresses. The operator's
   host is anycast, so pinning would break when its addresses change.
-- Arch VM acceptance of the unit. The contract test verifies it with the
-  host's systemd only; the plan for a real Arch Linux/KVM run is
+- **Arch/KVM isolation acceptance has not been run.** It is separate from,
+  and not implied by, the offline tests. The offline contract test checks
+  the unit with the host's `systemd-analyze` and the operator logic
+  against scratch roots without root. It does not show that the
+  confinement holds in a real guest. The plan for that run is
   [Remote Provider Unit Test Plan](remote-provider-unit-test-plan.md).
 - OS-boundary acceptance. The first live test (#268) ran providerd as the
   owner's user without the unit, so it accepted the adapter only.
+
+## Residual risks
+
+Known and accepted by none of the tests above:
+
+- **Remote tokens.** `max_tokens` is not a remote token or spending cap:
+  the server exceeded it in the live test.
+- **Destinations.** There is no OS-level allowlist; destinations other
+  than localhost, link-local and multicast rely on providerd's resolver
+  and address policy.
+- **Socket group.** Membership is authority to spend the key without
+  per-user consent (see the socket access model). It is checked at
+  install, preflight and accept, not continuously.
+- **Root.** Root is trusted. The operator lock serializes only this
+  tool's commands. Another root process could change a file between the
+  tool's check and its removal, or join the socket group.
+- **Accounts after an interrupted install.** If install is interrupted
+  between `systemd-sysusers` and the ledger confirmation, the accounts
+  are reported for manual removal, not removed.
+- **Approval reference.** It is an operator attestation, not verified
+  proof of the owner's authorization.
+- **Not yet run.**
+  - Arch/KVM isolation acceptance (unit confinement, socket
+    authentication with real credentials, effective process groups,
+    lifecycle) has not been run.
+  - flowerlyd's gates have never been enabled against a real provider.
+  - The only live evidence is one adapter-level request made outside the
+    unit.

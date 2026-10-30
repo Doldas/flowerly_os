@@ -20,7 +20,9 @@ Nothing here contacts a real server, needs a key or needs root:
   any shared resource while a usage check finds a user or cannot
   complete; a file it keeps stays in the ledger and a rerun finishes the
   job; one exclusive lock serializes every mutating subcommand; an
-  interruption at any change is recovered by rerunning; symlinked or
+  interruption at any change is recovered by rerunning, and never
+  removes an identical file or account another installation created
+  meanwhile; symlinked or
   writable parent directories are refused before any change;
 - `--require-isolated-identity` refuses supplementary groups and root;
 - the unit probe detects an unconfined process and does not mistake an
@@ -28,6 +30,7 @@ Nothing here contacts a real server, needs a key or needs root:
 """
 import importlib.util
 import json
+import re
 import os
 import pathlib
 import shutil
@@ -351,6 +354,7 @@ BASE_GROUP = "root:x:0:\nflowerly:x:961:\n"
 LOCK = "run/flowerly-provider-operator.lock"
 LEDGER = "var/lib/flowerly-provider-operator"
 LOCKED = "holds /run/flowerly-provider-operator.lock"
+AMBIGUOUS = re.compile(r"kept (account|group) (\S+): an interrupted install may not have created it")
 
 
 class Sysroot:
@@ -401,14 +405,28 @@ class Sysroot:
         path = self.root / LEDGER / name
         return path.read_text().splitlines() if path.exists() else None
 
-    def recover(self, instance="alpha"):
+    def recover(self, instance="alpha", strict=True):
         """The documented recovery after an interruption: rerun `rollback`
-        while the instance ledger exists, then `rollback-shared`."""
-        if self.ledger(f"instances/{instance}") is not None:
-            assert self.op("rollback", instance).returncode == 0
-        if self.ledger("shared") is not None:
-            result = self.op("rollback-shared")
-            assert result.returncode == 0, result.stdout + result.stderr
+        while the instance ledger exists, then `rollback-shared`. Returns
+        the accounts and groups it reported as possibly not its own."""
+        output = ""
+        for args, ledger in [(("rollback", instance), f"instances/{instance}"), (("rollback-shared",), "shared")]:
+            if self.ledger(ledger) is None:
+                continue
+            result = self.op(*args)
+            output += result.stderr
+            ambiguous = AMBIGUOUS.findall(result.stderr)
+            if strict:
+                assert result.returncode == 0 or ambiguous, result.stdout + result.stderr
+        return sorted(set(AMBIGUOUS.findall(output)))
+
+    def remove_account_lines(self, reported):
+        """What the operator does by hand for an account or group reported
+        as possibly not created by this tool, once they checked it is unused."""
+        for kind, rel in (("account", "etc/passwd"), ("group", "etc/group")):
+            names = {name for k, name in reported if k == kind}
+            lines = (self.root / rel).read_text().splitlines(keepends=True)
+            (self.root / rel).write_text("".join(l for l in lines if l.split(":")[0] not in names))
 
 
 SHARED = ["usr/local/libexec/flowerly/providerd", "usr/local/libexec/flowerly/remote-provider-acceptance.py",
@@ -781,8 +799,12 @@ def case_operator_lock(scratch, build, other_build):
 def crash_points(scratch, name, build, prepare, command):
     """Run `command` killed after each change in turn; after every kill the
     documented recovery must restore the baseline exactly, deleting each
-    account and group at most once."""
+    account and group at most once. The one window where the recovery
+    cannot prove an account is its own (killed after systemd-sysusers ran,
+    before the ledger confirmed it) must report the account instead of
+    deleting it; the operator then removes it by hand."""
     point = 0
+    ambiguous_points = 0
     while True:
         point += 1
         sr = Sysroot(scratch, f"{name}-{point}", build)
@@ -792,12 +814,23 @@ def crash_points(scratch, name, build, prepare, command):
         if result.returncode != -signal.SIGKILL:
             assert result.returncode == 0, (point, result.stdout, result.stderr)
             break
-        sr.recover()
+        sysusers_ran = any(c.startswith("systemd-sysusers") for c in sr.commands())
+        ambiguous = sr.recover()
+        if ambiguous:
+            assert command[0] == "install" and sysusers_ran, (name, point, ambiguous)
+            for kind, account in ambiguous:
+                command_ = f"{'userdel' if kind == 'account' else 'groupdel'} {account}"
+                assert command_ not in deletions(sr), (name, point, deletions(sr))
+            ambiguous_points += 1
+            sr.remove_account_lines(ambiguous)
         assert sr.files() == baseline, (name, point, set(sr.files()) ^ set(baseline))
         assert not (sr.root / LEDGER).exists(), (name, point)
         # etc/passwd and etc/group are part of the baseline compared above.
         deleted = deletions(sr)
         assert len(deleted) == len(set(deleted)), (name, point, deleted)
+    # At most the kill right after systemd-sysusers and after each of the
+    # three account confirmations but the last.
+    assert ambiguous_points <= 3, (name, ambiguous_points)
     return point - 1
 
 
@@ -813,6 +846,67 @@ def case_interrupted(scratch, build, other_build):
     assert rollback_points >= 10 and install_points >= 10, (rollback_points, install_points)
     print(f"interrupted rollback recovered at all {rollback_points} change points, "
           f"interrupted install at all {install_points}")
+
+
+def case_interrupted_install_spares_foreign(scratch, build, other_build):
+    """Review of 807877a, item 2: an install killed at any change, followed
+    by another installation creating byte-identical files and the same
+    accounts wherever this one had not, then the documented recovery:
+    nothing the other installation created is removed or changed."""
+    reference = Sysroot(scratch, "foreign-reference", build)
+    reference.install("alpha")
+    identical = {rel: reference.files()[rel] for rel in SHARED + instance_paths("alpha")}
+    accounts = {"passwd": [l for l in (reference.root / "etc/passwd").read_text().splitlines() if l.startswith("flowerly-provider:")],
+                "group": [l for l in (reference.root / "etc/group").read_text().splitlines()
+                          if l.startswith(("flowerly-provider:", "flowerly-provider-clients:"))]}
+    exercised = 0
+    # Two other installations: one with its own instance config (which
+    # also keeps every shared resource in place), one with only the shared
+    # files and accounts (so the account cleanup itself is exercised).
+    for variant, candidates in (("all", identical), ("shared", {rel: identical[rel] for rel in SHARED})):
+        exercised += spare_foreign(scratch, build, variant, candidates, accounts)
+    assert exercised >= 20, exercised
+    print(f"interrupted install spared another installation's identical files and accounts at {exercised} points")
+
+
+def spare_foreign(scratch, build, variant, identical, accounts):
+    point, exercised = 0, 0
+    while True:
+        point += 1
+        sr = Sysroot(scratch, f"spare-{variant}-{point}", build)
+        result = sr.op("install", "alpha", API_BASE, STYLE, MODEL, FLOWERLY_OPERATOR_TEST_CRASH_AFTER=str(point))
+        if result.returncode != -signal.SIGKILL:
+            assert result.returncode == 0, result.stderr
+            break
+        # The other installation fills every gap the killed install left.
+        foreign = {}
+        for rel, data in identical.items():
+            path = sr.root / rel
+            if not path.exists() and not path.is_symlink():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                foreign[rel] = data
+        foreign_accounts = []
+        for rel, lines in (("etc/passwd", accounts["passwd"]), ("etc/group", accounts["group"])):
+            text = (sr.root / rel).read_text()
+            for line in lines:
+                name = line.split(":")[0]
+                if not any(l.split(":")[0] == name for l in text.splitlines()):
+                    text += line + "\n"
+                    foreign_accounts.append((rel, line))
+            (sr.root / rel).write_text(text)
+        commands_before = len(sr.commands())
+        sr.recover(strict=False)
+        for rel, data in foreign.items():
+            assert (sr.root / rel).read_bytes() == data, f"point {point}: /{rel} of the other installation was removed"
+        for rel, line in foreign_accounts:
+            assert line in (sr.root / rel).read_text().splitlines(), f"point {point}: {line.split(':')[0]} was deleted"
+            name = line.split(":")[0]
+            later = sr.commands()[commands_before:]
+            kind = "userdel" if rel == "etc/passwd" else "groupdel"
+            assert f"{kind} {name}" not in later, (variant, point, later)
+        exercised += bool(foreign or foreign_accounts)
+    return exercised
 
 
 def case_identity_refusals(scratch, build, other_build):
@@ -844,6 +938,7 @@ ROLLBACK_CASES = [case_single_instance, case_two_instances, case_foreign_shared,
                   case_other_build, case_other_installation, case_consumer_blocks_all_shared,
                   case_modified_file_keeps_ledger, case_installed_instance_preflight, case_tampered_ledger,
                   case_unknown_instance, case_symlinks, case_operator_lock, case_interrupted,
+                  case_interrupted_install_spares_foreign,
                   case_identity_refusals, case_test_hooks_need_flag]
 
 

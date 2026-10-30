@@ -5,6 +5,16 @@ Plan for accepting the **OS security boundary** of the remote provider unit
 (#268) ran providerd as the owner's user without this unit, so it accepted
 the adapter only. Nothing below has run yet.
 
+**Status: not run.** The offline contract test
+(`scripts/test-remote-provider-operator.py`, run in CI) passing is **not**
+this acceptance and must never be reported as it. That test checks:
+- the unit file with the CI host's `systemd-analyze`;
+- the operator logic against scratch roots, without root.
+
+It never starts the unit, never checks real kernel credentials, and
+never runs in an Arch guest. This plan's results are recorded separately,
+with their own SHA and evidence files.
+
 ## Scope and rules
 
 - **Disposable guest:** a fresh official Arch Linux cloud image under
@@ -164,7 +174,15 @@ Use the real `ExecStart` against the guest's mock server:
 6. Run `rollback` while `preflight` holds the lock: it refuses with no
    change. Kill a rollback with `kill -9` midway; the documented rerun
    completes it.
-7. After the final rollback, nothing the ledger recorded remains. The
+7. **Interrupted install next to another installation.**
+   1. Kill `install` with `kill -9` right after `systemd-sysusers`.
+   2. Create an identical `/usr/local/libexec/flowerly/providerd` by hand
+      if it is absent.
+   3. Run the documented recovery.
+
+   Expected: the hand-made file stays, and the accounts are reported, not
+   deleted.
+8. After the final rollback, nothing the ledger recorded remains. The
    pre-existing accounts, groups and files are byte-identical, compared
    against a snapshot taken before `install`.
 

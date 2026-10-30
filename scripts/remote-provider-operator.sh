@@ -336,6 +336,14 @@ ledger_shared() { at "$LEDGER/shared"; }
 shared_owned() { [[ -f $(ledger_shared) ]] && awk -F'\t' -v k="$1" -v n="$2" '$1 == k && $2 == n { found = 1 } END { exit !found }' "$(ledger_shared)"; }
 shared_sha() { awk -F'\t' -v n="$1" '$1 == "file" && $2 == n { print $3 }' "$(ledger_shared)" 2>/dev/null; }
 ledger_add_shared() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:--}" >>"$(ledger_shared)"; test_step; }
+# Rewrite every entry `from<TAB>name<TAB>…` of a ledger as `to<TAB>name<TAB>…`.
+ledger_rekind() {
+    local ledger=$1 from=$2 to=$3 name=$4 tmp
+    tmp="${ledger%/*}/.${ledger##*/}.tmp"
+    awk -F'\t' -v OFS='\t' -v f="$from" -v t="$to" -v n="$name" '$1 == f && $2 == n { $1 = t } { print }' "$ledger" >"$tmp"
+    mv "$tmp" "$ledger"
+    test_step
+}
 # Rewrite a ledger without one entry. The rename is atomic, so an
 # interruption leaves either the old or the new ledger, never a torn one.
 ledger_drop() {
@@ -361,6 +369,34 @@ plan_shared_file() {
     else
         die "/$rel exists and was not installed by this tool; refusing to replace it"
     fi
+}
+
+# Where a file is staged next to its target before it is linked into place.
+staged_of() { printf '%s/.%s.flowerly-new' "$(dirname "$1")" "$(basename "$1")"; }
+
+# Create /rel from source, never replacing anything, and record it so that
+# an interruption at any point is recoverable without ever taking another
+# installation's file for ours:
+#   1. `pending` entry;  2. write the staged copy;
+#   3. hard-link it to the target (fails if the target exists);
+#   4. entry becomes `file`;  5. remove the staged copy.
+# Until step 4 the target counts as ours only if it is the same inode as
+# our staged copy, which nobody else can produce.
+install_recorded() {
+    local ledger=$1 rel=$2 source=$3 mode=$4 target staged
+    target=$(at "$rel")
+    staged=$(staged_of "$target")
+    printf 'pending\t%s\t%s\n' "$rel" "$(sha "$source")" >>"$ledger"
+    test_step
+    install -d -m 0755 "$(dirname "$target")"
+    rm -f "$staged"
+    install -m "$mode" "$source" "$staged"
+    test_step
+    ln "$staged" "$target" 2>/dev/null || die "/$rel appeared during install; it was not replaced (run rollback)"
+    test_step
+    ledger_rekind "$ledger" pending file "$rel"
+    rm -f "$staged"
+    test_step
 }
 
 install_instance() {
@@ -397,29 +433,41 @@ install_instance() {
         plan[$rel]=$(plan_shared_file "$rel" "${source[$rel]}")
     done
 
-    # Each change is recorded before it is made, so an interrupted install
-    # leaves a ledger that `rollback` (or `rollback-shared`) can finish.
+    # Every change is recorded so an interrupted install leaves a ledger
+    # that `rollback` (or `rollback-shared`) finishes, and nothing recorded
+    # is ever mistaken for another installation's resource.
     install -d -m 0700 "$(at "$LEDGER")" "$(at "$LEDGER/instances")"
     for rel in "$UNIT" "$SYSUSERS" "$BIN" "$CLIENT"; do
         [[ ${plan[$rel]} == create ]] || continue
         local mode=0644
         [[ $rel == "$BIN" || $rel == "$CLIENT" ]] && mode=0755
-        ledger_add_shared file "$rel" "$(sha "${source[$rel]}")"
-        install -D -m "$mode" "${source[$rel]}" "$(at "$rel")"
-        test_step
+        install_recorded "$(ledger_shared)" "$rel" "${source[$rel]}" "$mode"
     done
-    [[ -n $(passwd_entry "$PROVIDER_USER") ]] || ledger_add_shared user "$PROVIDER_USER"
-    [[ -n $(group_entry "$PROVIDER_USER") ]] || ledger_add_shared group "$PROVIDER_USER"
-    [[ -n $(group_entry "$CLIENT_GROUP") ]] || ledger_add_shared group "$CLIENT_GROUP"
+    # Accounts are recorded `pending-*` before systemd-sysusers runs and
+    # confirmed after it. An entry still pending after an interruption
+    # cannot be told apart from an account someone else created meanwhile,
+    # so rollback never deletes it (see rollback_shared).
+    local -a created=()
+    local item kind name
+    [[ -n $(passwd_entry "$PROVIDER_USER") ]] || created+=("user $PROVIDER_USER")
+    [[ -n $(group_entry "$PROVIDER_USER") ]] || created+=("group $PROVIDER_USER")
+    [[ -n $(group_entry "$CLIENT_GROUP") ]] || created+=("group $CLIENT_GROUP")
+    for item in "${created[@]}"; do
+        read -r kind name <<<"$item"
+        ledger_add_shared "pending-$kind" "$name"
+    done
     system systemd-sysusers "/$SYSUSERS"
     test_step
+    for item in "${created[@]}"; do
+        read -r kind name <<<"$item"
+        if [[ $kind == user ]]; then [[ -n $(passwd_entry "$name") ]] || continue
+        else [[ -n $(group_entry "$name") ]] || continue; fi
+        ledger_rekind "$(ledger_shared)" "pending-$kind" "$kind" "$name"
+    done
     check_identities
 
     while read -r rel; do
-        printf 'file\t%s\t%s\n' "$rel" "$(sha "$staging/$rel")" >>"$(ledger_instance "$instance")"
-        test_step
-        install -D -m 0644 "$staging/$rel" "$(at "$rel")"
-        test_step
+        install_recorded "$(ledger_instance "$instance")" "$rel" "$staging/$rel" 0644
     done < <(instance_files "$instance")
     system systemctl daemon-reload
     echo "installed $(unit_of "$instance"): not started, not enabled; nothing was sent"
@@ -447,12 +495,36 @@ remove_if_unmodified() {
     test_step
 }
 
+# Finish one ledger file entry: `file` entries are ours (the link
+# succeeded); a `pending` target is ours only if it is the same inode as
+# our staged copy. A staged copy left by an interruption always goes.
+remove_recorded() {
+    local kind=$1 rel=$2 expected=$3 target staged
+    target=$(at "$rel")
+    staged=$(staged_of "$target")
+    safe_parents "$rel" || { warn "kept /$rel"; return 1; }
+    if [[ $kind == pending ]]; then
+        if [[ -f $staged && ! -L $staged && ! -L $target && $target -ef $staged ]]; then
+            rm -f "$target"
+            test_step
+        elif [[ -e $target || -L $target ]]; then
+            warn "kept /$rel: an interrupted install never created it"
+        fi
+    else
+        remove_if_unmodified "$rel" "$expected" || return 1
+    fi
+    if [[ -L $staged ]]; then rm -f "$staged"
+    elif [[ -e $staged ]]; then rm -f "$staged"; test_step; fi
+}
+
 validate_shared_ledger() {
     local kind rel expected
     while IFS=$'\t' read -r kind rel expected; do
         case "$kind:$rel" in
-            "file:$UNIT"|"file:$SYSUSERS"|"file:$BIN"|"file:$CLIENT") [[ $expected =~ ^[0-9a-f]{64}$ ]] ;;
+            file:*|pending:*) [[ $rel == "$UNIT" || $rel == "$SYSUSERS" || $rel == "$BIN" || $rel == "$CLIENT" ]] \
+                && [[ $expected =~ ^[0-9a-f]{64}$ ]] ;;
             "user:$PROVIDER_USER"|"group:$PROVIDER_USER"|"group:$CLIENT_GROUP") [[ $expected == - ]] ;;
+            "pending-user:$PROVIDER_USER"|"pending-group:$PROVIDER_USER"|"pending-group:$CLIENT_GROUP") [[ $expected == - ]] ;;
             *) false ;;
         esac || die "shared ledger names an unexpected entry ($kind $rel); nothing removed"
     done <"$(ledger_shared)"
@@ -523,8 +595,21 @@ rollback_shared() {
     mapfile -t entries <"$ledger"
     for line in "${entries[@]}"; do
         IFS=$'\t' read -r kind name expected <<<"$line"
-        [[ $kind == file ]] || continue
-        if remove_if_unmodified "$name" "$expected"; then ledger_drop "$ledger" file "$name"; else status=1; fi
+        [[ $kind == file || $kind == pending ]] || continue
+        if remove_recorded "$kind" "$name" "$expected"; then ledger_drop "$ledger" "$kind" "$name"; else status=1; fi
+    done
+    # Accounts an interrupted install recorded but never confirmed: they
+    # may be someone else's, so they are reported, never deleted.
+    for line in "${entries[@]}"; do
+        IFS=$'\t' read -r kind name expected <<<"$line"
+        case $kind in
+            pending-user) [[ -z $(passwd_entry "$name") ]] \
+                || { warn "kept account $name: an interrupted install may not have created it; remove it by hand only if nothing else uses it"; status=1; } ;;
+            pending-group) [[ -z $(group_entry "$name") ]] \
+                || { warn "kept group $name: an interrupted install may not have created it; remove it by hand only if nothing else uses it"; status=1; } ;;
+            *) continue ;;
+        esac
+        ledger_drop "$ledger" "$kind" "$name"
     done
     if shared_owned user "$PROVIDER_USER"; then
         if [[ -n $(passwd_entry "$PROVIDER_USER") ]]; then
@@ -565,7 +650,7 @@ rollback() {
     local -a paths=("$LEDGER/instances/$instance" "$RUNTIME" "run/systemd/system/$unit.d/50-discover-only.conf")
     while read -r rel; do allowed[$rel]=1; done < <(instance_files "$instance")
     while IFS=$'\t' read -r kind rel expected; do
-        [[ $kind == file && -n ${allowed[$rel]:-} && $expected =~ ^[0-9a-f]{64}$ ]] \
+        [[ ($kind == file || $kind == pending) && -n ${allowed[$rel]:-} && $expected =~ ^[0-9a-f]{64}$ ]] \
             || die "ledger for $instance names an unexpected entry ($kind $rel); nothing removed"
         paths+=("$rel")
     done <"$ledger"
@@ -589,7 +674,7 @@ rollback() {
     mapfile -t entries <"$ledger"
     for line in "${entries[@]}"; do
         IFS=$'\t' read -r kind rel expected <<<"$line"
-        if remove_if_unmodified "$rel" "$expected"; then ledger_drop "$ledger" file "$rel"; else status=1; fi
+        if remove_recorded "$kind" "$rel" "$expected"; then ledger_drop "$ledger" "$kind" "$rel"; else status=1; fi
     done
     rmdir "$(at "etc/systemd/system/$unit.d")" 2>/dev/null || true
 
@@ -703,6 +788,7 @@ installed_here() {
     [[ -f $ledger ]] || die "instance $1 was not installed by this tool"
     [[ $(wc -l <"$ledger") -eq 3 ]] || die "instance $1 is not completely installed; roll it back first"
     while IFS=$'\t' read -r kind rel expected; do
+        [[ $kind == file ]] || die "instance $1 is not completely installed; roll it back first"
         safe_parents "$rel" || die "instance $1: unsafe path /$rel"
         [[ -f $(at "$rel") && ! -L $(at "$rel") && $(sha "$(at "$rel")") == "$expected" ]] \
             || die "instance $1: /$rel is missing or modified since install; roll it back first"
