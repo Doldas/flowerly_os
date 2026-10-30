@@ -17,7 +17,11 @@ Nothing here contacts a real server, needs a key or needs root:
 - install and rollback (against scratch system roots) touch only what the
   ledger says this tool created: rollback never removes another
   instance's files or runtime resources, a foreign or modified file, or
-  the shared binary, account and groups while anything else uses them;
+  any shared resource while a usage check finds a user or cannot
+  complete; a file it keeps stays in the ledger and a rerun finishes the
+  job; one exclusive lock serializes every mutating subcommand; an
+  interruption at any change is recovered by rerunning; symlinked or
+  writable parent directories are refused before any change;
 - `--require-isolated-identity` refuses supplementary groups and root;
 - the unit probe detects an unconfined process and does not mistake an
   unanswered connection for a blocked one.
@@ -344,6 +348,9 @@ def check_evidence(scratch):
 
 BASE_PASSWD = "root:x:0:0::/root:/bin/bash\nflowerly:x:961:961::/var/lib/flowerly:/usr/sbin/nologin\n"
 BASE_GROUP = "root:x:0:\nflowerly:x:961:\n"
+LOCK = "run/flowerly-provider-operator.lock"
+LEDGER = "var/lib/flowerly-provider-operator"
+LOCKED = "holds /run/flowerly-provider-operator.lock"
 
 
 class Sysroot:
@@ -361,10 +368,12 @@ class Sysroot:
         self.build = build
         self.resolv = scratch / "resolv-lan"
 
-    def op(self, *args, build=None):
-        env = dict(os.environ, FLOWERLY_OPERATOR_SYSROOT=str(self.root), FLOWERLY_OPERATOR_TEST="1",
-                   FLOWERLY_OPERATOR_PROVIDERD=str(build or self.build), RESOLV_CONF=str(self.resolv))
-        return run(["bash", str(OPERATOR), *args], env=env, check=False)
+    def env(self, build=None, **extra):
+        return dict(os.environ, FLOWERLY_OPERATOR_SYSROOT=str(self.root), FLOWERLY_OPERATOR_TEST="1",
+                    FLOWERLY_OPERATOR_PROVIDERD=str(build or self.build), RESOLV_CONF=str(self.resolv), **extra)
+
+    def op(self, *args, build=None, **extra):
+        return run(["bash", str(OPERATOR), *args], env=self.env(build, **extra), check=False)
 
     def install(self, instance, **kw):
         result = self.op("install", instance, API_BASE, STYLE, MODEL, **kw)
@@ -372,8 +381,12 @@ class Sysroot:
         return result
 
     def files(self):
-        return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*")
-                if (p.is_file() or p.is_symlink()) and not str(p.relative_to(self.root)).startswith("test/")}
+        """Every file and symlink outside the test inputs and the lock file
+        (which, by design, outlives each command)."""
+        return {str(p.relative_to(self.root)): p.read_bytes() if not p.is_symlink() else b"-> " + bytes(p.readlink())
+                for p in self.root.rglob("*")
+                if (p.is_file() or p.is_symlink()) and not str(p.relative_to(self.root)).startswith("test/")
+                and str(p.relative_to(self.root)) != LOCK}
 
     def commands(self):
         log = self.root / "test/commands.log"
@@ -383,6 +396,19 @@ class Sysroot:
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+
+    def ledger(self, name):
+        path = self.root / LEDGER / name
+        return path.read_text().splitlines() if path.exists() else None
+
+    def recover(self, instance="alpha"):
+        """The documented recovery after an interruption: rerun `rollback`
+        while the instance ledger exists, then `rollback-shared`."""
+        if self.ledger(f"instances/{instance}") is not None:
+            assert self.op("rollback", instance).returncode == 0
+        if self.ledger("shared") is not None:
+            result = self.op("rollback-shared")
+            assert result.returncode == 0, result.stdout + result.stderr
 
 
 SHARED = ["usr/local/libexec/flowerly/providerd", "usr/local/libexec/flowerly/remote-provider-acceptance.py",
@@ -398,16 +424,22 @@ def deletions(sysroot):
     return [c for c in sysroot.commands() if c.startswith(("userdel", "groupdel"))]
 
 
-def check_rollback(scratch):
+def builds(scratch):
     (scratch / "resolv-lan").write_text("nameserver 192.168.0.1\n")
     build = scratch / "providerd-build"
-    build.write_text("#!/bin/sh\n# fake providerd build A\n")
-    build.chmod(0o755)
+    if not build.exists():
+        build.write_text("#!/bin/sh\n# fake providerd build A\n")
+        build.chmod(0o755)
     other_build = scratch / "providerd-build-b"
-    other_build.write_text("#!/bin/sh\n# fake providerd build B\n")
-    other_build.chmod(0o755)
+    if not other_build.exists():
+        other_build.write_text("#!/bin/sh\n# fake providerd build B\n")
+        other_build.chmod(0o755)
+    return build, other_build
 
-    # 1. One instance: rollback removes exactly what install created.
+
+def case_single_instance(scratch, build, other_build):
+    """One instance: rollback removes exactly what install created, and a
+    rerun is a refusal that changes nothing."""
     sr = Sysroot(scratch, "single", build)
     baseline = sr.files()
     sr.install("alpha")
@@ -423,9 +455,16 @@ def check_rollback(scratch):
     assert deletions(sr) == ["userdel flowerly-provider", "groupdel flowerly-provider-clients"] or \
         deletions(sr) == ["userdel flowerly-provider", "groupdel flowerly-provider", "groupdel flowerly-provider-clients"], deletions(sr)
     assert not (sr.root / "run/flowerly-provider").exists()
+    commands = sr.commands()
+    for args, refusal in [(("rollback", "alpha"), "no install ledger"), (("rollback-shared",), "no shared resources")]:
+        result = sr.op(*args)
+        assert result.returncode != 0 and refusal in result.stderr, result.stderr
+        assert sr.files() == baseline and sr.commands() == commands
 
-    # 2. Two instances: rolling back one leaves the other, its runtime
-    #    files and everything shared untouched.
+
+def case_two_instances(scratch, build, other_build):
+    """Rolling back one of two instances leaves the other, its runtime files
+    and everything shared untouched."""
     sr = Sysroot(scratch, "two", build)
     sr.install("alpha")
     sr.install("beta")
@@ -445,8 +484,9 @@ def check_rollback(scratch):
     assert sr.op("rollback", "beta").returncode == 0
     assert "userdel flowerly-provider" in deletions(sr)
 
-    # 3. Shared resources that existed before install (another
-    #    installation) are reused and never removed.
+
+def case_foreign_shared(scratch, build, other_build):
+    """Shared resources that existed before install are reused, never removed."""
     sr = Sysroot(scratch, "foreign", build)
     sr.write("usr/local/libexec/flowerly/providerd", build.read_text())
     (sr.root / "etc/passwd").write_text(BASE_PASSWD + "flowerly-provider:x:990:990::/:/usr/sbin/nologin\n")
@@ -457,8 +497,9 @@ def check_rollback(scratch):
     assert sr.files() == baseline, set(sr.files()) ^ set(baseline)
     assert deletions(sr) == [], deletions(sr)
 
-    # 4. A foreign file that differs is never replaced: install refuses
-    #    before changing anything.
+
+def case_foreign_conflict(scratch, build, other_build):
+    """A foreign file that differs is never replaced: install refuses first."""
     sr = Sysroot(scratch, "conflict", build)
     sr.write("usr/local/libexec/flowerly/providerd", "#!/bin/sh\n# somebody else's providerd\n")
     baseline = sr.files()
@@ -466,8 +507,9 @@ def check_rollback(scratch):
     assert result.returncode != 0 and "not installed by this tool" in result.stderr, result.stderr
     assert sr.files() == baseline and sr.commands() == [], sr.commands()
 
-    # 5. A different build while an instance is installed is refused; the
-    #    shared binary serves the other instance.
+
+def case_other_build(scratch, build, other_build):
+    """A different build while an instance is installed is refused."""
     sr = Sysroot(scratch, "upgrade", build)
     sr.install("alpha")
     before = sr.files()
@@ -475,56 +517,127 @@ def check_rollback(scratch):
     assert result.returncode != 0 and "differs from this build" in result.stderr, result.stderr
     assert sr.files() == before
 
-    # 6. A provider config of another installation keeps everything shared.
-    sr = Sysroot(scratch, "foreign-config", build)
-    sr.install("alpha")
-    sr.write("etc/flowerly/providers/other.toml", "[remote]\n")
-    result = sr.op("rollback", "alpha")
-    assert result.returncode == 0 and "provider config other (another installation)" in result.stdout, result.stdout
-    assert deletions(sr) == [] and all(rel in sr.files() for rel in SHARED)
 
-    # 7. An active unit of another instance keeps everything shared.
-    sr = Sysroot(scratch, "active", build)
-    sr.install("alpha")
-    sr.write("test/active-units", "flowerly-provider-remote@other.service\n")
-    result = sr.op("rollback", "alpha")
-    assert "active unit flowerly-provider-remote@other.service" in result.stdout, result.stdout
-    assert deletions(sr) == [] and all(rel in sr.files() for rel in SHARED)
+def case_other_installation(scratch, build, other_build):
+    """A foreign provider config or another active unit keeps everything shared."""
+    for name, rel, text, expect in [
+        ("foreign-config", "etc/flowerly/providers/other.toml", "[remote]\n", "provider config other (another installation)"),
+        ("active", "test/active-units", "flowerly-provider-remote@other.service\n", "active unit flowerly-provider-remote@other.service"),
+    ]:
+        sr = Sysroot(scratch, name, build)
+        sr.install("alpha")
+        sr.write(rel, text)
+        shared = {rel: sr.files()[rel] for rel in SHARED}
+        result = sr.op("rollback", "alpha")
+        assert result.returncode == 0 and expect in result.stdout, (name, result.stdout)
+        assert deletions(sr) == [] and {rel: sr.files().get(rel) for rel in SHARED} == shared, name
 
-    # 8. A process still running as the provider account keeps the account
-    #    and its groups; rollback-shared finishes once it has gone.
-    sr = Sysroot(scratch, "process", build)
-    sr.install("alpha")
-    sr.write("test/processes", "flowerly-provider\n")
-    result = sr.op("rollback", "alpha")
-    assert result.returncode != 0 and "still runs processes" in result.stderr, result.stderr
-    assert deletions(sr) == [], deletions(sr)
-    assert "flowerly-provider:" in (sr.root / "etc/passwd").read_text()
-    assert not any(rel in sr.files() for rel in SHARED), "unused shared files should go"
-    (sr.root / "test/processes").write_text("")
-    assert sr.op("rollback-shared").returncode == 0
-    assert "userdel flowerly-provider" in deletions(sr)
-    assert not (sr.root / "var/lib/flowerly-provider-operator").exists()
 
-    # 9. flowerlyd joined the socket group (gates enabled): the group stays.
-    sr = Sysroot(scratch, "gate", build)
-    sr.install("alpha")
-    group = (sr.root / "etc/group").read_text().replace("flowerly-provider-clients:x:989:", "flowerly-provider-clients:x:989:flowerly")
-    (sr.root / "etc/group").write_text(group)
-    result = sr.op("rollback", "alpha")
-    assert result.returncode != 0 and "kept group flowerly-provider-clients: still in use by flowerly" in result.stderr, result.stderr
-    assert "groupdel flowerly-provider-clients" not in deletions(sr)
+def case_consumer_blocks_all_shared(scratch, build, other_build):
+    """BLOCKER 1: every usage check runs before any shared change. A process
+    of the provider account, a process executing the shared binary, an
+    outside member of an owned group, or a check that cannot complete
+    leaves every shared file, account, group and the shared ledger as it
+    was; rollback-shared finishes once the condition is gone."""
+    for name, rel, text, expect in [
+        ("process", "test/processes", "flowerly-provider\n", "processes running as flowerly-provider"),
+        ("exe", "test/exe", "4242 /usr/local/libexec/flowerly/providerd\n",
+         "processes executing /usr/local/libexec/flowerly/providerd: 4242"),
+        ("exe-deleted", "test/exe", "4243 /usr/local/libexec/flowerly/providerd (deleted)\n", "providerd: 4243"),
+        ("gate-member", None, None, "member flowerly of group flowerly-provider-clients"),
+        ("processes-unknown", "test/processes-error", "", "unknown: processes of flowerly-provider"),
+        ("units-unknown", "test/units-error", "", "unknown: active provider units"),
+        ("exe-unknown", "test/exe-error", "", "unknown: processes executing"),
+    ]:
+        sr = Sysroot(scratch, f"consumer-{name}", build)
+        baseline = sr.files()
+        sr.install("alpha")
+        if rel:
+            sr.write(rel, text)
+        else:
+            group = (sr.root / "etc/group").read_text()
+            (sr.root / "etc/group").write_text(group.replace("flowerly-provider-clients:x:989:", "flowerly-provider-clients:x:989:flowerly"))
+        accounts = ((sr.root / "etc/passwd").read_text(), (sr.root / "etc/group").read_text())
+        shared = {rel: sr.files()[rel] for rel in SHARED}
+        shared_ledger = sr.ledger("shared")
+        result = sr.op("rollback", "alpha")
+        assert result.returncode != 0 and expect in result.stdout, (name, result.stdout, result.stderr)
+        assert {rel: sr.files().get(rel) for rel in SHARED} == shared, f"{name}: a shared file changed"
+        assert sr.ledger("shared") == shared_ledger, f"{name}: the shared ledger changed"
+        assert deletions(sr) == [], (name, deletions(sr))
+        assert ((sr.root / "etc/passwd").read_text(), (sr.root / "etc/group").read_text()) == accounts, name
+        for rel_ in instance_paths("alpha"):
+            assert rel_ not in sr.files(), (name, rel_)
+        # Still in use: rollback-shared refuses the same way.
+        again = sr.op("rollback-shared")
+        assert again.returncode != 0 and expect in again.stdout, (name, again.stdout)
+        assert {rel: sr.files().get(rel) for rel in SHARED} == shared and deletions(sr) == [], name
+        # The condition is gone: rollback-shared completes.
+        for path in ("test/processes", "test/exe", "test/processes-error", "test/units-error", "test/exe-error"):
+            (sr.root / path).unlink(missing_ok=True)
+        (sr.root / "etc/group").write_text((sr.root / "etc/group").read_text().replace(
+            "flowerly-provider-clients:x:989:flowerly", "flowerly-provider-clients:x:989:"))
+        result = sr.op("rollback-shared")
+        assert result.returncode == 0, (name, result.stdout, result.stderr)
+        assert sr.files() == baseline, (name, set(sr.files()) ^ set(baseline))
+        assert "userdel flowerly-provider" in deletions(sr), name
 
-    # 10. An operator-edited file is kept; the rest is removed.
-    sr = Sysroot(scratch, "edited", build)
-    sr.install("alpha")
-    sr.write("etc/flowerly/providers/alpha.toml", "# edited by the operator\n")
-    result = sr.op("rollback", "alpha")
-    assert result.returncode != 0 and "kept /etc/flowerly/providers/alpha.toml: modified" in result.stderr, result.stderr
-    assert "etc/flowerly/providers/alpha.toml" in sr.files()
-    assert "etc/flowerly/providers/alpha.service.toml" not in sr.files()
 
-    # 11. A tampered ledger removes nothing at all.
+def case_modified_file_keeps_ledger(scratch, build, other_build):
+    """BLOCKER 2: a modified file is kept and stays in the ledger; the
+    rerun is idempotent until the operator restores or removes the file,
+    then it completes. A partly rolled back instance is never started."""
+    for name, resolve in [("edited-restore", "restore"), ("edited-remove", "remove")]:
+        sr = Sysroot(scratch, name, build)
+        baseline = sr.files()
+        sr.install("alpha")
+        original = (sr.root / "etc/flowerly/providers/alpha.toml").read_text()
+        full_ledger = sr.ledger("instances/alpha")
+        sr.write("etc/flowerly/providers/alpha.toml", "# edited by the operator\n")
+        result = sr.op("rollback", "alpha")
+        assert result.returncode != 0 and "kept /etc/flowerly/providers/alpha.toml: modified" in result.stderr, result.stderr
+        assert "etc/flowerly/providers/alpha.toml" in sr.files()
+        assert "etc/flowerly/providers/alpha.service.toml" not in sr.files()
+        kept = sr.ledger("instances/alpha")
+        assert kept == [l for l in full_ledger if "\tetc/flowerly/providers/alpha.toml\t" in l] and len(kept) == 1, kept
+        assert all(rel in sr.files() for rel in SHARED) and deletions(sr) == [], "shared resources must stay"
+        # Rerun with the file still modified: same refusal, same state.
+        state, commands = sr.files(), [c for c in sr.commands() if not c.startswith("systemctl")]
+        result = sr.op("rollback", "alpha")
+        assert result.returncode != 0 and "modified since install" in result.stderr, result.stderr
+        assert sr.files() == state and sr.ledger("instances/alpha") == kept
+        assert [c for c in sr.commands() if not c.startswith("systemctl")] == commands
+        # A partly rolled back instance cannot be preflighted or accepted.
+        for args in (("preflight", "alpha"), ("accept", "alpha", "attestation")):
+            refused = sr.op(*args)
+            assert refused.returncode != 0 and "not completely installed" in refused.stderr, refused.stderr
+        # Re-installing over the remains is refused too.
+        refused = sr.op("install", "alpha", API_BASE, STYLE, MODEL)
+        assert refused.returncode != 0 and "already installed" in refused.stderr, refused.stderr
+        if resolve == "restore":
+            sr.write("etc/flowerly/providers/alpha.toml", original)
+        else:
+            (sr.root / "etc/flowerly/providers/alpha.toml").unlink()
+        result = sr.op("rollback", "alpha")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert sr.files() == baseline, (name, set(sr.files()) ^ set(baseline))
+        assert "userdel flowerly-provider" in deletions(sr)
+
+
+def case_installed_instance_preflight(scratch, build, other_build):
+    """An intact install passes the ledger check and reaches the test-mode
+    refusal; an edited file stops preflight before anything runs."""
+    sr = Sysroot(scratch, "preflight-check", build)
+    sr.install("alpha")
+    result = sr.op("preflight", "alpha")
+    assert result.returncode != 0 and "not available in test mode" in result.stderr, result.stderr
+    sr.write("etc/flowerly/providers/alpha.toml", "# edited\n")
+    result = sr.op("preflight", "alpha")
+    assert result.returncode != 0 and "modified since install" in result.stderr, result.stderr
+
+
+def case_tampered_ledger(scratch, build, other_build):
+    """A tampered ledger removes nothing at all."""
     for name, ledger, line in [
         ("tamper-instance", "instances/alpha", "file\tetc/passwd\t" + "0" * 64),
         ("tamper-shared", "shared", "file\tetc/shadow\t" + "0" * 64),
@@ -532,14 +645,16 @@ def check_rollback(scratch):
     ]:
         sr = Sysroot(scratch, name, build)
         sr.install("alpha")
-        path = sr.root / "var/lib/flowerly-provider-operator" / ledger
+        path = sr.root / LEDGER / ledger
         path.write_text(path.read_text() + line + "\n")
         before, commands = sr.files(), sr.commands()
         result = sr.op("rollback", "alpha")
         assert result.returncode != 0 and "unexpected entry" in result.stderr, (name, result.stderr)
         assert sr.files() == before and sr.commands() == commands, name
 
-    # 12. An instance this tool did not install: nothing is removed.
+
+def case_unknown_instance(scratch, build, other_build):
+    """An instance this tool did not install: nothing is removed."""
     sr = Sysroot(scratch, "unknown", build)
     sr.install("alpha")
     sr.write("etc/flowerly/providers/beta.toml", "[remote]\n")
@@ -548,8 +663,27 @@ def check_rollback(scratch):
     assert result.returncode != 0 and "did not install it" in result.stderr, result.stderr
     assert sr.files() == before and sr.commands() == commands
 
-    # 13. A symlink planted at the instance's socket path is not followed.
-    sr = Sysroot(scratch, "symlink", build)
+
+def case_symlinks(scratch, build, other_build):
+    """MAJOR: symlink replacement of a file, of the runtime socket, of each
+    managed parent directory and of the lock is never followed. Each
+    decoy holds byte-identical copies, so a check by content alone would
+    pass and delete them."""
+    # A file replaced by a symlink to an identical copy: kept, ledger kept.
+    sr = Sysroot(scratch, "symlink-file", build)
+    sr.install("alpha")
+    target = sr.root / "etc/flowerly/providers/alpha.toml"
+    decoy = sr.root / "etc/decoy.toml"
+    decoy.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(decoy)
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "no longer the regular file" in result.stderr, result.stderr
+    assert decoy.exists() and target.is_symlink()
+    assert len(sr.ledger("instances/alpha")) == 1
+
+    # The socket path.
+    sr = Sysroot(scratch, "symlink-socket", build)
     sr.install("alpha")
     victim = sr.root / "etc/important"
     victim.write_text("keep me\n")
@@ -559,8 +693,131 @@ def check_rollback(scratch):
     assert result.returncode != 0 and "a symlink" in result.stderr, result.stderr
     assert victim.read_text() == "keep me\n"
 
-    # 14. Identity: an intruder in the socket group, or the provider
-    #     account in another group, makes install refuse with no change.
+    # A managed parent directory replaced by a symlink to identical copies:
+    # refused before any change, the decoy untouched.
+    for name, directory in [("symlink-providers", "etc/flowerly/providers"),
+                            ("symlink-dropin", "etc/systemd/system/flowerly-provider-remote@alpha.service.d"),
+                            ("symlink-libexec", "usr/local/libexec/flowerly"),
+                            ("symlink-ledger", f"{LEDGER}/instances"),
+                            ("symlink-runtime", "run/flowerly-provider")]:
+        sr = Sysroot(scratch, name, build)
+        sr.install("alpha")
+        real = sr.root / directory
+        real.mkdir(parents=True, exist_ok=True)
+        decoy = sr.root / f"decoy-{name}"
+        shutil.copytree(real, decoy)
+        shutil.rmtree(real)
+        real.symlink_to(decoy)
+        before, commands = sr.files(), sr.commands()
+        decoy_files = {p.name: p.read_bytes() for p in decoy.iterdir()}
+        result = sr.op("rollback", "alpha")
+        assert result.returncode != 0 and ("not a real directory" in result.stderr or "is a symlink" in result.stderr), \
+            (name, result.stderr)
+        assert {p.name: p.read_bytes() for p in decoy.iterdir()} == decoy_files, f"{name}: the decoy was changed"
+        assert sr.files() == before and sr.commands() == commands, f"{name}: something changed"
+
+    # A directory others can write: refused before any change.
+    sr = Sysroot(scratch, "writable-parent", build)
+    sr.install("alpha")
+    (sr.root / "etc/flowerly/providers").chmod(0o777)
+    before, commands = sr.files(), sr.commands()
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "closed to group and others" in result.stderr, result.stderr
+    assert sr.files() == before and sr.commands() == commands
+    (sr.root / "etc/flowerly/providers").chmod(0o755)
+
+    # Install through a symlinked parent: refused, nothing written anywhere.
+    sr = Sysroot(scratch, "symlink-install", build)
+    decoy = sr.root / "decoy-etc-flowerly"
+    decoy.mkdir()
+    (sr.root / "etc/flowerly").symlink_to(decoy)
+    baseline = sr.files()
+    result = sr.op("install", "alpha", API_BASE, STYLE, MODEL)
+    assert result.returncode != 0 and "not a real directory" in result.stderr, result.stderr
+    assert sr.files() == baseline and sr.commands() == [] and not any(decoy.iterdir())
+
+    # The lock file replaced by a symlink: refused, the target untouched.
+    sr = Sysroot(scratch, "symlink-lock", build)
+    victim = sr.root / "etc/important"
+    victim.write_text("keep me\n")
+    (sr.root / "run").mkdir()
+    (sr.root / LOCK).symlink_to(victim)
+    result = sr.op("install", "alpha", API_BASE, STYLE, MODEL)
+    assert result.returncode != 0 and "is a symlink" in result.stderr, result.stderr
+    assert victim.read_text() == "keep me\n" and sr.commands() == []
+
+
+def case_operator_lock(scratch, build, other_build):
+    """MAJOR: one operator command at a time. While a rollback holds the
+    lock, install, a second rollback, rollback-shared, preflight and
+    accept refuse without any change; the holder then completes."""
+    sr = Sysroot(scratch, "lock", build)
+    baseline = sr.files()
+    sr.install("alpha")
+    hold = scratch / "lock-hold"
+    holder = subprocess.Popen(["bash", str(OPERATOR), "rollback", "alpha"], env=sr.env(FLOWERLY_OPERATOR_TEST_HOLD=str(hold)),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 20
+        while not pathlib.Path(f"{hold}.held").exists():
+            assert holder.poll() is None, holder.communicate()
+            assert time.monotonic() < deadline, "the holder never took the lock"
+            time.sleep(0.05)
+        before, commands = sr.files(), sr.commands()
+        for args in (("install", "beta", API_BASE, STYLE, MODEL), ("rollback", "alpha"), ("rollback-shared",),
+                     ("preflight", "alpha"), ("accept", "alpha", "attestation")):
+            result = sr.op(*args)
+            assert result.returncode != 0 and LOCKED in result.stderr, (args, result.stderr)
+            assert sr.files() == before and sr.commands() == commands, args
+    finally:
+        pathlib.Path(f"{hold}.release").touch()
+        out, err = holder.communicate(timeout=60)
+    assert holder.returncode == 0, out + err
+    assert sr.files() == baseline, set(sr.files()) ^ set(baseline)
+    # The lock is released with the process: the next command runs.
+    sr.install("beta")
+
+
+def crash_points(scratch, name, build, prepare, command):
+    """Run `command` killed after each change in turn; after every kill the
+    documented recovery must restore the baseline exactly, deleting each
+    account and group at most once."""
+    point = 0
+    while True:
+        point += 1
+        sr = Sysroot(scratch, f"{name}-{point}", build)
+        baseline = sr.files()
+        prepare(sr)
+        result = sr.op(*command, FLOWERLY_OPERATOR_TEST_CRASH_AFTER=str(point))
+        if result.returncode != -signal.SIGKILL:
+            assert result.returncode == 0, (point, result.stdout, result.stderr)
+            break
+        sr.recover()
+        assert sr.files() == baseline, (name, point, set(sr.files()) ^ set(baseline))
+        assert not (sr.root / LEDGER).exists(), (name, point)
+        # etc/passwd and etc/group are part of the baseline compared above.
+        deleted = deletions(sr)
+        assert len(deleted) == len(set(deleted)), (name, point, deleted)
+    return point - 1
+
+
+def case_interrupted(scratch, build, other_build):
+    """MAJOR: an interrupted rollback or install, at every change it makes,
+    is completed by rerunning the documented commands."""
+    def installed(sr):
+        sr.install("alpha")
+        sr.write("run/flowerly-provider/alpha.sock", "")
+    rollback_points = crash_points(scratch, "crash-rollback", build, installed, ("rollback", "alpha"))
+    install_points = crash_points(scratch, "crash-install", build, lambda sr: None,
+                                  ("install", "alpha", API_BASE, STYLE, MODEL))
+    assert rollback_points >= 10 and install_points >= 10, (rollback_points, install_points)
+    print(f"interrupted rollback recovered at all {rollback_points} change points, "
+          f"interrupted install at all {install_points}")
+
+
+def case_identity_refusals(scratch, build, other_build):
+    """An intruder in the socket group, or the provider account in another
+    group, makes install refuse with no change."""
     for name, group_text in [
         ("intruder", BASE_GROUP + "flowerly-provider-clients:x:989:alice\n"),
         ("provider-in-flowerly", "root:x:0:\nflowerly:x:961:flowerly-provider\n"),
@@ -575,10 +832,25 @@ def check_rollback(scratch):
                                            or "must hold no other group" in result.stderr), (name, result.stderr)
         assert sr.files() == baseline and sr.commands() == [], name
 
-    # 15. The test hooks cannot be reached without the explicit test flag.
+
+def case_test_hooks_need_flag(scratch, build, other_build):
+    """The test hooks cannot be reached without the explicit test flag."""
     env = dict(os.environ, FLOWERLY_OPERATOR_SYSROOT=str(scratch))
     result = run(["bash", str(OPERATOR), "rollback", "alpha"], env=env, check=False)
     assert result.returncode != 0 and "offline tests only" in result.stderr, result.stderr
+
+
+ROLLBACK_CASES = [case_single_instance, case_two_instances, case_foreign_shared, case_foreign_conflict,
+                  case_other_build, case_other_installation, case_consumer_blocks_all_shared,
+                  case_modified_file_keeps_ledger, case_installed_instance_preflight, case_tampered_ledger,
+                  case_unknown_instance, case_symlinks, case_operator_lock, case_interrupted,
+                  case_identity_refusals, case_test_hooks_need_flag]
+
+
+def check_rollback(scratch):
+    build, other_build = builds(scratch)
+    for case in ROLLBACK_CASES:
+        case(scratch, build, other_build)
 
 
 def check_isolated_identity(scratch, bin_dir):
@@ -660,6 +932,8 @@ def check_privileged_refusals():
 
 
 def main(bin_dir):
+    # The operator refuses directories that group or others can write.
+    os.umask(0o022)
     check_unit_template()
     check_dns_classification()
     check_privileged_refusals()
@@ -676,7 +950,9 @@ def main(bin_dir):
         check_probe(scratch)
     print("remote provider operator contract: unit confinement, render, discover-only, "
           "single-prompt client, redacted evidence, DNS classification, root-only subcommands, "
-          "ledger-scoped rollback (15 negative cases), isolated identity, unit probe detection")
+          f"ledger-scoped rollback ({len(ROLLBACK_CASES)} case groups: usage checks before shared changes, "
+          "recoverable partial rollback, operator lock, every interruption point, symlinked parents), "
+          "isolated identity, unit probe detection")
 
 
 if __name__ == "__main__":

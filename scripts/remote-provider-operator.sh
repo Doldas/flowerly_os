@@ -19,9 +19,16 @@
 # is an operator attestation recorded in the evidence, not proof of the
 # owner's authorization: nothing here verifies it. `disable` is the
 # emergency stop. `rollback` removes only what the ledger says this tool
-# created, only while unmodified, and keeps shared resources while any
-# other instance, installation, process or group member still uses them;
-# `rollback-shared` retries that shared cleanup once they no longer do.
+# created, only while unmodified, and keeps every file it could not remove
+# recorded so a rerun continues where it stopped. Shared resources are
+# touched only after every usage check passed: while any other instance,
+# installation, process, group member or an inconclusive check remains,
+# nothing shared changes. `rollback-shared` retries that cleanup later.
+#
+# Every subcommand but `render` holds one exclusive lock,
+# /run/flowerly-provider-operator.lock, for its whole run; a second one
+# refuses instead of waiting. `disable` masks the unit first, without the
+# lock, so an emergency stop is never held up, then waits for the lock.
 #
 # The API key is never read, printed or copied by this script. The operator
 # installs it beforehand by typing it at the systemd-creds prompt:
@@ -32,6 +39,7 @@
 # non-root user. Every system command is then logged, not executed, and
 # accounts, groups, processes and active units come from files in that root.
 set -euo pipefail
+umask 022
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPLATES="$ROOT/distro/templates/remote-inference"
@@ -51,6 +59,7 @@ SYSUSERS=etc/sysusers.d/flowerly-provider.conf
 UNIT=etc/systemd/system/$UNIT_TEMPLATE
 LEDGER=var/lib/flowerly-provider-operator
 RUNTIME=run/flowerly-provider
+LOCK=run/flowerly-provider-operator.lock
 
 die() { echo "remote-provider-operator: $*" >&2; exit 1; }
 warn() { echo "remote-provider-operator: $*" >&2; }
@@ -65,6 +74,9 @@ if [[ $SYSROOT != / ]]; then
     TEST_MODE=1
 fi
 at() { printf '%s/%s' "${SYSROOT%/}" "$1"; }
+# Who must own every directory on a path this tool changes.
+OWNER_UID=0
+(( ! TEST_MODE )) || OWNER_UID=$(id -u)
 
 need_root() {
     (( TEST_MODE )) && return 0
@@ -119,13 +131,42 @@ all_groups() {
 group_members() { group_entry "$1" | cut -d: -f4 | tr ',' '\n' | sed '/^$/d'; }
 # Groups that list a user as an explicit (supplementary) member.
 groups_of_member() { all_groups | awk -F: -v user="$1" '{ n = split($4, m, ","); for (i = 1; i <= n; i++) if (m[i] == user) print $1 }'; }
-user_has_processes() {
-    if (( TEST_MODE )); then grep -qx "$1" "$(at test/processes)" 2>/dev/null
-    else pgrep -u "$1" >/dev/null 2>&1; fi
+# The usage checks below fail, rather than report "nothing", when they
+# cannot tell; callers treat that as "still in use".
+provider_has_processes() {
+    if (( TEST_MODE )); then
+        [[ ! -e $(at test/processes-error) ]] || return 2
+        grep -qx "$1" "$(at test/processes)" 2>/dev/null && return 0
+        return 1
+    fi
+    [[ -n $(passwd_entry "$1") ]] || return 1
+    local status=0
+    pgrep -u "$1" >/dev/null 2>&1 || status=$?
+    return "$status"
 }
 active_provider_units() {
-    if (( TEST_MODE )); then cat "$(at test/active-units)" 2>/dev/null || true
-    else systemctl list-units --plain --no-legend --state=active,activating,reloading 'flowerly-provider-remote@*' 2>/dev/null | awk '{ print $1 }'; fi
+    if (( TEST_MODE )); then
+        [[ ! -e $(at test/units-error) ]] || return 1
+        cat "$(at test/active-units)" 2>/dev/null || true
+        return 0
+    fi
+    local units
+    units=$(systemctl list-units --plain --no-legend --state=active,activating,reloading 'flowerly-provider-remote@*') || return 1
+    awk '{ print $1 }' <<<"$units"
+}
+# Pids of processes executing the shared binary, whoever runs them.
+binary_users() {
+    if (( TEST_MODE )); then
+        [[ ! -e $(at test/exe-error) ]] || return 1
+        awk -v bin="/$BIN" 'index($2, bin) == 1 { print $1 }' "$(at test/exe)" 2>/dev/null | paste -sd' ' -
+        return 0
+    fi
+    [[ -r /proc/1/exe || -L /proc/1/exe ]] || return 1
+    local exe pids=()
+    for exe in /proc/[0-9]*/exe; do
+        [[ $(readlink "$exe" 2>/dev/null) == "/$BIN"* ]] && pids+=("$(basename "$(dirname "$exe")")")
+    done
+    echo "${pids[*]}"
 }
 
 # --- render --------------------------------------------------------------
@@ -190,6 +231,82 @@ render() {
     } | install -m 0644 /dev/stdin "$dest/etc/flowerly/providers/$instance.toml"
 }
 
+# --- path safety and the operator lock ----------------------------------
+
+# Every directory from the root down to the parent of $1 must be a real
+# directory that only root can change. Nobody else can then redirect the
+# path between a check and the change made through it, and a symlinked
+# directory never leads a removal outside the paths this tool wrote.
+safe_parents() {
+    local rel=$1 dir=${SYSROOT%/} part owner mode
+    local -a parts
+    IFS=/ read -r -a parts <<<"$rel"
+    unset 'parts[${#parts[@]}-1]'
+    for part in "" "${parts[@]}"; do
+        [[ -z $part ]] || dir+=/$part
+        [[ -n $dir ]] || dir=/
+        [[ -e $dir || -L $dir ]] || return 0
+        if [[ -L $dir || ! -d $dir ]]; then
+            warn "/${dir#"${SYSROOT%/}"} is not a real directory; refusing to change anything below it"
+            return 1
+        fi
+        read -r owner mode < <(stat -c '%u %a' "$dir")
+        if [[ $owner != "$OWNER_UID" ]] || (( 8#$mode & 8#022 )); then
+            warn "/${dir#"${SYSROOT%/}"} is not root-owned and closed to group and others (owner $owner, mode $mode); refusing"
+            return 1
+        fi
+    done
+}
+
+# Abort before any change unless every path in "$@" is reachable safely.
+require_safe_paths() {
+    local rel failed=0
+    for rel in "$@"; do safe_parents "$rel" || failed=1; done
+    (( ! failed )) || die "unsafe directory on a path this tool manages; nothing was changed"
+}
+
+# One operator command at a time. flock is released by the kernel when the
+# process ends, so an interrupted command never leaves a stale lock.
+operator_lock() {
+    local wait=$1 path
+    command -v flock >/dev/null || die "flock (util-linux) is required"
+    if (( TEST_MODE )) && [[ ! -d $(at run) ]]; then install -d -m 0755 "$(at run)"; fi
+    require_safe_paths "$LOCK"
+    path=$(at "$LOCK")
+    [[ ! -L $path ]] || die "/$LOCK is a symlink; refusing"
+    exec {LOCK_FD}>>"$path"
+    [[ ! -L $path && -f $path ]] || die "/$LOCK is not a regular file; refusing"
+    # shellcheck disable=SC2086 # $wait is one flock option
+    flock $wait "$LOCK_FD" \
+        || die "another remote-provider-operator command holds /$LOCK; nothing was changed"
+    # Leftovers of an interrupted ledger rewrite; the lock makes them stale.
+    rm -f "$(at "$LEDGER")"/.*.tmp "$(at "$LEDGER/instances")"/.*.tmp
+    test_hold
+}
+
+# --- offline test hooks (test mode only) ---------------------------------
+
+# Hold the lock until the test releases it, to exercise a concurrent run.
+test_hold() {
+    (( TEST_MODE )) && [[ -n ${FLOWERLY_OPERATOR_TEST_HOLD:-} ]] || return 0
+    : >"$FLOWERLY_OPERATOR_TEST_HOLD.held"
+    local _
+    for _ in $(seq 1 400); do
+        [[ -e $FLOWERLY_OPERATOR_TEST_HOLD.release ]] && return 0
+        sleep 0.05
+    done
+    die "test hold was never released"
+}
+
+# Count one change; die like a power cut after the configured number, to
+# show that every interruption point leaves a state a rerun completes.
+TEST_STEPS=0
+test_step() {
+    (( TEST_MODE )) && [[ -n ${FLOWERLY_OPERATOR_TEST_CRASH_AFTER:-} ]] || return 0
+    TEST_STEPS=$((TEST_STEPS + 1))
+    (( TEST_STEPS < FLOWERLY_OPERATOR_TEST_CRASH_AFTER )) || kill -KILL $$
+}
+
 # --- identity checks -----------------------------------------------------
 
 # The socket group admits whoever is in it to the remote key, without
@@ -218,7 +335,16 @@ ledger_instance() { at "$LEDGER/instances/$1"; }
 ledger_shared() { at "$LEDGER/shared"; }
 shared_owned() { [[ -f $(ledger_shared) ]] && awk -F'\t' -v k="$1" -v n="$2" '$1 == k && $2 == n { found = 1 } END { exit !found }' "$(ledger_shared)"; }
 shared_sha() { awk -F'\t' -v n="$1" '$1 == "file" && $2 == n { print $3 }' "$(ledger_shared)" 2>/dev/null; }
-ledger_add_shared() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:--}" >>"$(ledger_shared)"; }
+ledger_add_shared() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:--}" >>"$(ledger_shared)"; test_step; }
+# Rewrite a ledger without one entry. The rename is atomic, so an
+# interruption leaves either the old or the new ledger, never a torn one.
+ledger_drop() {
+    local ledger=$1 kind=$2 name=$3 tmp
+    tmp="${ledger%/*}/.${ledger##*/}.tmp"
+    awk -F'\t' -v k="$kind" -v n="$name" '!($1 == k && $2 == n)' "$ledger" >"$tmp"
+    mv "$tmp" "$ledger"
+    test_step
+}
 
 # Decide, without changing anything, how a shared file is provided.
 plan_shared_file() {
@@ -238,7 +364,6 @@ plan_shared_file() {
 }
 
 install_instance() {
-    need_root
     [[ $# -eq 4 ]] || usage
     local instance=$1 api_base=$2 api_style=$3 model=$4
     valid_instance "$instance"
@@ -249,8 +374,12 @@ install_instance() {
     [[ ! -e $(ledger_instance "$instance") ]] || die "instance $instance is already installed"
     local rel
     while read -r rel; do
-        [[ ! -e $(at "$rel") ]] || die "refusing to overwrite /$rel; it was not installed by this tool for $instance"
+        [[ ! -e $(at "$rel") && ! -L $(at "$rel") ]] \
+            || die "refusing to overwrite /$rel; it was not installed by this tool for $instance"
     done < <(instance_files "$instance")
+    local -a targets
+    mapfile -t targets < <(instance_files "$instance")
+    require_safe_paths "${targets[@]}" "$UNIT" "$SYSUSERS" "$BIN" "$CLIENT" "$LEDGER/instances/$instance"
     check_identities
 
     staging=$(mktemp -d)
@@ -268,40 +397,43 @@ install_instance() {
         plan[$rel]=$(plan_shared_file "$rel" "${source[$rel]}")
     done
 
+    # Each change is recorded before it is made, so an interrupted install
+    # leaves a ledger that `rollback` (or `rollback-shared`) can finish.
     install -d -m 0700 "$(at "$LEDGER")" "$(at "$LEDGER/instances")"
     for rel in "$UNIT" "$SYSUSERS" "$BIN" "$CLIENT"; do
         [[ ${plan[$rel]} == create ]] || continue
         local mode=0644
         [[ $rel == "$BIN" || $rel == "$CLIENT" ]] && mode=0755
+        ledger_add_shared file "$rel" "$(sha "${source[$rel]}")"
         install -D -m "$mode" "${source[$rel]}" "$(at "$rel")"
-        ledger_add_shared file "$rel" "$(sha "$(at "$rel")")"
+        test_step
     done
-    local had_user had_group had_clients
-    had_user=$(passwd_entry "$PROVIDER_USER")
-    had_group=$(group_entry "$PROVIDER_USER")
-    had_clients=$(group_entry "$CLIENT_GROUP")
+    [[ -n $(passwd_entry "$PROVIDER_USER") ]] || ledger_add_shared user "$PROVIDER_USER"
+    [[ -n $(group_entry "$PROVIDER_USER") ]] || ledger_add_shared group "$PROVIDER_USER"
+    [[ -n $(group_entry "$CLIENT_GROUP") ]] || ledger_add_shared group "$CLIENT_GROUP"
     system systemd-sysusers "/$SYSUSERS"
-    [[ -n $had_user || -z $(passwd_entry "$PROVIDER_USER") ]] || ledger_add_shared user "$PROVIDER_USER"
-    [[ -n $had_group || -z $(group_entry "$PROVIDER_USER") ]] || ledger_add_shared group "$PROVIDER_USER"
-    [[ -n $had_clients || -z $(group_entry "$CLIENT_GROUP") ]] || ledger_add_shared group "$CLIENT_GROUP"
+    test_step
     check_identities
 
-    : >"$(ledger_instance "$instance").tmp"
     while read -r rel; do
+        printf 'file\t%s\t%s\n' "$rel" "$(sha "$staging/$rel")" >>"$(ledger_instance "$instance")"
+        test_step
         install -D -m 0644 "$staging/$rel" "$(at "$rel")"
-        printf 'file\t%s\t%s\n' "$rel" "$(sha "$(at "$rel")")" >>"$(ledger_instance "$instance").tmp"
+        test_step
     done < <(instance_files "$instance")
-    mv "$(ledger_instance "$instance").tmp" "$(ledger_instance "$instance")"
     system systemctl daemon-reload
     echo "installed $(unit_of "$instance"): not started, not enabled; nothing was sent"
 }
 
 # --- rollback ------------------------------------------------------------
 
-# Remove a file only if it is still the one this tool wrote.
+# Remove a file only if it is still the one this tool wrote, reached
+# through directories only root can change. An absent file counts as
+# removed, so a rerun after an interruption converges.
 remove_if_unmodified() {
     local rel=$1 expected=$2 target
     target=$(at "$rel")
+    safe_parents "$rel" || { warn "kept /$rel"; return 1; }
     if [[ ! -e $target && ! -L $target ]]; then
         return 0
     elif [[ -L $target || ! -f $target ]]; then
@@ -312,6 +444,7 @@ remove_if_unmodified() {
         return 1
     fi
     rm -f "$target"
+    test_step
 }
 
 validate_shared_ledger() {
@@ -323,10 +456,14 @@ validate_shared_ledger() {
             *) false ;;
         esac || die "shared ledger names an unexpected entry ($kind $rel); nothing removed"
     done <"$(ledger_shared)"
+    require_safe_paths "$LEDGER/shared" "$UNIT" "$SYSUSERS" "$BIN" "$CLIENT"
 }
 
-other_users() {
-    local instance=$1 path name unit
+# Everything that may still use the shared resources, one line each. A
+# check that cannot complete is reported as a user too, so it refuses the
+# cleanup instead of passing as "unused".
+shared_consumers() {
+    local instance=$1 path name unit units pids status member group
     for path in "$(at "$LEDGER/instances")"/*; do
         [[ -e $path ]] || continue
         name=${path##*/}
@@ -339,110 +476,154 @@ other_users() {
         name=${name%.toml}
         [[ $name == "$instance" || -e $(ledger_instance "$name") ]] || echo "provider config $name (another installation)"
     done
-    while read -r unit; do
-        [[ -z $unit || $unit == "$(unit_of "$instance")" ]] || echo "active unit $unit"
-    done < <(active_provider_units)
+    if units=$(active_provider_units); then
+        while read -r unit; do
+            [[ -z $unit || $unit == "$(unit_of "$instance")" ]] || echo "active unit $unit"
+        done <<<"$units"
+    else
+        echo "unknown: active provider units could not be listed"
+    fi
+    status=0
+    provider_has_processes "$PROVIDER_USER" || status=$?
+    case $status in
+        0) echo "processes running as $PROVIDER_USER" ;;
+        1) ;;
+        *) echo "unknown: processes of $PROVIDER_USER could not be listed" ;;
+    esac
+    if pids=$(binary_users); then
+        [[ -z $pids ]] || echo "processes executing /$BIN: $pids"
+    else
+        echo "unknown: processes executing /$BIN could not be listed"
+    fi
+    for group in "$PROVIDER_USER" "$CLIENT_GROUP"; do
+        shared_owned group "$group" || continue
+        while read -r member; do
+            [[ -z $member || $member == "$PROVIDER_USER" ]] || echo "member $member of group $group"
+        done < <(group_members "$group")
+    done
+}
+
+# Remove the shared resources this tool created. Every usage check runs
+# first; if anything may still use them, nothing shared is changed. Exit 0
+# when they were kept only for other installations, which is expected.
+rollback_shared() {
+    local instance=${1:-} consumers line ledger status=0 kind name expected
+    consumers=$(shared_consumers "$instance")
+    if [[ -n $consumers ]]; then
+        echo "kept the shared unit template, binary, client, account and groups; still used by:"
+        while read -r line; do echo "  $line"; done <<<"$consumers"
+        if grep -qv -e '^instance ' -e '^provider config ' -e '^active unit ' <<<"$consumers"; then
+            warn "shared resources unchanged; run rollback-shared once nothing above uses them"
+            return 1
+        fi
+        return 0
+    fi
+    ledger=$(ledger_shared)
+    local -a entries
+    mapfile -t entries <"$ledger"
+    for line in "${entries[@]}"; do
+        IFS=$'\t' read -r kind name expected <<<"$line"
+        [[ $kind == file ]] || continue
+        if remove_if_unmodified "$name" "$expected"; then ledger_drop "$ledger" file "$name"; else status=1; fi
+    done
+    if shared_owned user "$PROVIDER_USER"; then
+        if [[ -n $(passwd_entry "$PROVIDER_USER") ]]; then
+            system userdel "$PROVIDER_USER"
+            test_step
+        fi
+        ledger_drop "$ledger" user "$PROVIDER_USER"
+    fi
+    for name in "$PROVIDER_USER" "$CLIENT_GROUP"; do
+        shared_owned group "$name" || continue
+        if [[ -n $(group_entry "$name") ]]; then
+            # An account this tool did not create keeps its groups.
+            if [[ -n $(passwd_entry "$PROVIDER_USER") ]]; then
+                warn "kept group $name: account $PROVIDER_USER, not created by this tool, still exists"
+                status=1
+                continue
+            fi
+            system groupdel "$name"
+            test_step
+        fi
+        ledger_drop "$ledger" group "$name"
+    done
+    rmdir "$(at "$LIBEXEC")" 2>/dev/null || true
+    [[ -s $ledger ]] || rm -f "$ledger"
+    return $status
 }
 
 rollback() {
-    need_root
     [[ $# -eq 1 ]] || usage
     local instance=$1 unit status=0 kind rel expected
     valid_instance "$instance"
     unit=$(unit_of "$instance")
     local ledger
     ledger=$(ledger_instance "$instance")
-    [[ -f $ledger ]] || die "no install ledger for $instance: this tool did not install it, so nothing is removed"
-    # Validate the whole ledger before touching anything.
+    [[ -f $ledger ]] || die "no install ledger for $instance: this tool did not install it, or an earlier rollback finished it (then use rollback-shared); nothing is removed"
+    # Validate the whole ledger and every path before touching anything.
     local -A allowed=()
+    local -a paths=("$LEDGER/instances/$instance" "$RUNTIME" "run/systemd/system/$unit.d/50-discover-only.conf")
     while read -r rel; do allowed[$rel]=1; done < <(instance_files "$instance")
     while IFS=$'\t' read -r kind rel expected; do
         [[ $kind == file && -n ${allowed[$rel]:-} && $expected =~ ^[0-9a-f]{64}$ ]] \
             || die "ledger for $instance names an unexpected entry ($kind $rel); nothing removed"
+        paths+=("$rel")
     done <"$ledger"
+    require_safe_paths "${paths[@]}"
+    [[ ! -L $(at "$RUNTIME") ]] || die "/$RUNTIME is a symlink; nothing removed"
     [[ ! -f $(ledger_shared) ]] || validate_shared_ledger
 
     system systemctl stop "$unit" || true
     system systemctl unmask "$unit" || true
     rm -f "$(at "run/systemd/system/$unit.d/50-discover-only.conf")"
     rmdir "$(at "run/systemd/system/$unit.d")" 2>/dev/null || true
-    while IFS=$'\t' read -r kind rel expected; do
-        remove_if_unmodified "$rel" "$expected" || status=1
-    done <"$ledger"
-    rmdir "$(at "etc/systemd/system/$unit.d")" 2>/dev/null || true
-    # This instance's runtime files only, never the shared directory.
+    # This instance's runtime files only, never the shared directory. The
+    # provider owns that directory, but rm never follows a final symlink.
     for rel in "$RUNTIME/$instance.sock" "$RUNTIME/$instance.sock.lock"; do
         if [[ -L $(at "$rel") ]]; then warn "kept /$rel: a symlink"; status=1
-        elif [[ -e $(at "$rel") ]]; then rm -f "$(at "$rel")"; fi
+        elif [[ -e $(at "$rel") ]]; then rm -f "$(at "$rel")"; test_step; fi
     done
-    rm -f "$ledger"
+    # Each removed file leaves the ledger; a kept one stays recorded.
+    local line
+    local -a entries
+    mapfile -t entries <"$ledger"
+    for line in "${entries[@]}"; do
+        IFS=$'\t' read -r kind rel expected <<<"$line"
+        if remove_if_unmodified "$rel" "$expected"; then ledger_drop "$ledger" file "$rel"; else status=1; fi
+    done
+    rmdir "$(at "etc/systemd/system/$unit.d")" 2>/dev/null || true
 
-    local users line
-    users=$(other_users "$instance")
-    if [[ -n $users ]]; then
-        echo "kept the shared unit template, binary, client, account and groups; still used by:"
-        while read -r line; do echo "  $line"; done <<<"$users"
-    elif [[ -f $(ledger_shared) ]]; then
-        rollback_shared || status=1
+    if [[ -s $ledger ]]; then
+        warn "kept the install ledger of $instance for the files above; restore or remove them, then rerun: rollback $instance"
+        echo "kept the shared unit template, binary, client, account and groups: $instance is not fully rolled back"
+        status=1
+    else
+        rm -f "$ledger"
+        test_step
+        if [[ -f $(ledger_shared) ]]; then rollback_shared "$instance" || status=1; fi
     fi
     rmdir "$(at "$RUNTIME")" "$(at etc/flowerly/providers)" "$(at etc/flowerly)" \
         "$(at "$LEDGER/instances")" "$(at "$LEDGER")" 2>/dev/null || true
     system systemctl daemon-reload
-    echo "rolled back $unit; /etc/credstore.encrypted/$instance.key was left for the operator to remove"
+    if (( status )); then
+        echo "rollback of $unit is incomplete; see the messages above"
+    else
+        echo "rolled back $unit; /etc/credstore.encrypted/$instance.key was left for the operator to remove"
+    fi
     return $status
 }
 
 # Shared resources kept by an earlier rollback, once nothing uses them.
 rollback_shared_command() {
-    need_root
     [[ $# -eq 0 ]] || usage
     [[ -f $(ledger_shared) ]] || die "no shared resources recorded by this tool"
     validate_shared_ledger
-    local users line
-    users=$(other_users "")
-    if [[ -n $users ]]; then
-        echo "kept the shared resources; still used by:"
-        while read -r line; do echo "  $line"; done <<<"$users"
-        return 1
-    fi
     local status=0
-    rollback_shared || status=1
+    rollback_shared "" || status=1
+    [[ ! -f $(ledger_shared) ]] || status=1
     rmdir "$(at "$RUNTIME")" "$(at etc/flowerly/providers)" "$(at etc/flowerly)" \
         "$(at "$LEDGER/instances")" "$(at "$LEDGER")" 2>/dev/null || true
     system systemctl daemon-reload
-    return $status
-}
-
-rollback_shared() {
-    local status=0 kind name expected kept member
-    kept=$(mktemp)
-    while IFS=$'\t' read -r kind name expected; do
-        [[ $kind == file ]] || continue
-        remove_if_unmodified "$name" "$expected" || { printf '%s\t%s\t%s\n' "$kind" "$name" "$expected" >>"$kept"; status=1; }
-    done <"$(ledger_shared)"
-    if shared_owned user "$PROVIDER_USER" && [[ -n $(passwd_entry "$PROVIDER_USER") ]]; then
-        if user_has_processes "$PROVIDER_USER"; then
-            warn "kept account $PROVIDER_USER: it still runs processes"
-            printf 'user\t%s\t-\n' "$PROVIDER_USER" >>"$kept"
-            status=1
-        else
-            system userdel "$PROVIDER_USER"
-        fi
-    fi
-    for name in "$PROVIDER_USER" "$CLIENT_GROUP"; do
-        shared_owned group "$name" && [[ -n $(group_entry "$name") ]] || continue
-        member=$(group_members "$name" | grep -vx "$PROVIDER_USER" | head -1 || true)
-        # A kept account keeps its groups: its processes may hold them.
-        if [[ -n $member || -n $(passwd_entry "$PROVIDER_USER") ]]; then
-            warn "kept group $name: still in use${member:+ by $member}"
-            printf 'group\t%s\t-\n' "$name" >>"$kept"
-            status=1
-        else
-            system groupdel "$name"
-        fi
-    done
-    rmdir "$(at "$LIBEXEC")" 2>/dev/null || true
-    if [[ -s $kept ]]; then mv "$kept" "$(ledger_shared)"; else rm -f "$kept" "$(ledger_shared)"; fi
     return $status
 }
 
@@ -514,18 +695,27 @@ wait_socket() {
     return 1
 }
 
+# Installed by this tool, completely and unmodified: a partly rolled back
+# or edited instance is never started.
 installed_here() {
-    [[ -f /$LEDGER/instances/$1 ]] || die "instance $1 was not installed by this tool"
+    local ledger kind rel expected
+    ledger=$(ledger_instance "$1")
+    [[ -f $ledger ]] || die "instance $1 was not installed by this tool"
+    [[ $(wc -l <"$ledger") -eq 3 ]] || die "instance $1 is not completely installed; roll it back first"
+    while IFS=$'\t' read -r kind rel expected; do
+        safe_parents "$rel" || die "instance $1: unsafe path /$rel"
+        [[ -f $(at "$rel") && ! -L $(at "$rel") && $(sha "$(at "$rel")") == "$expected" ]] \
+            || die "instance $1: /$rel is missing or modified since install; roll it back first"
+    done <"$ledger"
     check_identities
 }
 
 preflight() {
-    need_root
-    no_test_mode preflight
     [[ $# -ge 1 && $# -le 2 ]] || usage
     local instance=$1 dir=${2:-/var/log/flowerly-provider-acceptance} unit runtime status=0
     valid_instance "$instance"
     installed_here "$instance"
+    no_test_mode preflight
     unit=$(unit_of "$instance")
     runtime="/run/systemd/system/$unit.d"
     evidence_begin "$dir" preflight "$instance"
@@ -552,12 +742,11 @@ preflight() {
 }
 
 accept() {
-    need_root
-    no_test_mode accept
     [[ $# -ge 2 && $# -le 3 ]] || usage
     local instance=$1 approval=$2 dir=${3:-/var/log/flowerly-provider-acceptance} unit status=0
     valid_instance "$instance"
     installed_here "$instance"
+    no_test_mode accept
     [[ -n $approval ]] || die "an approval reference is required (recorded as the operator's attestation)"
     unit=$(unit_of "$instance")
     [[ ! -e /run/systemd/system/$unit.d/50-discover-only.conf ]] || die "a discovery-only drop-in is still present"
@@ -585,8 +774,10 @@ disable_instance() {
     valid_instance "$instance"
     unit=$(unit_of "$instance")
     # Emergency stop for any instance, installed by this tool or not: it
-    # cannot be started again until unmasked.
+    # cannot be started again until unmasked. It comes before the lock: it
+    # only ever restricts, and it must not wait for a running command.
     systemctl mask --now "$unit"
+    operator_lock "-w 600"
     # flowerlyd's gate, if an administrator enabled it: absent = disabled.
     # This disables remote inference for every provider, deliberately.
     if [[ -e /etc/flowerly/remote-providers.toml ]]; then
@@ -599,6 +790,11 @@ disable_instance() {
 [[ $# -ge 1 ]] || usage
 command=$1
 shift
+case $command in
+    install|preflight|accept|rollback|rollback-shared)
+        need_root
+        operator_lock -n ;;
+esac
 case $command in
     render) render "$@" ;;
     install) install_instance "$@" ;;

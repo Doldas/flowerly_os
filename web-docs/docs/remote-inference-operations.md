@@ -26,7 +26,25 @@ decision is made before the first change. `install` refuses when:
 - the provider account is a member of any other group.
 
 What it created is recorded in a root-only ledger,
-`/var/lib/flowerly-provider-operator/`.
+`/var/lib/flowerly-provider-operator/`. Each entry is written **before**
+the change it records, so an interrupted install leaves a ledger that
+`rollback` (and then `rollback-shared`) completes.
+
+Every subcommand except `render` holds one exclusive lock,
+`/run/flowerly-provider-operator.lock` (`flock`), for its whole run. A
+second command refuses at once and changes nothing. The kernel releases
+the lock when the process ends, so an interrupted command never leaves a
+stale lock. `disable` is the exception: it masks the unit **before** taking
+the lock, because an emergency stop must not wait for a running command
+and masking only restricts. It then waits for the lock to move the gate
+policy aside.
+
+Every directory on a path the tool writes or removes, from `/` down, must
+be a real directory, not a symlink, owned by root and not writable by
+group or others. Otherwise the command refuses before its first change.
+Only root can then redirect a path between a check and the change. The
+lock serializes this tool's own commands; other root processes stay
+trusted.
 
 | Path | Content |
 | --- | --- |
@@ -168,25 +186,54 @@ sudo scripts/remote-provider-operator.sh rollback-shared   # only if asked to re
 Rollback removes only what the ledger says `install` created, so it cannot
 remove anything belonging to another instance or installation.
 
-1. It validates the whole ledger first. An instance it did not install,
-   or a ledger naming any unexpected path or account, stops it before
-   anything is removed.
-2. It removes this instance's drop-in and configuration, but **only if
-   unmodified**: an edited file is kept and reported. It removes this
-   instance's socket and lock file, never following a symlink, and never
-   the shared runtime directory while it is not empty.
-3. The shared unit template, binary, client, sysusers file, account and
-   groups are removed only if this tool created them and nothing else
-   uses them. They are kept while any of these exist:
+1. **Validate before changing anything.** It checks the whole ledger and
+   every directory on the paths it names (see above). An instance it did
+   not install, a ledger naming any unexpected path or account, or a
+   symlinked or writable directory stops it before anything changes.
+2. **Instance files.** It removes this instance's drop-in and
+   configuration, but **only if unmodified**. It removes this instance's
+   socket and lock file, never following a symlink, and never the shared
+   runtime directory while it is not empty.
+3. **Partial rollback is recoverable.** Each removed file leaves the
+   ledger at once, through an atomic rewrite. A file that cannot be
+   removed (edited, replaced by a symlink) is kept, **stays in the
+   ledger**, and the command exits non-zero. While any entry remains:
+   - shared resources are not touched;
+   - the instance cannot be reinstalled, preflighted or accepted;
+   - rerunning `rollback` is safe and changes nothing more.
+
+   Restore the file's installed content, or remove it yourself, then rerun
+   `rollback <instance>`.
+4. **Shared resources: every usage check first.** The shared unit
+   template, binary, client, sysusers file, account and groups are
+   considered only after the instance ledger is gone. Before **any** of
+   them is changed, all of these checks run:
    - another instance of this tool;
    - a provider configuration from another installation;
    - an active `flowerly-provider-remote@` unit;
    - a process running as `flowerly-provider`;
-   - a member of the group (for example `flowerly` once flowerlyd's gates
-     are enabled).
+   - a process executing the shared binary, whoever runs it;
+   - a member other than the provider of a group this tool created (for
+     example `flowerly` once flowerlyd's gates are enabled);
+   - **any check that cannot complete** (`pgrep`, `systemctl list-units`
+     or `/proc` failing), which counts as "in use".
 
-   Anything kept is reported and stays in the ledger, so
-   `rollback-shared` can finish once it is unused.
+   If any check finds a user, **nothing shared is changed** and the shared
+   ledger stays as it was. Other installations are expected, so rollback
+   exits 0. Anything else exits non-zero; run `rollback-shared` once it is
+   gone. Only when every check passes are the shared items removed, each
+   only if this tool created it and it is unmodified. Each leaves the
+   ledger as it goes.
+
+**After an interruption** (power loss, kill) at any point:
+1. If `/var/lib/flowerly-provider-operator/instances/<instance>` exists,
+   rerun `rollback <instance>`.
+2. Then rerun `rollback-shared` if `/var/lib/flowerly-provider-operator/shared`
+   exists.
+
+The offline contract test interrupts install and rollback after every
+single change they make and checks that this restores the pre-install
+state byte for byte, deleting each account and group at most once.
 
 The encrypted key stays for the operator to remove:
 `sudo rm /etc/credstore.encrypted/<instance>.key`.

@@ -98,12 +98,47 @@ Use the real `ExecStart` against the guest's mock server:
 5. **Acceptance against the mock:** `accept probe <attestation>` must
    send exactly one chat request to the mock. The evidence must hold no
    prompt, text, bearer header or key, and the journal scan must be clean.
-6. **Socket access:**
-   - `flowerly` (after joining `flowerly-provider-clients`) can connect;
-   - an ordinary user and root without the group are refused at the
-     kernel peer check;
-   - a second group member cannot poll or cancel flowerlyd's jobs.
-7. **Shared-group refusal:** start flowerlyd with `AGENTIC_USERS_GROUP` set
+6. **Socket authentication boundary.** The provider admits a peer by
+   the identity the kernel reports for the connecting process:
+   `SO_PEERCRED` (uid, primary gid, pid) plus `SO_PEERGROUPS`
+   (supplementary groups), read once at accept. It does **not** use
+   `/etc/group`, the socket file's mode or anything the client sends. Test
+   each case with exact credentials, using
+   `setpriv --reuid=<u> --regid=<g> --groups=<list> --` around a minimal
+   socket client. Record the peer identity the provider logged and the
+   client's `/proc/self/status` `Uid:`/`Gid:`/`Groups:` lines:
+
+   | Connecting process | Expected |
+   | --- | --- |
+   | `flowerly`, `flowerly-provider-clients` among its effective groups | admitted |
+   | `flowerly` listed in `/etc/group` but started **before** joining (stale groups) | refused: the kernel groups decide, not the file |
+   | ordinary user, no group | refused at `connect` (0660 socket) |
+   | ordinary user, group gained only via `setpriv --groups` | admitted: shows that **effective** membership is the boundary |
+   | root (uid 0) **without** the group | refused at the peer check even though root bypasses the 0660 mode |
+   | root **with** the group | admitted; root is trusted by the plan's threat model |
+   | `flowerly-provider` itself (service account) | admitted |
+
+   A second admitted peer cannot poll, cancel or read flowerlyd's jobs
+   (`created_by` is the peer's kernel uid).
+7. **Effective process groups.** While the real unit runs, record
+   `/proc/<MainPID>/status` (`Uid:`, `Gid:`, `Groups:`, `CapEff:`,
+   `NoNewPrivs:`) using `systemctl show -p MainPID`. Also record the same
+   lines for flowerlyd's main process after `flowerly` joined
+   `flowerly-provider-clients` and flowerlyd was restarted. Expected:
+   - the provider's `Groups:` is empty or only its primary gid;
+   - flowerlyd's `Groups:` includes the clients group only after the
+     restart, so a stale process is not counted as a member.
+8. **Group membership is not consent.** Effective membership of
+   `flowerly-provider-clients` authenticates a **process** to the provider
+   socket. It proves nothing about which human asked for remote inference
+   or whether they consented. Per-user consent, the administrator gate and
+   the profile gate are enforced **only in flowerlyd**, against the uid of
+   flowerlyd's own peer. They are covered by the black-box test
+   `scripts/test-remote-inference-gates.py`, not by this unit test. This
+   plan must record that any process admitted here (flowerlyd, or root
+   with the group) can spend the key without per-user consent. The
+   install-time membership check limits who that is; it is not consent.
+9. **Shared-group refusal:** start flowerlyd with `AGENTIC_USERS_GROUP` set
    to `flowerly-provider-clients`. The journal must show remote inference
    disabled with the "would admit the provider process" reason.
 
@@ -114,10 +149,22 @@ Use the real `ExecStart` against the guest's mock server:
    remote inference disabled.
 2. Run `rollback probe` with a second instance installed: the second
    instance, the shared binary, the account and the groups remain.
-3. Roll back the last instance while a process runs as `flowerly-provider`:
-   the account is kept, then `rollback-shared` removes it afterwards.
-4. Rollback after `flowerly` joined the socket group: the group is kept.
-5. After the final rollback, nothing the ledger recorded remains. The
+3. Roll back the last instance while a process runs as `flowerly-provider`
+   (and, separately, while another user runs a copy of `providerd` from
+   `/usr/local/libexec/flowerly`). Expected:
+   - the instance files go;
+   - **every** shared file, the account, the groups and the shared ledger
+     stay byte-identical;
+   - `rollback-shared` removes them once the process has gone.
+4. Rollback after `flowerly` joined the socket group: nothing shared changes.
+5. Edit the instance config, then roll back. Expected:
+   - the file stays and the ledger keeps its entry;
+   - preflight refuses;
+   - after restoring the file, a rerun completes.
+6. Run `rollback` while `preflight` holds the lock: it refuses with no
+   change. Kill a rollback with `kill -9` midway; the documented rerun
+   completes it.
+7. After the final rollback, nothing the ledger recorded remains. The
    pre-existing accounts, groups and files are byte-identical, compared
    against a snapshot taken before `install`.
 
@@ -144,4 +191,8 @@ An independent reviewer reruns at least Part A from the same SHA.
   fails closed and the unit needs adjusting.
 - **Membership of `flowerly-provider-clients` is authority** to spend the
   key without per-user consent. It is checked at install, preflight and
-  accept, but not continuously.
+  accept, but not continuously. Group membership is never evidence of a
+  user's consent (Part B, step 8).
+- **Root is trusted.** The operator lock serializes this tool's commands
+  and refuses directories others can write. Another root process could
+  still change a file between the tool's check and its removal.
