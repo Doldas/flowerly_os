@@ -4,7 +4,7 @@
 // - the synthetic echo reference backend (default), described below;
 // - the opt-in OpenAI-compatible remote backend (`--remote-config`, see
 //   `remote`), the only code in Flowerly that opens network connections
-//   (ADR-0022, proposed).
+//   (ADR-0022).
 //
 // Echo backend contract claims (RFC 0004 interface 2, tranche 4):
 // - Fault-isolated: a separate process so a provider outage cannot corrupt

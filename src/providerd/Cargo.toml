@@ -20,7 +20,7 @@ uuid.workspace = true
 serde.workspace = true
 toml.workspace = true
 sha2 = "0.10"
-# HTTPS for the opt-in OpenAI-compatible backend (ADR-0022, proposed).
+# HTTPS for the opt-in OpenAI-compatible backend (ADR-0022).
 # rustls with the ring provider and the system trust store only: no aws-lc
 # (its sys crate carries the OpenSSL licence), no bundled webpki roots
 # (CDLA), no system proxy, no cookies, no decompression, HTTP/1.1 only.
