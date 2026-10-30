@@ -32,11 +32,19 @@ are authorized).
 2. Bounds prompt (16 KiB) and max_tokens (1..4096) at the runtime too.
 3. Resolves the provider row and its **runtime-dir-local** socket endpoint
    (endpoints outside the runtime directory are `PermissionDenied`).
-4. Calls `provider.generate` over the authenticated local IPC.
-5. On success writes **one bounded ledger row** (the only durable artifact)
-   with the client `operation_id` — retries replay the identical row (#63
-   semantics) and conflicts return typed `Conflict`.
-6. On provider outage, honors the profile's explicit fallback policy:
+4. With an `operation_id`, looks up a recorded response **before** calling
+   the provider: a retry replays it without a second execution (a repeated
+   provider call would repeat its external effect and any cost), and a reused
+   identity with different arguments is a typed `Conflict` (#263).
+5. Calls `provider.generate` over the authenticated local IPC **without the
+   shared store lock held**: steps 1–4 and 6 each take the lock briefly, so a
+   slow provider cannot stall other modules' requests. (The compute module's
+   own queue is still serial and bounded by the 7 s module deadline; real
+   remote inference needs the asynchronous design tracked in #263.)
+6. On success writes **one bounded ledger row** (the only durable artifact)
+   with the client `operation_id` — the write re-checks the identity
+   atomically, so a response recorded meanwhile wins (#63 semantics).
+7. On provider outage, honors the profile's explicit fallback policy:
    - `ask` (default) → `{ executed: false, requires_consent: true, policy: "ask" }` — no retry, no state change.
    - `queue` → same shape with `policy: "queue"`; the workload stays ADMITTED untouched.
    - `fail` → typed `Unavailable`.
@@ -125,6 +133,10 @@ Model output is returned as an inert string and grants nothing.
 
 - No real model execution, streaming, or GPU inference exists; the reference
   output is bounded synthetic echo.
+- Remote providers are refused unless an administrator enables them under
+  [ADR-0022](adr/0022-remote-inference-egress-policy.md) (#263):
+  administrator, profile and per-user consent gates, with egress confined
+  to one provider process.
 - `providerd` is dev/CI infrastructure and not part of the distribution
   image manifest.
 - Rate limiting is per actor in-flight concurrency (4) only; no scheduling,
