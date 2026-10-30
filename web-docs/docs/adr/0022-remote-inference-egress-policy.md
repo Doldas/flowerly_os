@@ -1,10 +1,12 @@
 # 0022: Opt-in Remote Inference Through an Egress-Confined Provider Process
 
 Date: 2026-10-29 (revised 2026-10-30 with the owner's direction on Q1–Q4)
-Status: **Proposed**. The owner's architecture direction on Q1–Q4 is
-recorded below and implemented behind disabled-by-default gates (#267).
-Live egress, real prompts and merging all still need explicit owner
-approval. Issue: [#263](https://github.com/Doldas/flowerly_os/issues/263).
+Status: **Accepted** (2026-10-30, by the owner, under the conditions in
+[Acceptance](#acceptance-2026-10-30)). Acceptance permits the gated code
+path; it does not enable egress. Remote inference stays disabled until an
+administrator installs the provider unit and gate policy, and the first
+live request needs its own explicit owner approval.
+Issue: [#263](https://github.com/Doldas/flowerly_os/issues/263).
 Planning context: [#64](https://github.com/Doldas/flowerly_os/issues/64),
 [RFC 0004](../rfcs/0004-location-independent-flowerly-ai-compute.md).
 Not 0.0.4 scope.
@@ -135,9 +137,12 @@ refusal is a typed error and is tested.
   private exception is needed.
 - **systemd confinement** (defence in depth; the application checks above
   are authoritative):
-  - remote provider unit: `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
-    plus `IPAddressDeny=any` with `IPAddressAllow=` the administrator's
-    CIDRs when the destination addresses are stable;
+  - remote provider unit: `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`
+    and `IPAddressDeny=` for link-local and multicast, plus localhost unless
+    the host's DNS resolver listens there (a local stub such as
+    systemd-resolved at 127.0.0.53 must stay reachable, or every lookup
+    fails closed). `IPAddressDeny=any` with `IPAddressAllow=` the
+    destination's CIDRs is preferred when its addresses are stable;
   - `flowerlyd.service`: gains `IPAddressDeny=any` only after Arch VM
     acceptance proves nothing in it needs IP (tracked separately).
 
@@ -165,7 +170,7 @@ refusal is a typed error and is tested.
 | Prompt | 16 KiB (both processes, as today) |
 | `max_tokens` | ≤ provider config cap ≤ 4096 |
 | Response body | 1 MiB, enforced while streaming (`Content-Length` checked first) |
-| Returned text | 32 KiB, so the replayable response stays under the 64 KiB `ipc_operations` limit |
+| Returned text | 32 KiB, held only in the provider's memory (§10) |
 | Discovery list | ≤ 1024 models |
 | Connect timeout | 5 s |
 | Total timeout | ≤ 120 s per request |
@@ -191,10 +196,11 @@ deadline (G3), so it uses submit and poll:
   `sent` / `not_sent` distinction) or `unknown`. `provider.cancel` cancels
   best-effort.
 - **flowerlyd:** for a remote provider, `inference.request` durably records
-  an *attempt* (owner, workload, provider, operation id, prompt digest,
-  state `submitted`) **before** submitting. It then returns
-  `{executed: false, state: "pending", attempt_id}`. `inference.result`
-  polls the attempt, and the final result is ledgered exactly once.
+  an *attempt* (owner, workload, provider, destination, consent, operation
+  id, request digest, state `submitting`) **before** submitting. It then
+  returns `{executed: false, attempt}` with the attempt `pending`.
+  `inference.result` polls the attempt, and its final state is recorded
+  exactly once.
 - **Outcome classes.** A failure *before the request was sent* (DNS,
   connect refused, TLS handshake, local limits, open circuit) is
   `not_sent`, and the client may safely retry. A failure *after* sending
@@ -204,23 +210,24 @@ deadline (G3), so it uses submit and poll:
   returns the same `unknown` state. Running it again needs a new operation
   identity, which the response labels as a possible duplicate charge.
 - **Restart:** if providerd restarts with jobs in flight, those attempts
-  become `unknown`. If flowerlyd restarts, it reconciles `submitted`
-  attempts by polling, and anything providerd no longer knows becomes
+  become `unknown`. If flowerlyd restarts, an open attempt is reconciled by
+  the next `inference.result`: anything providerd no longer knows becomes
   `unknown`.
 
 ### 7. Accounting and provenance
 
-- The usage row gains `usage_source ∈ {provider_reported, unknown, synthetic}`
-  and nullable token counts (migration with the downgrade guard of #247).
-  Missing or malformed `usage` is recorded as `unknown`, never estimated.
+- Remote usage is recorded on the attempt row (migration 0014, with the
+  downgrade guard of #247): `usage_source ∈ {provider_reported, unknown}`
+  and nullable token counts. Missing or malformed `usage` is recorded as
+  `unknown`, never estimated. Local synthetic usage is unchanged.
 - Latency is measured with a monotonic clock around the HTTP exchange in
   providerd, and separately end-to-end in flowerlyd.
 - `cost_micros` is `NULL` (unknown) unless the administrator configures
   pricing. Nothing is derived from guesses.
 - **Model identity:** the response's `model` must equal the requested
   allowlisted id. A mismatch fails closed as `model_mismatch`: the text is
-  withheld, and the attempt is ledgered as executed (cost may have been
-  incurred) with the reported model recorded.
+  withheld, and the attempt is recorded as `failed` with outcome `sent`
+  (cost may have been incurred).
 - Provenance links the provider, workload, attempt and usage row. The
   registered destination host is part of the attempt record.
 
@@ -245,62 +252,63 @@ unknown and never converted into a fallback execution.
 
 ### 9. Model output is untrusted data
 
-Generated text is returned as a JSON string and stored only in the bounded
-response and replay record. It is never parsed into commands, paths, URLs,
+Generated text is returned as a JSON string and held only in the provider
+process's memory (§10). It is never parsed into commands, paths, URLs,
 capabilities, profile changes or provider configuration, and it grants no OS
 authority (ADR-0014, ADR-0020). Clients that print it to a terminal must
 neutralise control sequences.
 
 ### 10. Privacy and retention (owner Q4: no default raw retention)
 
-*Owner Q4, as implemented (#267):*
+These rules are binding (owner Q4) and implemented in #267:
 
-- Remote attempts keep idempotency and accounting metadata only: a
-  SHA-256 digest of the arguments, model, destination, outcome, error
-  class, usage (reported or unknown) and latency. The schema has no column
-  that can hold prompt or response text, and the idempotent-operation
-  table is not used for remote requests.
-- The generated text exists only in the provider process's memory. It is
-  delivered once by default. An administrator may set
-  `response_replay_seconds` (≤ 900) to re-deliver it for that long after
-  the first delivery. It is never written to disk, so encryption at rest
-  is not needed. A future *persistent* replay would have to be encrypted
-  with a key not stored beside it, and needs its own decision.
-- When the text is no longer available, `inference.result` (or a retry
-  with the same `operation_id`) returns `response_available: false` and
-  `resubmitted: false` with the metadata. A digest cannot reproduce a
-  response, and the request is never re-run.
-
-The text below is the original proposal, superseded where it conflicts
-with the points above.
-
-For remote requests, the idempotency record stores a SHA-256 digest of the
-prompt instead of the prompt itself. Requests are matched on the digest
-plus the other arguments. The response, including model text, stays in the
-existing 30-day owner-scoped replay window. A request without
-`operation_id` is not retained for replay. *Owner decision Q4.* Logs carry
-the provider name, destination host, request id, status class and latency:
-never prompt text, output text, headers or keys.
+- **No raw retention.** Remote prompts and generated text are never
+  written to the database, a log or any other persistent store, by
+  default or otherwise. The attempt schema has no column that can hold
+  either, and the idempotent-operation table is not used for remote
+  requests.
+- **Metadata and digests only.** An attempt keeps what idempotency,
+  outcome classification and accounting need: a SHA-256 digest of the
+  request, owner, workload, provider, destination, consent, model,
+  state, outcome, error class, usage (reported or unknown) and latency.
+- **Bounded, memory-only replay.** The generated text exists only in the
+  provider process's memory and is delivered once by default. An
+  administrator may set `response_replay_seconds`, at most **900**, to
+  re-deliver it for that long after the first delivery. A persistent
+  replay would need its own decision, with encryption under a key not
+  stored beside it.
+- **Explicit unavailability.** When the text can no longer be delivered,
+  `inference.result` (and a retry with the same `operation_id`) returns
+  `response_available: false` and `resubmitted: false` with the metadata.
+  A digest cannot reproduce a response.
+- **No automatic retry of an unknown outcome.** An `unknown` attempt is
+  final. Running the request again needs a new `operation_id`, and the
+  reply warns of a possible duplicate charge.
+- **Logs** carry the provider name, destination host, request id, status
+  class and latency: never prompt text, output text, headers, keys or
+  the owner's uid.
 
 ### 11. Relationship to ADR-0020 and ADR-0021
 
-On acceptance, this ADR amends ADR-0020's "remote provider kinds and any
-egress stay structurally refused" clause and ADR-0021's "local socket, no
-egress, no credentials" requirement, **only** for the
-`remote-openai-compatible` kind under every gate above. Every other part
-of both ADRs stands. Until acceptance:
+This ADR amends ADR-0020's "remote provider kinds and any egress stay
+structurally refused" clause and ADR-0021's "local socket, no egress, no
+credentials" requirement, **only** for the `remote-openai-compatible`
+kind under every gate above. Every other part of both ADRs stands. In
+particular:
 
-- the backend may exist in providerd with offline tests (#263 PR C);
-- flowerlyd keeps refusing every remote kind;
-- no unit or image ships it.
+- flowerlyd refuses every remote kind unless started with a valid
+  `--remote-providers` policy, which nothing installs by default;
+- no image or package ships the provider unit or the policy; the
+  templates are operator-installed;
+- egress from any other process remains refused.
 
 ## Consequences
 
 - One new provider kind with a reviewed, testable egress surface. All other
   processes keep zero egress.
-- A new HTTP/TLS dependency set in providerd only (proposed: `reqwest`
-  without default features, with `rustls`, `ring` and the
-  `rustls-native-certs` system roots). Licences are within `deny.toml`
+- A new HTTP/TLS dependency set in providerd only: `reqwest` without
+  default features, with `rustls`, `ring` and the `rustls-native-certs`
+  system roots. Licences are within `deny.toml`
   (Apache-2.0, ISC, MIT); the `webpki-roots` bundle (CDLA) is excluded.
   `cargo-deny` and `cargo-audit` gate it.
 - A schema migration (attempts table, nullable usage, `usage_source`) and
@@ -326,7 +334,26 @@ of both ADRs stands. Until acceptance:
   metadata only. Replay is optional and short-lived (implemented as
   memory-only). Honest typed results are returned without resubmission.
 
+## Acceptance (2026-10-30)
+
+The owner accepted this ADR with the Q1–Q4 decisions above as binding
+conditions, and authorized integrating #264–#267 into `release/2` once
+their required checks pass. Acceptance does **not** authorize:
+
+- enabling remote egress on any host, or deploying the provider unit;
+- contacting the operator's server or sending any real prompt;
+- shipping the unit or policy in an image or package.
+
+Each of those needs a separate explicit owner approval. The first live
+request is the owner-run acceptance procedure of #263 PR E, with a
+dedicated least-privilege key installed by the operator as an encrypted
+systemd credential. Any private-address exception (Q2) also needs its own
+approval. The destination's DNS must be re-verified as public before
+deployment.
+
 ### Original questions
+
+Kept as asked, for the record. The answers above supersede them.
 
 - **Q1:** Should the provider run under a separate account
   (`flowerly-provider`, proposed), or as `flowerly` with path sandboxing only?
@@ -338,9 +365,10 @@ of both ADRs stands. Until acceptance:
   acceptable for remote requests, or should remote responses keep only a
   digest and the usage row?
 
-## Acceptance tests (required before this ADR's gates are wired into flowerlyd)
+## Acceptance tests
 
-The tests below run offline against a local mock OpenAI-compatible server.
+The tests below run offline against a local mock OpenAI-compatible server
+(#266, #267). None of them needs the real server or a key.
 
 - **Happy path:** discovery and inference succeed.
 - **Model checks:** a missing model and a mismatched response model.

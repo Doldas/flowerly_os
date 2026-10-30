@@ -37,10 +37,10 @@ and the reasoning behind them.
   review and ADR-0017 compatibility.
 
 - [0022: Opt-in remote inference through an egress-confined provider process](0022-remote-inference-egress-policy.md)
-  — proposed gates (administrator, profile locality, per-user consent),
-  TLS/SSRF/redirect/credential policy and asynchronous unknown-outcome
-  semantics for an OpenAI-compatible provider (#263); ADR-0020's egress
-  refusal stands until accepted.
+  — accepted gates (administrator, profile locality, per-user consent),
+  TLS/SSRF/redirect/credential policy, no raw prompt or output retention
+  and asynchronous unknown-outcome semantics for an OpenAI-compatible
+  provider (#263); disabled unless an administrator installs it.
 
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
