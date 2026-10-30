@@ -22,6 +22,9 @@ pub const MAX_CONSENT_DAYS: u64 = 30;
 pub const MAX_REPLAY_SECONDS: u64 = 900;
 const MAX_PROVIDERS: usize = 16;
 const MAX_IN_FLIGHT_PER_USER: u32 = 8;
+/// The group whose members may use a provider socket (the provider account
+/// and flowerlyd). Its members can spend the remote key without consent.
+pub const PROVIDER_CLIENT_GROUP: &str = "flowerly-provider-clients";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,6 +215,45 @@ impl RemoteGate {
         }
     }
 
+    /// Disable an enabled gate when flowerlyd's own users or admin group is
+    /// the provider socket group: every member of that group, the provider
+    /// process included, would then be admitted to flowerlyd, so a
+    /// compromised provider could act as a Flowerly user or administrator.
+    #[must_use]
+    pub fn refusing_shared_groups(
+        self,
+        flowerlyd: &crate::ipc::AccessPolicy,
+        group_file: &str,
+    ) -> Self {
+        if matches!(self, Self::Disabled { .. }) {
+            return self;
+        }
+        let client_gids: Vec<u32> = group_file
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split(':');
+                (fields.next()? == PROVIDER_CLIENT_GROUP)
+                    .then(|| fields.nth(1)?.parse().ok())
+                    .flatten()
+            })
+            .collect();
+        let shared = [
+            ("users", flowerlyd.users_gid),
+            ("admin", flowerlyd.admin_gid),
+        ]
+        .into_iter()
+        .find_map(|(role, gid)| gid.filter(|gid| client_gids.contains(gid)).map(|_| role));
+        match shared {
+            Some(role) => Self::Disabled {
+                reason: format!(
+                    "remote inference is disabled: flowerlyd's {role} group is {PROVIDER_CLIENT_GROUP}, \
+                     which would admit the provider process to flowerlyd"
+                ),
+            },
+            None => self,
+        }
+    }
+
     #[must_use]
     pub fn providers(&self) -> Option<&RemoteProviders> {
         match self {
@@ -318,6 +360,46 @@ mod tests {
         assert_eq!(
             policy.provider("gamitron").unwrap().socket,
             PathBuf::from("/run/flowerly-provider/gamitron.sock")
+        );
+    }
+
+    #[test]
+    fn the_provider_socket_group_is_never_a_flowerlyd_access_group() {
+        use crate::ipc::AccessPolicy;
+        let groups = "root:x:0:\nflowerly:x:961:\nflowerly-provider-clients:x:989:flowerly\nflowerly-users:x:962:\n";
+        let enabled = || RemoteGate::Enabled(Arc::new(RemoteProviders::parse(VALID).unwrap()));
+        let policy = |users, admin| AccessPolicy {
+            users_gid: users,
+            admin_gid: admin,
+        };
+
+        for (users, admin, role) in [(Some(989), None, "users"), (Some(962), Some(989), "admin")] {
+            let RemoteGate::Disabled { reason } =
+                enabled().refusing_shared_groups(&policy(users, admin), groups)
+            else {
+                panic!("{role} group shared with the provider socket left the gate enabled");
+            };
+            assert!(
+                reason.contains(&format!("{role} group is flowerly-provider-clients")),
+                "{reason}"
+            );
+        }
+        // Distinct groups, no groups, or no such group on the host: unchanged.
+        for (users, admin, file) in [
+            (Some(962), Some(961), groups),
+            (None, None, groups),
+            (Some(989), None, "root:x:0:\n"),
+        ] {
+            assert!(enabled()
+                .refusing_shared_groups(&policy(users, admin), file)
+                .providers()
+                .is_some());
+        }
+        // A disabled gate stays disabled with its own reason.
+        let disabled =
+            RemoteGate::default().refusing_shared_groups(&policy(Some(989), None), groups);
+        assert!(
+            matches!(disabled, RemoteGate::Disabled { reason } if reason.contains("no administrator policy"))
         );
     }
 

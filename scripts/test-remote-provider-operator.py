@@ -13,7 +13,14 @@ Nothing here contacts a real server, needs a key or needs root:
   discovery-only or missing-model answer, and never prints the text;
 - the evidence writer refuses to write evidence that would leak;
 - DNS classification admits public unicast addresses only;
-- every privileged subcommand refuses to run without root.
+- every privileged subcommand refuses to run without root;
+- install and rollback (against scratch system roots) touch only what the
+  ledger says this tool created: rollback never removes another
+  instance's files or runtime resources, a foreign or modified file, or
+  the shared binary, account and groups while anything else uses them;
+- `--require-isolated-identity` refuses supplementary groups and root;
+- the unit probe detects an unconfined process and does not mistake an
+  unanswered connection for a blocked one.
 """
 import importlib.util
 import json
@@ -75,6 +82,7 @@ def check_unit_template():
         "MemoryDenyWriteExecute=yes\n",
         "SystemCallFilter=@system-service\n",
         "IPAddressDeny=localhost link-local multicast\n",
+        "--require-isolated-identity\n",
     ]:
         assert line in unit, f"unit template lost `{line.strip()}`"
     for forbidden in ("Environment=", "LoadCredential=", "PassEnvironment=", "--discover-only"):
@@ -106,6 +114,7 @@ def check_render(scratch, bin_dir):
     dropin = (dest / "etc/systemd/system/flowerly-provider-remote@gamitron.service.d/10-operator.conf").read_text()
     assert "IPAddressAllow=127.0.0.53\n" in dropin, dropin
     assert "--discover-only" not in dropin
+    assert "--require-isolated-identity\n" in dropin, dropin
     sysusers = (dest / "etc/sysusers.d/flowerly-provider.conf").read_text()
     assert "\nm " not in sysusers and "u flowerly-provider " in sysusers, sysusers
     config = (dest / "etc/flowerly/providers/gamitron.toml").read_text()
@@ -322,17 +331,330 @@ def check_evidence(scratch):
     target = scratch / "evidence-clean.json"
     result = run([sys.executable, "-I", str(CLIENT), "evidence"], env=dict(base, EVIDENCE_PATH=str(target)))
     record = json.loads(target.read_text())
+    assert record["approval_reference"] is None
+    assert "not cryptographic proof" in record["approval_reference_semantics"], record
+    assert set(record["identity"]) == {"client_group_members", "provider_supplementary_groups"}, record
     assert record["journal_scan"] == {"contains_prompt": False, "contains_bearer": False,
                                       "contains_sk_token": False, "lines": 2}, record
     assert record["steps"][0]["prompt_sent"] is False
 
+
+
+# --- install and rollback against scratch system roots -------------------
+
+BASE_PASSWD = "root:x:0:0::/root:/bin/bash\nflowerly:x:961:961::/var/lib/flowerly:/usr/sbin/nologin\n"
+BASE_GROUP = "root:x:0:\nflowerly:x:961:\n"
+
+
+class Sysroot:
+    """A scratch system root; the operator script logs instead of running
+    system commands and reads accounts, processes and units from files."""
+
+    def __init__(self, scratch, name, build, instances=("alpha", "beta")):
+        self.root = scratch / name
+        (self.root / "test").mkdir(parents=True)
+        (self.root / "etc/credstore.encrypted").mkdir(parents=True)
+        (self.root / "etc/passwd").write_text(BASE_PASSWD)
+        (self.root / "etc/group").write_text(BASE_GROUP)
+        for instance in instances:
+            (self.root / f"etc/credstore.encrypted/{instance}.key").write_bytes(b"opaque-encrypted-blob")
+        self.build = build
+        self.resolv = scratch / "resolv-lan"
+
+    def op(self, *args, build=None):
+        env = dict(os.environ, FLOWERLY_OPERATOR_SYSROOT=str(self.root), FLOWERLY_OPERATOR_TEST="1",
+                   FLOWERLY_OPERATOR_PROVIDERD=str(build or self.build), RESOLV_CONF=str(self.resolv))
+        return run(["bash", str(OPERATOR), *args], env=env, check=False)
+
+    def install(self, instance, **kw):
+        result = self.op("install", instance, API_BASE, STYLE, MODEL, **kw)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result
+
+    def files(self):
+        return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*")
+                if (p.is_file() or p.is_symlink()) and not str(p.relative_to(self.root)).startswith("test/")}
+
+    def commands(self):
+        log = self.root / "test/commands.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def write(self, rel, text):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+SHARED = ["usr/local/libexec/flowerly/providerd", "usr/local/libexec/flowerly/remote-provider-acceptance.py",
+          "etc/systemd/system/flowerly-provider-remote@.service", "etc/sysusers.d/flowerly-provider.conf"]
+
+
+def instance_paths(instance):
+    return [f"etc/systemd/system/flowerly-provider-remote@{instance}.service.d/10-operator.conf",
+            f"etc/flowerly/providers/{instance}.service.toml", f"etc/flowerly/providers/{instance}.toml"]
+
+
+def deletions(sysroot):
+    return [c for c in sysroot.commands() if c.startswith(("userdel", "groupdel"))]
+
+
+def check_rollback(scratch):
+    (scratch / "resolv-lan").write_text("nameserver 192.168.0.1\n")
+    build = scratch / "providerd-build"
+    build.write_text("#!/bin/sh\n# fake providerd build A\n")
+    build.chmod(0o755)
+    other_build = scratch / "providerd-build-b"
+    other_build.write_text("#!/bin/sh\n# fake providerd build B\n")
+    other_build.chmod(0o755)
+
+    # 1. One instance: rollback removes exactly what install created.
+    sr = Sysroot(scratch, "single", build)
+    baseline = sr.files()
+    sr.install("alpha")
+    files = sr.files()
+    for rel in SHARED + instance_paths("alpha"):
+        assert rel in files, rel
+    assert "flowerly-provider:" in (sr.root / "etc/passwd").read_text()
+    sr.write("run/flowerly-provider/alpha.sock", "")
+    sr.write("run/flowerly-provider/alpha.sock.lock", "")
+    result = sr.op("rollback", "alpha")
+    assert result.returncode == 0, result.stderr
+    assert sr.files() == baseline, set(sr.files()) ^ set(baseline)
+    assert deletions(sr) == ["userdel flowerly-provider", "groupdel flowerly-provider-clients"] or \
+        deletions(sr) == ["userdel flowerly-provider", "groupdel flowerly-provider", "groupdel flowerly-provider-clients"], deletions(sr)
+    assert not (sr.root / "run/flowerly-provider").exists()
+
+    # 2. Two instances: rolling back one leaves the other, its runtime
+    #    files and everything shared untouched.
+    sr = Sysroot(scratch, "two", build)
+    sr.install("alpha")
+    sr.install("beta")
+    sr.write("run/flowerly-provider/alpha.sock", "")
+    sr.write("run/flowerly-provider/beta.sock", "")
+    sr.write("run/flowerly-provider/beta.sock.lock", "")
+    before = sr.files()
+    result = sr.op("rollback", "alpha")
+    assert result.returncode == 0, result.stderr
+    after = sr.files()
+    for rel in SHARED + instance_paths("beta") + ["run/flowerly-provider/beta.sock", "run/flowerly-provider/beta.sock.lock"]:
+        assert after.get(rel) == before[rel], f"rollback of alpha changed {rel}"
+    for rel in instance_paths("alpha") + ["run/flowerly-provider/alpha.sock"]:
+        assert rel not in after, rel
+    assert deletions(sr) == [], deletions(sr)
+    assert "instance beta (this tool)" in result.stdout, result.stdout
+    assert sr.op("rollback", "beta").returncode == 0
+    assert "userdel flowerly-provider" in deletions(sr)
+
+    # 3. Shared resources that existed before install (another
+    #    installation) are reused and never removed.
+    sr = Sysroot(scratch, "foreign", build)
+    sr.write("usr/local/libexec/flowerly/providerd", build.read_text())
+    (sr.root / "etc/passwd").write_text(BASE_PASSWD + "flowerly-provider:x:990:990::/:/usr/sbin/nologin\n")
+    (sr.root / "etc/group").write_text(BASE_GROUP + "flowerly-provider:x:990:\nflowerly-provider-clients:x:989:\n")
+    baseline = sr.files()
+    sr.install("alpha")
+    assert sr.op("rollback", "alpha").returncode == 0
+    assert sr.files() == baseline, set(sr.files()) ^ set(baseline)
+    assert deletions(sr) == [], deletions(sr)
+
+    # 4. A foreign file that differs is never replaced: install refuses
+    #    before changing anything.
+    sr = Sysroot(scratch, "conflict", build)
+    sr.write("usr/local/libexec/flowerly/providerd", "#!/bin/sh\n# somebody else's providerd\n")
+    baseline = sr.files()
+    result = sr.op("install", "alpha", API_BASE, STYLE, MODEL)
+    assert result.returncode != 0 and "not installed by this tool" in result.stderr, result.stderr
+    assert sr.files() == baseline and sr.commands() == [], sr.commands()
+
+    # 5. A different build while an instance is installed is refused; the
+    #    shared binary serves the other instance.
+    sr = Sysroot(scratch, "upgrade", build)
+    sr.install("alpha")
+    before = sr.files()
+    result = sr.op("install", "beta", API_BASE, STYLE, MODEL, build=other_build)
+    assert result.returncode != 0 and "differs from this build" in result.stderr, result.stderr
+    assert sr.files() == before
+
+    # 6. A provider config of another installation keeps everything shared.
+    sr = Sysroot(scratch, "foreign-config", build)
+    sr.install("alpha")
+    sr.write("etc/flowerly/providers/other.toml", "[remote]\n")
+    result = sr.op("rollback", "alpha")
+    assert result.returncode == 0 and "provider config other (another installation)" in result.stdout, result.stdout
+    assert deletions(sr) == [] and all(rel in sr.files() for rel in SHARED)
+
+    # 7. An active unit of another instance keeps everything shared.
+    sr = Sysroot(scratch, "active", build)
+    sr.install("alpha")
+    sr.write("test/active-units", "flowerly-provider-remote@other.service\n")
+    result = sr.op("rollback", "alpha")
+    assert "active unit flowerly-provider-remote@other.service" in result.stdout, result.stdout
+    assert deletions(sr) == [] and all(rel in sr.files() for rel in SHARED)
+
+    # 8. A process still running as the provider account keeps the account
+    #    and its groups; rollback-shared finishes once it has gone.
+    sr = Sysroot(scratch, "process", build)
+    sr.install("alpha")
+    sr.write("test/processes", "flowerly-provider\n")
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "still runs processes" in result.stderr, result.stderr
+    assert deletions(sr) == [], deletions(sr)
+    assert "flowerly-provider:" in (sr.root / "etc/passwd").read_text()
+    assert not any(rel in sr.files() for rel in SHARED), "unused shared files should go"
+    (sr.root / "test/processes").write_text("")
+    assert sr.op("rollback-shared").returncode == 0
+    assert "userdel flowerly-provider" in deletions(sr)
+    assert not (sr.root / "var/lib/flowerly-provider-operator").exists()
+
+    # 9. flowerlyd joined the socket group (gates enabled): the group stays.
+    sr = Sysroot(scratch, "gate", build)
+    sr.install("alpha")
+    group = (sr.root / "etc/group").read_text().replace("flowerly-provider-clients:x:989:", "flowerly-provider-clients:x:989:flowerly")
+    (sr.root / "etc/group").write_text(group)
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "kept group flowerly-provider-clients: still in use by flowerly" in result.stderr, result.stderr
+    assert "groupdel flowerly-provider-clients" not in deletions(sr)
+
+    # 10. An operator-edited file is kept; the rest is removed.
+    sr = Sysroot(scratch, "edited", build)
+    sr.install("alpha")
+    sr.write("etc/flowerly/providers/alpha.toml", "# edited by the operator\n")
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "kept /etc/flowerly/providers/alpha.toml: modified" in result.stderr, result.stderr
+    assert "etc/flowerly/providers/alpha.toml" in sr.files()
+    assert "etc/flowerly/providers/alpha.service.toml" not in sr.files()
+
+    # 11. A tampered ledger removes nothing at all.
+    for name, ledger, line in [
+        ("tamper-instance", "instances/alpha", "file\tetc/passwd\t" + "0" * 64),
+        ("tamper-shared", "shared", "file\tetc/shadow\t" + "0" * 64),
+        ("tamper-user", "shared", "user\troot\t-"),
+    ]:
+        sr = Sysroot(scratch, name, build)
+        sr.install("alpha")
+        path = sr.root / "var/lib/flowerly-provider-operator" / ledger
+        path.write_text(path.read_text() + line + "\n")
+        before, commands = sr.files(), sr.commands()
+        result = sr.op("rollback", "alpha")
+        assert result.returncode != 0 and "unexpected entry" in result.stderr, (name, result.stderr)
+        assert sr.files() == before and sr.commands() == commands, name
+
+    # 12. An instance this tool did not install: nothing is removed.
+    sr = Sysroot(scratch, "unknown", build)
+    sr.install("alpha")
+    sr.write("etc/flowerly/providers/beta.toml", "[remote]\n")
+    before, commands = sr.files(), sr.commands()
+    result = sr.op("rollback", "beta")
+    assert result.returncode != 0 and "did not install it" in result.stderr, result.stderr
+    assert sr.files() == before and sr.commands() == commands
+
+    # 13. A symlink planted at the instance's socket path is not followed.
+    sr = Sysroot(scratch, "symlink", build)
+    sr.install("alpha")
+    victim = sr.root / "etc/important"
+    victim.write_text("keep me\n")
+    (sr.root / "run/flowerly-provider").mkdir(parents=True)
+    (sr.root / "run/flowerly-provider/alpha.sock").symlink_to(victim)
+    result = sr.op("rollback", "alpha")
+    assert result.returncode != 0 and "a symlink" in result.stderr, result.stderr
+    assert victim.read_text() == "keep me\n"
+
+    # 14. Identity: an intruder in the socket group, or the provider
+    #     account in another group, makes install refuse with no change.
+    for name, group_text in [
+        ("intruder", BASE_GROUP + "flowerly-provider-clients:x:989:alice\n"),
+        ("provider-in-flowerly", "root:x:0:\nflowerly:x:961:flowerly-provider\n"),
+    ]:
+        sr = Sysroot(scratch, name, build)
+        if name == "provider-in-flowerly":
+            (sr.root / "etc/passwd").write_text(BASE_PASSWD + "flowerly-provider:x:990:990::/:/usr/sbin/nologin\n")
+        (sr.root / "etc/group").write_text(group_text)
+        baseline = sr.files()
+        result = sr.op("install", "alpha", API_BASE, STYLE, MODEL)
+        assert result.returncode != 0 and ("only flowerly may join" in result.stderr
+                                           or "must hold no other group" in result.stderr), (name, result.stderr)
+        assert sr.files() == baseline and sr.commands() == [], name
+
+    # 15. The test hooks cannot be reached without the explicit test flag.
+    env = dict(os.environ, FLOWERLY_OPERATOR_SYSROOT=str(scratch))
+    result = run(["bash", str(OPERATOR), "rollback", "alpha"], env=env, check=False)
+    assert result.returncode != 0 and "offline tests only" in result.stderr, result.stderr
+
+
+def check_isolated_identity(scratch, bin_dir):
+    """`--require-isolated-identity` against this process's real identity."""
+    status = pathlib.Path("/proc/self/status").read_text()
+    field = lambda key: next(l.split()[1:] for l in status.splitlines() if l.startswith(key))
+    uids, gids, groups = field("Uid:"), field("Gid:"), field("Groups:")
+    isolated = "0" not in uids + gids and all(g == gids[1] for g in groups)
+    creds = scratch / "creds-id"
+    creds.mkdir(mode=0o700)
+    (creds / "t.key").write_text("sk-offline-dummy-not-a-key\n")
+    config = scratch / "id.toml"
+    config.write_text(f'[remote]\napi_base = "https://localhost:9"\napi_style = "openai"\nmodels = ["{MODEL}"]\ncredential = "t.key"\n')
+    env = {k: v for k, v in os.environ.items() if k not in ("SSL_CERT_FILE", "SSL_CERT_DIR")}
+    env["CREDENTIALS_DIRECTORY"] = str(creds)
+    result = run([str(bin_dir / "providerd"), "--remote-config", str(config), "--require-isolated-identity",
+                  "--self-test"], env=env, check=False)
+    if isolated:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0, "a process with supplementary groups was accepted"
+        assert "supplementary group" in result.stderr or "uid or gid 0" in result.stderr, result.stderr
+    print(f"isolated-identity check: {'accepted' if isolated else 'refused'} this process "
+          f"(groups {' '.join(groups) or 'none'})")
+
+
+PROBE = ROOT / "scripts/provider-unit-probe.py"
+
+
+def check_probe(scratch):
+    """The KVM plan's probe, run here without any sandbox, must find the
+    boundary open; its classification is checked on fixed inputs."""
+    spec = importlib.util.spec_from_file_location("probe", PROBE)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+
+    results = {}
+    def refused():
+        raise ConnectionRefusedError(111, "refused")
+    def blocked():
+        raise PermissionError(1, "blocked")
+    def unreachable():
+        raise TimeoutError(110, "timed out")
+    probe.must_fail("refused", refused, results, probe.BLOCKED)
+    probe.must_fail("blocked", blocked, results, probe.BLOCKED)
+    probe.must_fail("timeout", unreachable, results, probe.BLOCKED)
+    probe.must_fail("allowed", lambda: None, results)
+    probe.must_fail("missing", lambda: open(scratch / "absent"), results)
+    assert [results[k]["ok"] for k in ("refused", "blocked", "timeout", "allowed", "missing")] == \
+        [False, True, False, False, True], results
+
+    creds = scratch / "probe-creds"
+    creds.mkdir()
+    (creds / "probe.key").write_text("")
+    for extra, expect_ok in [(None, True), ("other.key", False)]:
+        if extra:
+            (creds / extra).write_text("")
+        env = dict(os.environ, CREDENTIALS_DIRECTORY=str(creds))
+        result = run([sys.executable, "-I", str(PROBE)], env=env, check=False)
+        report = json.loads(result.stdout)
+        check = report["checks"]["credentials directory holds only this instance's key"]
+        assert check["ok"] is expect_ok, check
+        # Unconfined, the probe must always report a violation and fail.
+        assert result.returncode == 1 and report["violations"], report["violations"]
+    env = {k: v for k, v in os.environ.items() if k != "CREDENTIALS_DIRECTORY"}
+    report = json.loads(run([sys.executable, "-I", str(PROBE)], env=env, check=False).stdout)
+    assert "credentials directory holds only this instance's key" in report["violations"]
+    assert len(report["checks"]) >= 40, len(report["checks"])
 
 def check_privileged_refusals():
     if os.geteuid() == 0:
         print("running as root: privileged-refusal check skipped")
         return
     for args in (["install", INSTANCE, API_BASE, STYLE, MODEL], ["preflight", INSTANCE],
-                 ["accept", INSTANCE, "approval"], ["disable", INSTANCE], ["rollback", INSTANCE]):
+                 ["accept", INSTANCE, "approval"], ["disable", INSTANCE], ["rollback", INSTANCE],
+                 ["rollback-shared"]):
         result = run(["bash", str(OPERATOR), *args], check=False)
         assert result.returncode != 0 and "run as root" in result.stderr, (args, result.stderr)
 
@@ -349,8 +671,12 @@ def main(bin_dir):
         check_client(scratch)
         check_discover_only(scratch, bin_dir)
         check_evidence(scratch)
+        check_rollback(scratch)
+        check_isolated_identity(scratch, bin_dir)
+        check_probe(scratch)
     print("remote provider operator contract: unit confinement, render, discover-only, "
-          "single-prompt client, redacted evidence, DNS classification, root-only subcommands")
+          "single-prompt client, redacted evidence, DNS classification, root-only subcommands, "
+          "ledger-scoped rollback (15 negative cases), isolated identity, unit probe detection")
 
 
 if __name__ == "__main__":

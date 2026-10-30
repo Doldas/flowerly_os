@@ -187,9 +187,12 @@ Model output is returned as an inert string and grants nothing.
 
 ## Honest limitations
 
-- Remote inference has not been run against a live server. All of its
-  evidence is offline (mock HTTPS server, fake provider, real processes
-  against a refused destination).
+- One live request ran on 2026-10-30 (#268): providerd as the owner's
+  user, adapter level only. The confined unit and flowerlyd's gates have
+  not run live; the OS boundary is not accepted.
+- `max_tokens` is not a cap the server is known to honor: 16 requested, 44
+  completion tokens reported. Results carry `max_tokens_requested` and
+  `max_tokens_exceeded`. There is no remote token or spending cap.
 - Remote usage lives in the attempt records only. `workload.usage_brief`
   totals do not include it yet, and cost is unknown.
 - Workload admission still checks the model's measured local memory, even

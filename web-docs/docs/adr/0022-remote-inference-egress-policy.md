@@ -176,6 +176,12 @@ refusal is a typed error and is tested.
 | Total timeout | ≤ 120 s per request |
 | Concurrency | per provider (default 2) and per actor (existing 4); excess is `Unavailable`, never queued without bound |
 
+`max_tokens` is sent as a request and not enforced by Flowerly beyond the
+response bounds above. *Observation after acceptance (2026-10-30, #268):*
+the operator's server reported 44 completion tokens for `max_tokens: 16`.
+No remote token or spending cap is claimed. Results report
+`max_tokens_requested` and `max_tokens_exceeded`.
+
 Requests are non-streaming. Responses carrying `tool_calls`, function calls
 or any non-text content are refused as `unsupported_response`: no tools are
 offered, so none may come back.

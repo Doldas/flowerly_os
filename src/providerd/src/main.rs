@@ -52,6 +52,11 @@ struct Cli {
     /// prompt (the operator's preflight before a live acceptance request).
     #[arg(long, requires = "remote_config")]
     discover_only: bool,
+    /// With `--remote-config`: refuse to start unless this process is not
+    /// root and holds no group besides its primary one (the systemd unit
+    /// passes it, so an account's group memberships cannot widen access).
+    #[arg(long, requires = "remote_config")]
+    require_isolated_identity: bool,
 }
 
 /// In-flight generation requests per trusted actor label, enforcing the
@@ -93,6 +98,11 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(&config.name, config.log_format);
 
     if let Some(path) = cli.remote_config {
+        if cli.require_isolated_identity {
+            let status = std::fs::read_to_string("/proc/self/status")
+                .context("reading this process's identity")?;
+            remote::identity::check_isolated(&status).map_err(anyhow::Error::msg)?;
+        }
         // Fails closed on a bad config, missing credential or empty trust
         // store; makes no network request before the first IPC command.
         let backend = remote::Backend::from_config_file(&path).map_err(anyhow::Error::msg)?;

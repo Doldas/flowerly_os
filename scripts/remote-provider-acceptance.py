@@ -140,6 +140,10 @@ def accept(sock, model):
         base, state="succeeded", destination=result.get("destination"),
         model_used=result.get("model_used"), finish_reason=result.get("finish_reason"),
         truncated=result.get("truncated"), usage=result.get("usage"),
+        # The server may not honor max_tokens (16 requested, 44 reported in
+        # the first live test): recorded, never treated as a budget.
+        max_tokens_requested=result.get("max_tokens_requested"),
+        max_tokens_exceeded=result.get("max_tokens_exceeded"),
         latency_ms=result.get("latency_ms"), text_present=text is not None,
         text_length=len(text or ""), text_matches_expected=matches,
         text_released_after_delivery=released.get("text_released") is True and "text" not in released)
@@ -166,12 +170,19 @@ def evidence(env):
         "issue": "#263",
         "step": env["STEP"],
         "instance": env["INSTANCE"],
-        "owner_approval": env.get("APPROVAL") or None,
+        # What the operator typed. Nothing verifies it: it attests that the
+        # operator holds an approval, it does not prove the owner gave one.
+        "approval_reference": env.get("APPROVAL") or None,
+        "approval_reference_semantics": "operator attestation; not verified; not cryptographic proof of owner authorization",
         "recorded_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "git_commit": env["GIT_COMMIT"],
         "git_tree_clean": env["GIT_CLEAN"] == "yes",
         "systemd": env["SYSTEMD_VERSION"],
         "unit_exposure": env.get("EXPOSURE", ""),
+        "identity": {
+            "client_group_members": env.get("CLIENT_GROUP_MEMBERS", ""),
+            "provider_supplementary_groups": env.get("PROVIDER_GROUPS", ""),
+        },
         "sha256": {key: env[f"SHA_{key.upper()}"] for key in
                    ("providerd", "client", "unit", "dropin", "config")},
         "steps": steps,

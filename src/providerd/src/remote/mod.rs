@@ -19,6 +19,7 @@
 //! flowerlyd cannot reach this backend until ADR-0022 is accepted and its
 //! gates are wired (#263): `provider.register` still refuses remote kinds.
 pub mod config;
+pub mod identity;
 pub mod net;
 pub mod openai;
 
@@ -605,6 +606,11 @@ impl Backend {
             ),
             None => ("unknown", None, None),
         };
+        // `max_tokens` is a request, not a cap the server is known to honor:
+        // Open WebUI reported 44 completion tokens for 16 in the first live
+        // test (#268). Report the overrun; never treat the request as a
+        // spending limit. Unknown usage leaves it unknown.
+        let max_tokens_exceeded = tokens_out.map(|out| out > max_tokens);
         Ok(serde_json::json!({
             "request_id": request_id,
             "provider": "openai-compatible",
@@ -616,6 +622,8 @@ impl Backend {
             "truncated": completion.truncated,
             "finish_reason": completion.finish_reason,
             "usage": {"source": source, "tokens_in": tokens_in, "tokens_out": tokens_out},
+            "max_tokens_requested": max_tokens,
+            "max_tokens_exceeded": max_tokens_exceeded,
             "latency_ms": latency.as_millis() as u64,
         }))
     }

@@ -885,6 +885,48 @@ async fn missing_usage_is_recorded_as_unknown() {
         status["result"]["usage"],
         serde_json::json!({"source": "unknown", "tokens_in": null, "tokens_out": null})
     );
+    // Without reported usage, whether the server kept to max_tokens is unknown.
+    assert_eq!(status["result"]["max_tokens_exceeded"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_overrunning_max_tokens_is_reported_not_trusted() {
+    // As observed live (#268): 16 requested, 44 reported.
+    let ca = Ca::new("flowerly test CA");
+    let mock = Mock::start(
+        ca.server_config(&["localhost"]),
+        openai(&[MODEL], |_| {
+            Reply::Json(
+                200,
+                completion(MODEL, "flowerly-ready".into(), usage(74, 44)),
+            )
+        }),
+    )
+    .await;
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
+    let args = serde_json::json!({"request_id": "req-cap", "prompt": "hi", "max_tokens": 16, "created_by": "uid:1001"});
+    ipc(&backend, "provider.submit", args).await.unwrap();
+    let result = &settle(&backend, "req-cap").await["result"];
+    assert_eq!(result["max_tokens_requested"], 16);
+    assert_eq!(result["max_tokens_exceeded"], true, "{result}");
+    assert_eq!(result["usage"]["tokens_out"], 44);
+    let body: Value = serde_json::from_str(
+        &mock
+            .requests()
+            .iter()
+            .find(|r| r.method == "POST")
+            .unwrap()
+            .body,
+    )
+    .unwrap();
+    assert_eq!(
+        body["max_tokens"], 16,
+        "the request still asks for the limit"
+    );
+
+    // Within the request, and unknown when usage is unknown.
+    let within = run(&backend, "req-within", "hi").await;
+    assert_eq!(within["result"]["max_tokens_exceeded"], false);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -915,6 +957,26 @@ async fn duplicate_submissions_execute_once_and_reuse_conflicts() {
     let mut other = submit_args("req-dup", "hi");
     other["created_by"] = "uid:1002".into();
     ipc(&backend, "provider.submit", other).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_socket_peer_cannot_read_or_cancel_a_job() {
+    // The core runner replaces `created_by` with the peer's kernel uid, so
+    // a second member of the socket group is a different actor: it cannot
+    // observe, take or cancel flowerlyd's job, or learn that it exists.
+    let ca = Ca::new("flowerly test CA");
+    let mock = Mock::start(ca.server_config(&["localhost"]), ready()).await;
+    let backend = backend_for(&mock.base(), "", ca.roots(), loopback());
+    submit(&backend, "req-private", "secret-prompt-marker").await;
+    let owner = settle(&backend, "req-private").await;
+    assert_eq!(owner["state"], "succeeded");
+    for command in ["provider.poll", "provider.cancel"] {
+        let args = serde_json::json!({"request_id": "req-private", "created_by": "uid:1002"});
+        let (code, message) = ipc(&backend, command, args).await.unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound, "{command}: {message}");
+        assert!(!message.contains("flowerly-ready") && !message.contains("secret-prompt-marker"));
+    }
+    assert_eq!(mock.chat_requests(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1064,6 +1126,8 @@ async fn model_output_is_returned_as_inert_data() {
             "destination",
             "finish_reason",
             "latency_ms",
+            "max_tokens_exceeded",
+            "max_tokens_requested",
             "model_requested",
             "model_used",
             "provider",
