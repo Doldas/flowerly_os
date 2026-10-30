@@ -58,11 +58,10 @@ zero for the reference provider; real providers supply accounting later.
 ## Opt-in OpenAI-compatible backend (not reachable from flowerlyd)
 
 `providerd --remote-config <file>` serves an OpenAI-compatible HTTPS backend
-instead of the echo backend. It implements the provider half of the
-**proposed** ADR-0022 (#265, tracked in #263). flowerlyd still refuses to
-register any remote provider kind, so no Flowerly workload can reach it
-until that ADR is accepted and its administrator, profile and consent gates
-are wired.
+instead of the echo backend. It implements the provider half of
+ADR-0022 (tracked in #263). flowerlyd still refuses to register any remote
+provider kind, so no Flowerly workload can reach it until the ADR's
+administrator, profile and consent gates are wired (#267).
 
 The administrator-owned configuration (unknown fields are refused, and
 limits can only be lowered):

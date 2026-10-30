@@ -1,4 +1,4 @@
-//! Opt-in OpenAI-compatible remote backend (ADR-0022, **proposed**).
+//! Opt-in OpenAI-compatible remote backend (ADR-0022, accepted).
 //!
 //! Contract claims:
 //! - Egress happens only here, only to the administrator-configured origin,
@@ -206,7 +206,7 @@ impl Backend {
             "max_concurrency": self.config.max_concurrency,
             "max_in_flight_per_actor": MAX_IN_FLIGHT_PER_ACTOR,
             "request_timeout_ms": self.config.request_timeout.as_millis() as u64,
-            "promise": "opt-in-remote (ADR-0022 proposed; not reachable from flowerlyd)",
+            "promise": "opt-in-remote (ADR-0022; not reachable from flowerlyd)",
         })
     }
 
