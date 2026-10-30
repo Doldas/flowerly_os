@@ -1,8 +1,10 @@
 # 0022: Opt-in Remote Inference Through an Egress-Confined Provider Process
 
-Date: 2026-10-29
-Status: **Proposed** — requires owner acceptance before any runtime path can
-reach a remote provider. Issue: [#263](https://github.com/Doldas/flowerly_os/issues/263).
+Date: 2026-10-29 (revised 2026-10-30 with the owner's direction on Q1–Q4)
+Status: **Proposed**. The owner's architecture direction on Q1–Q4 is
+recorded below and implemented behind disabled-by-default gates (#267).
+Live egress, real prompts and merging all still need explicit owner
+approval. Issue: [#263](https://github.com/Doldas/flowerly_os/issues/263).
 Planning context: [#64](https://github.com/Doldas/flowerly_os/issues/64),
 [RFC 0004](../rfcs/0004-location-independent-flowerly-ai-compute.md).
 Not 0.0.4 scope.
@@ -46,7 +48,11 @@ The remote provider runs under a dedicated account (`flowerly-provider`),
 not `flowerly`, so it cannot read `/var/lib/flowerly/state.db`. Its socket
 lives in its own `RuntimeDirectory` with group access for `flowerly`.
 flowerlyd accepts that endpoint only from its root-owned configuration,
-never from IPC arguments (see §2). *Owner decision Q1.*
+never from IPC arguments (see §2). The provider admits only the service
+account and the `flowerly-provider-clients` group, whose members are
+`flowerly` and the provider itself. **Owner Q1: approved.** The account is
+dedicated and least-privilege, with no access to `state.db` or to
+unrelated credentials.
 
 ### 2. Every gate is explicit and fails closed
 
@@ -62,22 +68,36 @@ refusal is a typed error and is tested.
    - limits and timeouts;
    - the socket path.
 
-   flowerlyd's own root-owned configuration must set
-   `remote_providers = "enabled"` and list that socket path.
+   flowerlyd reads its own gate policy only from a path given on its
+   command line (`--remote-providers`). The file must not be a symlink,
+   must be owned by root or the service account, and must not be group-
+   or world-writable. It must say `enabled = true` and list each provider's
+   socket, destination host and model allowlist. Unknown fields are
+   refused, so it cannot carry a credential. If the file is absent or
+   fails any check, remote inference is disabled with a stated reason, and
+   local administration is unaffected.
 2. **Administrator, registration.** `provider.register` (Admin class) for
    kind `remote-openai-compatible` succeeds only when step 1 holds. The
    registered destination host is recorded and shown by `provider.show`.
 3. **Profile.** The workload's resolved profile has
    `locality = "approved-remote-opt-in"`. `local-only` (the default, and
    what inheritance tightens toward) refuses with `PermissionDenied`.
-4. **User consent.** The workload owner holds an unexpired, revocable
-   consent grant for that provider id *and* destination host. The grant is
-   owner-scoped and is never inferred from a profile, a model or a provider.
-   Each request also carries `remote: true`; a request without it never
-   reaches a remote provider. Refusing or revoking consent leaves local
-   administration fully usable. *Owner decision Q3 on grant granularity
-   and expiry.*
-5. **No silent placement change.** A local-to-remote or remote-to-local
+4. **User consent (owner Q3: approved with conditions).** The
+   authenticated user (kernel-attested uid) holds an unrevoked grant for
+   that provider id *and* destination host, lasting at most 30 days and
+   revocable immediately. The user must name the destination to grant it.
+   The grant's scope is immutable (database trigger). Changing the
+   provider or the configured destination leaves no matching grant.
+   Consent is checked under the store lock before the attempt is recorded
+   or anything is sent. Each request also carries `remote: true`. Refusing
+   or revoking consent leaves local administration fully usable.
+   Revocation stops new prompts at once; it cannot recall an attempt that
+   was already submitted.
+5. **Provider identity.** Before the prompt is submitted, the provider
+   process must report over IPC the same destination the policy and the
+   consent name. Otherwise the attempt fails as `not_sent` /
+   `destination_mismatch`.
+6. **No silent placement change.** A local-to-remote or remote-to-local
    substitution never happens as a fallback. `downgrade` stays refused, as
    in ADR-0021.
 
@@ -97,10 +117,22 @@ refusal is a typed error and is tested.
   unset in the unit. An explicit administrator proxy is out of scope here.
 - **SSRF and DNS rebinding:** the resolver used for the request is the one
   that filters addresses, so the addresses checked are the addresses
-  connected to. It refuses loopback, link-local, unspecified, multicast,
-  broadcast and documentation ranges, and (unless the administrator sets
-  `allow_private_addresses = true` for a self-hosted LAN server) RFC 1918,
-  CGNAT and IPv6 ULA ranges. *Owner decision Q2 for the operator's server.*
+  connected to. It answers only for the configured host, and it runs for
+  every new connection, so a later answer that rebinds the name is
+  filtered like the first. It always refuses loopback, link-local
+  (including 169.254.169.254), unspecified, multicast, broadcast,
+  documentation, NAT64 and IPv4-compatible ranges.
+- **Private destinations (owner Q2: conditional).** RFC 1918, CGNAT and
+  IPv6 ULA addresses are denied by default. The only exception is an
+  explicit, owner-approved `private_destination_cidrs` entry on that one
+  provider. Entries are restricted to private blocks no wider than /16
+  (IPv4) or /48 (IPv6), so an exception cannot open loopback, metadata or
+  public space, and a rebinding answer outside the pinned block is
+  refused. Verification on 2026-10-30: `openui.gamitronservers.com`
+  resolves only to public Cloudflare anycast addresses (188.114.96.1,
+  188.114.97.1, 2a06:98c1:3120::1, 2a06:98c1:3121::1). The system
+  resolver and two public resolvers (1.1.1.1, 8.8.8.8) agree, so no
+  private exception is needed.
 - **systemd confinement** (defence in depth; the application checks above
   are authoritative):
   - remote provider unit: `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
@@ -144,6 +176,11 @@ or any non-text content are refused as `unsupported_response`: no tools are
 offered, so none may come back.
 
 ### 6. Asynchronous execution and unknown outcomes
+
+*As implemented (#267):* `inference.request` returns the durable attempt,
+and `inference.result {attempt_id}` polls it. Attempts are owner-scoped,
+and a database trigger makes a final attempt (`succeeded`, `failed` or
+`unknown`) immutable.
 
 Remote inference cannot fit the 7 s module deadline or the 10 s IPC
 deadline (G3), so it uses submit and poll:
@@ -214,7 +251,28 @@ capabilities, profile changes or provider configuration, and it grants no OS
 authority (ADR-0014, ADR-0020). Clients that print it to a terminal must
 neutralise control sequences.
 
-### 10. Privacy and retention
+### 10. Privacy and retention (owner Q4: no default raw retention)
+
+*Owner Q4, as implemented (#267):*
+
+- Remote attempts keep idempotency and accounting metadata only: a
+  SHA-256 digest of the arguments, model, destination, outcome, error
+  class, usage (reported or unknown) and latency. The schema has no column
+  that can hold prompt or response text, and the idempotent-operation
+  table is not used for remote requests.
+- The generated text exists only in the provider process's memory. It is
+  delivered once by default. An administrator may set
+  `response_replay_seconds` (≤ 900) to re-deliver it for that long after
+  the first delivery. It is never written to disk, so encryption at rest
+  is not needed. A future *persistent* replay would have to be encrypted
+  with a key not stored beside it, and needs its own decision.
+- When the text is no longer available, `inference.result` (or a retry
+  with the same `operation_id`) returns `response_available: false` and
+  `resubmitted: false` with the metadata. A digest cannot reproduce a
+  response, and the request is never re-run.
+
+The text below is the original proposal, superseded where it conflicts
+with the points above.
 
 For remote requests, the idempotency record stores a SHA-256 digest of the
 prompt instead of the prompt itself. Requests are matched on the digest
@@ -252,7 +310,23 @@ of both ADRs stands. Until acceptance:
 - Live behaviour is claimed only from recorded owner-run evidence with a
   dedicated least-privilege key (#263 PR E).
 
-## Owner decisions requested
+## Owner decisions (2026-10-30)
+
+- **Q1 — approved:** dedicated least-privilege `flowerly-provider`
+  account, without access to `state.db` or unrelated credentials.
+- **Q2 — conditional:** private egress denied by default. Any exception
+  must be explicitly approved, restricted to the configured destination,
+  and protected against DNS rebinding. The operator's host is public, so
+  none is configured.
+- **Q3 — approved with conditions:** consent is per authenticated user,
+  provider and destination; at most 30 days; immediately revocable;
+  invalidated by a change of provider or destination; checked before any
+  prompt leaves the machine.
+- **Q4 — no default raw retention:** keep idempotency and accounting
+  metadata only. Replay is optional and short-lived (implemented as
+  memory-only). Honest typed results are returned without resubmission.
+
+### Original questions
 
 - **Q1:** Should the provider run under a separate account
   (`flowerly-provider`, proposed), or as `flowerly` with path sandboxing only?
