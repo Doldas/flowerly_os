@@ -176,6 +176,12 @@ refusal is a typed error and is tested.
 | Total timeout | ≤ 120 s per request |
 | Concurrency | per provider (default 2) and per actor (existing 4); excess is `Unavailable`, never queued without bound |
 
+`max_tokens` is sent as a request and not enforced by Flowerly beyond the
+response bounds above. *Observation after acceptance (2026-10-30, #268):*
+the operator's server reported 44 completion tokens for `max_tokens: 16`.
+No remote token or spending cap is claimed. Results report
+`max_tokens_requested` and `max_tokens_exceeded`.
+
 Requests are non-streaming. Responses carrying `tool_calls`, function calls
 or any non-text content are refused as `unsupported_response`: no tools are
 offered, so none may come back.
@@ -364,6 +370,42 @@ Kept as asked, for the record. The answers above supersede them.
 - **Q4:** Is retaining model output for the 30-day replay window
   acceptable for remote requests, or should remote responses keep only a
   digest and the usage row?
+
+## Socket access architecture (accepted 2026-10-30, architecture only)
+
+The owner explicitly accepted the socket access architecture for the
+first remote provider, with the limitations documented at `044bdac`
+([Remote Inference Operations](../remote-inference-operations.md#socket-access-model)).
+The decision is recorded in PR #268. The accepted scope:
+
+- **flowerlyd** is the trusted boundary for user identity, consent,
+  administrator policy and profile authorization.
+- **providerd** admits peers by kernel-attested process identity
+  (`SO_PEERCRED` plus `SO_PEERGROUPS`) and the dedicated socket group
+  `flowerly-provider-clients`.
+- Socket-group membership grants **provider-level authority**: it can
+  make the provider spend the remote key. It is **not** user consent.
+- Ordinary users must never join the provider socket group.
+- Root remains trusted within the documented threat model.
+- Real Arch Linux/KVM security-boundary validation is required before
+  operational acceptance.
+
+This is **architecture acceptance only**. It does not accept:
+- the OS security boundary;
+- the provider unit's confinement;
+- any operational use, release or deployment.
+
+It does not authorize:
+- merging #268;
+- live API calls;
+- installing or deploying the provider unit;
+- enabling remote inference;
+- changes to `master`, tags or releases.
+
+The OS boundary stays unaccepted until the
+[Remote Provider Unit Test Plan](../remote-provider-unit-test-plan.md)
+has run in a real Arch Linux/KVM guest and its results have been
+reviewed. Each of the other steps needs its own explicit owner approval.
 
 ## Acceptance tests
 

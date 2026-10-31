@@ -15,7 +15,7 @@ Group=flowerly-provider-clients
 UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH SSL_CERT_FILE SSL_CERT_DIR HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy FLOWERLY_PROVIDER_OUTAGE
 # The API key, decrypted by systemd into $CREDENTIALS_DIRECTORY only.
 LoadCredentialEncrypted=%i.key:/etc/credstore.encrypted/%i.key
-ExecStart=/usr/bin/providerd --config /etc/flowerly/providers/%i.service.toml --remote-config /etc/flowerly/providers/%i.toml
+ExecStart=/usr/bin/providerd --config /etc/flowerly/providers/%i.service.toml --remote-config /etc/flowerly/providers/%i.toml --require-isolated-identity
 RuntimeDirectory=flowerly-provider
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes

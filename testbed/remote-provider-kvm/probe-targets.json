@@ -1,0 +1,49 @@
+{
+  "comment": "Targets for scripts/provider-unit-probe.py in the KVM guest. The guest runner creates every path (including the world-readable decoys, so a denial there can only come from the unit) and every listener before the control run. Addresses match network.json.",
+  "instance": "probe",
+  "provider_user": "flowerly-provider",
+  "client_group": "flowerly-provider-clients",
+  "read_denied": [
+    "/var/lib/flowerly/state.db",
+    "/var/lib/flowerly",
+    "/var/lib/flowerly/kvm-decoy-world-readable",
+    "/run/flowerly",
+    "/run/flowerly/kvm-decoy-world-readable",
+    "/var/lib/flowerly-evolution",
+    "/etc/credstore",
+    "/etc/credstore.encrypted",
+    "/etc/credstore.encrypted/{instance}.key",
+    "/etc/credstore.encrypted/other.key",
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/root",
+    "/root/.ssh/id_ed25519",
+    "/home",
+    "/home/flowerly-kvm-other/world-readable.txt",
+    "/var/lib/flowerly-provider-operator",
+    "/var/log/flowerly-provider-acceptance"
+  ],
+  "write_denied": [
+    "/etc/flowerly-probe",
+    "/usr/local/flowerly-probe",
+    "/var/lib/flowerly-probe",
+    "/run/flowerly-probe",
+    "/home/flowerly-kvm-other/flowerly-probe",
+    "/var/tmp/../lib/flowerly-probe-2"
+  ],
+  "connect_blocked": [
+    {"name": "loopback_v4", "address": "127.0.0.1", "port": 22},
+    {"name": "loopback_v4_mock_port", "address": "127.0.0.1", "port": 8443},
+    {"name": "loopback_v6", "address": "::1", "port": 22},
+    {"name": "metadata_v4", "address": "169.254.169.254", "port": 80},
+    {"name": "link_local_v4", "address": "169.254.77.10", "port": 8443},
+    {"name": "link_local_v6", "address": "fe80::77", "port": 8443, "interface": "flowerly-mock0"}
+  ],
+  "connect_not_blocked": [
+    {"name": "private_rfc1918", "address": "10.77.0.10", "port": 8443},
+    {"name": "cgnat", "address": "100.77.0.10", "port": 8443},
+    {"name": "ula", "address": "fd77:77:77::10", "port": 8443},
+    {"name": "public_mock", "address": "192.88.99.10", "port": 8443}
+  ],
+  "dns_stub": "127.0.0.53"
+}

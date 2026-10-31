@@ -321,8 +321,14 @@ async fn main() -> Result<()> {
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
     compute::init_runtime_dir(config.runtime_dir.clone());
+    // An unreadable /etc/group cannot match the provider socket group; the
+    // access policy above already required it whenever groups are named.
     let remote_gate =
-        flowerly_core::remote_policy::RemoteGate::load(cli.remote_providers.as_deref());
+        flowerly_core::remote_policy::RemoteGate::load(cli.remote_providers.as_deref())
+            .refusing_shared_groups(
+                &policy,
+                &std::fs::read_to_string("/etc/group").unwrap_or_default(),
+            );
     match &remote_gate {
         flowerly_core::remote_policy::RemoteGate::Disabled { reason } => {
             tracing::info!(%reason, "remote inference gate");

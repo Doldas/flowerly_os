@@ -130,6 +130,9 @@ jobs:
       - name: Remote inference gates, consent and secret isolation end to end (#263)
         run: python3 ./scripts/test-remote-inference-gates.py target/release
 
+      - name: Remote provider operator procedure and unit contract, offline (#263)
+        run: python3 ./scripts/test-remote-provider-operator.py target/release
+
       - name: Admin commands and IPC shutdown require an explicit admin group
         run: python3 ./scripts/test-admin-authorization.py target/release
 
@@ -281,12 +284,21 @@ jobs:
           bash -n ./scripts/test-arch-vm-disk.sh
           bash -n ./testbed/evolution-world/arch-kernel/guest-verify.sh
           bash -n ./scripts/arch-pty-cgroup-acceptance.sh
+          bash -n ./scripts/remote-provider-arch-kvm-acceptance.sh
+          bash -n ./testbed/remote-provider-kvm/guest/make-test-pki.sh
+          bash -n ./testbed/remote-provider-kvm/guest/interpose.sh
 
       - name: Arch VM sparse disk growth and guest preflight regression
         run: bash ./scripts/test-arch-vm-disk.sh
 
       - name: Arch VM failure classification regression (#184)
         run: python3 ./scripts/test-arch-vm-failure-classify.py
+
+      - name: Remote provider Arch/KVM acceptance harness guardrails and contracts, offline, no VM (#263)
+        run: python3 ./scripts/test-remote-provider-kvm-harness.py
+
+      - name: Arch image signature verification with real GnuPG on synthetic keys, offline (#263)
+        run: python3 ./scripts/test-arch-image-verify.py
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24
