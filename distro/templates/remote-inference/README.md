@@ -14,6 +14,11 @@ owner has approved live egress.
 | `flowerlyd-remote-inference.conf` | `/etc/systemd/system/flowerlyd.service.d/` | flowerlyd joins the client group and reads the gate policy |
 | `remote-providers.toml` | `/etc/flowerly/remote-providers.toml` (root, 0644) | the flowerlyd gate (disabled when absent) |
 
+The operator procedure (install, discovery-only preflight, single-prompt
+acceptance, evidence, emergency disable and rollback) is
+`scripts/remote-provider-operator.sh`, documented in
+`web-docs/docs/remote-inference-operations.md`.
+
 The API key never appears in any of these files. Install it as an
 encrypted systemd credential by typing it at the prompt, never as a
 command argument:

@@ -19,6 +19,7 @@
 //! flowerlyd cannot reach this backend until ADR-0022 is accepted and its
 //! gates are wired (#263): `provider.register` still refuses remote kinds.
 pub mod config;
+pub mod identity;
 pub mod net;
 pub mod openai;
 
@@ -142,6 +143,9 @@ pub struct Backend {
     /// retried against the server.
     auth_failed: AtomicBool,
     discovery: Mutex<Option<(Instant, Vec<String>)>>,
+    /// Discovery-only preflight (`--discover-only`): `provider.submit` is
+    /// refused before anything is sent, so no prompt can leave the host.
+    discover_only: AtomicBool,
 }
 
 impl std::fmt::Debug for Backend {
@@ -191,7 +195,14 @@ impl Backend {
             jobs: Mutex::new(HashMap::new()),
             auth_failed: AtomicBool::new(false),
             discovery: Mutex::new(None),
+            discover_only: AtomicBool::new(false),
         }))
+    }
+
+    /// Restrict this instance to model discovery for the rest of its life.
+    /// One-way: nothing turns submission back on.
+    pub fn restrict_to_discovery(&self) {
+        self.discover_only.store(true, Ordering::SeqCst);
     }
 
     pub fn self_describe(&self) -> Value {
@@ -205,6 +216,7 @@ impl Backend {
             "streaming": false,
             "asynchronous": true,
             "commands": ["provider.discover", "provider.submit", "provider.poll", "provider.cancel"],
+            "discover_only": self.discover_only.load(Ordering::SeqCst),
             "max_prompt_bytes": MAX_PROMPT_BYTES,
             "max_tokens_per_request": self.config.max_tokens_cap,
             "max_response_bytes": MAX_RESPONSE_BYTES,
@@ -230,6 +242,12 @@ impl Backend {
         };
         let result = match name.as_str() {
             "provider.discover" => self.discover_command(),
+            "provider.submit" if self.discover_only.load(Ordering::SeqCst) => Err(Failure::new(
+                ErrorCode::PermissionDenied,
+                "discover_only",
+                Outcome::NotSent,
+                "this provider instance runs in discovery-only preflight mode and accepts no prompt",
+            )),
             "provider.submit" => self.submit(args),
             "provider.poll" => self.poll(args),
             "provider.cancel" => self.cancel(args),
@@ -588,6 +606,11 @@ impl Backend {
             ),
             None => ("unknown", None, None),
         };
+        // `max_tokens` is a request, not a cap the server is known to honor:
+        // Open WebUI reported 44 completion tokens for 16 in the first live
+        // test (#268). Report the overrun; never treat the request as a
+        // spending limit. Unknown usage leaves it unknown.
+        let max_tokens_exceeded = tokens_out.map(|out| out > max_tokens);
         Ok(serde_json::json!({
             "request_id": request_id,
             "provider": "openai-compatible",
@@ -599,6 +622,8 @@ impl Backend {
             "truncated": completion.truncated,
             "finish_reason": completion.finish_reason,
             "usage": {"source": source, "tokens_in": tokens_in, "tokens_out": tokens_out},
+            "max_tokens_requested": max_tokens,
+            "max_tokens_exceeded": max_tokens_exceeded,
             "latency_ms": latency.as_millis() as u64,
         }))
     }

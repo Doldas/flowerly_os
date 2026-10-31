@@ -74,7 +74,10 @@ from two parts:
   root or the service account and not group- or world-writable).
 
 Deployment templates, none of them installed or shipped, are in
-`distro/templates/remote-inference/`.
+`distro/templates/remote-inference/`. The operator procedure for one
+provider instance (discovery-only preflight, single-prompt acceptance,
+evidence, emergency disable, rollback) is
+[Remote Inference Operations](remote-inference-operations.md).
 
 ### Gates, checked before anything is sent
 
@@ -188,9 +191,12 @@ Model output is returned as an inert string and grants nothing.
 
 ## Honest limitations
 
-- Remote inference has not been run against a live server. All of its
-  evidence is offline (mock HTTPS server, fake provider, real processes
-  against a refused destination).
+- One live request ran on 2026-10-30 (#268): providerd as the owner's
+  user, adapter level only. The confined unit and flowerlyd's gates have
+  not run live; the OS boundary is not accepted.
+- `max_tokens` is not a cap the server is known to honor: 16 requested, 44
+  completion tokens reported. Results carry `max_tokens_requested` and
+  `max_tokens_exceeded`. There is no remote token or spending cap.
 - Remote usage lives in the attempt records only. `workload.usage_brief`
   totals do not include it yet, and cost is unknown.
 - Workload admission still checks the model's measured local memory, even

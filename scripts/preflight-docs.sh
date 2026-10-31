@@ -23,5 +23,8 @@ python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
 bash scripts/test-arch-vm-disk.sh
 python3 scripts/test-arch-vm-failure-classify.py
+bash -n scripts/remote-provider-arch-kvm-acceptance.sh
+python3 scripts/test-remote-provider-kvm-harness.py
+python3 scripts/test-arch-image-verify.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."

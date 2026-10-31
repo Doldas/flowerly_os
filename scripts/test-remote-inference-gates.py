@@ -13,6 +13,7 @@ Verifies, with real processes and real IPC:
 - secret isolation: the provider key exists only in the provider's
   credential directory, and neither the key nor the prompt reaches the
   state database (with WAL), any IPC reply, or either daemon's log;
+- no refusal discloses a uid;
 - the unit templates keep their confinement settings.
 """
 import json
@@ -66,6 +67,9 @@ def ok(reply):
 def refused(reply, code, needle):
     assert reply["type"] == "err" and reply["code"] == code, reply
     assert needle in reply["message"], reply
+    # Refusals never disclose the caller's or a file owner's uid.
+    message = reply["message"].lower()
+    assert "uid" not in message and str(os.getuid()) not in message, reply
 
 
 def wait_socket(path, proc, log):
