@@ -1223,3 +1223,36 @@ async fn an_opt_in_replay_window_redelivers_until_it_expires() {
     assert_eq!(expired["result"]["text_released"], true);
     assert_eq!(mock.chat_requests(), 1, "replay re-executed");
 }
+
+// --- Arch/KVM acceptance network plan --------------------------------------
+
+/// The KVM acceptance (testbed/remote-provider-kvm/network.json) puts its
+/// mock on an address the production policy must treat as public, and its
+/// negative cases on addresses it must refuse. This keeps the plan honest
+/// against the real `AddressPolicy::default()`: if the policy changes, the
+/// guest test would otherwise silently test something else.
+#[test]
+fn kvm_acceptance_network_plan_matches_the_production_address_policy() {
+    let plan: Value = serde_json::from_str(include_str!(
+        "../../../../testbed/remote-provider-kvm/network.json"
+    ))
+    .unwrap();
+    let addresses = plan["addresses"].as_object().unwrap();
+    let expected = plan["expected_policy"].as_object().unwrap();
+    assert_eq!(
+        addresses.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>()
+    );
+    let production = AddressPolicy::default();
+    for (role, address) in addresses {
+        let ip: std::net::IpAddr = address.as_str().unwrap().parse().unwrap();
+        let allowed = super::net::address_allowed(ip, &production);
+        let want = expected[role].as_str().unwrap();
+        assert_eq!(
+            allowed,
+            want == "allowed",
+            "{role} ({ip}) expected {want} by the production policy"
+        );
+    }
+    assert!(!production.allow_loopback && production.private_allowlist.is_empty());
+}

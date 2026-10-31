@@ -331,6 +331,45 @@ implementation enforces, not a validated boundary.
   against scratch roots without root. It does not show that the
   confinement holds in a real guest. The plan for that run is
   [Remote Provider Unit Test Plan](remote-provider-unit-test-plan.md).
+
+### Arch/KVM acceptance harness (prepared, not run)
+
+| Item | Status |
+| --- | --- |
+| KVM harness | PREPARED: offline-validated only |
+| KVM acceptance | NOT RUN |
+| OS confinement | NOT ACCEPTED |
+| Operational deployment, live inference, release | NOT AUTHORIZED |
+
+The harness is `scripts/remote-provider-arch-kvm-acceptance.sh`. Its guest
+side lives in `testbed/remote-provider-kvm/`.
+
+Preparation commands, safe on any machine:
+
+```sh
+scripts/remote-provider-arch-kvm-acceptance.sh --plan      # what would run; image-lock state
+scripts/remote-provider-arch-kvm-acceptance.sh --validate  # syntax, configuration, evidence rules
+scripts/remote-provider-arch-kvm-acceptance.sh --dry-run   # plus the exact commands, none executed
+```
+
+They never start a VM, download, build, use the network or `sudo`, and
+they only ever report `NOT_RUN`.
+
+Execution (`--execute --approved-sha <sha>` with
+`FLOWERLY_KVM_ACCEPTANCE=execute-in-disposable-guest`) refuses on:
+- a wrong SHA or a dirty tree;
+- root or a CI runner;
+- an unpinned image (the lock file is unpinned today);
+- a missing keyring or `/dev/kvm`.
+
+Those refusals are guardrails, not evidence of approval. A run needs its
+own owner authorization, described in the plan's
+[Authorization](remote-provider-unit-test-plan.md#authorization-required-before-execution)
+section.
+
+The guest has no route out. The mock server, its DNS and the dummy
+credential exist only inside it. The real server and the real key are
+never involved.
 - OS-boundary acceptance. The first live test (#268) ran providerd as the
   owner's user without the unit, so it accepted the adapter only.
 
@@ -357,7 +396,8 @@ Known and accepted by none of the tests above:
 - **Not yet run.**
   - Arch/KVM isolation acceptance (unit confinement, socket
     authentication with real credentials, effective process groups,
-    lifecycle) has not been run.
+    lifecycle) has not been run. Its harness is prepared; the image is
+    not pinned.
   - flowerlyd's gates have never been enabled against a real provider.
   - The only live evidence is one adapter-level request made outside the
     unit.
