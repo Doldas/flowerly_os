@@ -28,6 +28,14 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope, caller: Ca
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
+    // Inference manages the store lock itself: it must not be held across
+    // a provider call, which every other module's requests would wait behind.
+    if name.starts_with("inference.") {
+        return match inference::run_inference(store, name, args, caller) {
+            Ok(data) => ok_envelope(request.id.clone(), data),
+            Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
+        };
+    }
     let mut store = match store.lock() {
         Ok(store) => store,
         Err(_) => {
@@ -46,8 +54,10 @@ pub(crate) fn handle_command(store: &SharedStore, request: &Envelope, caller: Ca
 mod admission;
 mod inference;
 mod profiles;
+mod remote;
 
 pub(crate) use inference::init_runtime_dir;
+pub(crate) use remote::set_gate as set_remote_gate;
 
 #[derive(Debug)]
 pub(crate) struct CommandFailure {
@@ -237,9 +247,6 @@ fn run_command(store: &mut Store, name: &str, args: &Value, caller: Caller) -> C
             }
             if name.starts_with("workload.") || name.starts_with("usage.") {
                 return admission::run(store, name, args, caller);
-            }
-            if name.starts_with("inference.") {
-                return inference::run_inference(store, name, args, caller);
             }
             return Err(CommandFailure::invalid(format!(
                 "compute: unknown command `{name}`"

@@ -153,6 +153,10 @@ pub(crate) const DATA_SCOPES: &[(&str, DataScope)] = &[
     ("workload.usage_brief", DataScope::OwnerScoped),
     ("inference.capabilities", DataScope::SharedSystem),
     ("inference.request", DataScope::OwnerScoped),
+    ("inference.result", DataScope::OwnerScoped),
+    ("inference.consent_grant", DataScope::OwnerScoped),
+    ("inference.consent_revoke", DataScope::OwnerScoped),
+    ("inference.consent_list", DataScope::OwnerScoped),
 ];
 
 /// Decide a command for a kernel-attested peer. Only inventoried commands
@@ -366,6 +370,15 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
         CommandClass::User,
         "own admitted workload",
     ),
+    // Remote inference (ADR-0022): a user's own attempts and consent only.
+    ("inference.result", CommandClass::User, "own remote attempt"),
+    ("inference.consent_grant", CommandClass::User, "own consent"),
+    (
+        "inference.consent_revoke",
+        CommandClass::User,
+        "own consent",
+    ),
+    ("inference.consent_list", CommandClass::User, "own consent"),
 ];
 
 /// Class of a command, or `None` for anything not in the inventory.
