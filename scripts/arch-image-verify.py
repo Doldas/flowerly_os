@@ -236,7 +236,10 @@ def check_status(records, primary_fpr, approved_subkeys, keyring_subkeys, now=No
 
 class Gpg:
     """A fresh GnuPG home holding only the given keyring. No keyserver, no
-    auto-retrieval, no options file, no agent. Use as a context manager."""
+    auto-retrieval, no options file, no agent. Use as a context manager.
+    GnuPG's own trust model is left at its default and never consulted:
+    `--trust-model always` makes gpg 2.4.4 skip creating the trustdb and
+    then abort `--show-keys` on a revoked key."""
 
     def __init__(self, keyring, gpg="gpg"):
         self.keyring, self.gpg = pathlib.Path(keyring), shutil.which(gpg) or gpg
@@ -266,7 +269,7 @@ class Gpg:
         status.unlink(missing_ok=True)
         argv = [self.gpg, "--homedir", str(self.home), "--batch", "--no-tty", "--no-options",
                 "--no-autostart", "--no-auto-key-retrieve", "--no-auto-key-locate",
-                "--keyserver-options", "no-auto-key-retrieve", "--trust-model", "always",
+                "--keyserver-options", "no-auto-key-retrieve",
                 "--status-file", str(status), *args]
         try:
             result = subprocess.run(argv, capture_output=True, text=True, timeout=600,
