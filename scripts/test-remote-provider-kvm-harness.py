@@ -126,6 +126,11 @@ def scratch_repo(scratch, name="repo"):
         shutil.copy2(ROOT / rel, repo / rel)
     shutil.copytree(TESTBED, repo / "testbed/remote-provider-kvm",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    # The guardrail tests start from an unpinned lock whatever the real one
+    # holds; they pin their own fake lock where they need one.
+    lock_path = repo / "testbed/remote-provider-kvm/arch-image.json"
+    lock_path.write_text(json.dumps(dict(json.loads(lock_path.read_text()),
+                                         **{f: None for f in LOCK_FIELDS}), indent=2) + "\n")
     git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
     run(["git", "init", "-q", repo], check=True)
     run([*git, "add", "-A"], check=True)
@@ -140,6 +145,8 @@ def commit_lock(repo, lock):
     return run(["git", "-C", repo, "rev-parse", "HEAD"], check=True).stdout.strip()
 
 
+LOCK_FIELDS = ("version", "url", "sha256", "signature_url", "primary_key_fingerprint",
+               "signing_subkey_fingerprints", "pinned_by", "pinned_at_utc")
 FAKE_LOCK = {
     "schema_version": 1, "source_index": "https://geo.mirror.pkgbuild.com/images/",
     "version": "20990101.1",
@@ -263,8 +270,14 @@ def check_network_plan():
     blocked = {plan["addresses"][r] for r in os_policy["blocked"]}
     assert {t["address"] for t in targets["connect_blocked"]} == blocked
     assert targets["dns_stub"] == plan["dns_stub"]
+    # The real lock is either wholly unpinned or wholly pinned and accepted
+    # by the harness; never half-pinned.
     lock = json.loads((TESTBED / "arch-image.json").read_text())
-    assert lock["sha256"] is None and lock["version"] is None, "the image must stay unpinned until a reviewed pin"
+    unset = [f for f in LOCK_FIELDS if lock.get(f) in (None, "", [])]
+    assert unset in ([], list(LOCK_FIELDS)), f"arch-image.json is half-pinned: {unset} unset"
+    if not unset:
+        plan = run(["bash", HARNESS, "--plan"])
+        assert "image lock:    pinned" in plan.stdout, plan.stdout
 
 
 # --- evidence -----------------------------------------------------------------

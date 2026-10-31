@@ -1,13 +1,15 @@
 {
   "schema_version": 1,
-  "comment": "Exact Arch Linux cloud image for the remote provider KVM acceptance. UNPINNED: no image has been accepted. A candidate and its provenance are in web-docs/docs/remote-provider-unit-test-plan.md ('Image provenance'); pinning is a separate, reviewed step. The harness refuses to execute while any field is null, and never substitutes a floating 'latest' URL. primary_key_fingerprint is the signing key's primary; signing_subkey_fingerprints are the subkeys approved to sign images (Arch's arch-boxes key signs with a subkey).",
+  "comment": "Exact Arch Linux cloud image for the remote provider KVM acceptance. PINNED to v20261015.611680 after an owner-authorized provenance verification and independent review (web-docs/docs/remote-provider-unit-test-plan.md, 'Image provenance'). The pin covers the image bytes and the arch-boxes signing identity only: it is not an operational security assessment. The harness refuses to execute while any field is null, and never substitutes a floating 'latest' URL. primary_key_fingerprint is the signing key's primary; signing_subkey_fingerprints are the subkeys approved to sign images (Arch's arch-boxes key signs with a subkey; this one expires 2027-05-28).",
   "source_index": "https://geo.mirror.pkgbuild.com/images/",
-  "version": null,
-  "url": null,
-  "sha256": null,
-  "signature_url": null,
-  "primary_key_fingerprint": null,
-  "signing_subkey_fingerprints": null,
-  "pinned_by": null,
-  "pinned_at_utc": null
+  "version": "20261015.611680",
+  "url": "https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2",
+  "sha256": "08754e28d91b1680086c6211ef4df13559e766fff7cdb4006489b14b5d281f08",
+  "signature_url": "https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2.sig",
+  "primary_key_fingerprint": "1B9A16984A4E8CB448712D2AE0B78BF4326C6F8F",
+  "signing_subkey_fingerprints": [
+    "656E4C5AC1CC3B86E539D97E343635A6859A9174"
+  ],
+  "pinned_by": "Doldas",
+  "pinned_at_utc": "2026-10-31T18:34:27Z"
 }

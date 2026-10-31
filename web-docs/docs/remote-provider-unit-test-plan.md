@@ -72,9 +72,11 @@ shims that fail on any such call. `--execute` has **never** been run.
 
 ## Image provenance
 
-`arch-image.json` is **UNPINNED**. No image has been downloaded, verified
-or accepted for this plan, and no value may be invented. Pinning is its own
-reviewed commit:
+`arch-image.json` pins Arch Linux cloud image `20261015.611680` (see
+[Pinned image](#pinned-image) below). The pin records verified provenance
+only: it is not an operational security assessment, and the Arch/KVM
+acceptance is still `NOT_RUN`. No value may be invented. Changing the pin
+is its own reviewed commit:
 
 1. Choose a versioned directory under
    `https://geo.mirror.pkgbuild.com/images/` (`v<YYYYMMDD>.<build>/`),
@@ -117,12 +119,14 @@ An expired or revoked key fails closed, even for a signature made while it
 was valid: re-pin to a newer image, or refresh the key from Arch, in a
 reviewed commit.
 
-### Candidate (proposed, not accepted)
+### Pinned image
 
-Resolved on 2026-10-31 from metadata only. The image itself was **not**
-downloaded, so nothing below proves the image bytes.
+Resolved on 2026-10-31. The image was downloaded and verified once under a
+limited owner authorization; the evidence was independently reviewed (the
+reviewer re-verified the signed checksum metadata, not the image bytes).
+`pinned_by` and `pinned_at_utc` in `arch-image.json` record the approval.
 
-| Field | Candidate value |
+| Field | Pinned value |
 | --- | --- |
 | `version` | `20261015.611680` (newest versioned release on 2026-10-31) |
 | `url` | `https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2` (576 680 960 bytes) |
@@ -130,16 +134,18 @@ downloaded, so nothing below proves the image bytes.
 | `signature_url` | `url` + `.sig` |
 | `primary_key_fingerprint` | `1B9A16984A4E8CB448712D2AE0B78BF4326C6F8F` (`arch-boxes <arch-boxes@archlinux.org>`, ed25519, certify only, created 2022-05-29) |
 | `signing_subkey_fingerprints` | `["656E4C5AC1CC3B86E539D97E343635A6859A9174"]` (ed25519, sign, **expires 2027-05-28**) |
-| `pinned_by`, `pinned_at_utc` | not set: the reviewer who accepts the pin |
 
-Established from metadata:
+Verified (observed cryptographic facts):
+- The downloaded image is 576 680 960 bytes with that SHA-256, and its
+  detached signature `….qcow2.sig` verifies over those bytes with
+  `scripts/arch-image-verify.py` (signer `656E…9174`, primary `1B9A…6F8F`).
+- The rest of this list was first established from metadata:
 - The checksum file `….qcow2.SHA256` names that SHA-256. Its detached
   signature `….qcow2.SHA256.sig` verifies with
   `scripts/arch-image-verify.py` (VALIDSIG signer `656E…9174`, primary
   `1B9A…6F8F`, signed 2026-10-15 12:07:03 UTC).
 - The image signature `….qcow2.sig` is an EdDSA/SHA-512 signature by
-  issuer `656E…9174`, made at the same time. It was inspected, not
-  verified: verifying it needs the image.
+  issuer `656E…9174`, made at the same time.
 - The checksum file and image signature are byte-identical on
   `geo.`, `mirror.` and `fastly.mirror.pkgbuild.com`.
 - Key sources: the arch-boxes README on Arch's GitLab
@@ -148,9 +154,7 @@ Established from metadata:
   primary and subkey. The GitHub copy of the README is a mirror of the same
   repository, not an independent channel.
 
-Not established (open before acceptance):
-- That the image bytes hash to the SHA-256 and that `.qcow2.sig` verifies
-  over them: needs the authorized download.
+Not established (open; the pin does not resolve them):
 - An independent trust root: the key is not in `archlinux-keyring`, not
   published by WKD, and no certification by an Arch master or developer
   key was found. The Arch infrastructure repository's copy
@@ -164,7 +168,9 @@ Not established (open before acceptance):
   suggests linux 7.2.9, systemd 262, glibc 2.44 and python 3.14.8, but the
   image was built from a live mirror, so the archive does not prove what
   the image contains. The run records the kernel and systemd version.
-- The subkey expires 2027-05-28; after that this candidate fails closed.
+- The subkey expires 2027-05-28; after that this pin fails closed.
+- Any OS isolation property: that needs the Arch/KVM acceptance, which is
+  `NOT_RUN`.
 
 The image name and SHA-256 go into every evidence record. The guest
 reports its kernel (`uname -r`) and `systemctl --version`. The cached

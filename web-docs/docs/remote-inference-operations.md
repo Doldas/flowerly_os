@@ -359,7 +359,7 @@ Execution (`--execute --approved-sha <sha>` with
 `FLOWERLY_KVM_ACCEPTANCE=execute-in-disposable-guest`) refuses on:
 - a wrong SHA or a dirty tree;
 - root or a CI runner;
-- an unpinned image (the lock file is unpinned today);
+- an unpinned or half-pinned image lock;
 - a missing keyring or `/dev/kvm`.
 
 Those refusals are guardrails, not evidence of approval. A run needs its
