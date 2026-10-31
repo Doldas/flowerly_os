@@ -259,6 +259,32 @@ canary_probe() {
     python3 -I -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5).close()' "$1"
 }
 
+# Guest teardown, for the EXIT trap and the normal path. It reads globals
+# only: an EXIT trap fired by `set -e` or a signal runs after execute's
+# locals are gone. It touches paths inside this run's fresh directory only,
+# and signals the QEMU pid only while its command line still names this run
+# (never a reused pid).
+RUN_DIR=""
+RUN_ID=""
+CANARY_PID=""
+cleanup() {
+    [[ -n $RUN_DIR ]] || return 0
+    local pid cmdline _
+    pid=$(cat "$RUN_DIR/qemu.pid" 2>/dev/null || true)
+    if [[ $pid =~ ^[0-9]+$ ]]; then
+        cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+        if [[ $cmdline == *"flowerly-kvm-$RUN_ID "* ]]; then
+            kill "$pid" 2>/dev/null || true
+            for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+            if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+        fi
+    fi
+    [[ -n $CANARY_PID ]] && kill "$CANARY_PID" 2>/dev/null || true
+    rm -f "$RUN_DIR/overlay.qcow2" "$RUN_DIR/seed.img" "$RUN_DIR/user-data" \
+        "$RUN_DIR"/id_ed25519{,.pub} "$RUN_DIR"/guest_host_ed25519{,.pub}
+    rm -rf "$RUN_DIR/export" "$RUN_DIR/bundle"
+}
+
 execute() {
     local approved=$1
     require_execution_gates "$approved"
@@ -269,6 +295,12 @@ execute() {
     cache="${FLOWERLY_KVM_IMAGE_CACHE:-$HOME/.cache/flowerly/remote-provider-kvm}"
     [[ ! -e $run ]] || die "run directory exists: $run"
     mkdir -p "$run/report" "$run/export" "$cache"
+    key="$run/id_ed25519"
+    hostkey="$run/guest_host_ed25519"
+    # Armed before any key, disk or process exists: every exit from here on
+    # (die, set -e, INT/TERM/HUP) destroys the guest.
+    RUN_DIR=$run RUN_ID=$run_id
+    trap cleanup EXIT
     say "run $run_id at $approved (phase: execution)"
 
     # Build exactly the approved commit, from an export, without network.
@@ -294,8 +326,6 @@ execute() {
     [[ $image_sha == "$(lock_field sha256)" ]] || die "image SHA-256 mismatch; refusing"
 
     qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$run/overlay.qcow2" "${VM_DISK_GB}G"
-    key="$run/id_ed25519"
-    hostkey="$run/guest_host_ed25519"
     ssh-keygen -q -t ed25519 -N "" -f "$key" -C "flowerly-kvm-$run_id"
     # The guest's SSH host key is generated here for this run only and
     # pinned below: no trust-on-first-use, no StrictHostKeyChecking=no.
@@ -334,16 +364,6 @@ EOF
     mapfile -t args < <(qemu_args "$run_id" "$run" "$image" "$port")
     printf '%s\n' "${args[@]}" >"$run/report/qemu-args.txt"
 
-    CANARY_PID=""
-    cleanup() {
-        local pid
-        pid=$(cat "$run/qemu.pid" 2>/dev/null || true)
-        [[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
-        [[ -n $CANARY_PID ]] && kill "$CANARY_PID" 2>/dev/null || true
-        rm -f "$run/overlay.qcow2" "$run/seed.img" "$key" "$key.pub" "$hostkey" "$hostkey.pub" "$run/user-data"
-        rm -rf "$run/export" "$run/bundle"
-    }
-    trap cleanup EXIT
     canary_start "$run"
     local canary_port
     canary_port=$(cat "$run/canary.port")
@@ -430,15 +450,17 @@ EOF
     local verdict=0
     python3 -I "$EVIDENCE_TOOL" verify-bound "$run/report/acceptance.json" | tee "$run/report/verification.json" \
         || verdict=$?
-    # Destroy the guest here, not in the EXIT trap: once execute returns its
-    # locals are gone, and under `set -u` the trap would fail on $run and
-    # leave QEMU, the canary and the run's private keys behind.
+    # Destroy the guest before reporting, not later in the EXIT trap.
     cleanup
     trap - EXIT
     say "guest exit $guest_status; acceptance record $run/report/acceptance.json; guest destroyed"
     say "only a verify-bound verdict of PASS is an acceptance candidate; the owner decides acceptance"
     return $(( verdict || guest_status ))
 }
+
+# Sourcing only defines the functions: the offline tests drive execute with
+# fake tools that way. Running the script is the only way to start anything.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 case $1 in

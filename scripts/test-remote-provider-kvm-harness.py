@@ -37,6 +37,12 @@ Covered:
   and unit hashes, tree state and host-finalized E1-E3 all agree verifies
   as PASS; preparation, partial, edited or mismatched runs never do;
 - SSH uses a per-run pinned guest host key;
+- --execute end to end with fake external tools (no KVM, QEMU, network or
+  keys of value; the gates are skipped here and covered above): on PASS,
+  FAIL, a failing guest, a failing tool before or after boot, and SIGINT,
+  SIGTERM or SIGHUP mid-run, the fake guest and the canary are stopped, no
+  private key, overlay, seed or export is left, unrelated files survive, and
+  the exit status is 0 only for a PASS verdict with a passing guest;
 - image trust (#263 review): the lock pins a primary key and approved
   signing subkeys; the harness checks the keyring before any download and
   the image (scripts/arch-image-verify.py, tested with real GnuPG in
@@ -58,6 +64,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import socket
 import ssl
 import struct
@@ -215,6 +222,188 @@ def check_execute_refusals(scratch, shims, repo, sha):
     plan = run(["bash", harness, "--plan"], env=shims.env())
     assert "image lock:    pinned" in plan.stdout, plan.stdout
     assert shims.calls() == [], shims.calls()
+
+
+# Fake external tools for the --execute end-to-end test. Each records its
+# call; FAKE_FAIL=<name> makes that one fail. The fake QEMU "daemonizes" a
+# process whose command line carries -name like the real one; the fake
+# guest-acceptance ssh call can hang until that process dies, as a real
+# session would when its guest is destroyed.
+FAKE_TOOLS = {
+    "cargo": """[ "$FAKE_FAIL" = cargo ] && exit 101
+mkdir -p target/release && echo providerd > target/release/providerd && echo flowerlyd > target/release/flowerlyd
+""",
+    "curl": """[ "$FAKE_FAIL" = curl ] && exit 22
+while [ $# -gt 0 ]; do [ "$1" = --output ] && out=$2; shift; done
+echo fake-download > "$out"
+""",
+    "qemu-img": """[ "$FAKE_FAIL" = qemu-img ] && exit 1
+prev=; for a; do overlay=$prev; prev=$a; done
+echo overlay > "$overlay"
+""",
+    "ssh-keygen": """while [ $# -gt 0 ]; do [ "$1" = -f ] && file=$2; shift; done
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\\nfake\\n-----END OPENSSH PRIVATE KEY-----\\n' > "$file"
+echo "ssh-ed25519 AAAAfake fake" > "$file.pub"
+""",
+    "cloud-localds": """[ "$FAKE_FAIL" = cloud-localds ] && exit 1
+echo seed > "$1"
+""",
+    "qemu-system-x86_64": """[ "$FAKE_FAIL" = qemu ] && exit 1
+while [ $# -gt 0 ]; do case $1 in -pidfile) pidfile=$2;; -name) name=$2;; esac; shift; done
+if [ "$FAKE_FAIL" = qemu-foreign-pid ]; then
+    # QEMU failed, and its pidfile names some other process: never signal it.
+    python3 -c 'import os, time; os.setsid(); time.sleep(300)' -fake-unrelated "$FAKE_STATE" </dev/null >/dev/null 2>&1 &
+    echo $! > "$pidfile"
+    exit 1
+fi
+python3 -c 'import os, time; os.setsid(); time.sleep(300)' -name "$name" -fake-qemu </dev/null >/dev/null 2>&1 &
+echo $! > "$pidfile"
+""",
+    "ssh": """for a; do case $a in UserKnownHostsFile=*) run=$(dirname "${a#UserKnownHostsFile=}");; esac; cmd=$a; done
+case $cmd in
+    *guest-acceptance.py*)
+        [ "$FAKE_FAIL" = ssh ] && exit 255
+        if [ -n "$FAKE_HANG" ]; then
+            touch "$FAKE_STATE/hanging"
+            while kill -0 "$(cat "$run/qemu.pid")" 2>/dev/null; do sleep 0.1; done
+            exit 255
+        fi
+        exit "${FAKE_GUEST_STATUS:-0}" ;;
+    *"tar -x"*) cat >/dev/null; [ "$FAKE_FAIL" = ssh-copy ] && exit 255 ;;
+esac
+exit 0
+""",
+    "scp": """[ "$FAKE_FAIL" = scp ] && exit 1
+for a; do dest=$a; done
+echo '{}' > "$dest/remote-provider-kvm-fake.json"
+""",
+    # The harness runs these two with python3 -I.
+    "image-tool": """import json, os, sys
+if os.environ.get("FAKE_FAIL") == "image-tool":
+    sys.exit(1)
+if "--out" in sys.argv:
+    out = sys.argv[sys.argv.index("--out") + 1]
+    json.dump({"sha256_actual": "%s", "signature_verified": True}, open(out, "w"))
+""" % ("0" * 64),
+    "evidence-tool": """import json, os, sys
+verdict = os.environ["FAKE_VERDICT"]
+if sys.argv[1] == "bind":
+    json.dump({}, open(sys.argv[sys.argv.index("--out") + 1], "w"))
+else:
+    print(json.dumps({"verdict": verdict}))
+    sys.exit(verdict != "PASS")
+""",
+}
+
+
+def check_execute_end_to_end(scratch):
+    repo, _ = scratch_repo(scratch, "e2e-repo")
+    unit = repo / "distro/templates/remote-inference/flowerly-provider-remote@.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\n")
+    (repo / ".gitignore").write_text("/target\n")
+    sha = commit_lock(repo, FAKE_LOCK)
+    git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    run([*git, "add", "-A"], check=True)
+    run([*git, "commit", "-qm", "unit"], check=True)
+    sha = run(["git", "-C", repo, "rev-parse", "HEAD"], check=True).stdout.strip()
+    harness = repo / "scripts/remote-provider-arch-kvm-acceptance.sh"
+    fakes = scratch / "fake-tools"
+    fakes.mkdir()
+    for name, body in FAKE_TOOLS.items():
+        (fakes / name).write_text(("" if "import" in body.split("\n")[0] else "#!/bin/sh\n") + body)
+        (fakes / name).chmod(0o755)
+    cache = scratch / "image-cache"
+    cache.mkdir()
+    runs = repo / "target/remote-provider-kvm"
+    runs.mkdir(parents=True)
+    unrelated = [cache / "unrelated.qcow2", runs / "older-run/report/acceptance.json", scratch / "home/keep"]
+    # Sourcing defines the functions without running anything; the gates
+    # (tested above) are replaced so the fakes stand in for KVM and the host.
+    driver = ('source "$1"; require_execution_gates() { :; }; '
+              'IMAGE_TOOL="$2/image-tool"; EVIDENCE_TOOL="$2/evidence-tool"; execute "$3"')
+
+    def processes_naming(text):
+        found = []
+        for proc in pathlib.Path("/proc").iterdir():
+            try:
+                if proc.name.isdigit() and text in (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode():
+                    found.append(proc.name)
+            except OSError:
+                pass
+        return found
+
+    def execute(case, signal_=None, **fake):
+        for path in unrelated:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("unrelated")
+        state = scratch / f"state-{case}"
+        state.mkdir()
+        before = set(runs.iterdir())
+        env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_ACTIONS", "CI") and not k.startswith("FAKE_")}
+        env.update(PATH=f"{fakes}:{os.environ['PATH']}", HOME=str(scratch / "home"),
+                   FLOWERLY_KVM_IMAGE_CACHE=str(cache), FLOWERLY_KVM_ARCH_KEYRING=str(scratch / "fake.asc"),
+                   FAKE_STATE=str(state), FAKE_VERDICT="PASS")
+        env.update(fake)
+        # Files, not pipes: a leftover guest or canary must fail the
+        # assertions below, not hang the test on an inherited pipe.
+        stdout, stderr = open(state / "stdout", "w"), open(state / "stderr", "w")
+        proc = subprocess.Popen(["bash", "-c", driver, "driver", harness, fakes, sha], env=env,
+                                stdout=stdout, stderr=stderr, start_new_session=True)
+        if signal_:
+            deadline = time.time() + 60
+            while not (state / "hanging").exists():
+                assert time.time() < deadline and proc.poll() is None, (case, (state / "stderr").read_text())
+                time.sleep(0.05)
+            # A terminal's ^C reaches the whole foreground group; kill(1) only the shell.
+            if signal_ == signal.SIGINT:
+                os.killpg(proc.pid, signal_)
+            else:
+                proc.send_signal(signal_)
+        proc.wait(timeout=120)
+        stdout.close(), stderr.close()
+        out, err = (state / "stdout").read_text(), (state / "stderr").read_text()
+        new = set(runs.iterdir()) - before
+        assert len(new) == 1, (case, new, err)
+        rundir = new.pop()
+        deadline = time.time() + 15
+        while processes_naming(str(rundir.name)) and time.time() < deadline:
+            time.sleep(0.1)
+        leftover = processes_naming(rundir.name)
+        for pid in leftover:
+            os.kill(int(pid), signal.SIGKILL)
+        assert leftover == [], (case, "guest or canary left running", err)
+        left = sorted(str(p.relative_to(rundir)) for p in rundir.rglob("*"))
+        for name in ("id_ed25519", "id_ed25519.pub", "guest_host_ed25519", "guest_host_ed25519.pub",
+                     "user-data", "overlay.qcow2", "seed.img", "export", "bundle"):
+            assert name not in left, (case, name, left)
+        assert not any(b"PRIVATE KEY" in p.read_bytes() for p in rundir.rglob("*") if p.is_file()), (case, left)
+        for path in unrelated:
+            assert path.read_text() == "unrelated", (case, path)
+        assert (cache / "Arch-Linux-x86_64-cloudimg-20990101.1.qcow2").exists(), case
+        return proc.returncode, rundir, out, err
+
+    status, rundir, out, err = execute("pass")
+    assert status == 0, (out, err)
+    assert (rundir / "report/acceptance.json").exists() and "guest destroyed" in out, out
+    status, *_ = execute("fail-verdict", FAKE_VERDICT="FAIL")
+    assert status != 0
+    status, *_ = execute("guest-fails", FAKE_GUEST_STATUS="3")
+    assert status != 0
+    # Failures handled by die, and unguarded ones that end the run through
+    # `set -e` (cloud-localds before boot, the bundle copy after it).
+    for tool, why in (("cargo", "offline build failed"), ("image-tool", "does not verify"),
+                      ("cloud-localds", ""), ("qemu", "QEMU/KVM did not start"),
+                      ("ssh-copy", ""), ("scp", "no evidence came out of the guest")):
+        status, _, _, err = execute(f"fail-{tool}", FAKE_FAIL=tool)
+        assert status != 0 and why in err, (tool, status, err)
+    status, *_ = execute("foreign-pid", FAKE_FAIL="qemu-foreign-pid")
+    foreign = processes_naming(f"-fake-unrelated {scratch}/state-foreign-pid")
+    assert status != 0 and len(foreign) == 1, ("a pid that does not name this run was signalled", foreign)
+    os.kill(int(foreign[0]), signal.SIGKILL)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        status, *_ = execute(f"signal-{sig.name}", signal_=sig, FAKE_HANG="1")
+        assert status != 0, (sig, status)
 
 
 def check_static_guardrails():
@@ -1044,6 +1233,7 @@ def main():
         shims = Shims(scratch)
         repo, sha = check_preparation_modes(scratch, shims)
         check_execute_refusals(scratch, shims, repo, sha)
+        check_execute_end_to_end(scratch)
         check_static_guardrails()
         check_network_plan()
         check_evidence()
@@ -1058,7 +1248,7 @@ def main():
         check_end_to_end(evidence_module, scratch)
         assert shims.calls() == [], shims.calls()
     print("remote provider KVM harness, offline: preparation modes run nothing forbidden and report NOT_RUN; "
-          "--execute refuses on every missing gate; KVM-only, restrict=on, no workflow executes it; "
+          "--execute refuses on every missing gate and cleans up after PASS, FAIL, errors and signals; KVM-only, restrict=on, no workflow executes it; "
           "network plan matches the DNS classifier and probe targets; evidence rules reject fabricated "
           "PASS, gaps and leaks; mock scenarios, DNS and rebinding; probe classification; guest runner "
           "fail-closed. (Harness only: real confinement remains NOT_RUN.)")
