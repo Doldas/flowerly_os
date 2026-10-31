@@ -6,19 +6,19 @@
     {
       "test_id": "E1",
       "part": "environment",
-      "description": "QEMU runs with -accel kvm; no TCG fallback",
+      "description": "Guest systemd-detect-virt reports kvm and QEMU's running command line (host) has exactly -accel kvm, no TCG",
       "exercises": "harness"
     },
     {
       "test_id": "E2",
       "part": "environment",
-      "description": "Guest NIC is QEMU user networking with restrict=on: no route to the host or the internet; egress attempts fail",
+      "description": "QEMU's running network option is restrict=on with only the SSH forward, the guest routes via the slirp gateway, and a live host canary at that gateway sees no guest connection",
       "exercises": "harness"
     },
     {
       "test_id": "E3",
       "part": "environment",
-      "description": "Guest image matches the pinned version, SHA-256 and signature in arch-image.json",
+      "description": "Host-computed image SHA-256 equals the pin, the signature verifies, and the keyring holds exactly the pinned key",
       "exercises": "harness"
     },
     {

@@ -370,6 +370,10 @@ section.
 The guest has no route out. The mock server, its DNS and the dummy
 credential exist only inside it. The real server and the real key are
 never involved.
+
+A run counts only through its bound record: `verify-bound` on
+`acceptance.json` must return `PASS`. A guest evidence document alone, a
+preparation document or a partial run never does.
 - OS-boundary acceptance. The first live test (#268) ran providerd as the
   owner's user without the unit, so it accepted the adapter only.
 

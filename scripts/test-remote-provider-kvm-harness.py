@@ -29,7 +29,14 @@ Covered:
 - the admission client separates refused-at-connect, refused-after-connect
   and admitted;
 - the guest runner refuses outside a disposable guest and records harness
-  errors as INCONCLUSIVE, unreached checks as NOT_RUN, never PASS.
+  errors as INCONCLUSIVE, unreached checks as NOT_RUN, never PASS;
+- E2: simulated non-isolated configurations that the a505c87 logic passed
+  (refused or silent probes, no route) now FAIL or are INCONCLUSIVE; only
+  restrict=on read back from QEMU plus a live, untouched host canary passes;
+- evidence chain: only a bound record whose commit, run id, image, binary
+  and unit hashes, tree state and host-finalized E1-E3 all agree verifies
+  as PASS; preparation, partial, edited or mismatched runs never do;
+- SSH uses a per-run pinned guest host key.
 """
 import hashlib
 import http.client
@@ -194,6 +201,10 @@ def check_static_guardrails():
     assert "images/latest" not in text and "Arch-Linux-x86_64-cloudimg.qcow2" not in text
     qemu = re.search(r"qemu_args\(\) \{(.*?)\n\}", text, re.S).group(1)
     assert "-accel kvm" in qemu and "restrict=on" in qemu and "hostfwd=tcp:127.0.0.1:" in qemu, qemu
+    # The guest's SSH host key is generated per run and pinned: no TOFU.
+    assert "StrictHostKeyChecking=no" not in code and "UserKnownHostsFile=/dev/null" not in code
+    assert code.count("StrictHostKeyChecking=yes") >= 2 and "HostKeyAlias=" in code
+    assert "ssh_deletekeys: true" in text and "ed25519_private" in text
     # Host-side sudo never appears outside commands sent to the guest over ssh.
     for line in code.splitlines():
         if re.search(r"\bsudo\b", line):
@@ -486,6 +497,176 @@ def check_probe(scratch):
     assert result.returncode == 1 and report["controlled"] and "connect refused" in report["inconclusive"]
 
 
+# --- E2 egress and the host/guest evidence chain --------------------------------
+
+def old_e2_passed(attempts):
+    """E2 as it was at a505c87: PASS when no probe connected."""
+    return all(v != "connected" for v in attempts.values())
+
+
+RESTRICTED = ["qemu-system-x86_64", "-machine", "q35", "-accel", "kvm", "-cpu", "host",
+              "-nic", "user,model=virtio-net-pci,restrict=on,hostfwd=tcp:127.0.0.1:40222-:22"]
+UNRESTRICTED = [a.replace("restrict=on,", "") for a in RESTRICTED]
+LIVE_CANARY = {"live_before": True, "live_after": True, "control_connections": 2, "total_connections": 2}
+GUEST_OK = {"gateway": "10.0.2.2", "default_route_via": "10.0.2.2", "local_control": "connected",
+            "canary_attempt": "ETIMEDOUT", "canary_port": 40001}
+
+
+def e2_outcome(guest, ev, guest_eval, qemu, canary):
+    """Full E2 decision: the guest's half, then the host finalization."""
+    status, cls = guest_eval(guest)
+    record = {"test_id": "E2", "test_status": status, "classification": cls, "observed": guest,
+              "skip_reason": None, "test_started_at_utc": None}
+    doc = ev.finalize({"phase": "execution", "results": [record]},
+                      {"qemu": {"cmdline": qemu}, "egress_canary": canary, "finished_at_utc": "2099-01-01T00:00:00Z"})
+    return doc["results"][0]["test_status"], doc["results"][0]["classification"]
+
+
+def check_e2(ev, guest):
+    evaluate = guest.evaluate_guest_egress
+    # The guest alone never passes E2.
+    assert evaluate(GUEST_OK) == ("INCONCLUSIVE", "awaiting_host")
+    scenarios = [
+        # (name, guest observations, QEMU command line, canary, expected status)
+        ("isolated", GUEST_OK, RESTRICTED, LIVE_CANARY, "PASS"),
+        # Not isolated, nothing listening behind the gateway: every guest
+        # probe is refused. a505c87 called this PASS.
+        ("unrestricted, refused probes", dict(GUEST_OK, canary_attempt="ECONNREFUSED"), UNRESTRICTED,
+         LIVE_CANARY, "FAIL"),
+        ("unrestricted, silent probes", GUEST_OK, UNRESTRICTED, LIVE_CANARY, "FAIL"),
+        ("canary reached, guest saw a timeout", GUEST_OK, RESTRICTED, dict(LIVE_CANARY, total_connections=3),
+         "FAIL"),
+        ("guest connected", dict(GUEST_OK, canary_attempt="connected"), RESTRICTED, LIVE_CANARY, "FAIL"),
+        ("no default route", dict(GUEST_OK, default_route_via=None), RESTRICTED, LIVE_CANARY, "INCONCLUSIVE"),
+        ("route elsewhere", dict(GUEST_OK, default_route_via="192.168.1.1"), RESTRICTED, LIVE_CANARY,
+         "INCONCLUSIVE"),
+        ("probe method unproven", dict(GUEST_OK, local_control="ECONNREFUSED"), RESTRICTED, LIVE_CANARY,
+         "INCONCLUSIVE"),
+        ("canary dead before", GUEST_OK, RESTRICTED, dict(LIVE_CANARY, live_before=False), "INCONCLUSIVE"),
+        ("canary dead after", GUEST_OK, RESTRICTED, dict(LIVE_CANARY, live_after=False), "INCONCLUSIVE"),
+        ("no canary attempt", dict(GUEST_OK, canary_attempt=None), RESTRICTED, LIVE_CANARY, "INCONCLUSIVE"),
+        ("no QEMU command line", GUEST_OK, [], LIVE_CANARY, "INCONCLUSIVE"),
+        ("extra NIC", GUEST_OK, RESTRICTED + ["-nic", "user"], LIVE_CANARY, "FAIL"),
+        ("guestfwd", GUEST_OK, [a + ",guestfwd=tcp:10.0.2.100:80-cmd:x" if a.startswith("user,") else a
+                                for a in RESTRICTED], LIVE_CANARY, "FAIL"),
+        ("forward on all interfaces", GUEST_OK, [a.replace("127.0.0.1", "") for a in RESTRICTED], LIVE_CANARY,
+         "FAIL"),
+    ]
+    for name, obs, qemu, canary, want in scenarios:
+        got = e2_outcome(obs, ev, evaluate, qemu, canary)[0]
+        assert got == want, (name, got, want)
+    # The regression: these simulated NON-isolated configurations satisfied
+    # the old E2 (no probe connected), and the corrected logic rejects them.
+    for name, attempt in [("refused", "ECONNREFUSED"), ("timeout", "ETIMEDOUT")]:
+        old = {"host_gateway_ssh": attempt, "slirp_dns_tcp": attempt, "documentation_address": "ETIMEDOUT"}
+        assert old_e2_passed(old), "the old logic must be shown to pass this"
+        status = e2_outcome(dict(GUEST_OK, canary_attempt=attempt), ev, evaluate, UNRESTRICTED, LIVE_CANARY)[0]
+        assert status == "FAIL", (name, status)
+    old_no_route = {"host_gateway_ssh": "ENETUNREACH", "slirp_dns_tcp": "ENETUNREACH",
+                    "documentation_address": "ENETUNREACH"}
+    assert old_e2_passed(old_no_route)
+    assert e2_outcome(dict(GUEST_OK, default_route_via=None, canary_attempt="ENETUNREACH"), ev, evaluate,
+                      RESTRICTED, LIVE_CANARY)[0] == "INCONCLUSIVE"
+    # E1: KVM only; TCG anywhere fails.
+    assert ev.qemu_accel_kvm(RESTRICTED)
+    assert not ev.qemu_accel_kvm([a.replace("kvm", "tcg") for a in RESTRICTED])
+    assert not ev.qemu_accel_kvm(RESTRICTED + ["-accel", "tcg"])
+    assert not ev.qemu_accel_kvm(["qemu-system-x86_64"])
+    # The harness's own QEMU line satisfies both checks.
+    line = run(["bash", "-c", f"source <(sed -n '/^qemu_args() {{/,/^}}/p' {HARNESS}); "
+                              "VM_CPUS=4 VM_MEMORY_MB=4096; qemu_args r /run img 40222"], check=True).stdout.split()
+    assert ev.qemu_accel_kvm(line) and ev.qemu_network_restricted(line), line
+
+
+def accepted_run(ev):
+    """A complete, consistent synthetic run: guest document and host facts."""
+    commit, image_sha = "c" * 40, "d" * 64
+    facts = {"git_commit": commit, "git_tree_clean": True, "guest_image": "Arch-Linux-x86_64-cloudimg-x",
+             "guest_image_sha256": image_sha, "guest_kernel": "6.x-arch", "systemd_version": "systemd 999",
+             "providerd_sha256": "e" * 64, "unit_sha256": "f" * 64}
+    results = []
+    for check in ev.catalog():
+        if check["test_id"] in ("E1", "E2", "E3"):
+            obs = dict(GUEST_OK) if check["test_id"] == "E2" else {"guest_virt": "kvm"}
+            results.append(ev.record(check, facts, "INCONCLUSIVE", expected="x", observed=obs,
+                                     classification="awaiting_host", started="2099-01-01T00:00:00Z",
+                                     finished="2099-01-01T00:00:00Z"))
+        else:
+            results.append(ev.record(check, facts, "PASS", expected="x", observed={"ok": True},
+                                     started="2099-01-01T00:00:00Z", finished="2099-01-01T00:00:01Z"))
+    guest_doc = ev.document("execution", "synthetic-run-0001", results)
+    host = {"run_id": "synthetic-run-0001", "approved_commit": commit, "head_at_start": commit, "head_at_end": commit,
+            "tree_clean_at_start": True, "tree_clean_at_end": True, "finished_at_utc": "2099-01-01T01:00:00Z",
+            "image": {"lock_sha256": image_sha, "sha256_expected": image_sha, "sha256_actual": image_sha,
+                      "signature_verified": True, "keyring_fingerprints": ["A" * 40],
+                      "signing_key_fingerprint": "A" * 40, "lock_fingerprint": "A" * 40},
+            "qemu": {"cmdline": RESTRICTED}, "egress_canary": dict(LIVE_CANARY),
+            "build": {"providerd_sha256": "e" * 64, "flowerlyd_sha256": "0" * 64, "unit_sha256": "f" * 64}}
+    return guest_doc, host
+
+
+def check_binding(ev, scratch):
+    guest_doc, host = accepted_run(ev)
+    # The guest's own document is never an acceptance: E1-E3 await the host.
+    assert guest_doc["summary"]["overall"] == "INCONCLUSIVE"
+    bound = ev.bind(guest_doc, host)
+    assert bound["verdict"] == "PASS" and bound["problems"] == [], bound["problems"]
+    path = scratch / "acceptance.json"
+    path.write_text(json.dumps(bound))
+    assert run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", path]).returncode == 0
+
+    def verdict(mutate_guest=None, mutate_host=None, mutate_bound=None):
+        g, h = accepted_run(ev)
+        if mutate_guest:
+            mutate_guest(g)
+            g["summary"] = ev.summarize(g["phase"], g["results"])
+        if mutate_host:
+            mutate_host(h)
+        b = ev.bind(g, h)
+        if mutate_bound:
+            mutate_bound(b)
+            b["verdict"], b["problems"] = ev.verify_bound(b)
+        return b["verdict"]
+
+    def by_id(doc, test_id):
+        return next(r for r in doc["results"] if r["test_id"] == test_id)
+    cases = {
+        "preparation document": (dict(mutate_bound=lambda b: b.update(
+            guest_evidence=ev.not_run("c" * 40, True, "prep"))), "INVALID"),
+        "partial run": (dict(mutate_guest=lambda g: by_id(g, "C16").update(
+            test_status="NOT_RUN", observed=None, skip_reason="not reached")), "NOT_RUN"),
+        "a failed check": (dict(mutate_guest=lambda g: by_id(g, "A10").update(test_status="FAIL")), "FAIL"),
+        "guest claims E2 itself": (dict(mutate_guest=lambda g: by_id(g, "E2").update(
+            test_status="PASS", classification="x")), "INCONCLUSIVE"),
+        "finalized E2 edited to PASS": (dict(mutate_host=lambda h: h["egress_canary"].update(total_connections=3),
+                                             mutate_bound=lambda b: by_id(b["evidence"], "E2").update(
+                                                 test_status="PASS")), "INVALID"),
+        "unrestricted QEMU": (dict(mutate_host=lambda h: h["qemu"].update(cmdline=UNRESTRICTED)), "FAIL"),
+        "TCG": (dict(mutate_host=lambda h: h["qemu"].update(
+            cmdline=[a.replace("kvm", "tcg") for a in RESTRICTED])), "FAIL"),
+        "unsigned image": (dict(mutate_host=lambda h: h["image"].update(signature_verified=False)), "FAIL"),
+        "image digest mismatch": (dict(mutate_host=lambda h: h["image"].update(sha256_actual="9" * 64)), "FAIL"),
+        "record image differs": (dict(mutate_guest=lambda g: by_id(g, "A1").update(
+            guest_image_sha256="9" * 64)), "INVALID"),
+        "other commit in a record": (dict(mutate_guest=lambda g: [r.update(git_commit="b" * 40)
+                                                                  for r in g["results"]]), "INVALID"),
+        "HEAD moved": (dict(mutate_host=lambda h: h.update(head_at_end="b" * 40)), "INVALID"),
+        "dirty at end": (dict(mutate_host=lambda h: h.update(tree_clean_at_end=False)), "INVALID"),
+        "run id mismatch": (dict(mutate_host=lambda h: h.update(run_id="another-run-0001")), "INVALID"),
+        "providerd hash mismatch": (dict(mutate_host=lambda h: h["build"].update(providerd_sha256="1" * 64)),
+                                    "INVALID"),
+        "unit hash mismatch": (dict(mutate_host=lambda h: h["build"].update(unit_sha256="1" * 64)), "INVALID"),
+        "guest evidence swapped": (dict(mutate_bound=lambda b: b["guest_evidence"]["results"][5].update(
+            observed={"edited": True})), "INVALID"),
+    }
+    for name, (mutation, want) in cases.items():
+        got = verdict(**mutation)
+        assert got == want, (name, got, want)
+    broken = scratch / "broken.json"
+    broken.write_text("{}")
+    assert run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", broken]).returncode == 1
+
+
 # --- socket client ---------------------------------------------------------------
 
 def check_admission_client(scratch):
@@ -580,6 +761,10 @@ def main():
         check_probe(scratch)
         check_admission_client(scratch)
         check_guest_runner(scratch)
+        evidence_module = load("evidence_chain", EVIDENCE_TOOL)
+        guest_module = load("guest_e2", GUEST / "guest-acceptance.py")
+        check_e2(evidence_module, guest_module)
+        check_binding(evidence_module, scratch)
         assert shims.calls() == [], shims.calls()
     print("remote provider KVM harness, offline: preparation modes run nothing forbidden and report NOT_RUN; "
           "--execute refuses on every missing gate; KVM-only, restrict=on, no workflow executes it; "

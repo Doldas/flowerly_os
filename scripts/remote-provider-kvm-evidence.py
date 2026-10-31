@@ -3,6 +3,8 @@
 
     not-run  --commit <sha> --clean yes|no --reason <text> --out <file>
     validate <file> [--phase preparation|execution]
+    bind     --guest-evidence <file> --host-facts <file> --out <file>
+    verify-bound <file>
 
 `not-run` writes the only evidence a preparation command may produce: one
 NOT_RUN record per check in testbed/remote-provider-kvm/checks.json. It
@@ -21,8 +23,20 @@ the rules a schema cannot express:
 
 The guest runner builds its records with `record()` from this module, so
 the rules are the same in both places. Exit status 0 = valid.
+
+The guest can never PASS E1, E2 or E3 on its own: they depend on facts
+only the host sees (QEMU's running command line, the host-side egress
+canary, the image digest and signature). `bind` finalizes those three from
+the host facts and wraps everything into one acceptance record.
+`verify-bound` re-derives that finalization from the guest's original
+records and the host facts, and checks that commit, run id, image, binary
+and unit hashes and tree state agree everywhere. Only a record whose
+`verify-bound` verdict is PASS is an acceptance candidate; a guest
+evidence document alone, a preparation document, or a partial run never is.
 """
 import argparse
+import copy
+import hashlib
 import json
 import pathlib
 import re
@@ -195,6 +209,144 @@ def validate(doc, phase=None):
     return problems
 
 
+# --- host finalization and binding -----------------------------------------
+
+AWAITING_HOST = "awaiting_host"
+HOST_CHECKS = ("E1", "E2", "E3")
+SSH_FORWARD = re.compile(r"^hostfwd=tcp:127\.0\.0\.1:\d{1,5}-:22$")
+
+
+def qemu_accel_kvm(cmdline):
+    """Exactly one -accel, and it is kvm; no TCG anywhere."""
+    accels = [cmdline[i + 1] for i, arg in enumerate(cmdline[:-1]) if arg == "-accel"]
+    return accels == ["kvm"] and not any("tcg" in arg.lower() for arg in cmdline)
+
+
+def qemu_network_restricted(cmdline):
+    """Exactly one NIC: user networking, restrict=on, only the SSH forward
+    on 127.0.0.1, no guestfwd; no other network option at all."""
+    network_flags = {"-nic", "-netdev", "-net", "-device"}
+    nics = [cmdline[i + 1] for i, arg in enumerate(cmdline[:-1]) if arg in network_flags]
+    if len(nics) != 1 or "-nic" not in cmdline:
+        return False
+    options = nics[0].split(",")
+    forwards = [o for o in options if o.startswith(("hostfwd=", "guestfwd="))]
+    return (options[0] == "user" and "restrict=on" in options and len(forwards) == 1
+            and bool(SSH_FORWARD.match(forwards[0])))
+
+
+def finalize(guest_doc, host):
+    """The guest's document with E1-E3 decided from the host facts.
+    Deterministic: `verify-bound` recomputes it and compares."""
+    doc = copy.deepcopy(guest_doc)
+    when = host.get("finished_at_utc")
+    qemu = (host.get("qemu") or {}).get("cmdline") or []
+    image = host.get("image") or {}
+    canary = host.get("egress_canary") or {}
+    for record in doc["results"]:
+        test_id = record["test_id"]
+        if test_id not in HOST_CHECKS:
+            continue
+        guest_status, guest_class = record["test_status"], record["classification"]
+        if guest_status == "PASS":
+            status, cls = "INCONCLUSIVE", "guest_claimed_a_host_check"
+        elif guest_status == "FAIL":
+            status, cls = "FAIL", guest_class
+        elif guest_class != AWAITING_HOST:
+            status, cls = guest_status, guest_class
+        elif test_id == "E1":
+            status, cls = ("PASS", "kvm_verified") if qemu_accel_kvm(qemu) else (
+                ("INCONCLUSIVE", "qemu_cmdline_missing") if not qemu else ("FAIL", "qemu_not_kvm"))
+        elif test_id == "E2":
+            foreign = canary.get("total_connections", 0) - canary.get("control_connections", 0)
+            if not qemu:
+                status, cls = "INCONCLUSIVE", "qemu_cmdline_missing"
+            elif foreign != 0:
+                status, cls = "FAIL", "host_canary_reached"
+            elif not qemu_network_restricted(qemu):
+                status, cls = "FAIL", "qemu_network_not_restricted"
+            elif not (canary.get("live_before") and canary.get("live_after")):
+                status, cls = "INCONCLUSIVE", "canary_not_proven_live"
+            else:
+                status, cls = "PASS", "restrict_verified_canary_untouched"
+        else:  # E3
+            verified = (image.get("sha256_actual") == image.get("sha256_expected") == image.get("lock_sha256")
+                        and image.get("sha256_expected") is not None
+                        and image.get("signature_verified") is True
+                        and image.get("keyring_fingerprints") == [image.get("signing_key_fingerprint")]
+                        and image.get("signing_key_fingerprint") == image.get("lock_fingerprint"))
+            status, cls = ("PASS", "digest_and_signature_verified") if verified else ("FAIL", "image_unverified")
+        record["observed"] = {"guest": record["observed"], "host": {
+            "E1": {"qemu_accel": [qemu[i + 1] for i, a in enumerate(qemu[:-1]) if a == "-accel"]},
+            "E2": {"qemu_network": [qemu[i + 1] for i, a in enumerate(qemu[:-1]) if a == "-nic"], "canary": canary},
+            "E3": {k: image.get(k) for k in ("sha256_actual", "signature_verified", "signing_key_fingerprint")},
+        }[test_id]}
+        record.update(test_status=status, classification=cls, test_finished_at_utc=when,
+                      test_started_at_utc=record["test_started_at_utc"] or when)
+        if status != "NOT_RUN":
+            record["skip_reason"] = None
+    doc["summary"] = summarize(doc["phase"], doc["results"])
+    return doc
+
+
+def canonical_sha(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def bind(guest_doc, host):
+    final = finalize(guest_doc, host)
+    bound = {"schema_version": 1, "kind": "remote-provider-kvm-acceptance", "run_id": host.get("run_id"),
+             "approved_commit": host.get("approved_commit"), "host": host, "guest_evidence": guest_doc,
+             "guest_evidence_sha256": canonical_sha(guest_doc), "evidence": final}
+    verdict, problems = verify_bound(bound)
+    bound.update(verdict=verdict, problems=problems)
+    return bound
+
+
+def verify_bound(bound):
+    """(verdict, problems). Verdict is INVALID whenever anything disagrees."""
+    problems = []
+    host = bound.get("host") or {}
+    guest_doc = bound.get("guest_evidence")
+    commit = bound.get("approved_commit")
+    if bound.get("kind") != "remote-provider-kvm-acceptance" or bound.get("schema_version") != 1:
+        problems.append("not an acceptance record")
+    if not isinstance(guest_doc, dict) or guest_doc.get("phase") != "execution":
+        return "INVALID", problems + ["guest evidence is missing or not from an executed run"]
+    if canonical_sha(guest_doc) != bound.get("guest_evidence_sha256"):
+        problems.append("guest evidence does not match its recorded digest")
+    problems += [f"guest evidence: {p}" for p in validate(guest_doc, "execution")]
+    final = finalize(guest_doc, host)
+    if final != bound.get("evidence"):
+        problems.append("finalized evidence differs from the finalization the host facts produce")
+    problems += [f"evidence: {p}" for p in validate(final, "execution")]
+    if not (isinstance(commit, str) and SHA40.match(commit)):
+        problems.append("approved_commit is not a full SHA")
+    if not (host.get("head_at_start") == host.get("head_at_end") == commit):
+        problems.append("HEAD at start/end is not the approved commit")
+    if host.get("tree_clean_at_start") is not True or host.get("tree_clean_at_end") is not True:
+        problems.append("working tree was not clean for the whole run")
+    if not (bound.get("run_id") == host.get("run_id") == guest_doc.get("run_id")):
+        problems.append("run ids disagree")
+    image = host.get("image") or {}
+    build = host.get("build") or {}
+    for record in final["results"]:
+        if record["test_status"] == "NOT_RUN":
+            continue
+        where = record["test_id"]
+        if record["git_commit"] != commit or record["git_tree_clean"] is not True:
+            problems.append(f"{where}: commit or tree state differs from the approved run")
+        if record["providerd_sha256"] != build.get("providerd_sha256"):
+            problems.append(f"{where}: providerd hash differs from the host build")
+        if record["unit_sha256"] != build.get("unit_sha256"):
+            problems.append(f"{where}: unit hash differs from the approved commit's template")
+        if record["guest_image_sha256"] != image.get("sha256_expected"):
+            problems.append(f"{where}: image digest differs from the verified image")
+    if problems:
+        return "INVALID", sorted(set(problems))
+    return final["summary"]["overall"], []
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -206,7 +358,27 @@ def main(argv):
     check = sub.add_parser("validate")
     check.add_argument("file")
     check.add_argument("--phase", choices=("preparation", "execution"))
+    binder = sub.add_parser("bind")
+    binder.add_argument("--guest-evidence", required=True)
+    binder.add_argument("--host-facts", required=True)
+    binder.add_argument("--out", required=True)
+    verifier = sub.add_parser("verify-bound")
+    verifier.add_argument("file")
     args = parser.parse_args(argv[1:])
+    if args.command in ("bind", "verify-bound"):
+        if args.command == "bind":
+            bound = bind(json.loads(pathlib.Path(args.guest_evidence).read_text()),
+                         json.loads(pathlib.Path(args.host_facts).read_text()))
+            with open(args.out, "x") as out:
+                out.write(json.dumps(bound, indent=2, sort_keys=True) + "\n")
+        else:
+            try:
+                bound = json.loads(pathlib.Path(args.file).read_text())
+                bound["verdict"], bound["problems"] = verify_bound(bound)
+            except (OSError, ValueError, KeyError, TypeError) as err:
+                bound = {"verdict": "INVALID", "problems": [f"unreadable: {err}"]}
+        print(json.dumps({"verdict": bound["verdict"], "problems": bound["problems"]}, indent=2))
+        return 0 if bound["verdict"] == "PASS" else 1
     if args.command == "not-run":
         doc = not_run(args.commit, args.clean == "yes", args.reason)
         problems = validate(doc, "preparation")

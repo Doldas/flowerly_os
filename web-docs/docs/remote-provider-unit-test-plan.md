@@ -102,8 +102,11 @@ Delete the cache directory to clean it up.
 
 **No live egress.** The guest's only NIC is QEMU user networking with
 `restrict=on`: it cannot reach the host or the internet. The only
-forwarding is inbound SSH on `127.0.0.1:<random port>`. The guest also
-checks this itself (E2).
+forwarding is inbound SSH on `127.0.0.1:<random port>`. E2 proves this
+from evidence on both sides of QEMU (see [E2](#e2-egress-isolation)),
+never from unanswered probes alone. After E2, the guest also deletes its
+default routes and checks that every mock address is a `local` route, so
+nothing addressed to the mock can be forwarded.
 
 **Where the mock lives.** All destinations are on a dummy interface
 (`flowerly-mock0`) **inside the guest**
@@ -128,9 +131,54 @@ policy refuses that, correctly. It must not be weakened, and no test-only
 bypass may be added.
 
 The harness therefore gives the mock an address the **default production
-policy classifies as public**: `192.88.99.0/24`, the deprecated 6to4 relay
-anycast block (RFC 7526). That address lives only on the guest's dummy
-interface. The guest has no route out, so the address never leaves it.
+policy classifies as public**: `192.88.99.10`, from `192.88.99.0/24`. That
+address lives only on the guest's dummy interface. The kernel delivers it
+locally, and the guest has no route out, so the address never leaves it.
+
+**What `192.88.99.0/24` is.**
+- RFC 3068 (2001) assigned it as the 6to4 relay anycast prefix, with
+  `192.88.99.1` as the relay address. Third parties announced it in
+  global routing to run public 6to4 relays.
+- RFC 7526 (2015, BCP 196) deprecated that anycast mechanism. It asked
+  IANA to record the prefix as deprecated and not to reassign it except by
+  a future IETF standards action. In the IANA IPv4 special-purpose address
+  registry it is listed as "Deprecated (6to4 Relay Anycast)". Reviewers
+  should check that entry's current attribute columns (source,
+  destination, forwardable, globally reachable) directly; this plan does
+  not restate them from memory.
+- It is therefore neither private nor documentation space, and no current
+  service is expected to be assigned there.
+
+**Why production accepts it.** providerd's `net.rs` refuses:
+- loopback, unspecified, broadcast and multicast;
+- link-local;
+- documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`);
+- `0.0.0.0/8`, `240.0.0.0/4`, the benchmarking range `198.18.0.0/15` and
+  `192.0.0.0/24`;
+- private RFC 1918 and CGNAT `100.64.0.0/10`, unless the administrator
+  pins an exception.
+
+`192.88.99.0/24` is in none of these lists, so the default policy treats
+it as public, like any other unicast address. Python's `ipaddress` agrees
+(`is_global` is true); the operator's DNS check uses that.
+
+**Security ambiguity, stated.** The harness now depends on production
+*not* refusing a deprecated special-purpose block. Refusing it would be a
+reasonable production hardening, since no legitimate inference server
+should be there, and the harness must not argue against that. If such a
+change lands, the Rust test fails, and the harness moves to alternative B
+below; the policy is never relaxed for the test. For independent review,
+the offline alternatives are:
+
+| Option | Positive path runs | Cost |
+| --- | --- | --- |
+| A (current) | the default policy, unmodified config | relies on `192.88.99.0/24` staying accepted |
+| B | the reviewed production exception `private_destination_cidrs = ["10.77.0.10/32"]`, mock on that private address | tests the exception rather than the default; needs an instance rendered with that field (a new operator option or a second, hand-installed instance) |
+| C | an ordinary global unicast address on the dummy interface | the address belongs to someone else; harmless offline, but semantically worse than a block that will not be reassigned |
+
+The recommendation is A now. Whether production should refuse deprecated
+special-purpose blocks is a separate question for review; it is not
+changed here.
 The positive path (B1, B2) then runs:
 - the unmodified binary, unit, operator-rendered config and resolver;
 - with `allow_loopback = false` and an empty private allowlist.
@@ -200,12 +248,61 @@ the operator.
 
 ### Environment (harness)
 
-- **E1** QEMU runs with `-accel kvm`; there is no TCG fallback.
-- **E2** QEMU uses `restrict=on`. In the guest, connections to the host
-  gateway, slirp DNS and an external address all fail.
-- **E3** The image matches the pinned SHA-256 and signature.
-- **E4** The guest runner found this run's marker, KVM, hostname and
-  manifest.
+The guest decides only E4. For E1, E2 and E3 it records its half as
+`INCONCLUSIVE` (`awaiting_host`), or as `FAIL` when its own observation
+already disproves the claim. The host then finalizes those three from
+facts only it can see (see [Evidence](#evidence)). The guest alone can
+never PASS them.
+
+- **E1** In the guest, `systemd-detect-virt` reports `kvm` (TCG reports
+  `qemu`: FAIL). On the host, QEMU's running command line, read back from
+  `/proc/<pid>/cmdline`, has exactly one `-accel`, which is `kvm`, and
+  `tcg` appears nowhere.
+- **E2** Egress isolation, below.
+- **E3** On the host, the downloaded image's SHA-256 equals the pinned one,
+  the signature verifies, and the keyring holds exactly the pinned key.
+- **E4** The guest runner found this run's marker, KVM, hostname and a
+  bundle that matches its manifest.
+
+#### E2: egress isolation
+
+Unanswered TCP probes prove nothing: a refused connection, a timeout or a
+missing listener looks the same whether or not `restrict=on` is in force.
+The commit reviewed at `a505c87` passed E2 on exactly that basis; this
+section replaces it. E2 now combines four separate pieces of evidence:
+
+1. **Verified QEMU configuration (host).** On the running command line
+   there is exactly one network option. It is `-nic user,...,restrict=on`
+   with a single `hostfwd=tcp:127.0.0.1:<port>-:22`, no `guestfwd`, and no
+   other `-netdev`, `-net` or `-device`.
+2. **Guest routing (guest).** There is exactly one default route, and it
+   goes via the slirp gateway `10.0.2.2`, so the attempt below really
+   reaches QEMU. Without that route, a failure says nothing about QEMU.
+3. **Controlled attempt (both sides).**
+   - Before the guest starts, the host runs a canary listener on its own
+     `127.0.0.1:<port>`: exactly where slirp maps `10.0.2.2:<port>` when
+     networking is **not** restricted. The host proves the canary live
+     with one control connection before the guest run and one after.
+   - The guest first proves its probing method works, with a connection
+     to a guest-local listener. It then connects to `10.0.2.2:<port>`.
+4. **Permitted versus forbidden paths.** The permitted path is inbound SSH
+   through the single forward. The forbidden path is guest to host
+   (and, through the same slirp mechanism, guest to anywhere), represented
+   by the canary. Any canary connection beyond the host's two control
+   connections counts as the guest reaching the host.
+
+| Outcome | When |
+| --- | --- |
+| FAIL | the guest's attempt connected; the canary saw any extra connection; the running QEMU line is not restricted as above |
+| INCONCLUSIVE | the guest-local control failed; no single default route via `10.0.2.2`; no attempt was made; the canary was not proven live before **and** after; the QEMU line could not be read |
+| PASS | the guest's attempt did not connect, the canary saw only the host's two control connections, the canary was live before and after, and the running QEMU line is restricted |
+
+The internet is never contacted, even to test that it is unreachable.
+Guest-to-internet traffic would use the same slirp code path as the
+canary, and `restrict=on` stops both. The offline test simulates
+non-isolated configurations (refused probes, silent probes, no route) that
+the old E2 passed, and shows that the new logic makes them FAIL or
+INCONCLUSIVE.
 
 ### Part A: confinement probe inside the real unit
 
@@ -407,10 +504,17 @@ real-root evidence.
 
 ## Pass and fail criteria
 
-- The acceptance **passes** only if the evidence document validates with
-  `--phase execution` and `summary.overall` is `PASS`. That requires all
-  72 checks to be `PASS` at one commit, from a clean tree, with the image,
-  kernel, systemd and binary/unit hashes recorded.
+- The acceptance **passes** only if
+  `scripts/remote-provider-kvm-evidence.py verify-bound acceptance.json`
+  returns the verdict `PASS`. That requires:
+  - all 72 checks `PASS`, with E1-E3 finalized from host facts;
+  - one approved commit, the same at the start and the end, with a clean
+    tree throughout;
+  - one run id;
+  - the verified image digest and signature;
+  - binary and unit hashes that match the host build.
+- A guest evidence document on its own is never acceptance (its E1-E3 stay
+  `INCONCLUSIVE`), and neither is a preparation document or a partial run.
 - Any `FAIL` fails the run.
 - Any `INCONCLUSIVE` (harness error, unreachable control target, binary
   that does not run) or `NOT_RUN` means **not accepted**. Fix the harness
@@ -444,17 +548,57 @@ If the guest's document fails validation, the guest writes `*.INVALID.json`
 with the problems instead of the document. The preparation modes can only
 produce `NOT_RUN`.
 
+### Host/guest evidence chain
+
+| Link | Recorded by | How it is bound |
+| --- | --- | --- |
+| approved commit | host gates (HEAD = `--approved-sha`, clean tree); HEAD and tree re-read at the end | every record's `git_commit`; `head_at_start` = `head_at_end` = approved; clean at both ends |
+| run id | host (random, per run) | cloud-init marker, guest hostname, guest document, host facts and acceptance record must all agree |
+| image | host: computed SHA-256, signature, keyring fingerprints, lock file | E3; every record's `guest_image_sha256` = verified digest |
+| binaries and unit | host: hashes of the built `providerd`/`flowerlyd`, the template from the approved commit, the bundle manifest | the guest verifies the bundle manifest (E4); every record's `providerd_sha256` and `unit_sha256` = host build |
+| actual KVM | guest: `systemd-detect-virt`; host: QEMU's running command line | E1 |
+| egress isolation | guest observations; host canary and QEMU network line | E2 |
+| completeness | catalog | exactly one record per check; `NOT_RUN` or `INCONCLUSIVE` anywhere means not PASS |
+
+`bind` writes `acceptance.json`. It contains:
+- the guest's original document and its digest;
+- the host facts;
+- the finalized document;
+- the verdict.
+
+`verify-bound` re-derives the finalization from the guest's original
+records and the host facts, then rechecks every link. If any link
+disagrees, or the finalized document has been edited, the verdict is
+`INVALID`.
+
 The run directory `target/remote-provider-kvm/<run-id>/report/` keeps:
-- the evidence document and its validation result;
-- `guest.log`, `serial.log` and `qemu-args.txt`;
+- `acceptance.json`, `verification.json`, `host-facts.json` and the
+  guest's evidence document;
+- `guest.log`, `serial.log`, `qemu-args.txt` and `qemu-cmdline.txt`;
 - the image signature and its verification output.
+
+## SSH to the guest
+
+Trust-on-first-use is not used. For each run the harness generates the
+guest's ed25519 SSH host key itself and puts it in cloud-init
+(`ssh_keys`, with `ssh_deletekeys: true` and `ssh_genkeytypes: []`). It
+writes the public half to a run-local `known_hosts` under the alias
+`flowerly-kvm-<run id>`. Every `ssh` and `scp` uses
+`StrictHostKeyChecking=yes`, `HostKeyAlias=flowerly-kvm-<run id>` and
+`HostKeyAlgorithms=ssh-ed25519`. Anything else answering on the forwarded
+port fails host-key verification.
+
+The private host key exists only in the run directory (mode 0600 under
+`umask 077`) and in the seed image, and both are deleted at teardown.
+Anyone who can read the invoking user's files during the run could read
+it; that user already controls the VM.
 
 ## Teardown
 
 On exit, success or failure, the harness:
 - kills QEMU;
 - deletes the overlay, the cloud-init seed and user-data, the run's SSH
-  key, the export and the bundle;
+  client key and the guest's SSH host key pair, the export and the bundle;
 - keeps only `report/`.
 
 The guest, with every account, group, credential and trust anchor it
@@ -499,6 +643,19 @@ created, ceases to exist. The cached base image is untouched.
 - The guest orchestration (`guest-acceptance.py`) has passed only static
   and offline bookkeeping tests. Its first execution may hit harness
   defects. Those surface as `INCONCLUSIVE`, never as `PASS`.
+- **Evidence is not signed.** The binding makes inconsistencies and edits
+  of the finalized document detectable. Someone who controls the runner
+  could still fabricate a self-consistent guest document and host facts.
+  Trust rests on the recorded authorization, the run's logs and an
+  independent rerun from the same commit and image.
+- **E2 covers slirp's restrict mechanism, not every egress path in
+  principle.** It verifies the running QEMU network configuration and
+  that the guest cannot reach the host through it. The internet is not
+  contacted to test reachability. Another host process connecting to the
+  canary's port during the run would make E2 FAIL; that is conservative,
+  never a false PASS.
+- The older release runner `scripts/arch-kernel-vm-test.sh`, which is not
+  part of this harness, still uses `StrictHostKeyChecking=no`.
 
 ## Authorization required before execution
 

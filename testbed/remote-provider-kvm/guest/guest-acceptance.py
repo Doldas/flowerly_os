@@ -121,7 +121,9 @@ class Run:
             outcome = body()
             passed, observed = outcome[0], outcome[1]
             classification = outcome[2] if len(outcome) > 2 else None
-            status = "PASS" if passed is True else "FAIL"
+            # Only a literal True passes; a body may hand back INCONCLUSIVE
+            # itself (E1-E3 wait for the host's half of the evidence).
+            status = "PASS" if passed is True else ("INCONCLUSIVE" if passed == "INCONCLUSIVE" else "FAIL")
         except Harness as err:
             status, observed, classification = "INCONCLUSIVE", {"harness_error": str(err)[:400]}, "harness_error"
         except Exception as err:  # noqa: BLE001 - any surprise is inconclusive, never a pass
@@ -275,6 +277,7 @@ def guard(run):
     for rel, digest in manifest.items():
         if sha256(run.bundle / rel) != digest:
             sys.exit(f"guest-acceptance: bundle file {rel} does not match the manifest; refusing")
+    run.facts["manifest_files"] = len(manifest)
 
 
 def collect_facts(run):
@@ -285,22 +288,83 @@ def collect_facts(run):
         unit_sha256=sha256(run.repo / "distro/templates/remote-inference/flowerly-provider-remote@.service"))
 
 
-def check_egress(run):
-    """E2 inside the guest: the host and the internet are unreachable."""
-    def body():
-        attempts = {}
-        for name, address, port in [("host_gateway_ssh", "10.0.2.2", 22),
-                                     ("slirp_dns_tcp", "10.0.2.3", 53),
-                                     ("documentation_address", "192.0.2.1", 443)]:
-            try:
-                with socket.create_connection((address, port), timeout=5):
-                    attempts[name] = "connected"
-            except OSError as err:
-                attempts[name] = type(err).__name__
-        default_route = sh("ip", "-j", "route", "show", "default", check=False).stdout
-        passed = all(v != "connected" for v in attempts.values())
-        return passed, {"attempts": attempts, "default_route_present": bool(json.loads(default_route or "[]"))}
-    run.check("E2", "no TCP connection leaves the guest", body)
+AWAITING_HOST = "awaiting_host"
+
+
+def evaluate_guest_egress(obs):
+    """The guest's half of E2 -> (status, classification). Never PASS: an
+    unanswered connection proves nothing by itself. PASS needs the host's
+    half too (scripts/remote-provider-kvm-evidence.py finalize): QEMU's
+    running command line has restrict=on and the host canary the guest
+    aimed at stayed untouched while it was proven live.
+
+    obs keys: local_control ('connected' proves this probing method sees a
+    working path), default_route_via (the gateway the kernel would send the
+    attempt to), gateway (QEMU's slirp gateway, mapped to the host's
+    loopback when NOT restricted), canary_attempt ('connected' or an errno
+    name; None if not attempted)."""
+    if obs.get("canary_attempt") == "connected":
+        return "FAIL", "guest_reached_host_canary"
+    if obs.get("local_control") != "connected":
+        return "INCONCLUSIVE", "probe_method_unproven"
+    if not obs.get("gateway") or obs.get("default_route_via") != obs.get("gateway"):
+        # Without a route the attempt never reaches QEMU: its failure says
+        # nothing about restrict=on.
+        return "INCONCLUSIVE", "no_route_to_slirp_gateway"
+    if obs.get("canary_attempt") is None:
+        return "INCONCLUSIVE", "canary_not_attempted"
+    return "INCONCLUSIVE", AWAITING_HOST
+
+
+def observe_egress(run):
+    """Collect the guest's E2 observations, before any route change."""
+    obs = {"gateway": run.facts.get("slirp_gateway"), "canary_port": run.facts.get("egress_canary_port")}
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        try:
+            with socket.create_connection(listener.getsockname(), timeout=5):
+                obs["local_control"] = "connected"
+        except OSError as err:
+            obs["local_control"] = type(err).__name__
+    routes = json.loads(sh("ip", "-j", "route", "show", "default", check=False).stdout or "[]")
+    obs["default_routes"] = [{k: r.get(k) for k in ("gateway", "dev")} for r in routes]
+    obs["default_route_via"] = routes[0].get("gateway") if len(routes) == 1 else None
+    obs["canary_attempt"] = None
+    if obs["gateway"] and isinstance(obs["canary_port"], int):
+        try:
+            with socket.create_connection((obs["gateway"], obs["canary_port"]), timeout=10) as conn:
+                conn.sendall(f"guest-egress-canary {run.facts['run_id']}\n".encode())
+                obs["canary_attempt"] = "connected"
+        except OSError as err:
+            obs["canary_attempt"] = errname(err)
+    return obs
+
+
+def errname(err):
+    import errno
+    return errno.errorcode.get(err.errno, type(err).__name__) if err.errno else type(err).__name__
+
+
+def check_environment(run):
+    """E1-E4, guest halves. E1-E3 stay INCONCLUSIVE ('awaiting_host') until
+    the host adds what only it can see; E4 is fully decided here."""
+    virt = sh("systemd-detect-virt", "--vm", check=False).stdout.strip()
+    run.check("E4", "marker, KVM, hostname and bundle manifest match this run", lambda: (True, {
+        "marker_run_id": run.facts["run_id"], "virt": virt, "hostname": socket.gethostname(),
+        "manifest_files_verified": run.facts["manifest_files"]}))
+    # `kvm` here and `-accel kvm` on QEMU's running command line (host half).
+    run.check("E1", "guest sees KVM; host verifies QEMU's -accel kvm",
+              lambda: ("INCONCLUSIVE" if virt == "kvm" else False, {"guest_virt": virt},
+                       AWAITING_HOST if virt == "kvm" else "not_kvm"))
+    run.check("E3", "host verified the pinned image digest and signature before boot",
+              lambda: ("INCONCLUSIVE", {"guest": "cannot verify its own disk image"}, AWAITING_HOST))
+
+    def e2():
+        obs = observe_egress(run)
+        status, classification = evaluate_guest_egress(obs)
+        return (False if status == "FAIL" else "INCONCLUSIVE"), obs, classification
+    run.check("E2", "guest reaches no host path through QEMU (host canary untouched, restrict=on verified)", e2)
 
 
 def setup_network(run):
@@ -325,6 +389,21 @@ def setup_network(run):
     hosts = pathlib.Path("/etc/hosts").read_text()
     if net["domain"] in hosts:
         raise Harness("/etc/hosts already names the test domain")
+    # Defence in depth after E2 (which needed the route): no default route,
+    # and every mock address is delivered locally, never forwarded.
+    for family in ("-4", "-6"):
+        for _ in range(8):
+            if not json.loads(sh("ip", "-j", family, "route", "show", "default").stdout or "[]"):
+                break
+            sh("ip", family, "route", "del", "default")
+        else:
+            raise Harness(f"could not remove the {family} default route")
+    for role, address in net["addresses"].items():
+        if role.startswith("loopback"):
+            continue
+        route = sh("ip", "route", "get", address, check=False).stdout
+        if not route.startswith("local "):
+            raise Harness(f"{role} {address} is not a local address in this guest: {route.strip()[:120]}")
 
 
 def setup_pki_and_mock(run):
@@ -1128,14 +1207,7 @@ def main(argv):
     guard(run)
     WORK.mkdir(mode=0o755, exist_ok=True)
     collect_facts(run)
-    for test_id, result in (run.facts.pop("host_results", None) or {}).items():
-        run.results[test_id] = run.evidence.record(
-            run.catalog[test_id], run.facts, result["status"], expected=result["expected"],
-            observed=result["observed"], classification=result.get("classification"),
-            started=result["started"], finished=result["finished"])
-    run.check("E4", "marker, KVM, hostname and bundle manifest match this run",
-              lambda: (True, {"marker": "present", "virt": "kvm", "manifest": "verified"}))
-    check_egress(run)
+    check_environment(run)
     try:
         setup_network(run)
         setup_fixtures(run)

@@ -18,8 +18,12 @@
 #                no route to the host or the internet, and runs
 #                testbed/remote-provider-kvm/guest/guest-acceptance.py in it.
 #   evidence     after execution: the guest's evidence document is copied
-#                out, validated (scripts/remote-provider-kvm-evidence.py) and
-#                kept; the guest, its disk and its keys are destroyed.
+#                out; E1-E3 are finalized from host-only facts (QEMU's running
+#                command line, the egress canary, the image verification);
+#                everything is bound into one acceptance record that
+#                `remote-provider-kvm-evidence.py verify-bound` re-derives.
+#                Only its PASS verdict is an acceptance candidate. The guest,
+#                its disk and its keys are destroyed.
 #
 # --execute refuses unless ALL of these hold; each refusal happens before any
 # download, build or VM:
@@ -141,11 +145,15 @@ execution    --execute --approved-sha <sha> with FLOWERLY_KVM_ACCEPTANCE=$EXECUT
   3. download the pinned image (exact versioned URL) and its signature; verify
      SHA-256 and the signature against the pinned key; never 'latest'
   4. boot one guest: -accel kvm (no TCG fallback), -nic user,restrict=on with
-     only an SSH port forward on 127.0.0.1, qcow2 overlay, unique run id
-  5. copy the bundle (export, binaries, manifest, run facts); run
+     only an SSH port forward on 127.0.0.1, qcow2 overlay, unique run id, an
+     ephemeral SSH host key generated for this run and pinned (no TOFU)
+  5. start a host egress canary on 127.0.0.1 (proven live before and after);
+     read QEMU's running command line back from /proc
+  6. copy the bundle (export, binaries, manifest, run facts); run
      guest-acceptance.py as root INSIDE the guest
-evidence     copy out and validate the guest's evidence; destroy guest, overlay,
-             seed and SSH key; keep only the report directory
+evidence     copy out the guest's evidence; finalize E1-E3 from host facts; bind
+             commit, run id, image, hashes and tree state into acceptance.json;
+             verify-bound re-derives it; destroy guest, overlay, seed and keys
 EOF
 }
 
@@ -165,7 +173,8 @@ Commands an execution WOULD run (dry run: none of them is executed):
   qemu-system-x86_64 $(qemu_args "$run_id" "<run>" "<image>" "<port>" | tr '\n' ' ')
   scp <bundle> guest:/opt/flowerly-kvm/ ; ssh guest sudo python3 -I .../guest-acceptance.py /opt/flowerly-kvm
   scp guest:/var/lib/flowerly-kvm/evidence/*.json <run>/report/
-  python3 scripts/remote-provider-kvm-evidence.py validate <evidence> --phase execution
+  python3 scripts/remote-provider-kvm-evidence.py bind --guest-evidence <evidence> --host-facts <host-facts> --out <run>/report/acceptance.json
+  python3 scripts/remote-provider-kvm-evidence.py verify-bound <run>/report/acceptance.json
 EOF
 }
 
@@ -205,10 +214,41 @@ lock_field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])
 
 free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
+# Host-side egress canary for E2: a listener on the host's loopback that
+# QEMU's slirp gateway (10.0.2.2) maps to when networking is NOT
+# restricted. The guest aims at it; with restrict=on it must stay silent.
+# The host proves it live with one control connection before and after.
+canary_start() {
+    local dir=$1
+    python3 -I - "$dir" <<'EOF' &
+import json, pathlib, socket, sys
+out = pathlib.Path(sys.argv[1])
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen(16)
+(out / "canary.port").write_text(str(server.getsockname()[1]))
+count = 0
+while True:
+    conn, _ = server.accept()
+    count += 1
+    (out / "canary.count").write_text(str(count))
+    conn.close()
+EOF
+    CANARY_PID=$!
+    local _
+    for _ in $(seq 1 50); do [[ -s $dir/canary.port ]] && return 0; sleep 0.1; done
+    die "egress canary did not start"
+}
+
+canary_probe() {
+    python3 -I -c 'import socket,sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5).close()' "$1"
+}
+
 execute() {
     local approved=$1
     require_execution_gates "$approved"
-    local run_id run cache image port key ssh_opts guest
+    local run_id run cache image port key hostkey ssh_opts guest started
+    started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     run_id="$(date -u +%Y%m%dt%H%M%S)-${approved:0:12}-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
     run="$ROOT/target/remote-provider-kvm/$run_id"
     cache="${FLOWERLY_KVM_IMAGE_CACHE:-$HOME/.cache/flowerly/remote-provider-kvm}"
@@ -228,23 +268,39 @@ execute() {
         mv "$image.part" "$image"
     fi
     curl --fail --location --show-error --output "$run/report/image.sig" "$(lock_field signature_url)"
-    echo "$(lock_field sha256)  $image" | sha256sum --check --status || die "image SHA-256 mismatch; refusing"
-    local fingerprints
+    local image_sha fingerprints signature_ok=false
+    image_sha=$(sha256sum "$image" | cut -c1-64)
+    [[ $image_sha == "$(lock_field sha256)" ]] || die "image SHA-256 mismatch; refusing"
     fingerprints=$(gpg --no-default-keyring --keyring "$FLOWERLY_KVM_ARCH_KEYRING" --with-colons --fingerprint \
         | awk -F: '$1 == "fpr" { print $10 }' | sort -u)
     [[ $fingerprints == "$(lock_field signing_key_fingerprint)" ]] \
         || die "keyring must hold exactly the pinned signing key"
     gpg --no-default-keyring --keyring "$FLOWERLY_KVM_ARCH_KEYRING" --verify "$run/report/image.sig" "$image" \
         2>"$run/report/image-signature.txt" || die "image signature does not verify; refusing"
+    signature_ok=true
 
     qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$run/overlay.qcow2" "${VM_DISK_GB}G"
     key="$run/id_ed25519"
+    hostkey="$run/guest_host_ed25519"
     ssh-keygen -q -t ed25519 -N "" -f "$key" -C "flowerly-kvm-$run_id"
-    cat >"$run/user-data" <<EOF
+    # The guest's SSH host key is generated here for this run only and
+    # pinned below: no trust-on-first-use, no StrictHostKeyChecking=no.
+    ssh-keygen -q -t ed25519 -N "" -f "$hostkey" -C "flowerly-kvm-host-$run_id"
+    printf 'flowerly-kvm-%s %s\n' "$run_id" "$(cut -d' ' -f1-2 "$hostkey.pub")" >"$run/known_hosts"
+    {
+        cat <<EOF
 #cloud-config
 hostname: flowerly-kvm-${run_id:0:20}
 growpart: {mode: auto, devices: ['/']}
 resize_rootfs: true
+ssh_deletekeys: true
+ssh_genkeytypes: []
+ssh_keys:
+  ed25519_public: '$(cat "$hostkey.pub")'
+  ed25519_private: |
+EOF
+        sed 's/^/    /' "$hostkey"
+        cat <<EOF
 users:
   - name: flowerly-kvm
     groups: [wheel]
@@ -257,23 +313,37 @@ write_files:
     content: |
       $run_id
 EOF
+    } >"$run/user-data"
     cloud-localds "$run/seed.img" "$run/user-data"
     port=$(free_port)
     local -a args
     mapfile -t args < <(qemu_args "$run_id" "$run" "$image" "$port")
     printf '%s\n' "${args[@]}" >"$run/report/qemu-args.txt"
 
+    CANARY_PID=""
     cleanup() {
         local pid
         pid=$(cat "$run/qemu.pid" 2>/dev/null || true)
         [[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
-        rm -f "$run/overlay.qcow2" "$run/seed.img" "$key" "$key.pub" "$run/user-data"
+        [[ -n $CANARY_PID ]] && kill "$CANARY_PID" 2>/dev/null || true
+        rm -f "$run/overlay.qcow2" "$run/seed.img" "$key" "$key.pub" "$hostkey" "$hostkey.pub" "$run/user-data"
         rm -rf "$run/export" "$run/bundle"
     }
     trap cleanup EXIT
-    qemu-system-x86_64 "${args[@]}" || die "QEMU/KVM did not start; refusing (no TCG fallback)"
+    canary_start "$run"
+    local canary_port
+    canary_port=$(cat "$run/canary.port")
+    local live_before=false live_after=false control=0
+    canary_probe "$canary_port" && { live_before=true; control=$((control + 1)); }
 
-    ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+    qemu-system-x86_64 "${args[@]}" || die "QEMU/KVM did not start; refusing (no TCG fallback)"
+    # What actually runs, read back from the kernel, not what we meant to run.
+    local qpid
+    qpid=$(cat "$run/qemu.pid")
+    tr '\0' '\n' <"/proc/$qpid/cmdline" >"$run/report/qemu-cmdline.txt" || die "cannot read QEMU's command line"
+
+    ssh_opts=(-i "$key" -p "$port" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$run/known_hosts"
+              -o HostKeyAlias="flowerly-kvm-$run_id" -o HostKeyAlgorithms=ssh-ed25519
               -o ConnectTimeout=10 -o BatchMode=yes)
     guest=flowerly-kvm@127.0.0.1
     local _
@@ -283,24 +353,19 @@ EOF
     done
     # shellcheck disable=SC2029 # $run_id is meant to expand here, on the host.
     ssh "${ssh_opts[@]}" "$guest" "cloud-init status --wait >/dev/null; test \"\$(cat /etc/flowerly-kvm-disposable-guest)\" = $run_id" \
-        || die "guest never came up with this run's marker"
+        || die "guest never came up with this run's marker and pinned host key"
 
     # Bundle: the export, the two binaries, run facts and a manifest.
     local bundle="$run/bundle"
     mkdir -p "$bundle/bin"
     git -C "$ROOT" archive --format=tar --prefix=repo/ "$approved" | tar -x -C "$bundle"
     cp "$run/export/target/release/providerd" "$run/export/target/release/flowerlyd" "$bundle/bin/"
-    python3 -I - "$bundle" "$run_id" "$approved" "$(lock_field version)" "$(lock_field sha256)" <<'EOF'
-import hashlib, json, pathlib, sys, time
-bundle, run_id, commit, version, image_sha = pathlib.Path(sys.argv[1]), *sys.argv[2:]
-now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-host = lambda status, expected, observed: {"status": status, "expected": expected, "observed": observed,
-                                           "started": now, "finished": now}
+    python3 -I - "$bundle" "$run_id" "$approved" "$(lock_field version)" "$image_sha" "$canary_port" <<'EOF'
+import hashlib, json, pathlib, sys
+bundle, run_id, commit, version, image_sha, canary_port = pathlib.Path(sys.argv[1]), *sys.argv[2:]
 facts = {"run_id": run_id, "git_commit": commit, "git_tree_clean": True,
          "guest_image": f"Arch-Linux-x86_64-cloudimg-{version}", "guest_image_sha256": image_sha,
-         "host_results": {
-             "E1": host("PASS", "-accel kvm, no TCG", {"accel": "kvm", "qemu_started": True}),
-             "E3": host("PASS", "pinned SHA-256 and signature", {"sha256": "verified", "signature": "verified"})}}
+         "slirp_gateway": "10.0.2.2", "egress_canary_port": int(canary_port)}
 (bundle / "run.json").write_text(json.dumps(facts, indent=2))
 manifest = {str(p.relative_to(bundle)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(bundle.rglob("*")) if p.is_file() and p.name not in ("run.json", "manifest.json")}
@@ -310,16 +375,52 @@ EOF
     local guest_status=0
     ssh "${ssh_opts[@]}" "$guest" "sudo python3 -I /opt/flowerly-kvm/repo/testbed/remote-provider-kvm/guest/guest-acceptance.py /opt/flowerly-kvm" \
         >"$run/report/guest.log" 2>&1 || guest_status=$?
+    canary_probe "$canary_port" && { live_after=true; control=$((control + 1)); }
 
-    # Evidence phase.
-    scp -P "$port" -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
+    # Evidence phase: copy out, finalize E1-E3 from host facts, bind, verify.
+    scp -P "$port" -i "$key" -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$run/known_hosts" \
+        -o HostKeyAlias="flowerly-kvm-$run_id" -o HostKeyAlgorithms=ssh-ed25519 -o BatchMode=yes \
         "$guest:/var/lib/flowerly-kvm/evidence/*.json" "$run/report/" || die "no evidence came out of the guest"
     local -a found=("$run/report"/remote-provider-kvm-*.json)
     [[ ${#found[@]} -eq 1 && -f ${found[0]} ]] || die "expected exactly one evidence document from the guest"
-    local evidence=${found[0]}
-    python3 -I "$EVIDENCE_TOOL" validate "$evidence" --phase execution | tee "$run/report/validation.json"
-    say "guest exit $guest_status; evidence kept in $run/report; guest destroyed"
-    return $guest_status
+    local head_end clean_end=false
+    head_end=$(head_sha)
+    tree_clean && clean_end=true
+    python3 -I - "$run" "$run_id" "$approved" "$head_end" "$clean_end" "$started" "$image_sha" "$signature_ok" \
+        "$fingerprints" "$live_before" "$live_after" "$control" "$TESTBED/arch-image.json" <<'EOF'
+import hashlib, json, pathlib, sys, time
+(run, run_id, commit, head_end, clean_end, started, image_sha, signature_ok, fingerprints,
+ live_before, live_after, control, lock_path) = sys.argv[1:]
+run, lock = pathlib.Path(run), json.loads(pathlib.Path(lock_path).read_text())
+sha = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+count = run / "canary.count"
+host = {
+    "run_id": run_id, "approved_commit": commit, "head_at_start": commit, "head_at_end": head_end,
+    "tree_clean_at_start": True, "tree_clean_at_end": clean_end == "true",
+    "started_at_utc": started, "finished_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "image": {"version": lock["version"], "url": lock["url"], "lock_sha256": lock["sha256"],
+              "sha256_expected": lock["sha256"], "sha256_actual": image_sha,
+              "signature_verified": signature_ok == "true", "keyring_fingerprints": fingerprints.split(),
+              "signing_key_fingerprint": fingerprints.split()[0] if fingerprints.split() else None,
+              "lock_fingerprint": lock["signing_key_fingerprint"], "arch_image_lock_sha256": sha(lock_path)},
+    "qemu": {"cmdline": (run / "report/qemu-cmdline.txt").read_text().splitlines()},
+    "egress_canary": {"live_before": live_before == "true", "live_after": live_after == "true",
+                      "control_connections": int(control),
+                      "total_connections": int(count.read_text()) if count.exists() else 0},
+    "build": {"providerd_sha256": sha(run / "bundle/bin/providerd"), "flowerlyd_sha256": sha(run / "bundle/bin/flowerlyd"),
+              "unit_sha256": sha(run / "bundle/repo/distro/templates/remote-inference/flowerly-provider-remote@.service"),
+              "bundle_manifest_sha256": sha(run / "bundle/manifest.json")},
+}
+(run / "report/host-facts.json").write_text(json.dumps(host, indent=2, sort_keys=True) + "\n")
+EOF
+    python3 -I "$EVIDENCE_TOOL" bind --guest-evidence "${found[0]}" --host-facts "$run/report/host-facts.json" \
+        --out "$run/report/acceptance.json" >/dev/null
+    local verdict=0
+    python3 -I "$EVIDENCE_TOOL" verify-bound "$run/report/acceptance.json" | tee "$run/report/verification.json" \
+        || verdict=$?
+    say "guest exit $guest_status; acceptance record $run/report/acceptance.json; guest destroyed"
+    say "only a verify-bound verdict of PASS is an acceptance candidate; the owner decides acceptance"
+    return $(( verdict || guest_status ))
 }
 
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
