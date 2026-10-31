@@ -224,6 +224,44 @@ HOST_CHECKS = ("E1", "E2", "E3")
 SSH_FORWARD = re.compile(r"^hostfwd=tcp:127\.0\.0\.1:\d{1,5}-:22$")
 
 
+# E3 facts come from scripts/arch-image-verify.py on the host. The lock pins
+# one primary key and the subkeys allowed to sign; Arch's signer is a subkey.
+IMAGE_OBSERVED = ("sha256_actual", "signature_verified", "signature_primary_fingerprint",
+                  "signature_signing_fingerprint", "verification_problems")
+FPR40 = re.compile(r"^[0-9A-F]{40}$")
+
+
+def image_identity_problems(image):
+    """Why the recorded image facts do not show the pinned digest signed by
+    an approved subkey of the pinned primary ([] = they do). Independent of
+    `signature_verified`: E3 needs both."""
+    problems = []
+    digest = image.get("sha256_actual")
+    if not (isinstance(digest, str) and SHA64.match(digest)
+            and digest == image.get("sha256_expected") == image.get("lock_sha256")):
+        problems.append("image digest is not the pinned digest")
+    primary = image.get("lock_primary_fingerprint")
+    approved = image.get("lock_signing_subkeys")
+    if not (isinstance(primary, str) and FPR40.match(primary)):
+        return problems + ["lock primary fingerprint is missing or malformed"]
+    if not (isinstance(approved, list) and approved and all(isinstance(f, str) and FPR40.match(f) for f in approved)
+            and len(set(approved)) == len(approved) and primary not in approved):
+        return problems + ["lock signing subkeys are missing or malformed"]
+    if image.get("keyring_primary_fingerprints") != [primary]:
+        problems.append("keyring does not hold exactly the pinned primary key")
+    subkeys = image.get("keyring_subkey_fingerprints")
+    if not (isinstance(subkeys, list) and all(isinstance(f, str) for f in subkeys)
+            and set(approved) <= set(subkeys)):
+        problems.append("keyring lacks an approved signing subkey of the pinned primary")
+    if image.get("signature_primary_fingerprint") != primary:
+        problems.append("signature's primary key is not the pinned primary")
+    if image.get("signature_signing_fingerprint") not in approved:
+        problems.append("signature was not made by an approved signing subkey")
+    if image.get("verification_problems") != []:
+        problems.append("verification recorded problems")
+    return problems
+
+
 def qemu_accel_kvm(cmdline):
     """Exactly one -accel, and it is kvm; no TCG anywhere."""
     accels = [cmdline[i + 1] for i, arg in enumerate(cmdline[:-1]) if arg == "-accel"]
@@ -278,16 +316,12 @@ def finalize(guest_doc, host):
             else:
                 status, cls = "PASS", "restrict_verified_canary_untouched"
         else:  # E3
-            verified = (image.get("sha256_actual") == image.get("sha256_expected") == image.get("lock_sha256")
-                        and image.get("sha256_expected") is not None
-                        and image.get("signature_verified") is True
-                        and image.get("keyring_fingerprints") == [image.get("signing_key_fingerprint")]
-                        and image.get("signing_key_fingerprint") == image.get("lock_fingerprint"))
-            status, cls = ("PASS", "digest_and_signature_verified") if verified else ("FAIL", "image_unverified")
+            status, cls = ("PASS", "digest_and_signature_verified") if not image_identity_problems(image) \
+                and image.get("signature_verified") is True else ("FAIL", "image_unverified")
         record["observed"] = {"guest": record["observed"], "host": {
             "E1": {"qemu_accel": [qemu[i + 1] for i, a in enumerate(qemu[:-1]) if a == "-accel"]},
             "E2": {"qemu_network": [qemu[i + 1] for i, a in enumerate(qemu[:-1]) if a == "-nic"], "canary": canary},
-            "E3": {k: image.get(k) for k in ("sha256_actual", "signature_verified", "signing_key_fingerprint")},
+            "E3": {k: image.get(k) for k in IMAGE_OBSERVED},
         }[test_id]}
         record.update(test_status=status, classification=cls, test_finished_at_utc=when,
                       test_started_at_utc=record["test_started_at_utc"] or when)
@@ -359,6 +393,12 @@ def verify_bound(bound):
         problems.append("run ids disagree")
     image = host.get("image") or {}
     build = host.get("build") or {}
+    if type(image.get("signature_verified")) is not bool:
+        problems.append("image signature_verified is not a boolean")
+    elif image.get("signature_verified") is True and image_identity_problems(image):
+        # A claimed verification the recorded identities contradict is a
+        # tampered or broken record, not an honest failure.
+        problems += [f"image facts contradict signature_verified: {p}" for p in image_identity_problems(image)]
     for record in final["results"]:
         if record["test_status"] == "NOT_RUN":
             continue

@@ -18,7 +18,7 @@
     {
       "test_id": "E3",
       "part": "environment",
-      "description": "Host-computed image SHA-256 equals the pin, the signature verifies, and the keyring holds exactly the pinned key",
+      "description": "Host-computed image SHA-256 equals the pin, the signature verifies from GnuPG status, the signer is an approved signing subkey of the pinned primary, and the keyring holds exactly that primary",
       "exercises": "harness"
     },
     {

@@ -8,7 +8,7 @@ authorization a run needs are in
 | File | Purpose |
 | --- | --- |
 | `network.json` | Guest-internal addresses and the policy each must meet (checked against providerd's production policy by a Rust unit test) |
-| `arch-image.json` | The pinned Arch cloud image. **UNPINNED**: execution refuses until a reviewed commit pins it |
+| `arch-image.json` | The pinned Arch cloud image, primary key and approved signing subkeys. **UNPINNED**: execution refuses until a reviewed commit pins it (candidate in the plan's "Image provenance") |
 | `checks.json` | Every check the evidence must report, and whether it tests production code or the harness |
 | `evidence.schema.json` | Evidence structure; `scripts/remote-provider-kvm-evidence.py` adds the rules |
 | `probe-targets.json` | Paths and listeners for `scripts/provider-unit-probe.py` in the guest |

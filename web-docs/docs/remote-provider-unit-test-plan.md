@@ -53,14 +53,14 @@ shims that fail on any such call. `--execute` has **never** been run.
 
 - An x86_64 Linux host with a usable `/dev/kvm` for the invoking,
   **non-root** user. There is no TCG fallback: without KVM it refuses.
-- Host tools: `git python3 cargo curl gpg sha256sum qemu-img
+- Host tools: `git python3 cargo curl gpg qemu-img
   qemu-system-x86_64 cloud-localds ssh scp ssh-keygen tar`. Record their
   versions (`qemu-system-x86_64 --version`) with the evidence.
 - Crates fetched beforehand (`cargo fetch --locked`, a separate step): the
   build runs with `--offline`.
 - A pinned image in `testbed/remote-provider-kvm/arch-image.json` and a
-  keyring file holding exactly its signing key
-  (`FLOWERLY_KVM_ARCH_KEYRING`).
+  public keyring file (`FLOWERLY_KVM_ARCH_KEYRING`) holding exactly the
+  pinned primary key with its approved signing subkeys, and nothing else.
 - Host resources: 4 vCPUs, 4 GiB RAM, a 16 GiB sparse overlay.
 - Guest: the pinned Arch Linux cloud image as published, **not upgraded**
   (the guest has no network). It must provide systemd with
@@ -72,26 +72,99 @@ shims that fail on any such call. `--execute` has **never** been run.
 
 ## Image provenance
 
-`arch-image.json` is **UNPINNED**. Nobody has resolved, downloaded or
-verified an image for this plan, and no value may be invented. Pinning is
-its own reviewed commit:
+`arch-image.json` is **UNPINNED**. No image has been downloaded, verified
+or accepted for this plan, and no value may be invented. Pinning is its own
+reviewed commit:
 
 1. Choose a versioned directory under
    `https://geo.mirror.pkgbuild.com/images/` (`v<YYYYMMDD>.<build>/`),
    never `latest/`.
 2. Record `version`, the exact `url` of
    `Arch-Linux-x86_64-cloudimg-<version>.qcow2`, `signature_url`
-   (`url` + `.sig`), the published SHA-256 and the 40-hex fingerprint of the
-   signing key. Take the fingerprint from Arch Linux's published
-   release-engineering keys, cross-checked through a second channel, not
-   from the mirror alone.
-3. Record `pinned_by` and `pinned_at_utc`.
+   (`url` + `.sig`) and the SHA-256 from the signed checksum file.
+3. Record the signing key as Arch publishes it: `primary_key_fingerprint`
+   (the 40-hex primary) and `signing_subkey_fingerprints` (the subkeys
+   approved to sign images). Arch's arch-boxes key is a certify-only
+   primary with a signing subkey, so the signer is the subkey. Take both
+   from Arch's own publication, cross-checked through a second channel,
+   never from the mirror alone.
+4. Record `pinned_by` and `pinned_at_utc` (the reviewer and the time of the
+   approving commit, never filled in on anyone's behalf).
 
 At execution the harness:
-- downloads only that URL into its cache;
-- checks the SHA-256 and the signature against a keyring that must hold
-  exactly the pinned key;
+- before any download, checks with `scripts/arch-image-verify.py keyring`
+  that the keyring, imported into a throwaway GnuPG home, holds exactly one
+  primary key, the pinned one, usable, with every approved signing subkey
+  usable and signing-capable; other subkeys of that primary are allowed,
+  other primary keys and secret key material are not;
+- downloads only the pinned URL into its cache;
+- verifies with `scripts/arch-image-verify.py verify`: the pinned SHA-256,
+  and the detached signature from GnuPG's machine-readable status
+  (`--status-file`), never its human-readable output or exit status alone:
+  exactly one signature, one `GOODSIG` and one well-formed `VALIDSIG` whose
+  signer is an approved subkey and whose primary is the pinned primary, a
+  binary-document signature with a SHA-2/SHA-3 hash, not dated in the
+  future. Any `BADSIG`, `ERRSIG`, `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG`,
+  `KEYEXPIRED`, `KEYREVOKED`, `SIGEXPIRED`, `NO_PUBKEY` or `FAILURE`
+  rejects it. Trust comes from the lock, not from GnuPG's trust database,
+  a keyserver or a successful `gpg --verify`;
+- records the primary and signing-subkey fingerprints separately, with the
+  digests and any problems, in `report/image-verification.json` and the
+  host facts (never key material);
 - never falls back to another image, URL or kernel.
+
+An expired or revoked key fails closed, even for a signature made while it
+was valid: re-pin to a newer image, or refresh the key from Arch, in a
+reviewed commit.
+
+### Candidate (proposed, not accepted)
+
+Resolved on 2026-10-31 from metadata only. The image itself was **not**
+downloaded, so nothing below proves the image bytes.
+
+| Field | Candidate value |
+| --- | --- |
+| `version` | `20261015.611680` (newest versioned release on 2026-10-31) |
+| `url` | `https://geo.mirror.pkgbuild.com/images/v20261015.611680/Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2` (576 680 960 bytes) |
+| `sha256` | `08754e28d91b1680086c6211ef4df13559e766fff7cdb4006489b14b5d281f08` |
+| `signature_url` | `url` + `.sig` |
+| `primary_key_fingerprint` | `1B9A16984A4E8CB448712D2AE0B78BF4326C6F8F` (`arch-boxes <arch-boxes@archlinux.org>`, ed25519, certify only, created 2022-05-29) |
+| `signing_subkey_fingerprints` | `["656E4C5AC1CC3B86E539D97E343635A6859A9174"]` (ed25519, sign, **expires 2027-05-28**) |
+| `pinned_by`, `pinned_at_utc` | not set: the reviewer who accepts the pin |
+
+Established from metadata:
+- The checksum file `….qcow2.SHA256` names that SHA-256. Its detached
+  signature `….qcow2.SHA256.sig` verifies with
+  `scripts/arch-image-verify.py` (VALIDSIG signer `656E…9174`, primary
+  `1B9A…6F8F`, signed 2026-10-15 12:07:03 UTC).
+- The image signature `….qcow2.sig` is an EdDSA/SHA-512 signature by
+  issuer `656E…9174`, made at the same time. It was inspected, not
+  verified: verifying it needs the image.
+- The checksum file and image signature are byte-identical on
+  `geo.`, `mirror.` and `fastly.mirror.pkgbuild.com`.
+- Key sources: the arch-boxes README on Arch's GitLab
+  (`gitlab.archlinux.org/archlinux/arch-boxes`, "Every release is signed by
+  our CI with the following key") and keyserver.ubuntu.com give the same
+  primary and subkey. The GitHub copy of the README is a mirror of the same
+  repository, not an independent channel.
+
+Not established (open before acceptance):
+- That the image bytes hash to the SHA-256 and that `.qcow2.sig` verifies
+  over them: needs the authorized download.
+- An independent trust root: the key is not in `archlinux-keyring`, not
+  published by WKD, and no certification by an Arch master or developer
+  key was found. The Arch infrastructure repository's copy
+  (`misc/keys/arch-boxes.asc`) was not obtained (404 on `master`). Trust
+  currently rests on TLS to Arch's GitLab plus the matching keyserver copy;
+  a reviewer should re-derive the fingerprints from Arch's GitLab
+  themselves.
+- The exact build recipe: arch-boxes `master` build scripts were read, not
+  the commit of pipeline 611680.
+- The guest's package versions. Arch's dated archive for 2026-10-15
+  suggests linux 7.2.9, systemd 262, glibc 2.44 and python 3.14.8, but the
+  image was built from a live mirror, so the archive does not prove what
+  the image contains. The run records the kernel and systemd version.
+- The subkey expires 2027-05-28; after that this candidate fails closed.
 
 The image name and SHA-256 go into every evidence record. The guest
 reports its kernel (`uname -r`) and `systemctl --version`. The cached
@@ -226,8 +299,9 @@ on public DNS or an external server.
 - `--approved-sha` is a full SHA equal to `HEAD`;
 - the tree is clean, with no untracked files;
 - the caller is not root and not a CI runner;
-- the image is pinned, the keyring holds exactly the pinned key, and
-  `/dev/kvm` and all host tools are usable.
+- the image is pinned, the keyring holds exactly the pinned primary key
+  with its approved signing subkeys, and `/dev/kvm` and all host tools are
+  usable.
 
 Each run gets a unique id, its own work directory, overlay, cloud-init
 seed, SSH key and marker. The guest runner refuses unless it is root in a
@@ -260,7 +334,11 @@ never PASS them.
   `tcg` appears nowhere.
 - **E2** Egress isolation, below.
 - **E3** On the host, the downloaded image's SHA-256 equals the pinned one,
-  the signature verifies, and the keyring holds exactly the pinned key.
+  the signature verifies from GnuPG's status, the signer is an approved
+  signing subkey of the pinned primary, and the keyring holds exactly that
+  primary. `verify-bound` re-derives this from the recorded fingerprints
+  and digests; a record claiming a verification its own facts contradict
+  is `INVALID`.
 - **E4** The guest runner found this run's marker, KVM, hostname and a
   bundle that matches its manifest.
 
@@ -569,7 +647,7 @@ therefore never `PASS`.
 | --- | --- | --- |
 | approved commit | host gates (HEAD = `--approved-sha`, clean tree); HEAD and tree re-read at the end | every record's `git_commit`; `head_at_start` = `head_at_end` = approved; clean at both ends |
 | run id | host (random, per run) | cloud-init marker, guest hostname, guest document, host facts and acceptance record must all agree |
-| image | host: computed SHA-256, signature, keyring fingerprints, lock file | E3; every record's `guest_image_sha256` = verified digest |
+| image | host: computed SHA-256, signature outcome, keyring primary and subkey fingerprints, signer primary and subkey fingerprints, lock file | E3; every record's `guest_image_sha256` = verified digest |
 | binaries and unit | host: hashes of the built `providerd`/`flowerlyd`, the template from the approved commit, the bundle manifest | the guest verifies the bundle manifest (E4); every record's `providerd_sha256` and `unit_sha256` = host build |
 | actual KVM | guest: `systemd-detect-virt`; host: QEMU's running command line | E1 |
 | egress isolation | guest observations; host canary and QEMU network line | E2 |
@@ -590,7 +668,7 @@ The run directory `target/remote-provider-kvm/<run-id>/report/` keeps:
 - `acceptance.json`, `verification.json`, `host-facts.json` and the
   guest's evidence document;
 - `guest.log`, `serial.log`, `qemu-args.txt` and `qemu-cmdline.txt`;
-- the image signature and its verification output.
+- the image signature and `image-verification.json`.
 
 ## SSH to the guest
 

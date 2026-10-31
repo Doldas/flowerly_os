@@ -37,6 +37,13 @@ Covered:
   and unit hashes, tree state and host-finalized E1-E3 all agree verifies
   as PASS; preparation, partial, edited or mismatched runs never do;
 - SSH uses a per-run pinned guest host key;
+- image trust (#263 review): the lock pins a primary key and approved
+  signing subkeys; the harness checks the keyring before any download and
+  the image (scripts/arch-image-verify.py, tested with real GnuPG in
+  scripts/test-arch-image-verify.py) before any boot, never calling gpg
+  itself; E3 passes only when the recorded digest and signer identities
+  agree with the pin, and image facts that claim a verification their
+  identities contradict make the record INVALID;
 - end to end through the real guest Run.check/check_environment/write:
   E1-E3 await the host and a ready guest exits 0; valid host facts PASS;
   invalid host facts FAIL, stay INCONCLUSIVE or are INVALID; genuine guest
@@ -112,6 +119,7 @@ def scratch_repo(scratch, name="repo"):
     image lock can be varied without touching this checkout."""
     repo = scratch / name
     for rel in ["scripts/remote-provider-arch-kvm-acceptance.sh", "scripts/remote-provider-kvm-evidence.py",
+                "scripts/arch-image-verify.py",
                 "scripts/provider-unit-probe.py", "scripts/remote-provider-acceptance.py",
                 "scripts/remote-provider-operator.sh"]:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +146,8 @@ FAKE_LOCK = {
     "url": "https://geo.mirror.pkgbuild.com/images/v20990101.1/Arch-Linux-x86_64-cloudimg-20990101.1.qcow2",
     "sha256": "0" * 64,
     "signature_url": "https://geo.mirror.pkgbuild.com/images/v20990101.1/Arch-Linux-x86_64-cloudimg-20990101.1.qcow2.sig",
-    "signing_key_fingerprint": "0" * 40, "pinned_by": "offline test fixture, not a real pin",
+    "primary_key_fingerprint": "0" * 40, "signing_subkey_fingerprints": ["1" * 40],
+    "pinned_by": "offline test fixture, not a real pin",
     "pinned_at_utc": "2099-01-01T00:00:00Z"}
 
 
@@ -186,7 +195,9 @@ def check_execute_refusals(scratch, shims, repo, sha):
     (repo / "untracked").unlink()
     for broken in ({"url": FAKE_LOCK["url"].replace("v20990101.1/", "latest/")},
                    {"sha256": "abc"}, {"signature_url": "https://example.invalid/x.sig"},
-                   {"signing_key_fingerprint": "nothex"}):
+                   {"primary_key_fingerprint": "nothex"}, {"signing_subkey_fingerprints": "1" * 40},
+                   {"signing_subkey_fingerprints": ["1" * 40, "1" * 40]},
+                   {"signing_subkey_fingerprints": ["0" * 40]}, {"signing_subkey_fingerprints": ["abc"]}):
         bad_sha = commit_lock(repo, dict(FAKE_LOCK, **broken))
         refused(["--approved-sha", bad_sha], "arch-image.json", **token)
     pinned_sha = commit_lock(repo, FAKE_LOCK)
@@ -214,6 +225,14 @@ def check_static_guardrails():
     for line in code.splitlines():
         if re.search(r"\bsudo\b", line):
             assert "ssh " in line or "sudo:" in line or "|" in line and "ssh" in line, line
+    # Image trust: never a direct gpg call or a human-readable verdict; the
+    # keyring is checked before any download, the image before any boot.
+    assert not re.search(r"^\s*[^#]*\bgpg\s", "\n".join(l for l in code.splitlines() if "HOST_TOOLS" not in l), re.M)
+    gate = re.search(r"require_execution_gates\(\) \{(.*?)\n\}", text, re.S).group(1)
+    assert '"$IMAGE_TOOL" keyring' in gate, "the keyring structure must be checked before execution starts"
+    body = re.search(r"\nexecute\(\) \{(.*?)\n\}", text, re.S).group(1)
+    assert body.index('"$IMAGE_TOOL" verify') < body.index("qemu-img create") < body.index("qemu-system-x86_64")
+    assert body.index("curl") < body.index('"$IMAGE_TOOL" verify')
     workflows = "\n".join(p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml"))
     assert "remote-provider-arch-kvm-acceptance.sh --execute" not in workflows
     assert "guest-acceptance.py" not in workflows
@@ -583,6 +602,20 @@ def check_e2(ev, guest):
     assert ev.qemu_accel_kvm(line) and ev.qemu_network_restricted(line), line
 
 
+PRIMARY, SUBKEY, OTHER_SUBKEY = "A" * 40, "B" * 40, "C" * 40
+
+
+def verified_image(image_sha):
+    """Host image facts as scripts/arch-image-verify.py records a good
+    verification: an approved subkey of the pinned primary signed it."""
+    return {"lock_sha256": image_sha, "sha256_expected": image_sha, "sha256_actual": image_sha,
+            "lock_primary_fingerprint": PRIMARY, "lock_signing_subkeys": [SUBKEY],
+            "keyring_primary_fingerprints": [PRIMARY], "keyring_subkey_fingerprints": [SUBKEY, OTHER_SUBKEY],
+            "signature_primary_fingerprint": PRIMARY, "signature_signing_fingerprint": SUBKEY,
+            "signature_status": ["NEWSIG", "GOODSIG", "VALIDSIG"], "signature_verified": True,
+            "verification_problems": []}
+
+
 def accepted_run(ev):
     """A complete, consistent synthetic run: guest document and host facts."""
     commit, image_sha = "c" * 40, "d" * 64
@@ -602,12 +635,32 @@ def accepted_run(ev):
     guest_doc = ev.document("execution", "synthetic-run-0001", results)
     host = {"run_id": "synthetic-run-0001", "approved_commit": commit, "head_at_start": commit, "head_at_end": commit,
             "tree_clean_at_start": True, "tree_clean_at_end": True, "finished_at_utc": "2099-01-01T01:00:00Z",
-            "image": {"lock_sha256": image_sha, "sha256_expected": image_sha, "sha256_actual": image_sha,
-                      "signature_verified": True, "keyring_fingerprints": ["A" * 40],
-                      "signing_key_fingerprint": "A" * 40, "lock_fingerprint": "A" * 40},
+            "image": verified_image(image_sha),
             "qemu": {"cmdline": RESTRICTED}, "egress_canary": dict(LIVE_CANARY),
             "build": {"providerd_sha256": "e" * 64, "flowerlyd_sha256": "0" * 64, "unit_sha256": "f" * 64}}
     return guest_doc, host
+
+
+# Each leaves signature_verified true while the recorded identities or
+# digest say otherwise: a tampered or inconsistent record, never a PASS.
+IMAGE_CONTRADICTIONS = {
+    "signer is another primary's key": lambda h: h["image"].update(signature_primary_fingerprint="D" * 40),
+    "signer is an unapproved subkey": lambda h: h["image"].update(signature_signing_fingerprint=OTHER_SUBKEY),
+    "signer is the primary itself": lambda h: h["image"].update(signature_signing_fingerprint=PRIMARY),
+    "signer missing": lambda h: h["image"].update(signature_signing_fingerprint=None),
+    "extra primary in keyring": lambda h: h["image"].update(keyring_primary_fingerprints=[PRIMARY, "D" * 40]),
+    "keyring primary is another key": lambda h: h["image"].update(keyring_primary_fingerprints=["D" * 40]),
+    "approved subkey not in keyring": lambda h: h["image"].update(keyring_subkey_fingerprints=[OTHER_SUBKEY]),
+    "lock lists the primary as a subkey": lambda h: h["image"].update(lock_signing_subkeys=[PRIMARY]),
+    "lock subkeys empty": lambda h: h["image"].update(lock_signing_subkeys=[]),
+    "lock primary lowercase": lambda h: h["image"].update(lock_primary_fingerprint="a" * 40),
+    "problems recorded": lambda h: h["image"].update(verification_problems=["GnuPG reported EXPKEYSIG"]),
+    "problems missing": lambda h: h["image"].pop("verification_problems"),
+    "digest differs": lambda h: h["image"].update(sha256_actual="9" * 64),
+    "digest missing": lambda h: h["image"].update(sha256_actual=None, sha256_expected=None, lock_sha256=None),
+    "old single-fingerprint facts": lambda h: h.update(image={
+        k: h["image"][k] for k in ("lock_sha256", "sha256_expected", "sha256_actual", "signature_verified")}),
+}
 
 
 def check_binding(ev, scratch):
@@ -649,8 +702,19 @@ def check_binding(ev, scratch):
         "unrestricted QEMU": (dict(mutate_host=lambda h: h["qemu"].update(cmdline=UNRESTRICTED)), "FAIL"),
         "TCG": (dict(mutate_host=lambda h: h["qemu"].update(
             cmdline=[a.replace("kvm", "tcg") for a in RESTRICTED])), "FAIL"),
-        "unsigned image": (dict(mutate_host=lambda h: h["image"].update(signature_verified=False)), "FAIL"),
-        "image digest mismatch": (dict(mutate_host=lambda h: h["image"].update(sha256_actual="9" * 64)), "FAIL"),
+        "unsigned image": (dict(mutate_host=lambda h: h["image"].update(
+            signature_verified=False, verification_problems=["GnuPG reported BADSIG"])), "FAIL"),
+        "image digest mismatch": (dict(mutate_host=lambda h: h["image"].update(
+            sha256_actual="9" * 64, signature_verified=False,
+            verification_problems=["image SHA-256 differs from the pinned SHA-256"])), "FAIL"),
+        **{f"image facts contradict a verification: {name}": (dict(mutate_host=change), "INVALID")
+           for name, change in IMAGE_CONTRADICTIONS.items()},
+        "signature_verified not a boolean": (dict(mutate_host=lambda h: h["image"].update(
+            signature_verified="true")), "INVALID"),
+        "signature_verified is 1": (dict(mutate_host=lambda h: h["image"].update(signature_verified=1)), "INVALID"),
+        "malformed keyring subkeys, guest failed E3": (dict(
+            mutate_guest=lambda g: by_id(g, "E3").update(test_status="FAIL", classification="x"),
+            mutate_host=lambda h: h["image"].update(keyring_subkey_fingerprints=[{"x": 1}])), "INVALID"),
         "record image differs": (dict(mutate_guest=lambda g: by_id(g, "A1").update(
             guest_image_sha256="9" * 64)), "INVALID"),
         "other commit in a record": (dict(mutate_guest=lambda g: [r.update(git_commit="b" * 40)
@@ -667,6 +731,11 @@ def check_binding(ev, scratch):
     for name, (mutation, want) in cases.items():
         got = verdict(**mutation)
         assert got == want, (name, got, want)
+    # E3 itself never passes contradicted image facts, before verify-bound looks.
+    for name, change in IMAGE_CONTRADICTIONS.items():
+        g, h = accepted_run(ev)
+        change(h)
+        assert by_id(ev.finalize(g, h), "E3")["test_status"] == "FAIL", name
     broken = scratch / "broken.json"
     broken.write_text("{}")
     assert run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", broken]).returncode == 1
@@ -781,7 +850,13 @@ def check_end_to_end(ev, scratch):
         "unrestricted QEMU": (dict(qemu={"cmdline": UNRESTRICTED}), "FAIL"),
         "TCG": (dict(qemu={"cmdline": [a.replace("kvm", "tcg") for a in RESTRICTED]}), "FAIL"),
         "unsigned image": (dict(image={"signature_verified": False}), "FAIL"),
-        "wrong keyring": (dict(image={"keyring_fingerprints": ["A" * 40, "B" * 40]}), "FAIL"),
+        "wrong primary, verification failed": (dict(image={
+            "signature_verified": False, "signature_primary_fingerprint": "D" * 40,
+            "verification_problems": ["signature's primary key is not the pinned primary"]}), "FAIL"),
+        "extra primary, verification failed": (dict(image={
+            "signature_verified": False, "keyring_primary_fingerprints": ["A" * 40, "D" * 40],
+            "verification_problems": ["keyring must hold exactly one primary key, holds 2"]}), "FAIL"),
+        "unapproved subkey claimed verified": (dict(image={"signature_signing_fingerprint": "C" * 40}), "INVALID"),
         "canary dead before": (dict(egress_canary={"live_before": False}), "INCONCLUSIVE"),
         "no QEMU command line": (dict(qemu={"cmdline": []}), "INCONCLUSIVE"),
         "dirty tree at end": (dict(tree_clean_at_end=False), "INVALID"),

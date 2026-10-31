@@ -297,6 +297,9 @@ jobs:
       - name: Remote provider Arch/KVM acceptance harness guardrails and contracts, offline, no VM (#263)
         run: python3 ./scripts/test-remote-provider-kvm-harness.py
 
+      - name: Arch image signature verification with real GnuPG on synthetic keys, offline (#263)
+        run: python3 ./scripts/test-arch-image-verify.py
+
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24
         with:

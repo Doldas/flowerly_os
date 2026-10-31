@@ -31,8 +31,10 @@
 #   - --approved-sha equals HEAD, and the working tree is clean;
 #   - not root, not a CI runner (GITHUB_ACTIONS/CI unset);
 #   - testbed/remote-provider-kvm/arch-image.json is pinned (version, URL,
-#     SHA-256, signature URL, signing-key fingerprint) and the keyring in
-#     FLOWERLY_KVM_ARCH_KEYRING holds exactly that key;
+#     SHA-256, signature URL, primary-key fingerprint, approved signing
+#     subkeys) and the keyring in FLOWERLY_KVM_ARCH_KEYRING holds exactly
+#     that primary key with those signing subkeys
+#     (scripts/arch-image-verify.py keyring);
 #   - /dev/kvm is usable and every host tool is present.
 # These are guardrails against accidents. They are NOT evidence that the
 # owner approved a run: that approval is recorded separately (see
@@ -43,8 +45,9 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTBED="$ROOT/testbed/remote-provider-kvm"
 EVIDENCE_TOOL="$ROOT/scripts/remote-provider-kvm-evidence.py"
+IMAGE_TOOL="$ROOT/scripts/arch-image-verify.py"
 EXECUTE_TOKEN=execute-in-disposable-guest
-HOST_TOOLS=(git python3 cargo curl gpg sha256sum qemu-img qemu-system-x86_64 cloud-localds ssh scp ssh-keygen tar)
+HOST_TOOLS=(git python3 cargo curl gpg qemu-img qemu-system-x86_64 cloud-localds ssh scp ssh-keygen tar)
 VM_CPUS=4
 VM_MEMORY_MB=4096
 VM_DISK_GB=16
@@ -65,8 +68,9 @@ image_lock_state() {
     python3 -I - "$TESTBED/arch-image.json" <<'EOF'
 import json, re, sys
 lock = json.load(open(sys.argv[1]))
-fields = ["version", "url", "sha256", "signature_url", "signing_key_fingerprint", "pinned_by", "pinned_at_utc"]
-missing = [f for f in fields if lock.get(f) in (None, "")]
+fields = ["version", "url", "sha256", "signature_url", "primary_key_fingerprint", "signing_subkey_fingerprints",
+          "pinned_by", "pinned_at_utc"]
+missing = [f for f in fields if lock.get(f) in (None, "", [])]
 if set(lock) - set(fields) - {"schema_version", "comment", "source_index"}:
     sys.exit("arch-image.json has unknown fields")
 if missing:
@@ -83,8 +87,13 @@ if lock["signature_url"] != lock["url"] + ".sig":
     problems.append("signature_url must be url + .sig")
 if not re.fullmatch(r"[0-9a-f]{64}", lock["sha256"]):
     problems.append("sha256 must be 64 lowercase hex")
-if not re.fullmatch(r"[0-9A-F]{40}", lock["signing_key_fingerprint"]):
-    problems.append("signing_key_fingerprint must be 40 uppercase hex")
+fpr = re.compile(r"[0-9A-F]{40}")
+if not isinstance(lock["primary_key_fingerprint"], str) or not fpr.fullmatch(lock["primary_key_fingerprint"]):
+    problems.append("primary_key_fingerprint must be 40 uppercase hex")
+subkeys = lock["signing_subkey_fingerprints"]
+if not isinstance(subkeys, list) or not all(isinstance(f, str) and fpr.fullmatch(f) for f in subkeys) \
+        or len(set(subkeys)) != len(subkeys) or lock["primary_key_fingerprint"] in subkeys:
+    problems.append("signing_subkey_fingerprints must be distinct 40 uppercase hex subkey fingerprints")
 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", lock["pinned_at_utc"]):
     problems.append("pinned_at_utc must be UTC")
 if problems:
@@ -139,11 +148,13 @@ status:        NOT_RUN
 preparation  --validate / --dry-run: syntax, configuration, evidence rules. No VM.
 execution    --execute --approved-sha <sha> with FLOWERLY_KVM_ACCEPTANCE=$EXECUTE_TOKEN:
   1. refuse on: wrong SHA, dirty tree, root, CI runner, unpinned image, missing
-     keyring, unusable /dev/kvm, missing host tool
+     keyring, unusable /dev/kvm, missing host tool, or a keyring that is not
+     exactly the pinned primary key with its approved signing subkeys
   2. export the commit (git archive) into a fresh run directory; cargo build
      --release --locked --offline -p providerd -p flowerlyd there
   3. download the pinned image (exact versioned URL) and its signature; verify
-     SHA-256 and the signature against the pinned key; never 'latest'
+     the SHA-256 and, from GnuPG's status output, that an approved signing
+     subkey of the pinned primary key signed it; never 'latest'
   4. boot one guest: -accel kvm (no TCG fallback), -nic user,restrict=on with
      only an SSH port forward on 127.0.0.1, qcow2 overlay, unique run id, an
      ephemeral SSH host key generated for this run and pinned (no TOFU)
@@ -167,7 +178,7 @@ Commands an execution WOULD run (dry run: none of them is executed):
   git -C $ROOT archive --format=tar <approved-sha> | tar -x -C <run>/export
   cargo build --release --locked --offline -p providerd -p flowerlyd   (in <run>/export)
   curl --fail --location -o <cache>/<image> <pinned url>   (+ .sig)
-  sha256sum -c <pinned sha256>;  gpg --no-default-keyring --keyring <keyring> --verify <image>.sig <image>
+  python3 -I scripts/arch-image-verify.py verify --lock <arch-image.json> --keyring <keyring> --image <image> --signature <image>.sig --out <run>/report/image-verification.json
   qemu-img create -f qcow2 -F qcow2 -b <image> <run>/overlay.qcow2 ${VM_DISK_GB}G
   cloud-localds <run>/seed.img <run>/user-data   (marker + hostname flowerly-kvm-<run id>, no packages)
   qemu-system-x86_64 $(qemu_args "$run_id" "<run>" "<image>" "<port>" | tr '\n' ' ')
@@ -203,11 +214,15 @@ require_execution_gates() {
     [[ -z ${GITHUB_ACTIONS:-} && -z ${CI:-} ]] || die "refusing on a CI runner: execution is a manual, approved step"
     [[ $(image_lock_state) == pinned ]] || die "image not pinned: $(image_lock_state)"
     [[ -n ${FLOWERLY_KVM_ARCH_KEYRING:-} && -f $FLOWERLY_KVM_ARCH_KEYRING ]] \
-        || die "FLOWERLY_KVM_ARCH_KEYRING must name the keyring holding the pinned signing key"
+        || die "FLOWERLY_KVM_ARCH_KEYRING must name the keyring holding the pinned primary key"
     [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable; refusing (no TCG fallback)"
     for tool in "${HOST_TOOLS[@]}"; do
         command -v "$tool" >/dev/null || die "missing host tool: $tool"
     done
+    # Structure only, before any download: exactly the pinned primary with
+    # its approved signing subkeys, nothing else, no secret material.
+    python3 -I "$IMAGE_TOOL" keyring --lock "$TESTBED/arch-image.json" --keyring "$FLOWERLY_KVM_ARCH_KEYRING" >&2 \
+        || die "keyring does not hold exactly the pinned primary key and its approved signing subkeys; refusing"
 }
 
 lock_field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$TESTBED/arch-image.json" "$1"; }
@@ -268,16 +283,15 @@ execute() {
         mv "$image.part" "$image"
     fi
     curl --fail --location --show-error --output "$run/report/image.sig" "$(lock_field signature_url)"
-    local image_sha fingerprints signature_ok=false
-    image_sha=$(sha256sum "$image" | cut -c1-64)
+    # Digest and signature from GnuPG's machine-readable status only: the
+    # signer must be an approved subkey of the pinned primary.
+    python3 -I "$IMAGE_TOOL" verify --lock "$TESTBED/arch-image.json" --keyring "$FLOWERLY_KVM_ARCH_KEYRING" \
+        --image "$image" --signature "$run/report/image.sig" --out "$run/report/image-verification.json" \
+        || die "image digest or signature does not verify against the pinned key; refusing"
+    local image_sha
+    image_sha=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256_actual"])' \
+        "$run/report/image-verification.json")
     [[ $image_sha == "$(lock_field sha256)" ]] || die "image SHA-256 mismatch; refusing"
-    fingerprints=$(gpg --no-default-keyring --keyring "$FLOWERLY_KVM_ARCH_KEYRING" --with-colons --fingerprint \
-        | awk -F: '$1 == "fpr" { print $10 }' | sort -u)
-    [[ $fingerprints == "$(lock_field signing_key_fingerprint)" ]] \
-        || die "keyring must hold exactly the pinned signing key"
-    gpg --no-default-keyring --keyring "$FLOWERLY_KVM_ARCH_KEYRING" --verify "$run/report/image.sig" "$image" \
-        2>"$run/report/image-signature.txt" || die "image signature does not verify; refusing"
-    signature_ok=true
 
     qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$run/overlay.qcow2" "${VM_DISK_GB}G"
     key="$run/id_ed25519"
@@ -386,10 +400,10 @@ EOF
     local head_end clean_end=false
     head_end=$(head_sha)
     tree_clean && clean_end=true
-    python3 -I - "$run" "$run_id" "$approved" "$head_end" "$clean_end" "$started" "$image_sha" "$signature_ok" \
-        "$fingerprints" "$live_before" "$live_after" "$control" "$TESTBED/arch-image.json" <<'EOF'
+    python3 -I - "$run" "$run_id" "$approved" "$head_end" "$clean_end" "$started" \
+        "$live_before" "$live_after" "$control" "$TESTBED/arch-image.json" <<'EOF'
 import hashlib, json, pathlib, sys, time
-(run, run_id, commit, head_end, clean_end, started, image_sha, signature_ok, fingerprints,
+(run, run_id, commit, head_end, clean_end, started,
  live_before, live_after, control, lock_path) = sys.argv[1:]
 run, lock = pathlib.Path(run), json.loads(pathlib.Path(lock_path).read_text())
 sha = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -398,11 +412,9 @@ host = {
     "run_id": run_id, "approved_commit": commit, "head_at_start": commit, "head_at_end": head_end,
     "tree_clean_at_start": True, "tree_clean_at_end": clean_end == "true",
     "started_at_utc": started, "finished_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "image": {"version": lock["version"], "url": lock["url"], "lock_sha256": lock["sha256"],
-              "sha256_expected": lock["sha256"], "sha256_actual": image_sha,
-              "signature_verified": signature_ok == "true", "keyring_fingerprints": fingerprints.split(),
-              "signing_key_fingerprint": fingerprints.split()[0] if fingerprints.split() else None,
-              "lock_fingerprint": lock["signing_key_fingerprint"], "arch_image_lock_sha256": sha(lock_path)},
+    # Fingerprints, digests and outcome from arch-image-verify.py; no key material.
+    "image": dict(json.loads((run / "report/image-verification.json").read_text()),
+                  version=lock["version"], url=lock["url"], arch_image_lock_sha256=sha(lock_path)),
     "qemu": {"cmdline": (run / "report/qemu-cmdline.txt").read_text().splitlines()},
     "egress_canary": {"live_before": live_before == "true", "live_after": live_after == "true",
                       "control_connections": int(control),
