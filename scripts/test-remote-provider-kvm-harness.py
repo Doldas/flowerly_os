@@ -195,15 +195,19 @@ def check_execute_refusals(scratch, shims, repo, sha):
         result = run(["bash", harness, "--execute", *args], env=shims.env(**env))
         assert result.returncode != 0 and why in result.stderr, (args, why, result.stderr)
 
+    # Gates after the root check refuse as root first: the self-hosted
+    # runner's container runs CI jobs as root.
+    def past_root(why):
+        return why if os.geteuid() != 0 else "run as root"
+
     refused(["--approved-sha", sha], "FLOWERLY_KVM_ACCEPTANCE")
     refused(["--approved-sha", sha], "FLOWERLY_KVM_ACCEPTANCE", FLOWERLY_KVM_ACCEPTANCE="yes")
     refused([], "usage", **token)
     refused(["--approved-sha", sha[:12]], "full 40-hex", **token)
     refused(["--approved-sha", "f" * 40], "not the approved commit", **token)
-    if os.geteuid() != 0:
-        refused(["--approved-sha", sha], "image not pinned", **token)
-    refused(["--approved-sha", sha], "CI runner", GITHUB_ACTIONS="true", **token)
-    refused(["--approved-sha", sha], "CI runner", CI="1", **token)
+    refused(["--approved-sha", sha], past_root("image not pinned"), **token)
+    refused(["--approved-sha", sha], past_root("CI runner"), GITHUB_ACTIONS="true", **token)
+    refused(["--approved-sha", sha], past_root("CI runner"), CI="1", **token)
     (repo / "untracked").write_text("x")
     refused(["--approved-sha", sha], "dirty", **token)
     (repo / "untracked").unlink()
@@ -213,12 +217,11 @@ def check_execute_refusals(scratch, shims, repo, sha):
                    {"signing_subkey_fingerprints": ["1" * 40, "1" * 40]},
                    {"signing_subkey_fingerprints": ["0" * 40]}, {"signing_subkey_fingerprints": ["abc"]}):
         bad_sha = commit_lock(repo, dict(FAKE_LOCK, **broken))
-        refused(["--approved-sha", bad_sha], "arch-image.json", **token)
+        refused(["--approved-sha", bad_sha], past_root("arch-image.json"), **token)
     pinned_sha = commit_lock(repo, FAKE_LOCK)
-    if os.geteuid() != 0:
-        refused(["--approved-sha", pinned_sha], "FLOWERLY_KVM_ARCH_KEYRING", **token)
-        refused(["--approved-sha", pinned_sha], "FLOWERLY_KVM_ARCH_KEYRING",
-                FLOWERLY_KVM_ARCH_KEYRING=str(scratch / "absent.gpg"), **token)
+    refused(["--approved-sha", pinned_sha], past_root("FLOWERLY_KVM_ARCH_KEYRING"), **token)
+    refused(["--approved-sha", pinned_sha], past_root("FLOWERLY_KVM_ARCH_KEYRING"),
+            FLOWERLY_KVM_ARCH_KEYRING=str(scratch / "absent.gpg"), **token)
     plan = run(["bash", harness, "--plan"], env=shims.env())
     assert "image lock:    pinned" in plan.stdout, plan.stdout
     assert shims.calls() == [], shims.calls()
