@@ -1,0 +1,12 @@
+# /etc/flowerly/remote-providers.toml (root:root 0644). Absent = disabled.
+enabled = true
+# Owner Q4: 0 delivers generated text once and keeps none. At most 900 s of
+# memory-only replay; text is never written to disk either way.
+response_replay_seconds = 0
+
+[[provider]]
+name = "<instance>"   # the name registered with provider.register
+socket = "/run/flowerly-provider/<instance>.sock"
+destination = "inference.example.org"   # must match the provider's api_base host
+models = ["gpt-oss:20b"]
+max_in_flight_per_user = 2

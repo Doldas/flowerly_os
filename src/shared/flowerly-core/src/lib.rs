@@ -5,6 +5,7 @@ mod daemon;
 pub mod ipc;
 mod logging;
 pub mod profile;
+pub mod remote_policy;
 pub mod storage;
 pub mod storage_mode;
 pub mod types;
