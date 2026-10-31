@@ -430,6 +430,11 @@ EOF
     local verdict=0
     python3 -I "$EVIDENCE_TOOL" verify-bound "$run/report/acceptance.json" | tee "$run/report/verification.json" \
         || verdict=$?
+    # Destroy the guest here, not in the EXIT trap: once execute returns its
+    # locals are gone, and under `set -u` the trap would fail on $run and
+    # leave QEMU, the canary and the run's private keys behind.
+    cleanup
+    trap - EXIT
     say "guest exit $guest_status; acceptance record $run/report/acceptance.json; guest destroyed"
     say "only a verify-bound verdict of PASS is an acceptance candidate; the owner decides acceptance"
     return $(( verdict || guest_status ))

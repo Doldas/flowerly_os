@@ -240,6 +240,10 @@ def check_static_guardrails():
     body = re.search(r"\nexecute\(\) \{(.*?)\n\}", text, re.S).group(1)
     assert body.index('"$IMAGE_TOOL" verify') < body.index("qemu-img create") < body.index("qemu-system-x86_64")
     assert body.index("curl") < body.index('"$IMAGE_TOOL" verify')
+    # The EXIT trap only covers early exits: after execute returns, its locals
+    # are out of scope, so the normal path must destroy the guest itself.
+    tail = text[text.rindex('"$EVIDENCE_TOOL" verify-bound'):text.index("\n[[ $# -ge 1 ]]")]
+    assert tail.index("\n    cleanup\n") < tail.index("trap - EXIT") < tail.index("return "), tail
     workflows = "\n".join(p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml"))
     assert "remote-provider-arch-kvm-acceptance.sh --execute" not in workflows
     assert "guest-acceptance.py" not in workflows
