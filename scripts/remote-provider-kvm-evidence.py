@@ -149,6 +149,13 @@ def validate(doc, phase=None):
         if not isinstance(result, dict) or set(result) != set(RECORD_FIELDS):
             problems.append(f"{where} does not have exactly the record fields")
             continue
+        bad_types = [key for key, kinds in (("test_id", str), ("test_status", str), ("exercises", str),
+                                            ("classification", (str, type(None))),
+                                            ("skip_reason", (str, type(None))))
+                     if not isinstance(result[key], kinds)]
+        if bad_types:
+            problems.append(f"{where} has wrongly typed {', '.join(bad_types)}")
+            continue
         test_id = result["test_id"]
         where = f"{where} ({test_id})"
         seen[test_id] = seen.get(test_id, 0) + 1
@@ -197,10 +204,11 @@ def validate(doc, phase=None):
     for test_id in by_check:
         if seen.get(test_id, 0) != 1:
             problems.append(f"check {test_id} has {seen.get(test_id, 0)} records, needs exactly 1")
-    commits = {r.get("git_commit") for r in results if isinstance(r, dict)}
+    commits = {str(r.get("git_commit")) for r in results if isinstance(r, dict)}
     if len(commits) > 1:
         problems.append("records name more than one git_commit")
-    if all(isinstance(r, dict) and r.get("test_status") in STATUSES for r in results):
+    if all(isinstance(r, dict) and isinstance(r.get("test_status"), str) and r["test_status"] in STATUSES
+           for r in results):
         if doc.get("summary") != summarize(doc.get("phase"), results):
             problems.append("summary does not match the records")
     found = leaks(json.dumps(doc))
@@ -294,9 +302,16 @@ def canonical_sha(value):
 
 
 def bind(guest_doc, host):
-    final = finalize(guest_doc, host)
-    bound = {"schema_version": 1, "kind": "remote-provider-kvm-acceptance", "run_id": host.get("run_id"),
-             "approved_commit": host.get("approved_commit"), "host": host, "guest_evidence": guest_doc,
+    """Never raises on malformed input: a guest document or host facts that
+    cannot be finalized are bound as they are and verify as INVALID."""
+    facts = host if isinstance(host, dict) else {}
+    try:
+        final = finalize(guest_doc, host) if isinstance(guest_doc, dict) and isinstance(host, dict) \
+            and not validate(guest_doc, "execution") else None
+    except (KeyError, TypeError, AttributeError, IndexError, ValueError):
+        final = None
+    bound = {"schema_version": 1, "kind": "remote-provider-kvm-acceptance", "run_id": facts.get("run_id"),
+             "approved_commit": facts.get("approved_commit"), "host": host, "guest_evidence": guest_doc,
              "guest_evidence_sha256": canonical_sha(guest_doc), "evidence": final}
     verdict, problems = verify_bound(bound)
     bound.update(verdict=verdict, problems=problems)
@@ -305,8 +320,12 @@ def bind(guest_doc, host):
 
 def verify_bound(bound):
     """(verdict, problems). Verdict is INVALID whenever anything disagrees."""
+    if not isinstance(bound, dict):
+        return "INVALID", ["acceptance record is not an object"]
     problems = []
-    host = bound.get("host") or {}
+    host = bound.get("host")
+    if not isinstance(host, dict):
+        return "INVALID", ["host facts are missing or malformed"]
     guest_doc = bound.get("guest_evidence")
     commit = bound.get("approved_commit")
     if bound.get("kind") != "remote-provider-kvm-acceptance" or bound.get("schema_version") != 1:
@@ -315,8 +334,18 @@ def verify_bound(bound):
         return "INVALID", problems + ["guest evidence is missing or not from an executed run"]
     if canonical_sha(guest_doc) != bound.get("guest_evidence_sha256"):
         problems.append("guest evidence does not match its recorded digest")
-    problems += [f"guest evidence: {p}" for p in validate(guest_doc, "execution")]
-    final = finalize(guest_doc, host)
+    guest_problems = validate(guest_doc, "execution")
+    if guest_problems:
+        # Malformed guest evidence is never finalized, let alone passed.
+        return "INVALID", sorted(set(problems + [f"guest evidence: {p}" for p in guest_problems]))
+    if not isinstance(host, dict) or not isinstance(host.get("image") or {}, dict) or \
+            not isinstance(host.get("qemu") or {}, dict) or not isinstance(host.get("egress_canary") or {}, dict) \
+            or not isinstance(host.get("build") or {}, dict):
+        return "INVALID", sorted(set(problems + ["host facts are malformed"]))
+    try:
+        final = finalize(guest_doc, host)
+    except (KeyError, TypeError, AttributeError, IndexError, ValueError) as err:
+        return "INVALID", sorted(set(problems + [f"host facts cannot be applied: {type(err).__name__}"]))
     if final != bound.get("evidence"):
         problems.append("finalized evidence differs from the finalization the host facts produce")
     problems += [f"evidence: {p}" for p in validate(final, "execution")]
@@ -375,7 +404,7 @@ def main(argv):
             try:
                 bound = json.loads(pathlib.Path(args.file).read_text())
                 bound["verdict"], bound["problems"] = verify_bound(bound)
-            except (OSError, ValueError, KeyError, TypeError) as err:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
                 bound = {"verdict": "INVALID", "problems": [f"unreadable: {err}"]}
         print(json.dumps({"verdict": bound["verdict"], "problems": bound["problems"]}, indent=2))
         return 0 if bound["verdict"] == "PASS" else 1

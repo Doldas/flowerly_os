@@ -548,6 +548,21 @@ If the guest's document fails validation, the guest writes `*.INVALID.json`
 with the problems instead of the document. The preparation modes can only
 produce `NOT_RUN`.
 
+Each guest check returns a verdict that maps explicitly:
+- `True` → `PASS`;
+- `False` → `FAIL`;
+- the string `INCONCLUSIVE` → `INCONCLUSIVE`.
+
+Any other value or result shape is a harness defect and is recorded as
+`INCONCLUSIVE` (`invalid_verdict`), never `PASS`. It is also not `FAIL`,
+because the check observed nothing. A raised exception is `INCONCLUSIVE`
+too.
+
+The guest exits 0 only when every check it decides is `PASS` and E1-E3
+are `INCONCLUSIVE`/`awaiting_host`: the one state the host can finalize
+into an acceptance candidate. The guest document's own `overall` is
+therefore never `PASS`.
+
 ### Host/guest evidence chain
 
 | Link | Recorded by | How it is bound |

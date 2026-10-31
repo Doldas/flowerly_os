@@ -36,7 +36,12 @@ Covered:
 - evidence chain: only a bound record whose commit, run id, image, binary
   and unit hashes, tree state and host-finalized E1-E3 all agree verifies
   as PASS; preparation, partial, edited or mismatched runs never do;
-- SSH uses a per-run pinned guest host key.
+- SSH uses a per-run pinned guest host key;
+- end to end through the real guest Run.check/check_environment/write:
+  E1-E3 await the host and a ready guest exits 0; valid host facts PASS;
+  invalid host facts FAIL, stay INCONCLUSIVE or are INVALID; genuine guest
+  failures stay failures; invalid verdicts and malformed or missing
+  evidence never PASS.
 """
 import hashlib
 import http.client
@@ -667,6 +672,197 @@ def check_binding(ev, scratch):
     assert run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", broken]).returncode == 1
 
 
+# --- end to end: guest Run.check -> write -> bind -> verify-bound ------------------
+
+class FakeCompleted:
+    def __init__(self, stdout, returncode=0):
+        self.stdout, self.stderr, self.returncode = stdout, "", returncode
+
+
+def guest_run(scratch, name, virt="kvm", route="127.0.0.1", canary_listening=False, fail_ids=(),
+              skip_ids=()):
+    """Drive the REAL guest code (Run.check, check_environment,
+    observe_egress, evaluate_guest_egress, Run.write) with only the two
+    system queries it makes (systemd-detect-virt, ip route) faked. The
+    "slirp gateway" is 127.0.0.1 and the canary a real local socket:
+    listening = what an unrestricted QEMU would forward to; closed = what a
+    restricted one leaves unreachable."""
+    guest = load(f"guest_e2e_{name}", GUEST / "guest-acceptance.py")
+    guest.WORK = scratch / name
+    bundle = scratch / f"bundle-{name}"
+    bundle.mkdir()
+    (bundle / "repo").symlink_to(ROOT)
+    canary = socket.socket()
+    canary.bind(("127.0.0.1", 0))
+    port = canary.getsockname()[1]
+    if canary_listening:
+        canary.listen(4)
+    else:
+        canary.close()
+    facts = {"run_id": f"e2e-{name}-0001", "git_commit": "c" * 40, "git_tree_clean": True,
+             "guest_image": "Arch-Linux-x86_64-cloudimg-x", "guest_image_sha256": "d" * 64,
+             "slirp_gateway": "127.0.0.1", "egress_canary_port": port}
+    (bundle / "run.json").write_text(json.dumps(facts))
+    run_ = guest.Run(bundle)
+    run_.facts.update(manifest_files=1, guest_kernel="6.x-arch", systemd_version="systemd 999",
+                      providerd_sha256="e" * 64, unit_sha256="f" * 64)
+
+    def fake_sh(*argv, check=True, **_):
+        argv = [str(a) for a in argv]
+        if argv[:2] == ["systemd-detect-virt", "--vm"]:
+            return FakeCompleted(virt + "\n")
+        if argv[:5] == ["ip", "-j", "route", "show", "default"]:
+            return FakeCompleted(json.dumps([{"gateway": route, "dev": "eth0"}] if route else []))
+        raise AssertionError(f"unexpected system call in the offline test: {argv}")
+    guest.sh = fake_sh
+    guest.check_environment(run_)
+    for check in run_.evidence.catalog():
+        test_id = check["test_id"]
+        if test_id in ("E1", "E2", "E3", "E4") or test_id in skip_ids:
+            continue
+        run_.check(test_id, "x", lambda t=test_id: (t not in fail_ids, {"simulated": True}))
+    guest_exit = run_.write()
+    accepted = 0
+    if canary_listening:
+        canary.settimeout(0.5)
+        try:
+            while True:
+                canary.accept()[0].close()
+                accepted += 1
+        except OSError:
+            pass
+        canary.close()
+    written = list((scratch / name / "evidence").glob("*.json"))
+    assert len(written) == 1, written
+    return guest_exit, json.loads(written[0].read_text()), accepted
+
+
+def host_facts(doc, guest_connections=0, **overrides):
+    _, host = accepted_run(load("evidence_hostfacts", EVIDENCE_TOOL))
+    host["run_id"] = doc.get("run_id")
+    host["egress_canary"]["total_connections"] = 2 + guest_connections
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(host.get(key), dict):
+            host[key].update(value)
+        else:
+            host[key] = value
+    return host
+
+
+def check_end_to_end(ev, scratch):
+    def status_of(doc, test_id):
+        record = next(r for r in doc["results"] if r["test_id"] == test_id)
+        return record["test_status"], record["classification"]
+
+    # A valid isolated KVM run: the guest awaits the host, the host passes it.
+    guest_exit, doc, _ = guest_run(scratch, "valid")
+    assert guest_exit == 0, "a guest ready for host finalization must exit 0"
+    for test_id in ("E1", "E2", "E3"):
+        assert status_of(doc, test_id) == ("INCONCLUSIVE", "awaiting_host"), (test_id, status_of(doc, test_id))
+    assert status_of(doc, "E4")[0] == "PASS" and doc["summary"]["overall"] == "INCONCLUSIVE"
+    bound = ev.bind(doc, host_facts(doc))
+    assert bound["verdict"] == "PASS", bound["problems"]
+    for test_id in ("E1", "E2", "E3"):
+        assert status_of(bound["evidence"], test_id)[0] == "PASS"
+    path = scratch / "e2e-valid.json"
+    path.write_text(json.dumps(bound))
+    assert run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", path]).returncode == 0
+    guest_file = scratch / "e2e-guest.json"
+    guest_file.write_text(json.dumps(doc))
+    hostfile = scratch / "e2e-host.json"
+    hostfile.write_text(json.dumps(host_facts(doc)))
+    out = scratch / "e2e-bound-cli.json"
+    result = run([sys.executable, "-I", EVIDENCE_TOOL, "bind", "--guest-evidence", guest_file,
+                  "--host-facts", hostfile, "--out", out])
+    assert result.returncode == 0 and json.loads(out.read_text())["verdict"] == "PASS", result.stdout
+
+    # The same valid guest document with invalid host facts.
+    invalid_hosts = {
+        "unrestricted QEMU": (dict(qemu={"cmdline": UNRESTRICTED}), "FAIL"),
+        "TCG": (dict(qemu={"cmdline": [a.replace("kvm", "tcg") for a in RESTRICTED]}), "FAIL"),
+        "unsigned image": (dict(image={"signature_verified": False}), "FAIL"),
+        "wrong keyring": (dict(image={"keyring_fingerprints": ["A" * 40, "B" * 40]}), "FAIL"),
+        "canary dead before": (dict(egress_canary={"live_before": False}), "INCONCLUSIVE"),
+        "no QEMU command line": (dict(qemu={"cmdline": []}), "INCONCLUSIVE"),
+        "dirty tree at end": (dict(tree_clean_at_end=False), "INVALID"),
+        "HEAD moved": (dict(head_at_end="b" * 40), "INVALID"),
+        "image is a string": (dict(image="verified"), "INVALID"),
+        "qemu is a list": (dict(qemu=["-accel", "kvm"]), "INVALID"),
+        "build missing": (dict(build=None), "INVALID"),
+    }
+    for name, (overrides, want) in invalid_hosts.items():
+        got = ev.bind(doc, host_facts(doc, **overrides))["verdict"]
+        assert got == want, (name, got, want)
+    for host in ({}, None, [], "x"):
+        assert ev.bind(doc, host)["verdict"] == "INVALID", host
+    # A host that saw the guest at the canary, though the guest saw nothing.
+    assert ev.bind(doc, host_facts(doc, guest_connections=1))["verdict"] == "FAIL"
+
+    # Genuine guest failures stay failures whatever the host says.
+    genuine = {
+        "TCG guest": (dict(virt="qemu"), "E1", ("FAIL", "not_kvm"), "FAIL"),
+        "guest reached the host": (dict(canary_listening=True), "E2", ("FAIL", "guest_reached_host_canary"), "FAIL"),
+        "no route": (dict(route=None), "E2", ("INCONCLUSIVE", "no_route_to_slirp_gateway"), "INCONCLUSIVE"),
+        "confinement violation": (dict(fail_ids={"A10"}), "A10", ("FAIL", None), "FAIL"),
+        "unreached checks": (dict(skip_ids={"C16"}), "C16", ("NOT_RUN", None), "NOT_RUN"),
+    }
+    for name, (kwargs, test_id, want_record, want_verdict) in genuine.items():
+        guest_exit, failed, accepted = guest_run(scratch, name.lower().replace(" ", "-"), **kwargs)
+        assert guest_exit == 1, name
+        assert status_of(failed, test_id) == want_record, (name, status_of(failed, test_id))
+        got = ev.bind(failed, host_facts(failed, guest_connections=accepted))["verdict"]
+        assert got == want_verdict, (name, got, want_verdict)
+
+    # A malformed run id (uppercase) makes the guest refuse to write evidence.
+    _, refused, _ = guest_run(scratch, "Upper-Case")
+    assert refused.get("invalid") is True and any("run_id" in p for p in refused["problems"]), refused
+    assert ev.bind(refused, host_facts(refused))["verdict"] == "INVALID"
+
+    # Invalid verdicts from a check body never pass and never claim a FAIL.
+    guest = load("guest_verdicts", GUEST / "guest-acceptance.py")
+    assert guest.verdict_status(True) == "PASS" and guest.verdict_status(False) == "FAIL"
+    assert guest.verdict_status("INCONCLUSIVE") == "INCONCLUSIVE"
+    for bad in (None, 1, 0, "PASS", "FAIL", "inconclusive", "yes", [], ("INCONCLUSIVE",)):
+        assert guest.verdict_status(bad) is None, bad
+    _, valid_doc, _ = guest_run(scratch, "verdicts")
+    run_ = guest.Run(scratch / "bundle-verdicts")
+    for test_id, body in [("A1", lambda: (None, {})), ("A2", lambda: (1, {})), ("A3", lambda: ("PASS", {})),
+                          ("A4", lambda: "PASS"), ("A5", lambda: (True,)), ("A6", lambda: (True, {}, 7)),
+                          ("A7", lambda: None), ("A8", lambda: (True, {}, "x", "extra"))]:
+        assert run_.check(test_id, "x", body) is False, test_id
+        assert run_.results[test_id]["test_status"] == "INCONCLUSIVE", (test_id, run_.results[test_id])
+
+    # Malformed or missing evidence never becomes PASS.
+    def tampered(mutate):
+        broken = json.loads(json.dumps(valid_doc))
+        mutate(broken)
+        return broken
+    malformed_docs = [
+        {"invalid": True, "problems": ["x"]}, {}, [], None, "text",
+        tampered(lambda d: d.update(results="none")),
+        tampered(lambda d: d["results"][0].update(test_id=["E1"])),
+        tampered(lambda d: d["results"][0].update(test_status=["PASS"])),
+        tampered(lambda d: d["results"][0].update(classification={"x": 1})),
+        tampered(lambda d: d["results"].pop()),
+        tampered(lambda d: d.update(phase="preparation")),
+        tampered(lambda d: d.pop("summary")),
+    ]
+    for broken in malformed_docs:
+        assert ev.bind(broken, host_facts(valid_doc))["verdict"] == "INVALID", str(broken)[:80]
+        if isinstance(broken, dict):
+            assert ev.validate(broken, "execution"), "malformed evidence validated"
+    for text in ["", "{", "[]", "{}", '{"verdict": "PASS"}', json.dumps({"kind": "remote-provider-kvm-acceptance",
+                                                                     "verdict": "PASS", "problems": []})]:
+        path = scratch / "malformed-bound.json"
+        path.write_text(text)
+        result = run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", path])
+        assert result.returncode == 1 and '"verdict": "PASS"' not in result.stdout, (text, result.stdout)
+    result = run([sys.executable, "-I", EVIDENCE_TOOL, "verify-bound", scratch / "absent.json"])
+    assert result.returncode == 1 and '"INVALID"' in result.stdout
+    result = run([sys.executable, "-I", EVIDENCE_TOOL, "validate", scratch / "absent.json"])
+    assert result.returncode == 1
+
+
 # --- socket client ---------------------------------------------------------------
 
 def check_admission_client(scratch):
@@ -734,6 +930,8 @@ def check_guest_runner(scratch):
     assert runner.check("A3", "x", lambda: (False, {"seen": 1})) is False
     assert runner.results["A3"]["test_status"] == "FAIL"
     assert runner.check("A4", "x", lambda: ("yes", {"seen": 1})) is False, "only True passes"
+    assert runner.results["A4"]["test_status"] == "INCONCLUSIVE"
+    assert runner.results["A4"]["classification"] == "invalid_verdict"
     runner.check("A5", "x", lambda: (True, {"seen": 1}))
     assert runner.results["A5"]["test_status"] == "PASS"
     status = runner.write()
@@ -765,6 +963,7 @@ def main():
         guest_module = load("guest_e2", GUEST / "guest-acceptance.py")
         check_e2(evidence_module, guest_module)
         check_binding(evidence_module, scratch)
+        check_end_to_end(evidence_module, scratch)
         assert shims.calls() == [], shims.calls()
     print("remote provider KVM harness, offline: preparation modes run nothing forbidden and report NOT_RUN; "
           "--execute refuses on every missing gate; KVM-only, restrict=on, no workflow executes it; "

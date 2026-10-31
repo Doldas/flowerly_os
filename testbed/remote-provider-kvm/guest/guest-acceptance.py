@@ -64,6 +64,24 @@ class Harness(Exception):
     """A harness problem: the check is INCONCLUSIVE, never PASS."""
 
 
+INCONCLUSIVE = "INCONCLUSIVE"
+
+
+def verdict_status(verdict):
+    """A check body's verdict -> evidence status, explicitly:
+    True -> PASS, False -> FAIL, the string INCONCLUSIVE -> INCONCLUSIVE.
+    Anything else (None, 1, "PASS", "yes", ...) is a harness defect and
+    becomes INCONCLUSIVE: never PASS, and never a FAIL that would claim an
+    observation the check did not make."""
+    if verdict is True:
+        return "PASS"
+    if verdict is False:
+        return "FAIL"
+    if verdict == INCONCLUSIVE and isinstance(verdict, str):
+        return "INCONCLUSIVE"
+    return None
+
+
 def sh(*argv, check=True, env=None, input_text=None, timeout=300):
     result = subprocess.run([str(a) for a in argv], capture_output=True, text=True, env=env,
                             input=input_text, timeout=timeout)
@@ -115,15 +133,22 @@ class Run:
     # --- records -------------------------------------------------------
 
     def check(self, test_id, expected, body):
-        """Run `body` -> (passed, observed[, classification])."""
+        """Run `body` -> (verdict, observed[, classification]); see
+        `verdict_status`. E1-E3 return INCONCLUSIVE ('awaiting_host') until
+        the host finalizes them."""
         started = utc()
         try:
             outcome = body()
-            passed, observed = outcome[0], outcome[1]
-            classification = outcome[2] if len(outcome) > 2 else None
-            # Only a literal True passes; a body may hand back INCONCLUSIVE
-            # itself (E1-E3 wait for the host's half of the evidence).
-            status = "PASS" if passed is True else ("INCONCLUSIVE" if passed == "INCONCLUSIVE" else "FAIL")
+            if not isinstance(outcome, tuple) or len(outcome) not in (2, 3):
+                raise Harness(f"check body returned {type(outcome).__name__}, not (verdict, observed[, class])")
+            verdict, observed = outcome[0], outcome[1]
+            classification = outcome[2] if len(outcome) == 3 else None
+            status = verdict_status(verdict)
+            if status is None:
+                status, classification = "INCONCLUSIVE", "invalid_verdict"
+                observed = {"invalid_verdict": repr(verdict)[:80], "observed": observed}
+            if classification is not None and not isinstance(classification, str):
+                raise Harness("classification must be a string")
         except Harness as err:
             status, observed, classification = "INCONCLUSIVE", {"harness_error": str(err)[:400]}, "harness_error"
         except Exception as err:  # noqa: BLE001 - any surprise is inconclusive, never a pass
@@ -155,9 +180,15 @@ class Run:
             path = out / f"remote-provider-kvm-{self.facts['run_id']}.INVALID.json"
             doc = {"invalid": True, "problems": problems}
         path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+        ready = not problems and ready_for_host(doc)
         print(json.dumps({"evidence": str(path), "valid": not problems,
-                          "overall": None if problems else doc["summary"]["overall"]}))
-        return 0 if not problems and doc["summary"]["overall"] == "PASS" else 1
+                          "overall": None if problems else doc["summary"]["overall"],
+                          "ready_for_host_finalization": ready}))
+        # The guest document can never be PASS by itself (E1-E3 await the
+        # host); exit 0 means "every guest-decided check passed and E1-E3
+        # await the host", which is the only state the host can finalize
+        # into an acceptance candidate.
+        return 0 if ready else 1
 
     # --- guest plumbing ------------------------------------------------
 
@@ -289,6 +320,18 @@ def collect_facts(run):
 
 
 AWAITING_HOST = "awaiting_host"
+HOST_CHECKS = ("E1", "E2", "E3")
+
+
+def ready_for_host(doc):
+    """Every guest-decided check PASS; E1-E3 INCONCLUSIVE awaiting the host."""
+    for record in doc["results"]:
+        if record["test_id"] in HOST_CHECKS:
+            if (record["test_status"], record["classification"]) != ("INCONCLUSIVE", AWAITING_HOST):
+                return False
+        elif record["test_status"] != "PASS":
+            return False
+    return True
 
 
 def evaluate_guest_egress(obs):
@@ -313,7 +356,7 @@ def evaluate_guest_egress(obs):
         return "INCONCLUSIVE", "no_route_to_slirp_gateway"
     if obs.get("canary_attempt") is None:
         return "INCONCLUSIVE", "canary_not_attempted"
-    return "INCONCLUSIVE", AWAITING_HOST
+    return INCONCLUSIVE, AWAITING_HOST
 
 
 def observe_egress(run):
@@ -355,15 +398,15 @@ def check_environment(run):
         "manifest_files_verified": run.facts["manifest_files"]}))
     # `kvm` here and `-accel kvm` on QEMU's running command line (host half).
     run.check("E1", "guest sees KVM; host verifies QEMU's -accel kvm",
-              lambda: ("INCONCLUSIVE" if virt == "kvm" else False, {"guest_virt": virt},
+              lambda: (INCONCLUSIVE if virt == "kvm" else False, {"guest_virt": virt},
                        AWAITING_HOST if virt == "kvm" else "not_kvm"))
     run.check("E3", "host verified the pinned image digest and signature before boot",
-              lambda: ("INCONCLUSIVE", {"guest": "cannot verify its own disk image"}, AWAITING_HOST))
+              lambda: (INCONCLUSIVE, {"guest": "cannot verify its own disk image"}, AWAITING_HOST))
 
     def e2():
         obs = observe_egress(run)
         status, classification = evaluate_guest_egress(obs)
-        return (False if status == "FAIL" else "INCONCLUSIVE"), obs, classification
+        return (False if status == "FAIL" else INCONCLUSIVE), obs, classification
     run.check("E2", "guest reaches no host path through QEMU (host canary untouched, restrict=on verified)", e2)
 
 
