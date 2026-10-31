@@ -19,6 +19,7 @@ Verifies, with real processes and real IPC:
 import json
 import os
 import pathlib
+import re
 import signal
 import socket
 import struct
@@ -69,7 +70,9 @@ def refused(reply, code, needle):
     assert needle in reply["message"], reply
     # Refusals never disclose the caller's or a file owner's uid.
     message = reply["message"].lower()
-    assert "uid" not in message and str(os.getuid()) not in message, reply
+    # A whole-number match: as root (the self-hosted runner) a bare "0" in a
+    # temporary path or mode is not a uid.
+    assert "uid" not in message and not re.search(rf"(?<![\w.]){os.getuid()}(?![\w.])", message), reply
 
 
 def wait_socket(path, proc, log):

@@ -130,9 +130,6 @@ jobs:
       - name: Remote inference gates, consent and secret isolation end to end (#263)
         run: python3 ./scripts/test-remote-inference-gates.py target/release
 
-      - name: Remote provider operator procedure and unit contract, offline (#263)
-        run: python3 ./scripts/test-remote-provider-operator.py target/release
-
       - name: Admin commands and IPC shutdown require an explicit admin group
         run: python3 ./scripts/test-admin-authorization.py target/release
 
@@ -163,6 +160,11 @@ jobs:
           id
           id -u
           bash ./scripts/ci-pty-user.sh prepare
+
+      # The operator's test mode refuses root by design, so on the root
+      # self-hosted runner this runs as the dedicated unprivileged account.
+      - name: Remote provider operator procedure and unit contract, offline (#263)
+        run: bash ./scripts/ci-pty-user.sh run python3 ./scripts/test-remote-provider-operator.py target/release
 
       - name: Root-owned PTY shell startup is refused
         run: bash ./scripts/ci-pty-user.sh root-refusal
