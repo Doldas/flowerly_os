@@ -40,7 +40,7 @@ jobs:
             ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-security-cargo-
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@8b0909b8902031c9ed62abc2387ebd6120876869 # cargo-audit
+        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # cargo-audit
 
       - name: Audit dependencies
         run: cargo audit
@@ -72,7 +72,7 @@ jobs:
             ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-security-cargo-
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@7ff3827688bd742ffc0b597ab1bf503967134e46 # cargo-deny
+        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # cargo-deny
 
       - name: cargo-deny check ${{ matrix.checks }}
         run: cargo deny --all-features check ${{ matrix.checks }}
