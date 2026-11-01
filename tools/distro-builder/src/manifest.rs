@@ -14,6 +14,8 @@ use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+use crate::signature;
+
 pub const SCHEMA: &str = "flowerly.generation-inputs.v1";
 
 /// Signature trust is reported explicitly so no caller can mistake a cache
@@ -328,26 +330,47 @@ pub struct CacheReport {
     pub artifacts_verified: usize,
     pub missing: Vec<CacheProblem>,
     pub mismatched: Vec<CacheProblem>,
+    /// `not_verified` without a keyring; otherwise
+    /// `verified_against_supplied_keyring` or `failed`.
     pub signature_trust: &'static str,
+    /// SHA-256 of the keyring signatures were checked against, if any.
+    pub keyring_sha256: Option<String>,
+    pub signature_problems: Vec<CacheProblem>,
 }
 
 impl CacheReport {
     pub fn complete(&self) -> bool {
-        self.missing.is_empty() && self.mismatched.is_empty()
+        self.missing.is_empty() && self.mismatched.is_empty() && self.signature_problems.is_empty()
     }
 }
 
 /// Verifies every archive and detached signature against a cache laid out as
 /// `<cache>/sha256/<hex digest>`. Reads only; never substitutes or fetches.
-pub fn verify_cache(checked: &Checked, cache: &Path) -> CacheReport {
+/// With a keyring, each package whose archive and signature bytes verified
+/// also has its signature checked by [`signature::verify`].
+pub fn verify_cache(checked: &Checked, cache: &Path, keyring: Option<&Path>) -> CacheReport {
     let mut report = CacheReport {
         manifest_sha256: checked.sha256.clone(),
         artifacts_verified: 0,
         missing: Vec::new(),
         mismatched: Vec::new(),
         signature_trust: SIGNATURE_TRUST,
+        keyring_sha256: None,
+        signature_problems: Vec::new(),
     };
+    if let Some(keyring) = keyring {
+        match hash_file(keyring) {
+            Ok(digest) => report.keyring_sha256 = Some(digest),
+            Err(error) => report.signature_problems.push(CacheProblem {
+                package: String::new(),
+                artifact: "keyring",
+                sha256: String::new(),
+                problem: format!("cannot read keyring {}: {error}", keyring.display()),
+            }),
+        }
+    }
     for package in &checked.manifest.packages {
+        let before = report.missing.len() + report.mismatched.len();
         for (artifact, digest, size) in [
             ("archive", &package.sha256, Some(package.size)),
             ("signature", &package.signature_sha256, None),
@@ -364,8 +387,37 @@ pub fn verify_cache(checked: &Checked, cache: &Path) -> CacheReport {
                 Err(CacheError::Bad(reason)) => report.mismatched.push(problem(reason)),
             }
         }
+        let bytes_verified = report.missing.len() + report.mismatched.len() == before;
+        if let (Some(keyring), Some(_), true) = (keyring, &report.keyring_sha256, bytes_verified) {
+            let entry = |digest: &String| cache.join("sha256").join(digest);
+            let problems = signature::verify(
+                keyring,
+                &entry(&package.signature_sha256),
+                &entry(&package.sha256),
+                &package.signer_fingerprint,
+            );
+            if !problems.is_empty() {
+                report.signature_problems.push(CacheProblem {
+                    package: package.name.clone(),
+                    artifact: "signature",
+                    sha256: package.signature_sha256.clone(),
+                    problem: problems.join("; "),
+                });
+            }
+        }
+    }
+    if keyring.is_some() {
+        report.signature_trust = if report.complete() {
+            signature::VERIFIED
+        } else {
+            "failed"
+        };
     }
     report
+}
+
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    sha256_reader(&mut File::open(path)?)
 }
 
 enum CacheError {
@@ -610,7 +662,7 @@ mod tests {
             dir.path(),
             &[b"base archive", b"base sig", b"fs archive", b"fs sig"],
         );
-        let report = verify_cache(&checked(), dir.path());
+        let report = verify_cache(&checked(), dir.path(), None);
         assert!(report.complete(), "{report:?}");
         assert_eq!(report.artifacts_verified, 4);
         assert_eq!(report.signature_trust, "not_verified");
@@ -626,7 +678,7 @@ mod tests {
             b"BASE ARCHIVE",
         )
         .unwrap();
-        let report = verify_cache(&checked(), dir.path());
+        let report = verify_cache(&checked(), dir.path(), None);
         assert!(!report.complete());
         assert_eq!(report.missing.len(), 1);
         assert_eq!(report.missing[0].package, "filesystem");
@@ -645,7 +697,7 @@ mod tests {
         let outside = dir.path().join("outside");
         std::fs::write(&outside, b"fs archive").unwrap();
         std::os::unix::fs::symlink(&outside, root.join(digest_of(b"fs archive"))).unwrap();
-        let report = verify_cache(&checked(), dir.path());
+        let report = verify_cache(&checked(), dir.path(), None);
         let problems: Vec<_> = report
             .mismatched
             .iter()
@@ -664,7 +716,7 @@ mod tests {
 
         std::fs::remove_file(root.join(digest_of(b"fs archive"))).unwrap();
         std::fs::create_dir(root.join(digest_of(b"fs archive"))).unwrap();
-        let report = verify_cache(&checked(), dir.path());
+        let report = verify_cache(&checked(), dir.path(), None);
         assert!(report
             .mismatched
             .iter()

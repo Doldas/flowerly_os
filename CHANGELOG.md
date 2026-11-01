@@ -13,6 +13,10 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   cache check that reports every missing or tampered archive and signature
   and fails closed. Package signature trust is **not** verified yet
   (`signature_trust: not_verified`); no real Arch package set is frozen.
+- `distro-builder manifest verify-cache --keyring <file>` checks every
+  detached package signature with `gpgv` against the supplied keyring and
+  requires the manifest's signer fingerprint (#49). Which keyring to trust
+  remains an open policy decision.
 
 ## 0.0.4 — Flows and Sessions (2026-10-28)
 

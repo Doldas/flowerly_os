@@ -1,4 +1,5 @@
 mod manifest;
+mod signature;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -35,6 +36,10 @@ enum ManifestAction {
         path: PathBuf,
         #[arg(long)]
         cache: PathBuf,
+        /// Binary OpenPGP keyring to check each detached signature against
+        /// with gpgv. Without it signatures are reported `not_verified`.
+        #[arg(long)]
+        keyring: Option<PathBuf>,
     },
 }
 
@@ -51,15 +56,20 @@ fn main() -> Result<()> {
             println!("signature_trust={}", manifest::SIGNATURE_TRUST);
             Ok(())
         }
-        Action::Manifest(ManifestAction::VerifyCache { path, cache }) => {
+        Action::Manifest(ManifestAction::VerifyCache {
+            path,
+            cache,
+            keyring,
+        }) => {
             let checked = check_manifest(&path)?;
-            let report = manifest::verify_cache(&checked, &cache);
+            let report = manifest::verify_cache(&checked, &cache, keyring.as_deref());
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.complete() {
                 bail!(
-                    "cache is incomplete: {} missing, {} mismatched; no artifact was fetched or substituted",
+                    "cache verification failed: {} missing, {} mismatched, {} signature problems; no artifact was fetched or substituted",
                     report.missing.len(),
-                    report.mismatched.len()
+                    report.mismatched.len(),
+                    report.signature_problems.len()
                 );
             }
             Ok(())
