@@ -4,6 +4,82 @@
 **Issues:** #49, #9, #48. **Scope:** prerequisites for 0.0.5.
 This document is a specification, **not** an implemented package fetcher.
 
+## Implementation status
+
+| Part | State |
+| --- | --- |
+| Manifest schema `flowerly.generation-inputs.v1`, canonical form and digest | Implemented: `distro-builder manifest check` |
+| Content-addressed cache verification, missing/tampered artifacts fail closed | Implemented: `distro-builder manifest verify-cache` |
+| Detached signature check against a supplied keyring | Implemented: `verify-cache --keyring <file>` (gpgv) |
+| Trust policy: which keyring is acceptable, key expiry on historic replay | **Not decided**; without `--keyring` the report says `signature_trust: not_verified` |
+| Repository database verification and transitive resolution | Not implemented |
+| Fetch from a dated snapshot, real frozen package set, mirror-change demo | Not done; needs approval for network acquisition |
+| Kernel, toolchain and output identity fields | Not in v1; a later schema version |
+
+A passing `verify-cache` proves only that the cached bytes are the bytes the
+manifest names. It does not establish who published them. #49 stays open
+until the acceptance evidence below exists.
+
+### v1 format
+
+The manifest is a JSON object with `schema`, `source`
+(`snapshot_url`, `snapshot_date`, `architecture`), `requested` and
+`packages`. Each package has `repository`, `name`, `version`,
+`architecture`, `filename`, `size`, `sha256`, `signature_sha256` and
+`signer_fingerprint`. Rules the checker enforces:
+
+- Unknown fields and any other `schema` value are rejected.
+- The stored bytes must equal the canonical form: pretty-printed JSON with
+  object keys sorted at every level and one final newline. The SHA-256 of
+  the file is the manifest identity.
+- `snapshot_url` is a plain `https://` directory URL whose path contains
+  `snapshot_date` as `YYYY/MM/DD`; a live mirror URL is rejected.
+- Names, versions (`[epoch:]pkgver-pkgrel`) and repositories use pacman's
+  alphabets; `filename` must be exactly
+  `<name>-<version>-<architecture>.pkg.tar.{zst,xz}`; `architecture` is
+  `any` or the source architecture.
+- Packages are strictly sorted by repository, architecture, name, version
+  and SHA-256. A name may be resolved once; no two artifacts share a digest.
+- `requested` is sorted, unique, contained in the resolved set, and equal
+  to `distro/base-image/arch/packages.base`.
+
+The cache layout is `<cache>/sha256/<hex digest>` for archives and detached
+signatures alike. Entries must be regular files, are opened without
+following symbolic links, and must match the manifest size (archives) and
+digest. The JSON report lists every missing and mismatched artifact; the
+command exits non-zero without fetching or substituting anything.
+
+### Signature check
+
+With `--keyring <file>` (a binary OpenPGP keyring, as `gpg --export`
+writes it), each package whose archive and signature bytes verified is
+also checked with `gpgv`. `gpgv` runs with an empty throwaway home, a
+cleared environment and only that keyring; only its `--status-fd` output
+is read. A package passes when the status holds exactly one `NEWSIG`,
+`GOODSIG` and `VALIDSIG`, the `GOODSIG` key id matches the signer, no
+rejecting keyword appears (`BADSIG`, `ERRSIG`, `EXPSIG`, `EXPKEYSIG`,
+`REVKEYSIG`, `NO_PUBKEY`, `KEYEXPIRED`, `KEYREVOKED`, `SIGEXPIRED`,
+`FAILURE`, `ERROR` and others), the `VALIDSIG` primary fingerprint equals
+the manifest's `signer_fingerprint`, the hash is SHA-2 or SHA-3, the
+signature class is a binary document, and `gpgv` exits 0. The report then
+says `signature_trust: verified_against_supplied_keyring` and records
+`keyring_sha256`; any problem makes it `failed` and the command non-zero.
+
+This proves the archives were signed by the keys the manifest names, as
+present in that keyring. It does not decide that the keyring is the right
+one; that is the open trust policy. Open policy questions:
+
+- **Which keyring.** Arch trusts packager keys certified by enough master
+  keys (`archlinux-keyring`). Flowerly checks one named key per package.
+  Policy must say how a keyring is chosen, pinned and rotated.
+- **Expiry on replay.** `gpgv` evaluates key expiry and revocation at the
+  current time. A manifest replayed after a packager key expired fails
+  closed. Whether historic replay should accept that, and with what
+  evidence, needs a decision.
+- **Time of check.** Signatures are checked by path after the bytes were
+  hashed. The cache is assumed to be writable only by the operator running
+  the check.
+
 ## Problem
 
 Arch mirrors are rolling; rebuilding from a current mirror can resolve

@@ -5,7 +5,18 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
-No unreleased changes yet.
+- `distro-builder manifest check` and `manifest verify-cache` implement the
+  Generation input manifest format proposed in ADR-0020 (#49): schema
+  `flowerly.generation-inputs.v1`, canonical sorted-key JSON whose file
+  SHA-256 is the manifest identity, dated-snapshot sources only, strict
+  pacman name/version/filename validation, and an offline content-addressed
+  cache check that reports every missing or tampered archive and signature
+  and fails closed. Package signature trust is **not** verified yet
+  (`signature_trust: not_verified`); no real Arch package set is frozen.
+- `distro-builder manifest verify-cache --keyring <file>` checks every
+  detached package signature with `gpgv` against the supplied keyring and
+  requires the manifest's signer fingerprint (#49). Which keyring to trust
+  remains an open policy decision.
 
 ## 0.0.4 — Flows and Sessions (2026-10-28)
 
