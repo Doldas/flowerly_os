@@ -39,7 +39,13 @@ promoted.
 - `../../scripts/check-image-inputs.sh` — cheap repository-level validation of
   these inputs.
 
-The package-name list is **not** sufficient for reproducibility. The eventual
+The package-name list is **not** sufficient for reproducibility.
+`cargo run -p distro-builder -- manifest check <file>` validates a frozen
+Generation input manifest and prints its SHA-256, and
+`manifest verify-cache <file> --cache <dir>` checks an offline
+content-addressed package cache against it (see
+[ADR-0020](../../../web-docs/docs/adr/0020-pinned-arch-generation-inputs-proposal.md)).
+No real package set has been frozen yet, and signatures are not verified. The eventual
 generation builder must capture exact resolved versions, architecture, package
 hashes/repository provenance, kernel identity, Flowerly source commit and output
 hashes.
