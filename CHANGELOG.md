@@ -5,7 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
-No unreleased changes yet.
+- `agenticctl` gains `goal child`, `generation promote --reason` and
+  `ownership inspect|claim|release` for operations the daemon already
+  implemented but the CLI could not reach. Admin commands remain enforced by
+  the daemon (kernel-attested admin group, audited with the given reason).
+  Covered by `check-cli-contracts.sh` and as real users in
+  `test-user-ownership.py --cross-uid`.
 
 ## 0.0.4 — Flows and Sessions (2026-10-28)
 

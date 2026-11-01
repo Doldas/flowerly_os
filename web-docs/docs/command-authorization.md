@@ -183,6 +183,14 @@ the command inventory. For the owner-scoped commands:
     and a per-owner profile-name clash. Components are capped at 10 000
     objects. A release followed by a claim restores the same component.
     Backup restore is not an ownership operation.
+- **CLI.** A member of the admin group runs these as
+  `agenticctl generation promote <id> --reason <text>`,
+  `agenticctl ownership inspect <ref> --reason <text>`,
+  `agenticctl ownership claim <ref> --to-uid <uid> --reason <text> --expect <n>`
+  and `agenticctl ownership release <ref> --reason <text> --expect <n>`.
+  Take `<n>` from the `component` list `ownership inspect` returns. The CLI
+  only forwards the request; the daemon enforces every rule above. Anyone
+  else gets `PermissionDenied` and a non-zero exit.
 - **Compute (PR 5).** The model catalog and the provider registry stay
   shared system data (Admin-only mutation).
   - *Profiles* are the caller's own plus read-only `system` profiles.
