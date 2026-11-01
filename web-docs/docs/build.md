@@ -167,7 +167,10 @@ namei -l target/flowerly-arch-rootfs/flowerly-rootfs/usr/lib/dbus-1.0/dbus-daemo
 
 The second command assumes the usual Arch path; use the path printed by
 `find` if it differs. Fixing this requires a tested ownership-aware image
-staging/build approach. **Do not recursively `chmod` the rootfs or remove
+staging/build approach: `build-arch-root-volume.sh` runs `du` and
+`mkfs.ext4 -d` through `podman unshare` when the tree is not readable (it
+fails closed if that is unavailable) and then checks owner, group and mode
+of every setuid/setgid entry in the image with `debugfs`. **Do not recursively `chmod` the rootfs or remove
 setuid/setgid bits**: that would change security-sensitive OS contents.
 Do not run all project build stages as root as a generic workaround.
 

@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- The ext4 root-volume builder no longer fails with `Permission denied` on a
+  rootfs owned by subordinate ids (#51): it enters the owning user namespace
+  with `podman unshare` instead of changing permissions, and audits owner,
+  group and mode of setuid/setgid entries in the image. Covered by a real
+  `mkfs.ext4`/`debugfs` test that fails without the fix.
 - `agenticctl` gains `goal child`, `generation promote --reason` and
   `ownership inspect|claim|release` for operations the daemon already
   implemented but the CLI could not reach. Admin commands remain enforced by
