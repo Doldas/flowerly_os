@@ -10,3 +10,8 @@ description = "Host-side validator and future Arch rootfs/ISO builder"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tempfile = "3"
