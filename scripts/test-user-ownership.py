@@ -40,6 +40,10 @@ two-UID reproduction from #225 into permanent assertions:
     reason). Inspect reveals ownership metadata, not content. A claim with
     a stale `expect` moves nothing; a claim moves the whole component to
     alice only, and a release makes it protected again.
+  * agenticctl: `generation promote`, `ownership inspect|claim|release` and
+    `goal child`, run as the real users, reach the same checks: the admin's
+    reason lands in admin_audit, non-admins get permission_denied, a stale
+    `--expect` moves nothing, and a child Goal needs a parent of your own.
 
 Default mode (no root) runs only the offline parser and helper self-checks.
 """
@@ -128,6 +132,26 @@ class Peer:
         reply = self.call(command, **args)
         assert reply["type"] == "ok", (self.user, command, args, reply)
         return reply["data"]
+
+    def ctl(self, *argv):
+        """agenticctl as this user: (exit code, parsed stdout or stderr)."""
+        result = subprocess.run(
+            ["runuser", "-u", self.user, "--", "env", "-i", "PATH=/usr/bin:/bin",
+             str(self.ctl_bin), "--runtime-dir", str(self.sock.parent), *argv],
+            capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            return 0, json.loads(result.stdout)
+        return result.returncode, result.stderr
+
+    def ctl_ok(self, *argv):
+        code, out = self.ctl(*argv)
+        assert code == 0, (self.user, argv, out)
+        return out
+
+    def ctl_err(self, *argv):
+        code, out = self.ctl(*argv)
+        assert code != 0, (self.user, argv, out)
+        return out
 
     def status(self):
         reply = self.send({"type": "status"})
@@ -442,6 +466,55 @@ def claim_scenario(alice, bob, admin, admin_uid, alice_uid, service, db_path):
         db.close()
 
 
+def cli_scenario(alice, bob, admin, admin_uid, alice_uid, service, db_path):
+    """The agenticctl admin and child-Goal commands, as real users."""
+    candidate = alice.ctl_ok("generation", "create", "--source-commit", "cli")["id"]
+    assert "PermissionDenied" in bob.ctl_err("generation", "promote", candidate,
+                                             "--reason", "mine now")
+    promoted = admin.ctl_ok("generation", "promote", candidate, "--reason", "cli promotion")
+    assert promoted["owner"] == "system", promoted
+    assert bob.ctl_ok("generation", "inspect", candidate)["source_commit"] == "cli"
+
+    root_goal, child_goal = (f"goal-{uuid.uuid4().hex}" for _ in range(2))
+    execution = f"exec-{uuid.uuid4().hex}"
+    insert_legacy_rows(service, db_path, root_goal, child_goal, execution)
+    assert "PermissionDenied" in alice.ctl_err("ownership", "inspect", root_goal,
+                                               "--reason", "curious")
+    report = admin.ctl_ok("ownership", "inspect", root_goal, "--reason", "cli triage")
+    assert len(report["component"]) == 3, report
+    assert "Conflict" in admin.ctl_err("ownership", "claim", root_goal, "--to-uid",
+                                       str(alice_uid), "--reason", "stale", "--expect", "2")
+    # A child under data alice does not own yet is answered like a missing Goal.
+    assert "NotFound" in alice.ctl_err("goal", "child", child_goal, "too early")
+    moved = admin.ctl_ok("ownership", "claim", root_goal, "--to-uid", str(alice_uid),
+                         "--reason", "cli claim", "--expect", "3")
+    assert set(moved["moved"]) == {root_goal, child_goal, execution}, moved
+
+    child = alice.ctl_ok("goal", "child", child_goal, "next step",
+                         "--operation-id", "cli-child-0001")
+    assert child["id"].startswith("goal-"), child
+    retried = alice.ctl_ok("goal", "child", child_goal, "next step",
+                           "--operation-id", "cli-child-0001")
+    assert retried["id"] == child["id"], (child, retried)
+    assert alice.ok("goal.show", id=child["id"])["parent_goal"] == child_goal
+    assert "NotFound" in bob.ctl_err("goal", "child", child_goal, "graft")
+
+    admin.ctl_ok("ownership", "release", root_goal, "--reason", "cli release", "--expect", "4")
+    assert_like_missing(alice, "goal.show", root_goal, MISSING_GOAL)
+
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = db.execute("SELECT actor_uid, command, reason FROM admin_audit "
+                          "WHERE object_ref IN (?, ?) ORDER BY id",
+                          (candidate, root_goal)).fetchall()
+        assert rows == [(admin_uid, "generation.promote", "cli promotion"),
+                        (admin_uid, "ownership.inspect", "cli triage"),
+                        (admin_uid, "ownership.claim", "cli claim"),
+                        (admin_uid, "ownership.release", "cli release")], rows
+    finally:
+        db.close()
+
+
 def cross_uid(bin_dir):
     if os.geteuid() != 0:
         raise SystemExit("--cross-uid must run as root (CI uses sudo)")
@@ -471,6 +544,8 @@ def cross_uid(bin_dir):
         local_bin = root / "bin"
         local_bin.mkdir(mode=0o755)
         shutil.copy2(bin_dir / "flowerlyd", local_bin / "flowerlyd")
+        shutil.copy2(bin_dir / "agenticctl", local_bin / "agenticctl")
+        Peer.ctl_bin = local_bin / "agenticctl"
         script = root / "test-user-ownership.py"
         shutil.copy2(__file__, script)
         script.chmod(0o644)
@@ -499,6 +574,8 @@ def cross_uid(bin_dir):
         generation_scenario(alice_peer, bob_peer, admin_peer, admin_uid)
         claim_scenario(alice_peer, bob_peer, admin_peer, admin_uid, alice_uid, service,
                        state / "state.db")
+        cli_scenario(alice_peer, bob_peer, admin_peer, admin_uid, alice_uid, service,
+                     state / "state.db")
         assert process.poll() is None, log_path.read_text()
         print("cross-UID ownership (#225): status counts and foreground are per caller; "
               "other users' Flows, Goals, Sessions and Executions are not_found like missing "
@@ -508,7 +585,8 @@ def cross_uid(bin_dir):
               "survive restart; profiles, workloads and usage are private; Generation "
               "candidates are private until an audited Admin promotion, which never "
               "reveals the reason Goal; unresolved legacy data is protected until an "
-              "audited Admin claim moves its whole component: OK")
+              "audited Admin claim moves its whole component; the agenticctl admin and "
+              "child-Goal commands enforce the same rules: OK")
     finally:
         if process is not None:
             stop_daemon(process)
