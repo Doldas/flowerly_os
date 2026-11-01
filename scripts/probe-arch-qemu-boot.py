@@ -18,6 +18,7 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = ROOT / "target/flowerly-arch-rootfs"
+KVM_DEVICE = Path(os.environ.get("FLOWERLY_KVM_DEVICE", "/dev/kvm"))
 
 
 def fail(message):
@@ -83,10 +84,12 @@ def run(args):
             fail(f"refusing to overwrite evidence report: {args.report}")
         if args.report.resolve() == args.log.resolve():
             fail("evidence report and serial log must differ")
+    if args.accel == "kvm" and not os.access(KVM_DEVICE, os.R_OK | os.W_OK):
+        fail(f"--accel kvm needs read-write access to {KVM_DEVICE}; use tcg or fix group membership")
     args.log.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        qemu, "-machine", "q35,accel=tcg", "-m", "2048",
-        "-smp", "2", "-nographic", "-no-reboot", "-monitor", "none",
+        qemu, "-machine", f"q35,accel={args.accel}", "-m", "2048",
+        *(["-cpu", "host"] if args.accel == "kvm" else []), "-smp", "2", "-nographic", "-no-reboot", "-monitor", "none",
         "-kernel", str(kernel), "-initrd", str(initramfs),
         "-append",
         "root=/dev/vda rw rootfstype=ext4 console=ttyS0 "
@@ -115,12 +118,16 @@ def run(args):
         fail(f"systemd multi-user boot not observed within {args.timeout}s; inspect {args.log}")
     # Require the witness emitted by boot-ipc-health.sh on its own line.
     # A quoted command, diagnostic or partial token is not boot evidence.
-    if not re.search(r"(?m)^FLOWERLY_BOOT_IPC_HEALTHY\r?$", log):
+    # systemd prefixes console output of journal+console units with the kernel
+    # timestamp and the writing process: "[    7.52] bash[348]: <line>".
+    if not re.search(
+        r"(?m)^(?:\[\s*\d+\.\d+\] bash\[\d+\]: )?FLOWERLY_BOOT_IPC_HEALTHY\r?$", log
+    ):
         fail("Flowerly IPC health witness not observed; inspect serial log")
     if args.report is not None:
         evidence = {
             "schema": 1,
-            "probe": "direct-kernel-qemu-tcg",
+            "probe": f"direct-kernel-qemu-{args.accel}",
             "accepted": True,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "timeout_seconds": args.timeout,
@@ -147,6 +154,8 @@ def main():
     parser.add_argument("--volume", type=Path, default=DEFAULT_DIR / "flowerly-root.ext4")
     parser.add_argument("--log", type=Path, default=DEFAULT_DIR / "qemu-serial.log")
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--accel", choices=("tcg", "kvm"), default="tcg",
+                        help="QEMU accelerator; kvm needs a read-write /dev/kvm")
     parser.add_argument("--report", type=Path, help="write JSON evidence; never overwrite")
     args = parser.parse_args()
     try:

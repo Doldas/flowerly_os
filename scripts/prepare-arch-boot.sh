@@ -34,9 +34,15 @@ UNITDIR="$ROOTFS/etc/systemd/system/multi-user.target.wants"
     fail "boot witness already enabled or path occupied"
 [[ ! -e "$UNITDIR/evolutiond.service" && ! -L "$UNITDIR/evolutiond.service" ]] ||
     fail "evolutiond must stay disabled"
+# A fresh image has no machine-id, so systemd-firstboot would stop on the
+# console for timezone, locale and root password and multi-user.target would
+# never be reached. The fixture is unattended: mask the interactive wizard.
+FIRSTBOOT="$ROOTFS/etc/systemd/system/systemd-firstboot.service"
+[[ ! -e "$FIRSTBOOT" && ! -L "$FIRSTBOOT" ]] || fail "systemd-firstboot path occupied"
 install -d -m 0755 "$UNITDIR" "$ROOTFS/usr/lib/flowerly"
 install -m 0755 "$HEALTH" "$ROOTFS/usr/lib/flowerly/boot-ipc-health.sh"
 install -m 0644 "$WITNESS" "$ROOTFS/usr/lib/systemd/system/flowerly-boot-witness.service"
+ln -s /dev/null "$FIRSTBOOT"
 ln -s /usr/lib/systemd/system/flowerlyd.service "$UNITDIR/flowerlyd.service"
 ln -s /usr/lib/systemd/system/flowerly-boot-witness.service "$UNITDIR/flowerly-boot-witness.service"
 echo "Prepared systemd enablement of flowerlyd in Arch rootfs: $ROOTFS"
