@@ -420,6 +420,10 @@ def check_static_guardrails():
     assert "StrictHostKeyChecking=no" not in code and "UserKnownHostsFile=/dev/null" not in code
     assert code.count("StrictHostKeyChecking=yes") >= 2 and "HostKeyAlias=" in code
     assert "ssh_deletekeys: true" in text and "ed25519_private" in text
+    # ssh_genkeytypes: [] fails cloud-init's schema; time-wait-sync never ends
+    # without NTP and would keep sshd from starting (KVM run 20261031t215656).
+    assert "ssh_genkeytypes" not in text
+    assert "[systemctl, stop, --no-block, systemd-time-wait-sync.service]" in text
     # Host-side sudo never appears outside commands sent to the guest over ssh.
     for line in code.splitlines():
         if re.search(r"\bsudo\b", line):

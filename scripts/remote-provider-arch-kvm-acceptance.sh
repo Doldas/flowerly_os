@@ -338,7 +338,11 @@ hostname: flowerly-kvm-${run_id:0:20}
 growpart: {mode: auto, devices: ['/']}
 resize_rootfs: true
 ssh_deletekeys: true
-ssh_genkeytypes: []
+# The image's pacman-init.service orders sshd after time-sync.target, which
+# systemd-time-wait-sync holds until NTP syncs: never, with restrict=on.
+# The clock comes from the host RTC; stop the wait so sshd can start.
+bootcmd:
+  - [systemctl, stop, --no-block, systemd-time-wait-sync.service]
 ssh_keys:
   ed25519_public: '$(cat "$hostkey.pub")'
   ed25519_private: |
