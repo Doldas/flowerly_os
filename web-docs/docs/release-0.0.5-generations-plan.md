@@ -133,3 +133,6 @@ Start with #48: author the substrate ADR and an isolated bootable-VM
 rollback proof, **before** implementing activation logic. In parallel, #49
 can define the package manifest and trusted archive acquisition contract.
 Document all negative results and keep warnings visible.
+
+The ordered PR breakdown for #51 + #48 is in
+[0.0.5 step 1 — Flowerly boots its own image and survives one real rollback](release-0.0.5-step1-ab-boot-rollback-plan.md).
