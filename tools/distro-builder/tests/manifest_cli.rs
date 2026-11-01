@@ -226,15 +226,20 @@ impl Gpg {
             .args(args)
             .output()
             .unwrap();
-        assert!(output.status.success(), "gpg {args:?}: {output:?}");
+        assert!(
+            output.status.success(),
+            "gpg failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
         output
     }
 
     /// Generates an ed25519 signing key and returns its primary fingerprint.
-    fn generate(&self, uid: &str) -> String {
-        self.run(&["--quick-gen-key", uid, "ed25519", "sign", "never"]);
+    fn generate(&self, user_id: &str) -> String {
+        self.run(&["--quick-gen-key", user_id, "ed25519", "sign", "never"]);
         let listing =
-            String::from_utf8(self.run(&["--with-colons", "--list-keys", uid]).stdout).unwrap();
+            String::from_utf8(self.run(&["--with-colons", "--list-keys", user_id]).stdout).unwrap();
         listing
             .lines()
             .find_map(|l| l.strip_prefix("fpr:"))
