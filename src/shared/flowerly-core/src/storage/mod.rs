@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod remote;
 pub mod repository;
 pub mod scoped;
 
@@ -408,6 +409,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "generation_ownership_admin_audit",
         sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
     },
+    Migration {
+        version: 14,
+        name: "remote_inference",
+        sql: include_str!("../../migrations/0014_remote_inference.sql"),
+    },
 ];
 
 /// Live domain counts reported by service Status.
@@ -746,6 +752,42 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(response)
+    }
+
+    /// Read-only replay check for an operation whose external effect must
+    /// not run twice: the stored response for the same actor, command and
+    /// operation_id, `None` when the identity is unused (or expired), and
+    /// `OperationConflict` when it was used with different arguments.
+    /// Callers check this BEFORE an external effect and still record the
+    /// result with `insert_once`/`run_once`, which re-checks atomically.
+    pub fn lookup_operation(
+        &self,
+        actor: &str,
+        command: &str,
+        operation_id: &str,
+        request_payload: &str,
+    ) -> Result<Option<String>> {
+        let recorded: Option<(String, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT request_payload, response_payload, created_at FROM ipc_operations
+                 WHERE actor = ?1 AND command = ?2 AND operation_id = ?3",
+                params![actor, command, operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        // Mirror the 30-day expiry `run_once` applies before its own lookup.
+        let expires_before = Timestamp::now().as_millis() - 30_i64 * 24 * 60 * 60 * 1000;
+        match recorded {
+            Some((_, _, created_at)) if created_at < expires_before => Ok(None),
+            Some((prior_request, _, _)) if prior_request != request_payload => {
+                Err(StorageError::OperationConflict(
+                    "operation_id was already used with different request arguments".into(),
+                ))
+            }
+            Some((_, prior_response, _)) => Ok(Some(prior_response)),
+            None => Ok(None),
+        }
     }
 
     /// Reserve an externally effective PTY operation BEFORE launching anything.
@@ -2574,6 +2616,34 @@ mod tests {
         conflicting.request_payload = "changed";
         let result = store.insert_model_with_provenance_once(&model, &[], &conflicting);
         assert!(matches!(result, Err(StorageError::OperationConflict(_))));
+    }
+
+    #[test]
+    fn operation_lookup_is_read_only_and_matches_the_recorded_request() {
+        let mut store = migrated_store();
+        let model = example_model();
+        let operation = model_operation(&model, "lookup-1");
+        let lookup = |store: &Store, request: &str| {
+            store.lookup_operation(&model.created_by, "model.register", "lookup-1", request)
+        };
+        assert!(lookup(&store, "static").unwrap().is_none());
+        store
+            .insert_model_with_provenance_once(&model, &[], &operation)
+            .unwrap();
+        assert_eq!(lookup(&store, "static").unwrap().as_deref(), Some("static"));
+        assert!(matches!(
+            lookup(&store, "changed"),
+            Err(StorageError::OperationConflict(_))
+        ));
+        // Another actor or command never sees this identity.
+        assert!(store
+            .lookup_operation("uid:9", "model.register", "lookup-1", "static")
+            .unwrap()
+            .is_none());
+        assert!(store
+            .lookup_operation(&model.created_by, "model.retire", "lookup-1", "static")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

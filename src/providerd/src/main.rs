@@ -1,6 +1,12 @@
-// Flowerly OS reference local inference provider.
+// Flowerly OS inference provider process.
 //
-// Contract claims (RFC 0004 interface 2, tranche 4):
+// Two backends, one per process:
+// - the synthetic echo reference backend (default), described below;
+// - the opt-in OpenAI-compatible remote backend (`--remote-config`, see
+//   `remote`), the only code in Flowerly that opens network connections
+//   (ADR-0022).
+//
+// Echo backend contract claims (RFC 0004 interface 2, tranche 4):
 // - Fault-isolated: a separate process so a provider outage cannot corrupt
 //   or block the Flowerly runtime.
 // - Fail-closed: single-user local Unix socket only (the crate-provided
@@ -11,6 +17,7 @@
 // - Synthetic only: deterministic bounded echo output. This process does
 //   NOT claim to run real models and never writes durable state.
 mod generate;
+mod remote;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,9 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use clap::Parser;
-use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::ipc::{Envelope, ErrorCode, Payload, PeerIdentity};
 use flowerly_core::{
-    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig,
+    coded_error_envelope, error_envelope, init_tracing, ok_envelope, run_authorized_service,
+    run_service, ServiceConfig,
 };
 use serde_json::Value;
 
@@ -35,6 +43,20 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long)]
     self_test: bool,
+    /// Serve the opt-in OpenAI-compatible remote backend described by this
+    /// administrator-owned TOML file instead of the synthetic echo backend.
+    /// The API key is read from the systemd credentials directory only.
+    #[arg(long)]
+    remote_config: Option<PathBuf>,
+    /// With `--remote-config`: serve model discovery only and refuse every
+    /// prompt (the operator's preflight before a live acceptance request).
+    #[arg(long, requires = "remote_config")]
+    discover_only: bool,
+    /// With `--remote-config`: refuse to start unless this process is not
+    /// root and holds no group besides its primary one (the systemd unit
+    /// passes it, so an account's group memberships cannot widen access).
+    #[arg(long, requires = "remote_config")]
+    require_isolated_identity: bool,
 }
 
 /// In-flight generation requests per trusted actor label, enforcing the
@@ -74,6 +96,41 @@ async fn main() -> anyhow::Result<()> {
         None => ServiceConfig::for_service("providerd"),
     };
     init_tracing(&config.name, config.log_format);
+
+    if let Some(path) = cli.remote_config {
+        if cli.require_isolated_identity {
+            let status = std::fs::read_to_string("/proc/self/status")
+                .context("reading this process's identity")?;
+            remote::identity::check_isolated(&status).map_err(anyhow::Error::msg)?;
+        }
+        // Fails closed on a bad config, missing credential or empty trust
+        // store; makes no network request before the first IPC command.
+        let backend = remote::Backend::from_config_file(&path).map_err(anyhow::Error::msg)?;
+        if cli.self_test {
+            println!("providerd self-test ok: remote backend configuration and credential loaded (no network request made)");
+            return Ok(());
+        }
+        if cli.discover_only {
+            backend.restrict_to_discovery();
+            tracing::info!("remote backend restricted to discovery: provider.submit is refused");
+        }
+        // Owner Q1: the remote backend runs as its own account; flowerlyd
+        // connects through the configured users group (for example
+        // `flowerly-provider-clients`), never as the provider's own uid.
+        let policy = config
+            .access_policy()
+            .context("resolving the provider socket's client group")?;
+        let status = backend.self_describe();
+        let handler = move |request: &Envelope, _peer: &PeerIdentity| backend.handle(request);
+        return run_authorized_service(
+            config,
+            policy,
+            Arc::new(move |_peer: &PeerIdentity| status.clone()),
+            Arc::new(handler),
+        )
+        .await
+        .context("providerd terminated");
+    }
 
     if cli.self_test {
         generate::self_test().map_err(anyhow::Error::msg)?;

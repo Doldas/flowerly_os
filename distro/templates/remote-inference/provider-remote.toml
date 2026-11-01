@@ -1,0 +1,13 @@
+# /etc/flowerly/providers/<instance>.toml (root:root 0644). No key here:
+# the key is the systemd credential <instance>.key.
+[remote]
+api_base = "https://inference.example.org"
+api_style = "openai"            # or "open-webui" for /api/*
+models = ["gpt-oss:20b"]        # confirm the exact id with provider.discover
+credential = "<instance>.key"
+max_tokens_cap = 1024
+request_timeout_ms = 60000
+max_concurrency = 2
+# Owner Q2: private destinations are refused. Add a pinned block only after
+# verifying the destination's DNS and network, with owner approval:
+# private_destination_cidrs = ["192.168.1.50/32"]

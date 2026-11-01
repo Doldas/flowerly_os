@@ -1,0 +1,439 @@
+{
+  "schema_version": 1,
+  "test_suite": "remote-provider-arch-kvm",
+  "comment": "Every check the Arch/KVM acceptance must report. 'exercises' says whether a check tests production providerd/unit/operator behaviour or only the harness itself. Evidence must contain exactly one record per id.",
+  "checks": [
+    {
+      "test_id": "E1",
+      "part": "environment",
+      "description": "Guest systemd-detect-virt reports kvm and QEMU's running command line (host) has exactly -accel kvm, no TCG",
+      "exercises": "harness"
+    },
+    {
+      "test_id": "E2",
+      "part": "environment",
+      "description": "QEMU's running network option is restrict=on with only the SSH forward, the guest routes via the slirp gateway, and a live host canary at that gateway sees no guest connection",
+      "exercises": "harness"
+    },
+    {
+      "test_id": "E3",
+      "part": "environment",
+      "description": "Host-computed image SHA-256 equals the pin, the signature verifies from GnuPG status, the signer is an approved signing subkey of the pinned primary, and the keyring holds exactly that primary",
+      "exercises": "harness"
+    },
+    {
+      "test_id": "E4",
+      "part": "environment",
+      "description": "Guest carries this run's disposable-guest marker; the guest runner refuses anywhere else",
+      "exercises": "harness"
+    },
+    {
+      "test_id": "A1",
+      "part": "confinement",
+      "description": "uid/gid real, effective, saved, fs are the provider account; no supplementary group",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A2",
+      "part": "confinement",
+      "description": "All capability sets are empty",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A3",
+      "part": "confinement",
+      "description": "NoNewPrivs=1 and Seccomp=2 (filter)",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A4",
+      "part": "confinement",
+      "description": "User, mount, net, ipc, uts, pid, cgroup namespace creation refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A5",
+      "part": "confinement",
+      "description": "Flowerly state (/var/lib/flowerly, state.db, /run/flowerly, evolution state) unreadable",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A6",
+      "part": "confinement",
+      "description": "Unrelated credentials, root, other homes, shadow, operator ledger and evidence unreadable",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A7",
+      "part": "confinement",
+      "description": "CREDENTIALS_DIRECTORY exposes exactly <instance>.key; the encrypted source is unreadable; contents never read",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A8",
+      "part": "confinement",
+      "description": "No writes outside the unit's runtime directory",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A9",
+      "part": "confinement",
+      "description": "setuid(0), /proc/1, /proc/sys writes, /dev/kvm, /dev/mem refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A10",
+      "part": "confinement",
+      "description": "Loopback IPv4/IPv6 connects blocked by the OS (EPERM) with a live listener present",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A11",
+      "part": "confinement",
+      "description": "Link-local IPv4/IPv6 and metadata connects blocked by the OS (EPERM) with a live listener present",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A12",
+      "part": "confinement",
+      "description": "AF_PACKET, AF_NETLINK, raw ICMP and other forbidden families refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A13",
+      "part": "confinement",
+      "description": "The loopback DNS stub allowed by the operator drop-in stays reachable",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A14",
+      "part": "confinement",
+      "description": "RFC 1918, CGNAT and ULA are NOT blocked by the OS (recorded, application policy only)",
+      "exercises": "production"
+    },
+    {
+      "test_id": "A15",
+      "part": "confinement",
+      "description": "--require-isolated-identity: extra supplementary group makes the real unit fail and install refuse",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B1",
+      "part": "provider",
+      "description": "Positive discovery over verified TLS to the public-classified mock address, default production policy",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B2",
+      "part": "provider",
+      "description": "accept sends exactly one chat request; evidence holds no prompt, text, bearer or key",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B3",
+      "part": "provider",
+      "description": "Name resolving to RFC 1918 refused (address_refused, not_sent); sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B4",
+      "part": "provider",
+      "description": "Name resolving to CGNAT refused; sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B5",
+      "part": "provider",
+      "description": "Name resolving to loopback refused; sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B6",
+      "part": "provider",
+      "description": "Name resolving to link-local refused; sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B7",
+      "part": "provider",
+      "description": "Name resolving to the metadata address refused; sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B8",
+      "part": "provider",
+      "description": "Name resolving to IPv6 ULA refused; sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B9",
+      "part": "provider",
+      "description": "DNS rebinding public then private at connection time refused; private sink sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B10",
+      "part": "provider",
+      "description": "Certificate from an untrusted CA fails as tls, not_sent; no plaintext fallback",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B11",
+      "part": "provider",
+      "description": "Certificate for the wrong name fails as tls, not_sent",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B12",
+      "part": "provider",
+      "description": "302 to another host fails as redirect_refused; target sees no connection",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B13",
+      "part": "provider",
+      "description": "HTTP 401 fails as auth_failed; later submits refused without sending",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B14",
+      "part": "provider",
+      "description": "HTTP 429 fails as rate_limited with bounded retry_after_ms",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B15",
+      "part": "provider",
+      "description": "HTTP 503 fails as server_error with outcome unknown; never retried automatically",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B16",
+      "part": "provider",
+      "description": "Discovery without the allowlisted model: model not served, no prompt sent",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B17",
+      "part": "provider",
+      "description": "Response naming another model fails as model_mismatch",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B18",
+      "part": "provider",
+      "description": "Response over 1 MiB fails as oversized",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B19",
+      "part": "provider",
+      "description": "Malformed JSON fails as invalid_response",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B20",
+      "part": "provider",
+      "description": "tool_calls in the response fail as unsupported_response",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B21",
+      "part": "provider",
+      "description": "Missing usage is reported as unknown (null), never 0",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B22",
+      "part": "provider",
+      "description": "Connection dropped mid-body after 200 reports outcome unknown",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B23",
+      "part": "provider",
+      "description": "Delayed response below the timeout succeeds with measured latency",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B24",
+      "part": "provider",
+      "description": "Duplicate request_id with identical arguments yields one chat request; different arguments refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B25",
+      "part": "provider",
+      "description": "Discovery-only preflight refuses provider.submit with discover_only",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B26",
+      "part": "provider",
+      "description": "Journal and evidence scan finds no sentinel prompt, dummy key, bearer header or model text",
+      "exercises": "production"
+    },
+    {
+      "test_id": "B27",
+      "part": "provider",
+      "description": "flowerlyd with AGENTIC_USERS_GROUP=flowerly-provider-clients reports remote inference disabled",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S1",
+      "part": "socket",
+      "description": "flowerly with the clients group effective: admitted",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S2",
+      "part": "socket",
+      "description": "flowerly started before joining the group (stale credentials): refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S3",
+      "part": "socket",
+      "description": "Ordinary user without the group: refused at connect",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S4",
+      "part": "socket",
+      "description": "Unrelated user with effective membership via setpriv --groups: admitted (membership is the boundary)",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S5",
+      "part": "socket",
+      "description": "root without the group: refused at the peer check",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S6",
+      "part": "socket",
+      "description": "root with the group: admitted (root trusted by the threat model)",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S7",
+      "part": "socket",
+      "description": "flowerly-provider service account: admitted",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S8",
+      "part": "socket",
+      "description": "Two admitted processes under distinct uids get distinct created_by",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S9",
+      "part": "socket",
+      "description": "Cross-uid poll, cancel and result retrieval refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "S10",
+      "part": "socket",
+      "description": "After flowerlyd restart, its effective Groups include the clients group only then",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C1",
+      "part": "lifecycle",
+      "description": "install starts and enables nothing",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C2",
+      "part": "lifecycle",
+      "description": "Missing credential: the unit fails to start, nothing is sent",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C3",
+      "part": "lifecycle",
+      "description": "Invalid instance configuration: refused, nothing is sent",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C4",
+      "part": "lifecycle",
+      "description": "Two instances: rolling back one keeps the other and all shared resources",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C5",
+      "part": "lifecycle",
+      "description": "Shared resources in use (process, binary user, group member): nothing shared changes",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C6",
+      "part": "lifecycle",
+      "description": "Partial rollback keeps the ledger entries it could not remove; rerun completes",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C7",
+      "part": "lifecycle",
+      "description": "install killed after systemd-sysusers: recovery removes only what install created",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C8",
+      "part": "lifecycle",
+      "description": "rollback killed midway: the documented rerun completes",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C9",
+      "part": "lifecycle",
+      "description": "Foreign file with identical contents is never removed",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C10",
+      "part": "lifecycle",
+      "description": "Symlink substitution of a recorded path or parent is refused",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C11",
+      "part": "lifecycle",
+      "description": "Modified instance file is kept, ledger keeps it, preflight refuses",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C12",
+      "part": "lifecycle",
+      "description": "Corrupt ledger refuses rollback with no change",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C13",
+      "part": "lifecycle",
+      "description": "Concurrent operator commands: the second refuses on the lock",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C14",
+      "part": "lifecycle",
+      "description": "disable masks and stops the unit and moves the gate aside",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C15",
+      "part": "lifecycle",
+      "description": "rollback-shared removes shared resources only after the final consumer exits",
+      "exercises": "production"
+    },
+    {
+      "test_id": "C16",
+      "part": "lifecycle",
+      "description": "After final rollback the guest matches the pre-install snapshot",
+      "exercises": "production"
+    }
+  ]
+}

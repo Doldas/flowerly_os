@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "comment": "Guest-internal network plan for the remote provider Arch/KVM acceptance (#263). Every address lives on a dummy interface INSIDE the disposable guest, which has no route out (QEMU user networking with restrict=on). The expected_policy values are checked against providerd's production address policy by a Rust unit test (src/providerd/src/remote/tests.rs) and against the operator's DNS classifier by scripts/test-remote-provider-kvm-harness.py.",
+  "domain": "flowerly.test",
+  "mock_port": 8443,
+  "dns_stub": "127.0.0.53",
+  "interface": "flowerly-mock0",
+  "names": {
+    "mock": "mock.flowerly.test",
+    "redirect_target": "other.flowerly.test",
+    "wrong_name": "wrong.flowerly.test"
+  },
+  "addresses": {
+    "public_mock": "192.88.99.10",
+    "redirect_target": "192.88.99.11",
+    "private_rfc1918": "10.77.0.10",
+    "cgnat": "100.77.0.10",
+    "ula": "fd77:77:77::10",
+    "link_local_v4": "169.254.77.10",
+    "metadata_v4": "169.254.169.254",
+    "link_local_v6": "fe80::77",
+    "loopback_v4": "127.0.0.1",
+    "loopback_v6": "::1"
+  },
+  "expected_policy": {
+    "public_mock": "allowed",
+    "redirect_target": "allowed",
+    "private_rfc1918": "refused",
+    "cgnat": "refused",
+    "ula": "refused",
+    "link_local_v4": "refused",
+    "metadata_v4": "refused",
+    "link_local_v6": "refused",
+    "loopback_v4": "refused",
+    "loopback_v6": "refused"
+  },
+  "unit_os_policy": {
+    "comment": "What the unit's IPAddressDeny=localhost link-local multicast must block at the OS level (EPERM). Private, CGNAT, ULA and public destinations are NOT blocked by the unit: only providerd's application policy refuses them.",
+    "blocked": ["loopback_v4", "loopback_v6", "link_local_v4", "metadata_v4", "link_local_v6"],
+    "not_blocked": ["public_mock", "redirect_target", "private_rfc1918", "cgnat", "ula"]
+  }
+}

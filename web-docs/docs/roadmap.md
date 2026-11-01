@@ -208,6 +208,8 @@ instead of an abstract future distribution.
 
 ## 0.0.5 — Generations
 
+- **Implementation and acceptance gates:** [0.0.5 Generations plan](release-0.0.5-generations-plan.md) — real snapshot rollback (#48), pinned Arch acquisition (#49), bootable Flowerly fixture (#51), then durable activation (#9). No metadata-only rollback claims.
+
 - **Goal:** a reproducible model for system state and rollback.
 - **Key deliverables:** Generation manifest; create/list/inspect/test/promote/
   activate/rollback semantics; integration with source commit, build manifest,

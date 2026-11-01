@@ -1,0 +1,56 @@
+# Remote inference provider instance %i (ADR-0022). NOT installed by default.
+# The only Flowerly process permitted to open network connections.
+[Unit]
+Description=Flowerly OS remote inference provider %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flowerly-provider
+# Primary group = the socket's client group, so the socket can be 0660 to
+# flowerlyd without granting the provider any other group.
+Group=flowerly-provider-clients
+# Never inherit trust, proxy, config or credential overrides.
+UnsetEnvironment=AGENTIC_USERS_GROUP AGENTIC_CONFIG AGENTIC_DATABASE_PATH SSL_CERT_FILE SSL_CERT_DIR HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy FLOWERLY_PROVIDER_OUTAGE
+# The API key, decrypted by systemd into $CREDENTIALS_DIRECTORY only.
+LoadCredentialEncrypted=%i.key:/etc/credstore.encrypted/%i.key
+ExecStart=/usr/bin/providerd --config /etc/flowerly/providers/%i.service.toml --remote-config /etc/flowerly/providers/%i.toml --require-isolated-identity
+RuntimeDirectory=flowerly-provider
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0007
+# Confinement: no state, no other credentials, no privileges.
+InaccessiblePaths=/var/lib/flowerly /run/flowerly /etc/credstore /etc/credstore.encrypted
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Defence in depth behind the application's address policy. Pin the
+# destination's published ranges with IPAddressAllow= when they are stable.
+IPAddressDeny=localhost link-local multicast
+MemoryMax=256M
+TasksMax=64
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

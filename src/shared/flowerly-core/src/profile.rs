@@ -82,9 +82,11 @@ impl std::str::FromStr for BackgroundActivity {
     }
 }
 
-/// Data locality preference. `local` is the default and the only fully
-/// supported value: egress policy authorization does not exist yet, so any
-/// other recorded preference is honest future intent, not an entitlement.
+/// Data locality preference. `local-only` is the default. Remote inference
+/// (ADR-0022) requires `approved-remote-opt-in` *in addition to* the
+/// administrator's policy and the user's consent: the preference alone
+/// never sends anything off the machine. `org-approved-providers` is
+/// recorded intent only and grants nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Locality {
