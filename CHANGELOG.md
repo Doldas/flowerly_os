@@ -5,6 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- The Flowerly-built ext4 root volume now boots in KVM to `multi-user.target`
+  with the IPC health witness (#51, evidence in
+  `reviews/0051-flowerly-volume-kvm-boot-2026-11-01.md`). Fixes found on the
+  way: the initrd output name, the blocking `systemd-firstboot` wizard and
+  the journal prefix on the witness line. `probe-arch-qemu-boot.py` gains
+  `--accel kvm|tcg` (default `tcg`).
 - The ext4 root-volume builder no longer fails with `Permission denied` on a
   rootfs owned by subordinate ids (#51): it enters the owning user namespace
   with `podman unshare` instead of changing permissions, and audits owner,
