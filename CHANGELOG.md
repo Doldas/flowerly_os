@@ -5,6 +5,7 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Docs: 0.0.5 step 1 plan (S1–S8) and the ADR-0019 prototype decision for A/B root slots with boot counting (#48, #51); the ADR stays Proposed until a real boot/rollback run is reviewed.
 - The Flowerly-built ext4 root volume now boots in KVM to `multi-user.target`
   with the IPC health witness (#51, evidence in
   `reviews/0051-flowerly-volume-kvm-boot-2026-11-01.md`). Fixes found on the
