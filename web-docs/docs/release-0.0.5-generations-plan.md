@@ -70,6 +70,15 @@ Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 - Fail closed on missing, tampered or untrusted packages. Test offline cache
   replay and corrupted manifest/artifact rejection.
 - **Exit:** exact resolved package set and provenance independently verified.
+- **Progress (2026-11-01):** the v1 package manifest format, canonical
+  digest and offline cache verification are implemented in
+  `distro-builder manifest check|verify-cache` (see ADR-0020 implementation
+  status). Missing and tampered archives/signatures fail closed, and
+  `--keyring` checks each detached signature with `gpgv` against the key the
+  manifest names. Still open: the trust policy (which keyring, expiry on
+  replay), repository database resolution, a real frozen package set and the
+  mirror-change demonstration; kernel/toolchain/output identity is not yet in
+  the schema.
 
 ### Gate C — Minimal bootable Flowerly candidate (#51)
 

@@ -680,12 +680,22 @@ The run directory `target/remote-provider-kvm/<run-id>/report/` keeps:
 
 Trust-on-first-use is not used. For each run the harness generates the
 guest's ed25519 SSH host key itself and puts it in cloud-init
-(`ssh_keys`, with `ssh_deletekeys: true` and `ssh_genkeytypes: []`). It
+(`ssh_keys`, with `ssh_deletekeys: true`; cloud-init then generates no
+other host key). It
 writes the public half to a run-local `known_hosts` under the alias
 `flowerly-kvm-<run id>`. Every `ssh` and `scp` uses
 `StrictHostKeyChecking=yes`, `HostKeyAlias=flowerly-kvm-<run id>` and
 `HostKeyAlgorithms=ssh-ed25519`. Anything else answering on the forwarded
 port fails host-key verification.
+
+The image enables `pacman-init.service`, which orders `sshd.service` after
+`time-sync.target`, and `systemd-time-wait-sync.service`, which holds that
+target until NTP has synchronized the clock. With `restrict=on` the guest
+has no NTP, so sshd never starts. The first KVM run
+(`20261031t215656-13a5619c1c08-681546`) failed exactly that way. The
+cloud-init `bootcmd` stops the wait (`systemctl stop --no-block
+systemd-time-wait-sync.service`). The guest clock comes from the host's RTC.
+No network path is added.
 
 The private host key exists only in the run directory (mode 0600 under
 `umask 077`) and in the seed image, and both are deleted at teardown.

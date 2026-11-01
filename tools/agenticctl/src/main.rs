@@ -56,6 +56,8 @@ enum Command {
     Model(ModelArgs),
     #[command(about = "Inspect local device resource observations (advisory only).")]
     Device(DeviceArgs),
+    #[command(about = "Inspect or reassign data ownership (Admin, audited).")]
+    Ownership(OwnershipArgs),
     #[command(about = "List the capability catalog.")]
     Capability,
 }
@@ -106,6 +108,18 @@ enum GoalAction {
         objective: String,
         #[arg(long, help = "Priority.")]
         priority: Option<i32>,
+        #[arg(
+            long,
+            help = "Reuse a durable operation ID for safe retries within the retention window."
+        )]
+        operation_id: Option<String>,
+    },
+    #[command(about = "Create a child Goal under one of your Goals.")]
+    Child {
+        #[arg(help = "Parent Goal id.")]
+        parent: String,
+        #[arg(help = "Objective.")]
+        objective: String,
         #[arg(
             long,
             help = "Reuse a durable operation ID for safe retries within the retention window."
@@ -215,6 +229,15 @@ enum GenerationAction {
     Activate {
         #[arg(help = "Generation id.")]
         id: String,
+    },
+    #[command(
+        about = "Promote a private candidate to a shared system Generation (Admin, audited)."
+    )]
+    Promote {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
     },
 }
 
@@ -343,6 +366,49 @@ struct DeviceArgs {
     action: DeviceAction,
 }
 
+#[derive(Debug, Args)]
+struct OwnershipArgs {
+    #[command(subcommand)]
+    action: OwnershipAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum OwnershipAction {
+    #[command(about = "Show an object's owner and its same-owner component (no content).")]
+    Inspect {
+        #[arg(help = "Object reference, e.g. goal-<id>.")]
+        reference: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Give an object's whole component to a user.")]
+    Claim {
+        #[arg(help = "Object reference, e.g. goal-<id>.")]
+        reference: String,
+        #[arg(long, help = "Numeric uid of the new owner.")]
+        to_uid: u32,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+        #[arg(
+            long,
+            help = "Component size reported by `ownership inspect`; a stale value moves nothing."
+        )]
+        expect: usize,
+    },
+    #[command(about = "Make an object's whole component unresolved (protected) again.")]
+    Release {
+        #[arg(help = "Object reference, e.g. goal-<id>.")]
+        reference: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+        #[arg(
+            long,
+            help = "Component size reported by `ownership inspect`; a stale value moves nothing."
+        )]
+        expect: usize,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum DeviceAction {
     #[command(about = "Read local memory observations and explicit enforcement limits.")]
@@ -383,6 +449,7 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
         Command::Execution(action) => dispatch_execution(runtime_dir, action.action).await,
         Command::Model(action) => dispatch_model(runtime_dir, action.action).await,
         Command::Device(action) => dispatch_device(runtime_dir, action.action).await,
+        Command::Ownership(action) => dispatch_ownership(runtime_dir, action.action).await,
         Command::Capability => {
             let response = call(
                 &socket(runtime_dir, "capabilityd"),
@@ -432,6 +499,19 @@ async fn dispatch_goal(runtime_dir: &std::path::Path, action: GoalAction) -> Res
             args: serde_json::json!({
                 "objective": objective,
                 "priority": priority,
+                "operation_id": operation_id,
+                "created_by": "agenticctl",
+            }),
+        },
+        GoalAction::Child {
+            parent,
+            objective,
+            operation_id,
+        } => Payload::Command {
+            name: "goal.child".into(),
+            args: serde_json::json!({
+                "id": parent,
+                "objective": objective,
                 "operation_id": operation_id,
                 "created_by": "agenticctl",
             }),
@@ -531,6 +611,10 @@ async fn dispatch_generation(
         GenerationAction::Activate { id } => Payload::Command {
             name: "generation.activate".into(),
             args: serde_json::json!({ "id": id }),
+        },
+        GenerationAction::Promote { id, reason } => Payload::Command {
+            name: "generation.promote".into(),
+            args: serde_json::json!({ "id": id, "reason": reason }),
         },
     };
     reply_value(call(&socket, payload).await?)
@@ -652,6 +736,41 @@ async fn dispatch_device(runtime_dir: &std::path::Path, action: DeviceAction) ->
         DeviceAction::Budget => Payload::Command {
             name: "device.budget".into(),
             args: serde_json::json!({}),
+        },
+    };
+    reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
+}
+
+async fn dispatch_ownership(
+    runtime_dir: &std::path::Path,
+    action: OwnershipAction,
+) -> Result<Value> {
+    let payload = match action {
+        OwnershipAction::Inspect { reference, reason } => Payload::Command {
+            name: "ownership.inspect".into(),
+            args: serde_json::json!({ "ref": reference, "reason": reason }),
+        },
+        OwnershipAction::Claim {
+            reference,
+            to_uid,
+            reason,
+            expect,
+        } => Payload::Command {
+            name: "ownership.claim".into(),
+            args: serde_json::json!({
+                "ref": reference,
+                "to_uid": to_uid,
+                "reason": reason,
+                "expect": expect,
+            }),
+        },
+        OwnershipAction::Release {
+            reference,
+            reason,
+            expect,
+        } => Payload::Command {
+            name: "ownership.release".into(),
+            args: serde_json::json!({ "ref": reference, "reason": reason, "expect": expect }),
         },
     };
     reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
