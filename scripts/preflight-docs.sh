@@ -18,6 +18,8 @@ python3 scripts/test-install-flowerly-rootfs.py
 python3 scripts/test-prepare-arch-boot.py
 python3 scripts/test-boot-ipc-health.py
 python3 scripts/test-build-arch-root-volume.py
+bash -n scripts/build-flowerly-ab-disk.sh
+python3 scripts/test-build-flowerly-ab-disk.py
 python3 scripts/test-probe-arch-qemu-boot.py
 python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
