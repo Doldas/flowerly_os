@@ -34,7 +34,8 @@ class BootProbeTests(unittest.TestCase):
         self.volume = self.base / "root.ext4"
         self.volume.write_bytes(b"ext4 fixture")
         self.args = mock.Mock(rootfs=self.rootfs, volume=self.volume,
-                              log=self.base / "serial.log", timeout=10, report=None)
+                              log=self.base / "serial.log", timeout=10, report=None,
+                              accel="tcg")
 
     def test_packaged_kernel_path_accepted(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
@@ -64,6 +65,50 @@ class BootProbeTests(unittest.TestCase):
         with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
             with self.assertRaisesRegex(ValueError, "overwrite serial log"):
                 boot.run(self.args)
+
+    def test_journal_console_prefix_accepted_only_for_the_witness_process(self):
+        ok = "[  OK  ] Reached target Multi-User System.\n"
+        self.simulate(ok + "[    7.523691] bash[348]: FLOWERLY_BOOT_IPC_HEALTHY\r\n")
+        for forged in ("[    7.5] sh[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
+                       "x [    7.5] bash[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
+                       "[    7.5] bash[3]: echo FLOWERLY_BOOT_IPC_HEALTHY\n"):
+            self.args.log = self.base / ("serial-%d.log" % hash(forged))
+            with self.assertRaisesRegex(ValueError, "witness not observed"):
+                self.simulate(ok + forged)
+
+    def test_kvm_refused_without_device_access(self):
+        self.args.accel = "kvm"
+        with mock.patch.object(boot, "KVM_DEVICE", self.base / "no-kvm"), \
+             mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
+            with self.assertRaisesRegex(ValueError, "read-write access"):
+                boot.run(self.args)
+
+    def test_kvm_command_uses_host_cpu_and_report_names_accelerator(self):
+        self.args.accel = "kvm"
+        self.args.report = self.base / "report.json"
+        seen = []
+
+        class Spy:
+            def __init__(self, command, **kwargs):
+                seen.append(command)
+                kwargs["stdout"].write(b"Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
+                kwargs["stdout"].flush()
+
+            def wait(self, timeout=None):
+                if timeout == 10:
+                    raise subprocess.TimeoutExpired("qemu", 10)
+                return 0
+
+            def terminate(self):
+                return None
+
+        with mock.patch.object(boot, "KVM_DEVICE", Path("/dev/null")), \
+             mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"), \
+             mock.patch.object(boot.subprocess, "Popen", Spy):
+            boot.run(self.args)
+        command = seen[0]
+        assert "q35,accel=kvm" in command and command[command.index("-cpu") + 1] == "host"
+        self.assertEqual(json.loads(self.args.report.read_text())["probe"], "direct-kernel-qemu-kvm")
 
     def simulate(self, transcript):
         class FakeQemu:
