@@ -126,6 +126,8 @@ offline tests (fake tools, no KVM) next to any new script, following
 
 ### S4 — Partitioned two-slot disk builder (#51, #48)
 
+**Status: builder and offline tests implemented; the firmware (OVMF) boot exit is not yet met, so #51 stays open.** The script uses `sfdisk` and mtools, not `systemd-repart`/`bootctl`, so it needs no root or mount.
+
 - New `scripts/build-flowerly-ab-disk.sh`: `systemd-repart` (or `sfdisk`
   if repart is unavailable on the builder) creates the GPT layout; copies
   the S1 volume into `root-a`; installs systemd-boot, kernel and initramfs
