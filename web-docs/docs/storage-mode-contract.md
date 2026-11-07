@@ -28,3 +28,13 @@ acceptance before marking #85 complete.
 Run `cargo test -p flowerly-core storage_mode` to exercise the
 negative/positive parsing and transition contract. Real installation and
 no-open-port integration tests are separate follow-ups.
+
+## Configuration input hardening (2026-11-07, #85)
+
+The optional Linux mode configuration is read with `O_NOFOLLOW`, and its
+opened descriptor must identify a regular file no larger than 64 bytes.
+Symlinks, directories, unreadable files and oversized payloads fail closed
+with `ReadFailed`; malformed values still fail with `InvalidMode` or
+`InvalidEncoding`. A genuinely absent file retains the standalone default.
+These checks do not start cluster services or activate a new topology.
+Mode-switch, restart, offline and resource-profile acceptance remain open.
