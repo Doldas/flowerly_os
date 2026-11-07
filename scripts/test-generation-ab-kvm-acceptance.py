@@ -12,6 +12,10 @@ spec = importlib.util.spec_from_file_location(
     "kvm", HERE / "generation-ab-kvm-acceptance.py")
 kvm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(kvm)
+audit_spec = importlib.util.spec_from_file_location(
+    "audit", HERE / "generation-ab-evidence-audit.py")
+audit = importlib.util.module_from_spec(audit_spec)
+audit_spec.loader.exec_module(audit)
 MIB = 1048576
 H = "a" * 64
 
@@ -99,13 +103,13 @@ class KvmGateTests(unittest.TestCase):
                 "boots": boots,
             }
             self.assertEqual(
-                kvm.audit_evidence(evidence, folder)["boots"], 5)
+                audit.audit(evidence, folder)["boots"], 5)
 
             def refuses(mutator):
                 changed = copy.deepcopy(evidence)
                 mutator(changed)
                 with self.assertRaises(ValueError):
-                    kvm.audit_evidence(changed, folder)
+                    audit.audit(changed, folder)
 
             refuses(lambda r: r["boots"][2].update(marker_sha256="b"*64))
             refuses(lambda r: r["boots"][1].update(slot="root-a"))
@@ -119,11 +123,11 @@ class KvmGateTests(unittest.TestCase):
             log = folder / names[2]
             log.write_text(log.read_text().replace(ids[2], ids[1]))
             with self.assertRaises(ValueError):
-                kvm.audit_evidence(evidence, folder)
+                audit.audit(evidence, folder)
             log.write_text(log.read_text().replace(ids[1], ids[2]))
             log.write_text(log.read_text() + "FLOWERLY_GENERATION_BOOT_BLESSED\n")
             with self.assertRaises(ValueError):
-                kvm.audit_evidence(evidence, folder)
+                audit.audit(evidence, folder)
 
     def test_only_esp_and_user_data_are_carried_between_guests(self):
         with tempfile.TemporaryDirectory() as directory:
