@@ -124,3 +124,34 @@ and any reference to PR #206 as open.
   `SHA256SUMS`; checksums were independently re-downloaded and verified.
 - Release notes were replaced with the accurate v0.0.4 section, exact SHA,
   evidence links and known limitations.
+
+## Pending verification follow-ups — 2026-11-07 (16-ticket tranche)
+
+The following are scoped **draft-only** verification increments, not accepted
+runtime features or closed issues. Each change has a separate branch based on
+`release/2`; merge in this listed order only after fresh exact-head checks,
+review and explicit owner approval, rebasing each successor if necessary:
+
+| Order | Issue | Evidence document | Status |
+| --- | --- | --- | --- |
+| 1 | #285 | [Review](reviews/2026-11-07-issue-285-verification.md) | Draft, incomplete |
+| 2 | #263 | [Review](reviews/2026-11-07-issue-263-verification.md) | Draft, incomplete |
+| 3 | #257 | [Review](reviews/2026-11-07-issue-257-verification.md) | Draft, incomplete |
+| 4 | #249 | [Review](reviews/2026-11-07-issue-249-verification.md) | Draft, incomplete |
+| 5 | #187 | [Review](reviews/2026-11-07-issue-187-verification.md) | Draft, incomplete |
+| 6 | #112 | [Review](reviews/2026-11-07-issue-112-verification.md) | Draft, incomplete |
+| 7 | #95 | [Review](reviews/2026-11-07-issue-95-verification.md) | Draft, incomplete |
+| 8 | #94 | [Review](reviews/2026-11-07-issue-94-verification.md) | Draft, incomplete |
+| 9 | #93 | [Review](reviews/2026-11-07-issue-93-verification.md) | Draft, incomplete |
+| 10 | #91 | [Review](reviews/2026-11-07-issue-91-verification.md) | Draft, incomplete |
+| 11 | #85 | [Review](reviews/2026-11-07-issue-85-verification.md) | Draft, incomplete |
+| 12 | #82 | [Review](reviews/2026-11-07-issue-82-verification.md) | Draft, incomplete |
+| 13 | #64 | [Review](reviews/2026-11-07-issue-64-verification.md) | Draft, incomplete |
+| 14 | #51 | [Review](reviews/2026-11-07-issue-51-verification.md) | Draft, incomplete |
+| 15 | #49 | [Review](reviews/2026-11-07-issue-49-verification.md) | Draft, incomplete |
+| 16 | #48 | [Review](reviews/2026-11-07-issue-48-verification.md) | Draft, incomplete |
+
+The read-only Projects reconciliation (#257) cannot verify a live board without
+a real export and authorized token. Manifest date, A/B hash and unsafe-source
+guards are offline regressions, not substitutes for Arch/KVM evidence. All
+existing release/2 safety gates and manual master promotion policy remain.
