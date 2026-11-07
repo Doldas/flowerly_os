@@ -63,6 +63,22 @@ class SqliteDriverContracts(unittest.TestCase):
             "SELECT id FROM sessions WHERE id='bad-ref'"
         ).fetchone())
 
+    def test_operation_receipt_rolls_back_with_failed_mutation(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO ipc_operations(actor,command,operation_id,request_payload,"
+                    "response_payload,created_at) VALUES('uid:1000','flow.create','k1','{}','{}',1)"
+                )
+                # Deliberately fail after writing the receipt in same transaction.
+                self.conn.execute(
+                    "INSERT INTO flows(id,name,state,created_by,created_at,owner_class,owner_uid) "
+                    "VALUES('x','x','ACTIVE','uid:1000',1,'wrong',1000)"
+                )
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM ipc_operations WHERE operation_id='k1'"
+        ).fetchone()[0], 0)
+
     def test_second_writer_cannot_commit_during_immediate_transaction(self):
         other = sqlite3.connect(self.path, timeout=0)
         self.addCleanup(other.close)
