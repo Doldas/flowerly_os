@@ -10,7 +10,6 @@ python3 scripts/test-project-sync-workflows.py
 python3 scripts/test-wait-release-promotion.py
 python3 scripts/test-layer-15-boundaries.py
 python3 scripts/test-runtime-topology.py
-python3 scripts/test-host-process-authority.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
 python3 scripts/test-build-task-parity.py
@@ -31,5 +30,6 @@ python3 scripts/test-arch-vm-failure-classify.py
 bash -n scripts/remote-provider-arch-kvm-acceptance.sh
 python3 scripts/test-remote-provider-kvm-harness.py
 python3 scripts/test-arch-image-verify.py
+python3 scripts/test-host-process-authority.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."
