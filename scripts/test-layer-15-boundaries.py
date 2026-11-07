@@ -52,7 +52,7 @@ def unauthorized_imports(root=ROOT):
     for path in sorted(p for p in paths if p.is_file()):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
-        if (SQLITE_IMPORT.search(source) or re.search(r"\\brusqlite::", source)) and relative not in SQLITE_OWNERS:
+        if (SQLITE_IMPORT.search(source) or re.search(r"\brusqlite::", source)) and relative not in SQLITE_OWNERS:
             violations.append(f"{relative}: raw SQLite import outside storage adapter")
         if KERNEL_CRATE_IMPORT.search(source) and relative not in LINUX_OWNERS:
             violations.append(f"{relative}: direct kernel/FFI crate import outside reviewed boundary")
@@ -71,7 +71,7 @@ class DependencyBoundaryTests(unittest.TestCase):
             root = Path(directory)
             path = root / "src/flowerlyd/src/goal/mod.rs"
             path.parent.mkdir(parents=True)
-            path.write_text("let conn = rusqlite::Connection::open(path);\\n")
+            path.write_text("let conn = rusqlite::Connection::open(path);\n")
             self.assertTrue(any("SQLite" in error for error in unauthorized_imports(root)))
 
     def test_new_sqlite_import_is_rejected(self):
