@@ -481,10 +481,31 @@ fn sha256_reader(reader: &mut impl Read) -> std::io::Result<String> {
 }
 
 pub fn read_manifest(path: &Path) -> anyhow::Result<Vec<u8>> {
+    // A manifest is a small declaration, not an unbounded stream or a link.
+    const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| anyhow::anyhow!("opening manifest {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| anyhow::anyhow!("stat manifest {}: {error}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "manifest must be a regular file");
+    anyhow::ensure!(
+        metadata.len() <= MAX_MANIFEST_BYTES,
+        "manifest exceeds {} byte limit",
+        MAX_MANIFEST_BYTES
+    );
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|error| anyhow::anyhow!("reading {}: {error}", path.display()))?;
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("reading manifest {}: {error}", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_MANIFEST_BYTES,
+        "manifest exceeds {} byte limit",
+        MAX_MANIFEST_BYTES
+    );
     Ok(bytes)
 }
 
@@ -538,6 +559,20 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.find("\"architecture\"").unwrap() < text.find("\"filename\"").unwrap());
         assert!(text.find("\"packages\"").unwrap() < text.find("\"schema\"").unwrap());
+    }
+
+    #[test]
+    fn manifest_file_refuses_symlink_directory_and_large_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("manifest.json");
+        std::fs::write(&real, canonical_bytes(&manifest())).unwrap();
+        assert!(read_manifest(&real).is_ok());
+        let link = dir.path().join("linked.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(read_manifest(&link).is_err());
+        assert!(read_manifest(dir.path()).is_err());
+        std::fs::write(&real, vec![b'x'; 8 * 1024 * 1024 + 1]).unwrap();
+        assert!(read_manifest(&real).is_err());
     }
 
     #[test]
