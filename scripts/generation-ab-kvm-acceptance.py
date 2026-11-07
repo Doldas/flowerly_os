@@ -112,6 +112,33 @@ def observe_serial(log, slot, *, bless, timeout):
     return None
 
 
+def verify_running_qemu(pid, command):
+    """Read *running host process* evidence, not QEMU's requested config."""
+    if type(pid) is not int or pid <= 0 or not isinstance(command, list):
+        raise ValueError("invalid QEMU process identity")
+    proc = Path("/proc") / str(pid)
+    actual_raw = (proc / "cmdline").read_bytes()
+    actual_argv = [arg.decode("utf-8", errors="strict")
+                   for arg in actual_raw.split(bytes([0])) if arg]
+    if actual_argv != command or not all(arg in actual_argv for arg in (
+        "-net", "none", "-no-reboot", "-nodefaults", "q35,accel=kvm"
+    )):
+        raise ValueError("running QEMU command differs from approved KVM firmware boot")
+    if any(value in actual_argv for value in ("-kernel", "-initrd", "-nic", "-netdev")):
+        raise ValueError("direct-kernel or networked QEMU is not valid firmware evidence")
+    fd_directory = proc / "fd"
+    devices = []
+    for fd in fd_directory.iterdir():
+        try:
+            devices.append(os.readlink(fd))
+        except FileNotFoundError:
+            continue
+    if "/dev/kvm" not in devices:
+        raise ValueError("no open /dev/kvm descriptor in actual QEMU process")
+    return {"kvm_fd_verified": True,
+            "qemu_cmdline_sha256": hashlib.sha256(actual_raw).hexdigest()}
+
+
 def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
     """Start one real firmware boot; kill guest after the observed milestone."""
     log = report / (label + ".serial.log")
@@ -135,10 +162,12 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
             while time.monotonic() - started <= args.timeout:
                 marker = observe_serial(log, slot, bless=bless, timeout=args.timeout)
                 if marker is not None:
+                    host_observed = verify_running_qemu(process.pid, command)
                     # Permit systemd and ext4 a brief flush window before the
                     # deliberate abrupt QEMU kill (simulated host power loss).
                     time.sleep(2)
                     return {"slot": slot, "marker_sha256": marker,
+                            **host_observed,
                             "seconds": round(time.monotonic() - started, 3),
                             "serial": log.name, "observed_health": "BLESSED" if bless else "REJECTED",
                             "power_loss": "QEMU_SIGKILL"}
