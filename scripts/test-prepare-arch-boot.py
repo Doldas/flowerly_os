@@ -55,6 +55,13 @@ def main():
         populate(rootfs)
         (rootfs / "usr/lib/os-release").write_text("ID=debian\n")
         assert invoke(rootfs).returncode != 0, "wrong distro accepted"
+    with tempfile.TemporaryDirectory() as tmp:
+        rootfs = Path(tmp) / "arch"
+        populate(rootfs)
+        unit = rootfs / "usr/lib/systemd/system/flowerlyd.service"
+        unit.unlink()
+        unit.symlink_to("/tmp/foreign-flowerly-unit")
+        assert invoke(rootfs).returncode != 0, "external service symlink accepted"
     print("Arch boot preparation: valid enablement and negative safety checks pass")
 
 
