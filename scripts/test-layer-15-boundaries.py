@@ -111,7 +111,7 @@ class DependencyBoundaryTests(unittest.TestCase):
             for domain in ("ownership", "capability"):
                 file = root / f"src/flowerlyd/src/{domain}/mod.rs"
                 file.parent.mkdir(parents=True)
-                file.write_text("use rusqlite::Connection;\\n")
+                file.write_text("use rusqlite::Connection;\n")
                 with self.subTest(domain=domain):
                     self.assertTrue(
                         any("raw SQLite" in entry for entry in unauthorized_imports(root))
@@ -124,7 +124,7 @@ class DependencyBoundaryTests(unittest.TestCase):
             root = Path(temp)
             file = root / "src/flowerlyd/src/authorization.rs"
             file.parent.mkdir(parents=True)
-            file.write_text("use std::os::unix::fs::PermissionsExt;\\n")
+            file.write_text("use std::os::unix::fs::PermissionsExt;\n")
             self.assertTrue(
                 any("raw host access" in entry for entry in unauthorized_imports(root))
             )
