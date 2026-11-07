@@ -191,6 +191,24 @@ fn validate_source(source: &Source, errors: &mut Vec<String>) {
         });
     if !date_ok {
         errors.push(format!("source.snapshot_date {date:?} is not YYYY-MM-DD"));
+    } else {
+        // A shaped date such as 2026-99-99 is not a real immutable snapshot day.
+        let year = date[0..4].parse::<u32>().unwrap_or_default();
+        let month = date[5..7].parse::<u32>().unwrap_or_default();
+        let day = date[8..10].parse::<u32>().unwrap_or_default();
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap => 29,
+            2 => 28,
+            _ => 0,
+        };
+        if year == 0 || day == 0 || day > days {
+            errors.push(format!(
+                "source.snapshot_date {date:?} is not a valid calendar date"
+            ));
+        }
     }
     let url = &source.snapshot_url;
     match url.strip_prefix("https://") {
@@ -613,6 +631,20 @@ mod tests {
         assert!(errors_of(&m).contains("dated path"));
         m.source.snapshot_date = "yesterday".into();
         assert!(errors_of(&m).contains("YYYY-MM-DD"));
+        for invalid_date in [
+            "2026-02-30",
+            "2025-02-29",
+            "2026-13-01",
+            "2026-00-01",
+            "0000-01-01",
+        ] {
+            let mut invalid = manifest();
+            invalid.source.snapshot_date = invalid_date.into();
+            assert!(
+                errors_of(&invalid).contains("valid calendar date"),
+                "{invalid_date} was accepted"
+            );
+        }
         m = manifest();
         m.source.architecture = "any".into();
         assert!(errors_of(&m).contains("concrete architecture"));
