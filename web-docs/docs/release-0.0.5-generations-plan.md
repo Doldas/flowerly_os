@@ -136,3 +136,39 @@ Document all negative results and keep warnings visible.
 
 The ordered PR breakdown for #51 + #48 is in
 [0.0.5 step 1 — Flowerly boots its own image and survives one real rollback](release-0.0.5-step1-ab-boot-rollback-plan.md).
+
+
+## 2026-11-07: 16 scoped Generation 0.0.5 contracts (not release acceptance)
+
+Sixteen independently reviewable offline contracts were started on the
+verified `release/2` integration branch from SHA
+`39260b210753d1f5ac2732f2f2dc13de3f5a8ae0`. Each issue has a separate
+draft PR, its own test file and review note. Merge only after exact-head
+required checks, architecture review, and explicit maintainer permission;
+rebase subsequent branches on the latest release/2 after each merge.
+
+| Order | Issue | Increment |
+| --- | --- | --- |
+| 1 | [#321](https://github.com/Doldas/flowerly_os/issues/321) | artifact digest |
+| 2 | [#322](https://github.com/Doldas/flowerly_os/issues/322) | partition geometry |
+| 3 | [#323](https://github.com/Doldas/flowerly_os/issues/323) | booted PARTUUID |
+| 4 | [#324](https://github.com/Doldas/flowerly_os/issues/324) | loader entry parsing |
+| 5 | [#325](https://github.com/Doldas/flowerly_os/issues/325) | EFI entry identity |
+| 6 | [#326](https://github.com/Doldas/flowerly_os/issues/326) | root identity |
+| 7 | [#327](https://github.com/Doldas/flowerly_os/issues/327) | fsync witness prototype |
+| 8 | [#328](https://github.com/Doldas/flowerly_os/issues/328) | ledger replay |
+| 9 | [#329](https://github.com/Doldas/flowerly_os/issues/329) | health verdict |
+| 10 | [#330](https://github.com/Doldas/flowerly_os/issues/330) | slot stage preflight |
+| 11 | [#331](https://github.com/Doldas/flowerly_os/issues/331) | slot arm admission |
+| 12 | [#332](https://github.com/Doldas/flowerly_os/issues/332) | slot status reconciliation |
+| 13 | [#333](https://github.com/Doldas/flowerly_os/issues/333) | persistent data marker |
+| 14 | [#334](https://github.com/Doldas/flowerly_os/issues/334) | KVM evidence validator |
+| 15 | [#335](https://github.com/Doldas/flowerly_os/issues/335) | power-loss matrix |
+| 16 | [#336](https://github.com/Doldas/flowerly_os/issues/336) | package-set identity |
+
+These scripts are deliberately **not** wired into firmware, root-identity
+systemd units, slot writer, production activation or `flowerlyd`.
+A real firmware-booted Flowerly disk, boot-counting/fallback, power-loss
+failure injection, user-data partition persistence, signed package snapshot
+and required owner decisions remain blocked under #48, #49, #51 and #9.
+Completing any of the above offline checks alone does not fulfill S4–S8.
