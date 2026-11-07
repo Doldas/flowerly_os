@@ -258,3 +258,18 @@ tracks that do not block step 1:
   anyone treats A/B as the production answer.
 - **Scope creep:** no daemon integration, no updater, no installer, no AI
   authority over activation in this step.
+
+## S6 opt-in ESP image arming: immutable fixture publication
+
+`scripts/generation-arm-esp-image.py` uses real `sfdisk -J` and `mtools`
+against a **disposable regular disk image**, verifies actual GPT/partition
+identities and immutable root A+B hashes, copies the current disk to a new
+output and modifies only its ESP. It installs root B kernel/initramfs,
+creates a `flowerly-b+N.conf` boot-counting entry and selects B by
+`loader.conf`. It then verifies the data partition SHA has not changed.
+The original disk image, including state written during boot A, is not
+modified; a failure before publication leaves no armed outputs. This is
+**not** a crash-safe in-place FAT/EFI arm on a live machine. The bootloader
+must still be tested with persistent OVMF variables and a real guest, and
+runtime changes after QEMU boots invalidate old whole-disk hashes. Tests
+use real FAT/GPT tools and record explicit failure cases.
