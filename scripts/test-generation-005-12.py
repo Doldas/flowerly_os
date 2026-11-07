@@ -7,17 +7,22 @@ mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 import unittest
 H="a"*64
+H="a"*64
+B="b"*64
+P={"root-a":H,"root-b":B}
 class Tests(unittest.TestCase):
     def test_verified_activation_and_fallback(self):
-        self.assertEqual(mod.reconcile("root-a","root-b","root-b",True,H,H),"ACTIVE")
-        self.assertEqual(mod.reconcile("root-a","root-b","root-a",True,H,H),"FELL_BACK")
+        self.assertEqual(mod.reconcile("root-a","root-b","root-b",True,P,B),"ACTIVE")
+        self.assertEqual(mod.reconcile("root-a","root-b","root-a",True,P,H),"FELL_BACK")
     def test_never_claim_after_uncertainty(self):
-        for booted,healthy,observed in (("root-b",False,H),("root-b","true",H),
-                                       (None,True,H),("root-b",True,"b"*64)):
-            self.assertEqual(mod.reconcile("root-a","root-b",booted,healthy,H,observed),"INCONCLUSIVE")
-    def test_refuse_ambiguous_pending(self):
+        for booted,healthy,observed in (("root-b",False,B),("root-b","true",B),
+                                       (None,True,B),("root-b",True,H)):
+            self.assertEqual(mod.reconcile("root-a","root-b",booted,healthy,P,observed),"INCONCLUSIVE")
+    def test_refuse_ambiguous_pending_or_missing_identity(self):
         with self.assertRaises(ValueError):
-            mod.reconcile("root-a","root-a","root-a",True,H,H)
+            mod.reconcile("root-a","root-a","root-a",True,P,H)
+        with self.assertRaises(ValueError):
+            mod.reconcile("root-a","root-b","root-b",True,{"root-b":B},B)
 
 if __name__=="__main__":
     unittest.main()
