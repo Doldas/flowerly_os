@@ -62,6 +62,27 @@ class BootTests(unittest.TestCase):
                 guest.append_witness(ledger, identity(), "root=PARTUUID="+UUID_A,
                                      efi("a"), BOOT, 10, 20)
 
+    def test_persistent_marker_survives_reboots_and_missing_data_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            marker = Path(d) / "user-marker.bin"
+            a = guest.append_witness(
+                ledger, identity(), "root=PARTUUID="+UUID_A,
+                efi("a"), BOOT, 10, 20, marker_path=marker)
+            self.assertEqual(marker.stat().st_size, 32)
+            boot2 = "44444444-4444-4444-4444-444444444444"
+            b = guest.append_witness(
+                ledger, identity("root-b", UUID_B),
+                "root=PARTUUID="+UUID_B, efi("b"), boot2, 10, 20,
+                marker_path=marker)
+            self.assertEqual(a["user_data_sha256"], b["user_data_sha256"])
+            marker.unlink()
+            with self.assertRaisesRegex(ValueError, "marker missing"):
+                guest.append_witness(
+                    ledger, identity(), "root=PARTUUID="+UUID_A,
+                    efi("a"), "55555555-5555-5555-5555-555555555555",
+                    10, 20, marker_path=marker)
+
     def test_refusals_do_not_modify_ledger(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = Path(d)/"ledger.jsonl"
