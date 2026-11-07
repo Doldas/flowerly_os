@@ -130,6 +130,11 @@ def audit(report, directory):
             boot.get("observed_health") != ("REJECTED" if is_b else "BLESSED")
         ) or boot.get("power_loss") != "QEMU_SIGKILL":
             raise ValueError("boot report and serial evidence disagree")
+        if boot.get("kvm_fd_verified") is not True or (
+            not isinstance(boot.get("qemu_cmdline_sha256"), str) or
+            not SHA.fullmatch(boot["qemu_cmdline_sha256"])
+        ):
+            raise ValueError("no actual KVM process evidence for observed boot")
         markers.add(observed["marker"])
         digests[name] = observed["sha256"]
     if len(markers) != 1:
