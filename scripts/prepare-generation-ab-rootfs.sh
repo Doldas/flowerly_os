@@ -19,9 +19,23 @@ ROOTFS="$1"; shift
 [[ -d "$ROOTFS" && ! -L "$ROOTFS" ]] || fail "missing/symlinked rootfs"
 [[ -f "$ROOTFS/usr/lib/os-release" ]] &&
     grep -qx ID=arch "$ROOTFS/usr/lib/os-release" || fail "not an Arch rootfs"
+ROOTFS_REAL="$(realpath "$ROOTFS")"
 for file in usr/bin/python3 usr/bin/runuser usr/lib/systemd/systemd-bless-boot \
             usr/lib/systemd/system/flowerlyd.service usr/lib/flowerly/boot-ipc-health.sh; do
-    [[ -f "$ROOTFS/$file" && ! -L "$ROOTFS/$file" ]] || fail "missing A/B prerequisite: $file"
+    candidate="$ROOTFS/$file"
+    if [[ -L "$candidate" ]]; then
+        link="$(readlink "$candidate")"
+        if [[ "$link" == /* ]]; then
+            resolved="$(realpath -m "$ROOTFS$link")"
+        else
+            resolved="$(realpath -m "$(dirname "$candidate")/$link")"
+        fi
+        [[ "$resolved" == "$ROOTFS_REAL/"* ]] ||
+            fail "A/B prerequisite symlink escapes image: $file"
+        [[ -f "$resolved" ]] || fail "unresolved internal A/B prerequisite: $file"
+    else
+        [[ -f "$candidate" ]] || fail "missing A/B prerequisite: $file"
+    fi
 done
 for path in etc etc/systemd etc/systemd/system etc/fstab usr/lib/flowerly \
             usr/lib/systemd/system usr/lib/systemd/system/flowerlyd.service.d \
