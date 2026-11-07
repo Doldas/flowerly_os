@@ -156,6 +156,13 @@ class KvmGateTests(unittest.TestCase):
                 for i, name in ((1, "esp"), (2, "root-a"),
                                 (3, "root-b"), (5, "data"))
             ]}
+            for part in manifest["partitions"]:
+                start, size = part["offset_bytes"], part["size_bytes"]
+                part["sha256"] = hashlib.sha256(a[start:start+size]).hexdigest()
+            roots = kvm.verify_immutable_roots(pristine, manifest)
+            self.assertEqual(set(roots), {"root-a", "root-b"})
+            with self.assertRaisesRegex(ValueError, "guest changed pinned root-a"):
+                kvm.verify_immutable_roots(booted, manifest)
             # Only the two explicitly mutable sections are copied.
             hashes = kvm.reconcile_mutable_partitions(
                 pristine, booted, dest, manifest)
