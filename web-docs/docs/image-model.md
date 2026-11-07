@@ -136,3 +136,14 @@ Not implemented yet:
 - generation activation and rollback against a real installed system.
 
 Those remain roadmap items and must not be described as completed.
+
+## Manifest input hardening (#49; 2026-11-07)
+
+The local manifest reader now rejects symbolic links, non-regular inputs and
+files larger than 8 MiB. It bounds reads after opening the descriptor and
+continues to require the existing strict canonical JSON and signature/cache
+checks. This guards the build tool from unbounded manifest input and
+accidental manifest symlink substitution; it **does not** establish Arch
+publisher trust, capture a complete snapshot or produce a bootable image.
+Snapshot recovery, fresh keyring validation, package provenance and real VM
+reproduction remain open acceptance tasks for #49.
