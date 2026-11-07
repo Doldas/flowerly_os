@@ -32,7 +32,7 @@ KERNEL_CRATE_IMPORT = re.compile(
 )
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
 HOST_ACCESS = re.compile(
-    r'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?std::os(?:::unix\b|::\{\s*unix\b)|'
+    r'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?std::os(?:::unix\b|::\{\s*unix\b|::fd\b)|'
     r'(?m:(?:/proc/|/sys/fs/cgroup/))'
 )
 
@@ -122,6 +122,7 @@ class DependencyBoundaryTests(unittest.TestCase):
             file.parent.mkdir(parents=True)
             for declaration in (
                 "use std::os::unix::fs::PermissionsExt;\n",
+                "use std::os::fd::OwnedFd;\n",
                 "pub use std::os::unix::net::UnixStream;\n",
                 "use ::std::os::unix::io::RawFd;\n",
                 "use std::os::{unix::fs::PermissionsExt};\n",
