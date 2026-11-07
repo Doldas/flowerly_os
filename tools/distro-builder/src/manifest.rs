@@ -629,7 +629,13 @@ mod tests {
         assert!(errors_of(&m).contains("dated path"));
         m.source.snapshot_date = "yesterday".into();
         assert!(errors_of(&m).contains("YYYY-MM-DD"));
-        for invalid_date in ["2026-02-30", "2025-02-29", "2026-13-01", "2026-00-01", "0000-01-01"] {
+        for invalid_date in [
+            "2026-02-30",
+            "2025-02-29",
+            "2026-13-01",
+            "2026-00-01",
+            "0000-01-01",
+        ] {
             let mut invalid = manifest();
             invalid.source.snapshot_date = invalid_date.into();
             assert!(
