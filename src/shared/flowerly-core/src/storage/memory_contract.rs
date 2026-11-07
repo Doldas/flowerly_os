@@ -44,7 +44,12 @@ pub trait MemoryRepository {
 pub trait EmbeddingIndex {
     fn put(&mut self, actor: MemoryOwner, embedding: Embedding) -> Result<(), MemoryError>;
     fn nearest(
-        &self, actor: MemoryOwner, model: &str, version: u32, query: &[f32], limit: usize,
+        &self,
+        actor: MemoryOwner,
+        model: &str,
+        version: u32,
+        query: &[f32],
+        limit: usize,
     ) -> Result<Vec<String>, MemoryError>;
 }
 
@@ -62,8 +67,11 @@ pub enum ReplicationStatus {
 }
 
 pub fn validate_embedding(entry: &Embedding, dimension: usize) -> Result<(), MemoryError> {
-    if dimension == 0 || dimension > 4096 || entry.model.is_empty()
-        || entry.version == 0 || entry.values.len() != dimension
+    if dimension == 0
+        || dimension > 4096
+        || entry.model.is_empty()
+        || entry.version == 0
+        || entry.values.len() != dimension
         || !entry.values.iter().all(|value| value.is_finite())
     {
         return Err(MemoryError::Invalid);
@@ -77,8 +85,11 @@ mod tests {
     #[test]
     fn vectors_require_model_version_dimension_and_finite_values() {
         let mut vector = Embedding {
-            memory_id: "one".into(), owner: MemoryOwner(1000),
-            model: "offline".into(), version: 1, values: vec![0.5, -0.1],
+            memory_id: "one".into(),
+            owner: MemoryOwner(1000),
+            model: "offline".into(),
+            version: 1,
+            values: vec![0.5, -0.1],
         };
         assert_eq!(validate_embedding(&vector, 2), Ok(()));
         assert_eq!(validate_embedding(&vector, 3), Err(MemoryError::Invalid));
@@ -102,7 +113,13 @@ mod tests {
     #[test]
     fn disabled_memory_cannot_fabricate_success() {
         let mut backend = DenyByDefault;
-        assert_eq!(backend.get(MemoryOwner(1000), "id"), Err(MemoryError::Unavailable));
-        assert_eq!(backend.delete(MemoryOwner(1000), "id"), Err(MemoryError::Unavailable));
+        assert_eq!(
+            backend.get(MemoryOwner(1000), "id"),
+            Err(MemoryError::Unavailable)
+        );
+        assert_eq!(
+            backend.delete(MemoryOwner(1000), "id"),
+            Err(MemoryError::Unavailable)
+        );
     }
 }
