@@ -291,6 +291,14 @@ jobs:
             python3 "$contract"
           done
 
+      - name: Generation A/B exact-SHA OVMF KVM harness (offline negative controls)
+        run: |
+          python3 ./scripts/test-generation-ab-kvm-acceptance.py
+          python3 -m py_compile ./scripts/generation-ab-kvm-acceptance.py
+
+      - name: Verify fsynced inactive Generation slot staging and interrupted writes
+        run: python3 ./scripts/test-generation-slot-stage-image.py
+
       - name: Generation A/B guest identity and opt-in health-gate installation
         run: |
           python3 ./scripts/test-generation-ab-guest.py
