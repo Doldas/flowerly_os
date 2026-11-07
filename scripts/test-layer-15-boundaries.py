@@ -25,6 +25,11 @@ SQLITE_IMPORT = re.compile(
     r"(?m)^\s*(?:(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?rusqlite\b"
     r"(?:::|\s*;|\s+as\b)|extern\s+crate\s+rusqlite\b)"
 )
+# Raw kernel/FFI crates must not be introduced into domain modules either.
+KERNEL_CRATE_IMPORT = re.compile(
+    r"(?m)^\s*(?:(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?(?:libc|nix|rustix)\b"
+    r"(?:::|\s*;|\s+as\b)|extern\s+crate\s+(?:libc|nix|rustix)\b)"
+)
 # Only flag explicit Linux sysfs/procfs references and direct Unix OS interface imports.
 HOST_ACCESS = re.compile(
     r'(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?std::os(?:::unix\b|::\{\s*unix\b)|'
@@ -49,6 +54,8 @@ def unauthorized_imports(root=ROOT):
         source = path.read_text(encoding="utf-8")
         if SQLITE_IMPORT.search(source) and relative not in SQLITE_OWNERS:
             violations.append(f"{relative}: raw SQLite import outside storage adapter")
+        if KERNEL_CRATE_IMPORT.search(source) and relative not in LINUX_OWNERS:
+            violations.append(f"{relative}: direct kernel/FFI crate import outside reviewed boundary")
         if HOST_ACCESS.search(source) and relative not in LINUX_OWNERS:
             violations.append(f"{relative}: raw host access outside reviewed boundary")
     return violations
@@ -128,6 +135,24 @@ class DependencyBoundaryTests(unittest.TestCase):
             self.assertTrue(
                 any("raw host access" in entry for entry in unauthorized_imports(root))
             )
+
+    def test_kernel_crate_imports_cannot_bypass_boundary(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "src/flowerlyd/src/goal/mod.rs"
+            path.parent.mkdir(parents=True)
+            for import_line in (
+                "use libc::pid_t;\\n",
+                "pub use ::nix::unistd;\\n",
+                "extern crate rustix;\\n",
+                "use rustix as system;\\n",
+            ):
+                with self.subTest(import_line=import_line):
+                    path.write_text(import_line)
+                    self.assertTrue(
+                        any("kernel/FFI crate" in item for item in unauthorized_imports(root))
+                    )
 
     def test_new_unreviewed_kernel_access_is_rejected(self):
         from tempfile import TemporaryDirectory
