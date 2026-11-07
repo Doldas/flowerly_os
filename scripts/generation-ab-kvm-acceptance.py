@@ -152,6 +152,51 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
             process.wait(timeout=15)
 
 
+def verify_immutable_roots(disk_path, manifest):
+    """Prove guest boot did not modify either pinned root filesystem image.
+
+    Never 'repair' a writeable root from the pristine fixture and then call
+    the run immutable: that would conceal a real boot-chain regression.
+    """
+    parts = manifest.get("partitions", [])
+    if not isinstance(parts, list) or [p.get("name") for p in parts] != [
+        "esp", "root-a", "root-b", "data"
+    ]:
+        raise ValueError("cannot verify unknown A/B roots")
+    image = Path(disk_path)
+    if image.is_symlink() or not image.is_file():
+        raise ValueError("unsafe guest disk when verifying root immutability")
+    fd = os.open(image, os.O_RDONLY | os.O_NOFOLLOW)
+    results = {}
+    try:
+        for part in parts[1:3]:
+            offset, size = part.get("offset_bytes"), part.get("size_bytes")
+            expected = part.get("sha256")
+            if type(offset) is not int or type(size) is not int or (
+                size <= 0 or offset < 0 or offset + size > os.fstat(fd).st_size
+            ):
+                raise ValueError("invalid pinned root partition extent")
+            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+                raise ValueError("missing expected pinned root SHA256")
+            hash_value = hashlib.sha256()
+            remaining = size
+            while remaining:
+                block = os.pread(fd, min(1048576, remaining), offset)
+                if not block:
+                    raise ValueError("short guest root partition read")
+                hash_value.update(block)
+                offset += len(block)
+                remaining -= len(block)
+            actual = hash_value.hexdigest()
+            if actual != expected:
+                raise ValueError("guest changed pinned " + part["name"] +
+                                 " root image; refuse immutable-generation claim")
+            results[part["name"]] = actual
+    finally:
+        os.close(fd)
+    return results
+
+
 def reconcile_mutable_partitions(pristine_disk, booted_disk, out_disk, manifest):
     """Keep immutable pinned roots, carry A's real ESP and data writes forward."""
     shutil.copyfile(pristine_disk, out_disk)
@@ -215,6 +260,7 @@ def run(args):
         a = qemu_boot(args, disk, vars_file, args.output,
                       "root-a", bless=True, label="boot-a")
         result["boots"].append(a)
+        result["root_sha256_after_boot_a"] = verify_immutable_roots(disk, manifest)
         # The armed image is a NEW file based on A's current disk. It carries
         # A's user-data changes forward rather than rolling them back.
         arm = module("generation_arm_efi", "generation-arm-esp-image.py")
@@ -242,6 +288,8 @@ def run(args):
         last = qemu_boot(args, armed_disk, vars_file, args.output,
                          "root-a", bless=True, label="auto-fallback-a")
         result["boots"].append(last)
+        result["root_sha256_after_fallback"] = verify_immutable_roots(
+            armed_disk, json.loads(armed_manifest.read_text()))
         if last["marker_sha256"] != a["marker_sha256"]:
             raise ValueError("user data changed on automatic fallback to A")
         result["scenarios"]["data-survives"] = "PASS"
