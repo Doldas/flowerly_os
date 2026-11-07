@@ -73,3 +73,17 @@ from a pristine copy and report the original boot as immutable. The
 current firmware entry uses `rw`, so a real run may reveal this blocker.
 A production read-only root plus separate writable `/var/lib/flowerly`
 mount still needs actual OVMF/KVM verification. No S7 PASS is claimed.
+
+
+## Host-side KVM verification per boot
+
+At each accepted guest witness the runner also reads the **running QEMU
+PID's** `/proc/<pid>/cmdline` and open file descriptors. It requires its
+actual argv to match the approved firmware-only invocation, rejects a
+networked/direct-kernel/TCG configuration, and requires an actual open
+`/dev/kvm` descriptor. The command-line SHA256 and `kvm_fd_verified`
+flag are captured for **each** A/B/A boot and required in the independent
+evidence audit. This supplements, but does not cryptographically
+authenticate, the serial logs or substitute for external trusted-host
+execution and maintainer review. If the process cannot be inspected,
+the test **fails closed**; it never falls back to TCG.
