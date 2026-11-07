@@ -193,15 +193,24 @@ def run(args):
         "boots": [],
         "disk_sha256_initial": sha_file(args.disk),
         "ovmf_code_sha256": sha_file(args.ovmf_code),
+        "ovmf_vars_template_sha256": sha_file(args.ovmf_vars),
+        "manifest_sha256": sha_file(args.manifest),
+        "root_a_partuuid": args.root_a,
+        "root_b_partuuid": args.root_b,
         "status": "INCOMPLETE",
     }
     file = args.output / "acceptance.json"
     try:
+        qemu = shutil.which("qemu-system-x86_64")
+        if not qemu:
+            raise ValueError("real QEMU not installed")
+        result["qemu_version"] = subprocess.run(
+            [qemu, "--version"], capture_output=True, text=True,
+            check=True).stdout.splitlines()[0][:160]
         disk = args.output / "running-disk.img"
         vars_file = args.output / "OVMF_VARS.fd"
         shutil.copyfile(args.disk, disk)
         shutil.copyfile(args.ovmf_vars, vars_file)
-        result["scenarios"]["stage-complete"] = "PASS"
         a = qemu_boot(args, disk, vars_file, args.output,
                       "root-a", bless=True, label="boot-a")
         result["boots"].append(a)
@@ -222,7 +231,6 @@ def run(args):
                       failure_switch=True)
         # Retry unhealthy B using the SAME EFI variables and writable image.
         # systemd-boot must exhaust B's boot-count and select last healthy A.
-        result["scenarios"]["arm-after-rename"] = "PASS"
         for index in range(args.tries):
             attempt = qemu_boot(args, armed_disk, vars_file, args.output,
                                 "root-b", bless=False, label=f"unhealthy-b-{index+1}")
@@ -244,6 +252,10 @@ def run(args):
         result["error"] = str(error)[:350]
         raise
     finally:
+        for name in ("armed-b.img", "running-disk.img", "OVMF_VARS.fd"):
+            candidate = args.output / name
+            if candidate.is_file():
+                result[name + "_final_sha256"] = sha_file(candidate)
         file.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         # Hashes of serial evidence and the *final* disk may differ from the
         # initial manifest because systemd-boot and user data are mutable.
