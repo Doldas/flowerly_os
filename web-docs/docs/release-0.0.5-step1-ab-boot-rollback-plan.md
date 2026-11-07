@@ -258,3 +258,16 @@ tracks that do not block step 1:
   anyone treats A/B as the production answer.
 - **Scope creep:** no daemon integration, no updater, no installer, no AI
   authority over activation in this step.
+
+
+## S4 identity seam — deterministic PARTUUID for built A/B test images
+
+The A/B GPT builder accepts optional `FLOWERLY_AB_ROOT_A_PARTUUID` and
+`FLOWERLY_AB_ROOT_B_PARTUUID` from an explicitly prepared test-image build.
+Canonical lowercase UUIDs must be distinct. When unset, existing random UUID
+generation remains unchanged. This permits baking each root's identity into its
+rootfs **before** ext4 creation and having the firmware loader's
+`root=PARTUUID` and disk manifest match. The builder and offline regression
+prove the same UUID in all three places. It does not by itself validate
+a firmware boot or a signed/immutable package source; it only closes the
+builder/guest identity wiring prerequisite for S5–S7.
