@@ -83,6 +83,10 @@ class Tests(unittest.TestCase):
             with self.subTest(changed=changed):
                 with self.assertRaises(ValueError):
                     policy.verify_master("release/3", SHA, fake(**changed)[0])
+        for not_accepted in ("skipped", "cancelled", "timed_out", "neutral", "failure"):
+            with self.subTest(arch_conclusion=not_accepted):
+                with self.assertRaises(ValueError):
+                    policy.verify_master("release/3", SHA, fake(arch=not_accepted)[0])
         with self.assertRaisesRegex(ValueError, "latest"):
             policy.verify_master("release/2", SHA, client)
         with self.assertRaisesRegex(ValueError, "exact"):
