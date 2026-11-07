@@ -12,10 +12,10 @@ python3 scripts/test-layer-15-boundaries.py
 python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
-python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
+python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-install-flowerly-rootfs.py
 python3 scripts/test-prepare-arch-boot.py
 python3 scripts/test-boot-ipc-health.py
