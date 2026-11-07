@@ -34,6 +34,7 @@ bash scripts/test-arch-vm-stage-timing.sh
 python3 scripts/test-arch-vm-failure-classify.py
 bash -n scripts/remote-provider-arch-kvm-acceptance.sh
 python3 scripts/test-remote-provider-kvm-harness.py
+python3 scripts/test-cluster-peer-admission.py
 python3 scripts/test-arch-image-verify.py
 python3 scripts/test-host-process-authority.py
 
