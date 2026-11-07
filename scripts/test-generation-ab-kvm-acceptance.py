@@ -85,7 +85,9 @@ class KvmGateTests(unittest.TestCase):
                 boots.append({"slot": slot, "serial": name,
                               "marker_sha256": H,
                               "observed_health": "BLESSED" if blessed else "REJECTED",
-                              "power_loss": "QEMU_SIGKILL"})
+                              "power_loss": "QEMU_SIGKILL",
+                              "kvm_fd_verified": True,
+                              "qemu_cmdline_sha256": "c"*64})
             (folder / "serial-sha256.json").write_text(json.dumps(checksums))
             evidence = {
                 "schema": "flowerly-generation-kvm-sequence/v1",
@@ -116,6 +118,8 @@ class KvmGateTests(unittest.TestCase):
             refuses(lambda r: r["boots"][0].update(serial="unhealthy-b-1.serial.log"))
             refuses(lambda r: r.update(boot_tries=2))
             refuses(lambda r: r.update(release_acceptance=True))
+            refuses(lambda r: r["boots"][0].update(kvm_fd_verified=False))
+            refuses(lambda r: r["boots"][1].update(qemu_cmdline_sha256="invalid"))
             refuses(lambda r: r["scenarios"].update({"stage-interrupted": "PASS"}))
             refuses(lambda r: r["scenarios"].pop("data-survives"))
             refuses(lambda r: r["boots"].pop(2))
@@ -171,6 +175,12 @@ class KvmGateTests(unittest.TestCase):
             self.assertEqual(result[5*MIB:6*MIB], bytes(b[5*MIB:6*MIB]))
             self.assertEqual(result[2*MIB:5*MIB], a[2*MIB:5*MIB])
             self.assertEqual(hashes["data"], hashlib.sha256(b[5*MIB:6*MIB]).hexdigest())
+
+    def test_process_argv_never_fakes_kvm_evidence(self):
+        import os
+        with self.assertRaises(ValueError):
+            kvm.verify_running_qemu(os.getpid(),
+                                    ["qemu-system-x86_64", "-machine", "q35,accel=tcg"])
 
     def test_stale_commit_fails_before_touching_disk_or_kvm(self):
         args = SimpleNamespace(approved_sha="f"*40)
