@@ -142,7 +142,16 @@ mod tests {
     fn invalid_mode_is_not_silently_coerced() {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("mode");
-        for text in ["Cluster", "cluster extra", "cluster\n\n", "", "core-only", "standalone\r\n", " standalone", "standalone "] {
+        for text in [
+            "Cluster",
+            "cluster extra",
+            "cluster\n\n",
+            "",
+            "core-only",
+            "standalone\r\n",
+            " standalone",
+            "standalone ",
+        ] {
             std::fs::write(&path, text).expect("write");
             assert_eq!(read_mode_file(&path), Err(ModeError::InvalidMode));
         }
