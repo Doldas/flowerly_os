@@ -38,9 +38,13 @@ def unauthorized_imports(root=ROOT):
     # PTY supervisor, provider process and SQLite adapter retain reviewed
     # exceptions until dedicated migration and kernel-negative tests land.
     higher_level = root / "src/flowerlyd/src"
-    domains = ("flow", "goal", "generation", "provenance", "agentic", "compute")
-    for path in sorted(p for domain in domains
-                       for p in (higher_level / domain).rglob("*.rs")):
+    domains = ("flow", "goal", "generation", "provenance", "agentic",
+               "compute", "ownership", "capability")
+    paths = [p for domain in domains
+             for p in (higher_level / domain).rglob("*.rs")]
+    # Authorization lives at crate root, not under a domain directory.
+    paths.extend((higher_level / "authorization.rs",))
+    for path in sorted(p for p in paths if p.is_file()):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
         if SQLITE_IMPORT.search(source) and relative not in SQLITE_OWNERS:
@@ -99,6 +103,31 @@ class DependencyBoundaryTests(unittest.TestCase):
                     self.assertTrue(
                         any("raw host access" in entry for entry in unauthorized_imports(root))
                     )
+
+    def test_ownership_and_capability_are_guarded(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            for domain in ("ownership", "capability"):
+                file = root / f"src/flowerlyd/src/{domain}/mod.rs"
+                file.parent.mkdir(parents=True)
+                file.write_text("use rusqlite::Connection;\n")
+                with self.subTest(domain=domain):
+                    self.assertTrue(
+                        any("raw SQLite" in entry for entry in unauthorized_imports(root))
+                    )
+                file.write_text("")
+
+    def test_root_authorization_module_is_guarded(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            file = root / "src/flowerlyd/src/authorization.rs"
+            file.parent.mkdir(parents=True)
+            file.write_text("use std::os::unix::fs::PermissionsExt;\n")
+            self.assertTrue(
+                any("raw host access" in entry for entry in unauthorized_imports(root))
+            )
 
     def test_new_unreviewed_kernel_access_is_rejected(self):
         from tempfile import TemporaryDirectory
