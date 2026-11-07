@@ -16,7 +16,8 @@ DOMAINS = ("flow", "goal", "generation", "provenance", "agentic",
 FORBIDDEN = re.compile(
     r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?"
     r"(?:std|tokio)::process\b|"
-    r"(?m:(?:/sys/fs/cgroup/|cgroup\.procs|cgroup\.kill))|"\n    r"(?m:(?:std|tokio)::process::Command::new\\s*\\()"
+    r"(?m:(?:/sys/fs/cgroup/|cgroup\.procs|cgroup\.kill))|"
+    r"(?m:(?:std|tokio)::process::Command::new\s*\()"
 )
 
 
