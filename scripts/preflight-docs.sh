@@ -9,10 +9,10 @@ python3 scripts/test-branch-forward.py
 python3 scripts/test-project-sync-workflows.py
 python3 scripts/test-wait-release-promotion.py
 python3 scripts/test-layer-15-boundaries.py
-python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
+python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
