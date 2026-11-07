@@ -258,3 +258,15 @@ tracks that do not block step 1:
   anyone treats A/B as the production answer.
 - **Scope creep:** no daemon integration, no updater, no installer, no AI
   authority over activation in this step.
+
+## S6 active development — writable inactive-slot prototype
+
+The scoped image writer `scripts/generation-slot-stage-image.py` can now
+write, fsync and hash-check only the inactive root region of a **regular
+file** and atomically update the disk manifest. Its interrupted-write
+regression proves ESP, active root and data regions remain unchanged, while
+the original manifest stays intact and re-verification refuses the damaged
+image. This is **not** a block-device/stable-OS writer: caller-provided active
+PARTUUID is fixture input, not trusted kernel authority. It must not be used
+as a privileged production updater. Bootloader arming, user-data mount,
+actual guest reboot and power-loss evidence remain S5–S7 blockers.
