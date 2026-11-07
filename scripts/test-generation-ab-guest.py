@@ -96,9 +96,6 @@ class BootTests(unittest.TestCase):
             for name in ("flowerly-generation-witness", "flowerly-generation-health"):
                 self.assertTrue((unit_dir/(name+".service")).is_file())
                 self.assertTrue((wants/(name+".service")).is_symlink())
-            self.assertEqual((root/"usr/lib/flowerly/generation-root.json").read_text().strip(),
-                             json.dumps(identity(), separators=(",", ":")) if False else
-                             (root/"usr/lib/flowerly/generation-root.json").read_text().strip())
             self.assertEqual(json.loads((root/"usr/lib/flowerly/generation-root.json").read_text())["root_partuuid"], UUID_A)
             self.assertIn("PARTLABEL=data /var/lib/flowerly",
                           (root/"etc/fstab").read_text())
