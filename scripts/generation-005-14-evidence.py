@@ -23,7 +23,9 @@ def validate_evidence(doc):
     if not isinstance(witness,dict) or witness.get("ipc_healthy") is not True or witness.get("root_verified") is not True:
         raise ValueError("guest witness not verified")
     scenarios=doc["scenarios"]
-    if not isinstance(scenarios,dict) or not scenarios or any(v not in ("PASS","FAIL","NOT_RUN","INCONCLUSIVE") for v in scenarios.values()):
+    required={"stage-complete","stage-interrupted","arm-before-rename","arm-after-rename",
+              "boot-before-bless","unhealthy-b-fallback","data-survives","tampered-b-refused"}
+    if not isinstance(scenarios,dict) or set(scenarios)!=required or any(v not in ("PASS","FAIL","NOT_RUN","INCONCLUSIVE") for v in scenarios.values()):
         raise ValueError("invalid scenario evidence")
     if any(v!="PASS" for v in scenarios.values()):
         return {"status":"INCOMPLETE","scenarios":len(scenarios)}
