@@ -83,7 +83,7 @@ class DependencyBoundaryTests(unittest.TestCase):
             root = Path(directory)
             path = root / "src/flowerlyd/src/generation/mod.rs"
             path.parent.mkdir(parents=True)
-            path.write_text('#[cfg(test)]\\nmod tests { fn fake() { let error = rusqlite::Error::InvalidQuery; } }\\n')
+            path.write_text('#[cfg(test)]\nmod tests { fn fake() { let error = rusqlite::Error::InvalidQuery; } }\n')
             self.assertEqual(unauthorized_imports(root), [])
 
     def test_new_sqlite_import_is_rejected(self):
