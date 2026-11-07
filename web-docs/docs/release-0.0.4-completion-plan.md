@@ -155,3 +155,28 @@ The read-only Projects reconciliation (#257) cannot verify a live board without
 a real export and authorized token. Manifest date, A/B hash and unsafe-source
 guards are offline regressions, not substitutes for Arch/KVM evidence. All
 existing release/2 safety gates and manual master promotion policy remain.
+
+
+## 2026-11-07 release/2 → master promotion #279: push Docs tool regression
+
+**Observed at release/2 SHA `1e6cc17870fbec258448051121dcc99e7a8633ab`:**
+[push CI 42389245128](https://github.com/Doldas/flowerly_os/actions/runs/42389245128)
+failed in Docs, step `Verify two-slot disk builder offline`, because the
+self-hosted `flowerly-runner` lacked `sfdisk`. The hosted PR Docs job
+passed, but is not evidence of a successful release push. The separate
+[promotion validation 42389250137](https://github.com/Doldas/flowerly_os/actions/runs/42389250137)
+correctly refused promotion because that same SHA had a failing push CI.
+
+**Fix in this workstream:** before the existing offline A/B disk test,
+non-PR Docs jobs run `scripts/prepare-ab-disk-ci-tools.sh`, installing the
+real `fdisk` (providing `sfdisk`), `dosfstools`, `mtools` and
+`e2fsprogs` on an apt-based trusted runner only when missing, and checking
+every required executable afterward. Missing tools or failed installation
+remain hard failures; no fake partition builder, skipped test, downgraded
+Arch acceptance, or change to promotion predicates.
+
+**Still required:** merge the independently reviewed fix to `release/2`,
+then obtain a successful **new exact-SHA push CI** including Docs, Rust and
+the real Arch guest, plus security and CodeQL push workflows. Only after
+those runs pass can #279's verifier succeed for the new SHA. Master
+promotion remains manual and requires owner approval.
