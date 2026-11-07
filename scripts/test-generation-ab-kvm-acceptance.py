@@ -128,6 +128,14 @@ class KvmGateTests(unittest.TestCase):
             log.write_text(log.read_text() + "FLOWERLY_GENERATION_BOOT_BLESSED\n")
             with self.assertRaises(ValueError):
                 audit.audit(evidence, folder)
+            log.write_text(log.read_text().replace(
+                "FLOWERLY_GENERATION_BOOT_BLESSED\n", ""))
+            # A symlinked serial file is never accepted even when its
+            # content and digest would otherwise match.
+            log.rename(folder / "real-boot-serial.log")
+            log.symlink_to(folder / "real-boot-serial.log")
+            with self.assertRaises(ValueError):
+                audit.audit(evidence, folder)
 
     def test_only_esp_and_user_data_are_carried_between_guests(self):
         with tempfile.TemporaryDirectory() as directory:
