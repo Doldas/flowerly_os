@@ -152,8 +152,37 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
             process.wait(timeout=15)
 
 
+def reconcile_mutable_partitions(pristine_disk, booted_disk, out_disk, manifest):
+    """Keep immutable pinned roots, carry A's real ESP and data writes forward."""
+    shutil.copyfile(pristine_disk, out_disk)
+    parts = manifest["partitions"]
+    if [p["name"] for p in parts] != ["esp", "root-a", "root-b", "data"]:
+        raise ValueError("cannot reconcile unknown disk geometry")
+    copied = {}
+    src = os.open(booted_disk, os.O_RDONLY | os.O_NOFOLLOW)
+    dst = os.open(out_disk, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        for part in (parts[0], parts[3]):
+            cursor = part["offset_bytes"]
+            remaining = part["size_bytes"]
+            digest = hashlib.sha256()
+            while remaining:
+                block = os.pread(src, min(1048576, remaining), cursor)
+                if not block or os.pwrite(dst, block, cursor) != len(block):
+                    raise OSError("short mutable partition copy")
+                digest.update(block)
+                cursor += len(block)
+                remaining -= len(block)
+            copied[part["name"]] = digest.hexdigest()
+        os.fsync(dst)
+    finally:
+        os.close(src)
+        os.close(dst)
+    return copied
+
+
 def run(args):
-    validate_source(args, actual_execution=True)
+    manifest = validate_source(args, actual_execution=True)
     args.output.mkdir(mode=0o700)
     result = {
         "schema": "flowerly-generation-kvm-sequence/v1",
@@ -179,9 +208,16 @@ def run(args):
         # The armed image is a NEW file based on A's current disk. It carries
         # A's user-data changes forward rather than rolling them back.
         arm = module("generation_arm_efi", "generation-arm-esp-image.py")
+        reconstructed = args.output / "post-a-pristine-roots.img"
+        # A's ext4 root can receive incidental journaling writes. A Generation
+        # root is immutable, so retain its original verified bytes and carry
+        # forward *only* the live ESP boot-counting state and user-data volume.
+        result["mutable_sha256_from_boot_a"] = reconcile_mutable_partitions(
+            args.disk, disk, reconstructed, manifest)
+        result["root_reconstruction"] = "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES"
         armed_disk = args.output / "armed-b.img"
         armed_manifest = args.output / "armed-b.manifest.json"
-        arm.arm_image(disk, args.manifest, args.kernel_b, args.initramfs_b,
+        arm.arm_image(reconstructed, args.manifest, args.kernel_b, args.initramfs_b,
                       armed_disk, armed_manifest, tries=args.tries,
                       failure_switch=True)
         # Retry unhealthy B using the SAME EFI variables and writable image.
