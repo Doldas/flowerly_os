@@ -35,7 +35,11 @@ class PeerAdmissionTests(unittest.TestCase):
     def test_revocation_and_malformed_allowlist(self):
         revoked = mod.dataclasses.replace(self.policy, revoked=True)
         self.assertFalse(mod.eligible_peer(revoked, "node-b", "a"*64, "10.12.0.8", 1, **self.kw))
-        malformed = mod.dataclasses.replace(self.policy, allowed_networks=("not-a-network",))
+        self.assertFalse(self.check(operator_enabled="true"))
+        self.assertFalse(self.check(authenticated="yes"))
+        malformed = mod.dataclasses.replace(
+            self.policy, allowed_networks=("10.12.0.0/24", "not-a-network")
+        )
         self.assertFalse(mod.eligible_peer(malformed, "node-b", "a"*64, "10.12.0.8", 1, **self.kw))
 
 
