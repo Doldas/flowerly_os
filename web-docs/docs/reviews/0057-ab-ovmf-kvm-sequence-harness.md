@@ -58,3 +58,18 @@ actually run remain `NOT_RUN`. A passing audit says only
 are not cryptographic proof that QEMU produced them or that the VM was
 executed on the approved trusted host. Full S7 KVM power-loss coverage and
 owner approval are unchanged requirements.
+
+
+## Immutable-root check (additional S7 gate)
+
+After the first A boot and again after the automatic fallback A boot,
+the harness now hashes both root partition slices of the actual guest
+disk and demands exact equality with the originally pinned manifest.
+A guest that wrote to either supposedly immutable root makes the sequence
+**FAIL/INCONCLUSIVE**, before any reconstructed pristine-root test image is
+used for the next stage. This explicitly catches a root filesystem mounted
+read-write or ext4 journal updates; it is not correct to repair the image
+from a pristine copy and report the original boot as immutable. The
+current firmware entry uses `rw`, so a real run may reveal this blocker.
+A production read-only root plus separate writable `/var/lib/flowerly`
+mount still needs actual OVMF/KVM verification. No S7 PASS is claimed.
