@@ -17,6 +17,8 @@ def main():
         assert 'if [[ -z "$PROJECT_TOKEN" ]]' in content, name
         assert "exit 1" in content, name
         assert "contents: read" in content and "issues: read" in content, name
+        assert "permissions: write-all" not in content, name
+        assert "FLOWERLY_PROJECT_TOKEN ||" not in content, name
     print("project sync trigger and token boundary checks passed")
 
 
