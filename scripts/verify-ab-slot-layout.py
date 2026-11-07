@@ -12,6 +12,18 @@ def verify(disk_path, manifest):
     disk = Path(disk_path)
     if disk.is_symlink() or not disk.is_file():
         raise ValueError("disk must be a non-symlink regular file")
+    disk_metadata = manifest.get("disk", {})
+    if disk_metadata.get("size_bytes") != disk.stat().st_size:
+        raise ValueError("disk size differs from manifest")
+    expected_disk_sha = disk_metadata.get("sha256")
+    if not isinstance(expected_disk_sha, str) or len(expected_disk_sha) != 64:
+        raise ValueError("full disk digest missing or malformed")
+    full = hashlib.sha256()
+    with disk.open("rb") as source:
+        while chunk := source.read(1048576):
+            full.update(chunk)
+    if full.hexdigest() != expected_disk_sha:
+        raise ValueError("full disk SHA256 differs from manifest")
     parts = manifest.get("partitions")
     if not isinstance(parts, list) or [p.get("name") for p in parts] != [
         "esp", "root-a", "root-b", "data"
