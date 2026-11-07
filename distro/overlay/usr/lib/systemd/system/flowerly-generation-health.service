@@ -11,6 +11,7 @@ Group=root
 TimeoutStartSec=65
 ExecStartPre=/usr/bin/bash /usr/lib/flowerly/generation-health-gate.sh
 ExecStart=/usr/lib/systemd/systemd-bless-boot good
+ExecStartPost=/usr/bin/echo FLOWERLY_GENERATION_BOOT_BLESSED
 StandardOutput=journal+console
 StandardError=journal+console
 NoNewPrivileges=yes
