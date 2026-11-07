@@ -108,6 +108,8 @@ def audit(report, directory):
     ):
         raise ValueError("unverified boot attempt count")
     folder = Path(directory)
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError("unsafe evidence directory")
     seen_ids, names, markers, digests = set(), set(), set(), {}
     for index, boot in enumerate(boots):
         if not isinstance(boot, dict):
@@ -133,7 +135,7 @@ def audit(report, directory):
     if len(markers) != 1:
         raise ValueError("persistent marker changed during A/B/A")
     digest_file = folder/"serial-sha256.json"
-    if digest_file.is_symlink() or not digest_file.is_file():
+    if digest_file.is_symlink() or not digest_file.is_file() or digest_file.stat().st_size > 16384:
         raise ValueError("missing serial checksum manifest")
     if json.loads(digest_file.read_text()) != digests:
         raise ValueError("serial digest manifest does not match")
@@ -152,7 +154,10 @@ def main():
         folder = args.evidence_dir
         if folder.is_symlink():
             raise ValueError("symlink evidence root refused")
-        result = audit(json.loads((folder/"acceptance.json").read_text()), folder)
+        report_file = folder/"acceptance.json"
+        if report_file.is_symlink() or not report_file.is_file() or report_file.stat().st_size > 1048576:
+            raise ValueError("missing, oversized or symlinked acceptance report")
+        result = audit(json.loads(report_file.read_text()), folder)
     except (OSError, ValueError, TypeError, KeyError) as error:
         parser.exit(1, f"KVM evidence refused: {error}\n")
     print(json.dumps(result, sort_keys=True))
