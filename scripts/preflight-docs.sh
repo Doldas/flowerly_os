@@ -9,6 +9,7 @@ python3 scripts/test-branch-forward.py
 python3 scripts/test-project-sync-workflows.py
 python3 scripts/test-wait-release-promotion.py
 python3 scripts/test-layer-15-boundaries.py
+python3 scripts/test-host-process-authority.py
 python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
