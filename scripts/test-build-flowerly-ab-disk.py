@@ -119,6 +119,29 @@ def entry_case():
     print("Loader entry case passed: boot-count suffix and root PARTUUID")
 
 
+def pinned_partuuid_case():
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d)
+        fakes, inputs = fixture(folder)
+        root_a = "11111111-1111-1111-1111-111111111111"
+        root_b = "22222222-2222-2222-2222-222222222222"
+        (fakes / "mcopy").write_text(
+            '#!/bin/sh\necho "mcopy $*" >> "$FAKE_LOG"\n'
+            'case "$4" in */flowerly-a+*.conf) cp "$3" "$(dirname "$FAKE_LOG")/entry.conf";; esac\n')
+        result = run(folder, fakes, inputs, env={
+            "FLOWERLY_AB_ROOT_A_PARTUUID": root_a,
+            "FLOWERLY_AB_ROOT_B_PARTUUID": root_b,
+        })
+        assert result.returncode == 0, result.stderr
+        manifest = json.loads((folder / "disk.img.manifest.json").read_text())
+        parts = {p["name"]: p for p in manifest["partitions"]}
+        assert parts["root-a"]["partuuid"] == root_a
+        assert parts["root-b"]["partuuid"] == root_b
+        entry = (folder / "entry.conf").read_text()
+        assert f"root=PARTUUID={root_a} " in entry
+    print("Root A/B baked PARTUUIDs match GPT manifest and loader entry")
+
+
 def refusal_cases():
     def expect(label, message, mutate=None, env=None, extra=None):
         with tempfile.TemporaryDirectory() as d:
@@ -143,6 +166,11 @@ def refusal_cases():
     expect("wrong label", "labelled FLOWERLY_ROOT", env={"FAKE_LABEL": "OTHER"})
     expect("esp too small", "FLOWERLY_ESP_MB", env={"FLOWERLY_ESP_MB": "8"})
     expect("bad tries", "FLOWERLY_BOOT_TRIES", env={"FLOWERLY_BOOT_TRIES": "0"})
+    expect("invalid pinned UUID", "root slot PARTUUID",
+           env={"FLOWERLY_AB_ROOT_A_PARTUUID": "not-a-uuid"})
+    expect("duplicate pinned UUID", "must be distinct",
+           env={"FLOWERLY_AB_ROOT_A_PARTUUID": "11111111-1111-1111-1111-111111111111",
+                "FLOWERLY_AB_ROOT_B_PARTUUID": "11111111-1111-1111-1111-111111111111"})
     if not shutil.which("mcopy"):
         expect("missing tool", "missing host tool: mcopy",
                lambda f, k, i: (k / "mcopy").unlink())
@@ -173,5 +201,6 @@ def overwrite_case():
 if __name__ == "__main__":
     success_case()
     entry_case()
+    pinned_partuuid_case()
     refusal_cases()
     overwrite_case()

@@ -291,6 +291,20 @@ jobs:
             python3 "$contract"
           done
 
+      - name: Generation A/B exact-SHA OVMF KVM harness (offline negative controls)
+        run: |
+          python3 ./scripts/test-generation-ab-kvm-acceptance.py
+          python3 -m py_compile ./scripts/generation-ab-kvm-acceptance.py
+
+      - name: Verify fsynced inactive Generation slot staging and interrupted writes
+        run: python3 ./scripts/test-generation-slot-stage-image.py
+
+      - name: Generation A/B guest identity and opt-in health-gate installation
+        run: |
+          python3 ./scripts/test-generation-ab-guest.py
+          bash -n ./scripts/prepare-generation-ab-rootfs.sh
+          bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
+
       - name: Provision real GPT FAT and ext4 tools for Generation A/B tests
         run: bash ./scripts/prepare-ab-disk-ci-tools.sh
 

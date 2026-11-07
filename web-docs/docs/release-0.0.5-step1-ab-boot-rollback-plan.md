@@ -259,6 +259,65 @@ tracks that do not block step 1:
 - **Scope creep:** no daemon integration, no updater, no installer, no AI
   authority over activation in this step.
 
+
+## S7 — executable OVMF/KVM sequence harness awaiting actual run
+
+`scripts/generation-ab-kvm-acceptance.py` is an opt-in, exact-SHA, clean
+nonroot checkout runner that starts a **real** Flowerly-built GPT image via
+OVMF (not direct-kernel boot), reuses writable firmware variables, requires
+guest-sourced root/PARTUUID and post-bless IPC evidence, boots intentionally
+unhealthy B repeatedly and checks automatic return to A and an unchanged
+persistent data-marker hash. It records separate serial logs and explicit
+NOT_RUN scenarios. Full command-line instructions, dependencies, scope and
+blockers are in [the S7 KVM harness review](reviews/0057-ab-ovmf-kvm-sequence-harness.md).
+
+**Not executed in this session:** no usable QEMU or /dev/kvm in the available
+tool runtime; the GitHub connector cannot dispatch the workflow on the
+trusted private runner. CI offline fixture checks do not fulfill the
+firmware/guest acceptance. Only a real operator-run bundle on an owner-
+approved exact SHA can advance S7; until then all eight exit criteria remain
+unchecked and ADR-0019 remains Proposed.
+
+## S6 active development — writable inactive-slot prototype
+
+The scoped image writer `scripts/generation-slot-stage-image.py` can now
+write, fsync and hash-check only the inactive root region of a **regular
+file** and atomically update the disk manifest. Its interrupted-write
+regression proves ESP, active root and data regions remain unchanged, while
+the original manifest stays intact and re-verification refuses the damaged
+image. This is **not** a block-device/stable-OS writer: caller-provided active
+PARTUUID is fixture input, not trusted kernel authority. It must not be used
+as a privileged production updater. Bootloader arming, user-data mount,
+actual guest reboot and power-loss evidence remain S5–S7 blockers.
+
+## S5 active development — opt-in A/B boot witness and health gate
+
+`scripts/prepare-generation-ab-rootfs.sh` installs the test-only
+`flowerly-generation-witness.service` and `flowerly-generation-health.service`,
+a separate data-partition mount, and a dependency that prevents `flowerlyd`
+starting before the verified kernel/EFI root witness. The witness verifies
+baked PARTUUID/source identity against `/proc/cmdline` and the EFI
+`LoaderEntrySelected` variable; it refuses to write a witness if
+`/var/lib/flowerly` shares the root filesystem device. Ledger writes are
+flocked and fsynced. Only after a service-account IPC Ping may the explicit
+health service invoke `systemd-bless-boot good`; the stock early-bless unit
+is masked in this test profile. The `flowerly.test.fail_health=1` switch is
+supported only in this explicit fixture. **Not enabled in the normal distro**
+and not real KVM evidence. Installation is fail-closed if prerequisites are
+missing; no user state or current boot is modified by preparing the fixture.
+
+## S4 identity seam — deterministic PARTUUID for built A/B test images
+
+The A/B GPT builder accepts optional `FLOWERLY_AB_ROOT_A_PARTUUID` and
+`FLOWERLY_AB_ROOT_B_PARTUUID` from an explicitly prepared test-image build.
+Canonical lowercase UUIDs must be distinct. When unset, existing random UUID
+generation remains unchanged. This permits baking each root's identity into its
+rootfs **before** ext4 creation and having the firmware loader's
+`root=PARTUUID` and disk manifest match. The builder and offline regression
+prove the same UUID in all three places. It does not by itself validate
+a firmware boot or a signed/immutable package source; it only closes the
+builder/guest identity wiring prerequisite for S5–S7.
+
 ## S6 opt-in ESP image arming: immutable fixture publication
 
 `scripts/generation-arm-esp-image.py` uses real `sfdisk -J` and `mtools`
