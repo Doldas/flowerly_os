@@ -18,7 +18,9 @@ class PeerPolicy:
 
 def eligible_peer(policy, peer_id, presented_key_sha256, address, memory_schema, *,
                   encrypted, authenticated, operator_enabled):
-    if not operator_enabled or not encrypted or not authenticated or policy.revoked:
+    if operator_enabled is not True or encrypted is not True or authenticated is not True:
+        return False
+    if policy.revoked is not False:
         return False
     if not policy.peer_id or peer_id != policy.peer_id:
         return False
@@ -32,8 +34,9 @@ def eligible_peer(policy, peer_id, presented_key_sha256, address, memory_schema,
         return False
     try:
         ip = ipaddress.ip_address(address)
-        return any(ip in ipaddress.ip_network(net, strict=True)
-                   for net in policy.allowed_networks)
+        networks = tuple(ipaddress.ip_network(net, strict=True)
+                         for net in policy.allowed_networks)
+        return bool(networks) and any(ip in network for network in networks)
     except (ValueError, TypeError):
         return False
 
