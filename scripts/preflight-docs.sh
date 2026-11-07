@@ -14,6 +14,7 @@ python3 scripts/audit-storage-schema.py > /dev/null
 python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
+python3 scripts/test-offline-memory-prototype.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
