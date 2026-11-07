@@ -16,7 +16,7 @@ import sys
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
-LOADER = re.compile(r"flowerly-([ab])(?:\+[1-9][0-9]?)?(?:\.conf)?\Z")
+LOADER = re.compile(r"flowerly-([ab])(?:\+(?:0|[1-9][0-9]?)(?:-(?:0|[1-9][0-9]?))?)?(?:\.conf)?\Z")
 EFI_LOADER_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 MAX_LEDGER = 2097152
 IDENTITY = Path("/usr/lib/flowerly/generation-root.json")
