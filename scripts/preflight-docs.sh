@@ -13,6 +13,7 @@ python3 scripts/test-audit-storage-schema.py
 python3 scripts/audit-storage-schema.py > /dev/null
 python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
+python3 scripts/test-coreonly-unit-policy.py
 python3 scripts/test-pty-ipc-framing.py
 python3 scripts/test-build-task-parity.py
 bash scripts/check-image-inputs.sh
