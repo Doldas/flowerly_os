@@ -42,3 +42,19 @@ Without `--execute`, validation is read-only and prints `NOT_RUN`; no real KVM r
 This tool proves at most one **firmware-booted A → failing B → fallback A** sequence when it actually runs and yields logs. The complete S7 eight-scenario matrix is **not** yet satisfied: interruption immediately after staging, before/after EFI rename on a mounted ESP, tampered image, full disk, clean shutdown, and real production power-loss recovery remain pending. The manifest's original whole-disk hash becomes stale after guest boot because EFI boot counters and data are mutable; the harness treats these as such rather than quietly rewriting a trust baseline. Signed package acquisition, review of rollback substrate, owner D3/D5 and release authorization remain open.
 
 CI runs an offline parser/negative-case test only; hosted PR CI **does not claim KVM**. No branch merge, release tag or master promotion may be based on the existence of the harness alone.
+
+
+## Artifact audit added after first review (2026-11-07)
+
+The harness now re-reads all expected real guest serial logs after the
+A → unhealthy B × tries → A sequence and verifies exactly one root-witness
+record and boot ID per log, root A/B PARTUUID, the matching data-marker SHA,
+explicit positive post-bless IPC for A, negative health/no blessing for B,
+unique filenames, boot-count-sized sequence and exact SHA-256 digests in
+`serial-sha256.json`. Any missing, duplicated, contradictory or unexpected
+log fails the final acceptance report; all stage/ESP-interruption cases not
+actually run remain `NOT_RUN`. A passing audit says only
+`INTERNALLY_CONSISTENT_NOT_RELEASE_ACCEPTED`—serial output and its hashes
+are not cryptographic proof that QEMU produced them or that the VM was
+executed on the approved trusted host. Full S7 KVM power-loss coverage and
+owner approval are unchanged requirements.
