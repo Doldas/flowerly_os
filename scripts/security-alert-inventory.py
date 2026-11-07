@@ -25,6 +25,11 @@ def query(repo, endpoint):
         # Avoid echoing stderr because it can contain authentication details.
         raise RuntimeError(f"GitHub API request failed for {endpoint} (exit {completed.returncode})")
     pages = json.loads(completed.stdout)
+    if not isinstance(pages, list) or any(
+        not isinstance(page, list) or any(not isinstance(row, dict) for row in page)
+        for page in pages
+    ):
+        raise RuntimeError('malformed GitHub security alert pagination')
     return [item for page in pages for item in page]
 
 def sanitize(family, row):
