@@ -296,6 +296,9 @@ jobs:
           python3 ./scripts/test-generation-ab-kvm-acceptance.py
           python3 -m py_compile ./scripts/generation-ab-kvm-acceptance.py
 
+      - name: Verify fsynced inactive Generation slot staging and interrupted writes
+        run: python3 ./scripts/test-generation-slot-stage-image.py
+
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 

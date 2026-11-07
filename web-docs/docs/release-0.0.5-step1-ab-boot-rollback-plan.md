@@ -277,3 +277,15 @@ trusted private runner. CI offline fixture checks do not fulfill the
 firmware/guest acceptance. Only a real operator-run bundle on an owner-
 approved exact SHA can advance S7; until then all eight exit criteria remain
 unchecked and ADR-0019 remains Proposed.
+
+## S6 active development — writable inactive-slot prototype
+
+The scoped image writer `scripts/generation-slot-stage-image.py` can now
+write, fsync and hash-check only the inactive root region of a **regular
+file** and atomically update the disk manifest. Its interrupted-write
+regression proves ESP, active root and data regions remain unchanged, while
+the original manifest stays intact and re-verification refuses the damaged
+image. This is **not** a block-device/stable-OS writer: caller-provided active
+PARTUUID is fixture input, not trusted kernel authority. It must not be used
+as a privileged production updater. Bootloader arming, user-data mount,
+actual guest reboot and power-loss evidence remain S5–S7 blockers.
