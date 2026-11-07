@@ -143,10 +143,10 @@ class DependencyBoundaryTests(unittest.TestCase):
             path = root / "src/flowerlyd/src/goal/mod.rs"
             path.parent.mkdir(parents=True)
             for import_line in (
-                "use libc::pid_t;\\n",
-                "pub use ::nix::unistd;\\n",
-                "extern crate rustix;\\n",
-                "use rustix as system;\\n",
+                "use libc::pid_t;\n",
+                "pub use ::nix::unistd;\n",
+                "extern crate rustix;\n",
+                "use rustix as system;\n",
             ):
                 with self.subTest(import_line=import_line):
                     path.write_text(import_line)
