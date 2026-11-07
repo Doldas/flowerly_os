@@ -205,7 +205,9 @@ fn validate_source(source: &Source, errors: &mut Vec<String>) {
             _ => 0,
         };
         if year == 0 || day == 0 || day > days {
-            errors.push(format!("source.snapshot_date {date:?} is not a valid calendar date"));
+            errors.push(format!(
+                "source.snapshot_date {date:?} is not a valid calendar date"
+            ));
         }
     }
     let url = &source.snapshot_url;
