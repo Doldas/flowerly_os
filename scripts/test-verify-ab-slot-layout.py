@@ -27,8 +27,16 @@ class ABSlotTests(unittest.TestCase):
                     "sha256": hashlib.sha256(bytes([number])*MIB).hexdigest(),
                 })
             manifest = {"schema": "flowerly-ab-disk/v1",
-                        "disk": {"size_bytes": len(payload)}, "partitions": parts}
+                        "disk": {"size_bytes": len(payload),
+                                 "sha256": hashlib.sha256(payload).hexdigest()},
+                        "partitions": parts}
             self.assertEqual(mod.verify(path, manifest)["partitions_verified"], 4)
+            tampered = bytearray(payload)
+            tampered[0] ^= 1
+            path.write_bytes(tampered)
+            with self.assertRaises(ValueError):
+                mod.verify(path, manifest)
+            path.write_bytes(payload)
             parts[2]["partuuid"] = parts[1]["partuuid"]
             with self.assertRaises(ValueError):
                 mod.verify(path, manifest)
