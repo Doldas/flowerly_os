@@ -126,6 +126,24 @@ class BootTests(unittest.TestCase):
                           (unit_dir/"flowerlyd.service.d/10-generation-witness.conf").read_text())
             self.assertNotEqual(prepare(root).returncode, 0, "duplicate install accepted")
 
+    def test_arch_internal_prerequisite_link_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            create_root(root)
+            python = root / "usr/bin/python3"
+            python.rename(root / "usr/bin/python3.14")
+            python.symlink_to("python3.14")
+            self.assertEqual(prepare(root).returncode, 0)
+
+    def test_external_prerequisite_link_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            create_root(root)
+            python = root / "usr/bin/python3"
+            python.unlink()
+            python.symlink_to("/usr/bin/false")
+            self.assertNotEqual(prepare(root).returncode, 0)
+
     def test_installer_refuses_untrusted_inputs(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)/"root"
