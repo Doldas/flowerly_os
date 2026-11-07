@@ -284,6 +284,13 @@ jobs:
           bash -n ./scripts/build-flowerly-ab-disk.sh
           python3 ./scripts/test-build-flowerly-ab-disk.py
 
+      - name: Generation 0.0.5 offline safety contracts
+        run: |
+          for contract in scripts/test-generation-005-*.py; do
+            [[ -f "$contract" ]] || continue
+            python3 "$contract"
+          done
+
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 
