@@ -52,7 +52,10 @@ def unauthorized_imports(root=ROOT):
     for path in sorted(p for p in paths if p.is_file()):
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8")
-        if SQLITE_IMPORT.search(source) and relative not in SQLITE_OWNERS:
+        # Existing isolated Rust unit-test fixtures may construct SQLite
+        # error codes. A direct runtime driver reference remains prohibited.
+        runtime_source = source.split("#[cfg(test)]", 1)[0]
+        if (SQLITE_IMPORT.search(source) or re.search(r"\brusqlite::", runtime_source)) and relative not in SQLITE_OWNERS:
             violations.append(f"{relative}: raw SQLite import outside storage adapter")
         if KERNEL_CRATE_IMPORT.search(source) and relative not in LINUX_OWNERS:
             violations.append(f"{relative}: direct kernel/FFI crate import outside reviewed boundary")
@@ -64,6 +67,24 @@ def unauthorized_imports(root=ROOT):
 class DependencyBoundaryTests(unittest.TestCase):
     def test_existing_dependency_boundary(self):
         self.assertEqual(unauthorized_imports(), [])
+
+    def test_direct_sqlite_paths_outside_imports_are_forbidden(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "src/flowerlyd/src/goal/mod.rs"
+            path.parent.mkdir(parents=True)
+            path.write_text("let conn = rusqlite::Connection::open(path);\n")
+            self.assertTrue(any("SQLite" in error for error in unauthorized_imports(root)))
+
+    def test_test_only_sqlite_error_fixture_is_not_runtime_driver(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "src/flowerlyd/src/generation/mod.rs"
+            path.parent.mkdir(parents=True)
+            path.write_text('#[cfg(test)]\nmod tests { fn fake() { let error = rusqlite::Error::InvalidQuery; } }\n')
+            self.assertEqual(unauthorized_imports(root), [])
 
     def test_new_sqlite_import_is_rejected(self):
         from tempfile import TemporaryDirectory
