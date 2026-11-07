@@ -17,7 +17,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Require project-write credential
+        env:
+          PROJECT_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN }}
+        run: |
+          if [[ -z "$PROJECT_TOKEN" ]]; then
+            echo 'FLOWERLY_PROJECT_TOKEN is missing; configure a scoped project-write credential.' >&2
+            exit 1
+          fi
       - name: Sync issues and PRs with project fields
         env:
-          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN }}
         run: python3 scripts/sync-project.py
