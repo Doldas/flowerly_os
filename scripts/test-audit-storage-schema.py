@@ -19,6 +19,12 @@ class StorageSchemaAuditTests(unittest.TestCase):
         edges = [("user_facts", "flows", "flow_id", "id")]
         self.assertTrue(any("cross-boundary" in p for p in module.audit(tables, edges)))
 
+    def test_reverse_core_to_memory_fk_is_also_rejected(self):
+        tables = module.CORE_REQUIRED | module.MEMORY_CANDIDATES
+        self.assertTrue(any("cross-boundary" in p for p in module.audit(
+            tables, [("flows", "user_facts", "memory_id", "id")]
+        )))
+
     def test_core_internal_references_are_allowed_in_inventory(self):
         tables = module.CORE_REQUIRED | module.MEMORY_CANDIDATES
         edges = [("sessions", "flows", "flow_id", "id")]
