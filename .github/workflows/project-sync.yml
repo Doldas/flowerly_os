@@ -28,15 +28,24 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'Doldas/flowerly_os' && github.event.repository.default_branch == github.ref
+    if: github.repository == 'Doldas/flowerly_os' && (github.event_name != 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     steps:
+      - name: Require project-write credential
+        env:
+          PROJECT_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN }}
+        run: |
+          if [[ -z "$PROJECT_TOKEN" ]]; then
+            echo 'FLOWERLY_PROJECT_TOKEN is missing; project sync is disabled until a scoped token is configured.' >&2
+            exit 1
+          fi
+
       - name: Add opened issue or PR to Flowerly engineering roadmap
         if: github.event_name == 'issues' || github.event_name == 'pull_request'
         uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
         with:
           project-url: https://github.com/users/Doldas/projects/7
-          github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.FLOWERLY_PROJECT_TOKEN }}
 
       - name: Checkout
         if: github.event_name == 'schedule'
@@ -45,7 +54,7 @@ jobs:
       - name: Reconcile project fields
         if: github.event_name == 'schedule'
         env:
-          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLOWERLY_PROJECT_TOKEN }}
         run: python3 scripts/sync-project.py
 
       # Keep non-matching events green instead of a run whose every step
