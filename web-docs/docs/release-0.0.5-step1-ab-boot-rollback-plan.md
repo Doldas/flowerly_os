@@ -258,3 +258,19 @@ tracks that do not block step 1:
   anyone treats A/B as the production answer.
 - **Scope creep:** no daemon integration, no updater, no installer, no AI
   authority over activation in this step.
+
+## S5 active development — opt-in A/B boot witness and health gate
+
+`scripts/prepare-generation-ab-rootfs.sh` installs the test-only
+`flowerly-generation-witness.service` and `flowerly-generation-health.service`,
+a separate data-partition mount, and a dependency that prevents `flowerlyd`
+starting before the verified kernel/EFI root witness. The witness verifies
+baked PARTUUID/source identity against `/proc/cmdline` and the EFI
+`LoaderEntrySelected` variable; it refuses to write a witness if
+`/var/lib/flowerly` shares the root filesystem device. Ledger writes are
+flocked and fsynced. Only after a service-account IPC Ping may the explicit
+health service invoke `systemd-bless-boot good`; the stock early-bless unit
+is masked in this test profile. The `flowerly.test.fail_health=1` switch is
+supported only in this explicit fixture. **Not enabled in the normal distro**
+and not real KVM evidence. Installation is fail-closed if prerequisites are
+missing; no user state or current boot is modified by preparing the fixture.
