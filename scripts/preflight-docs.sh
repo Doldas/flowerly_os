@@ -25,11 +25,17 @@ python3 scripts/test-build-arch-rootfs.py
 python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-install-flowerly-rootfs.py
 python3 scripts/test-prepare-arch-boot.py
+python3 scripts/test-generation-ab-guest.py
+bash -n scripts/prepare-generation-ab-rootfs.sh
+bash -n distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 python3 scripts/test-boot-ipc-health.py
 python3 scripts/test-build-arch-root-volume.py
 bash -n scripts/build-flowerly-ab-disk.sh
 python3 scripts/test-build-flowerly-ab-disk.py
 python3 scripts/test-verify-ab-slot-layout.py
+python3 scripts/test-generation-slot-stage-image.py
+python3 scripts/test-generation-ab-kvm-acceptance.py
+python3 -m py_compile scripts/generation-ab-kvm-acceptance.py
 # All Generation 0.0.5 offline contracts present in the checkout must pass.
 for contract in scripts/test-generation-005-*.py; do
     [[ -f "$contract" ]] || continue
