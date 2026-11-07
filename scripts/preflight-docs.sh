@@ -15,6 +15,7 @@ python3 scripts/test-runtime-topology.py
 python3 scripts/test-shipped-ipc-admission.py
 python3 scripts/test-pty-ipc-framing.py
 python3 scripts/test-build-task-parity.py
+python3 scripts/test-sqlite-operational-health.py
 bash scripts/check-image-inputs.sh
 python3 scripts/test-build-arch-rootfs.py
 python3 scripts/test-layer-15-sqlite-contracts.py
