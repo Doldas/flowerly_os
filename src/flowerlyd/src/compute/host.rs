@@ -83,7 +83,10 @@ mod tests {
     fn host_failures_remain_typed_and_never_look_like_success() {
         for (kind, expected) in [
             (io::ErrorKind::NotFound, HostReadFailure::Unavailable),
-            (io::ErrorKind::PermissionDenied, HostReadFailure::PermissionDenied),
+            (
+                io::ErrorKind::PermissionDenied,
+                HostReadFailure::PermissionDenied,
+            ),
             (io::ErrorKind::TimedOut, HostReadFailure::Interrupted),
             (io::ErrorKind::Other, HostReadFailure::Io),
         ] {
