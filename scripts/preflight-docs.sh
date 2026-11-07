@@ -25,6 +25,9 @@ python3 scripts/test-build-arch-rootfs.py
 python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-install-flowerly-rootfs.py
 python3 scripts/test-prepare-arch-boot.py
+python3 scripts/test-generation-ab-guest.py
+bash -n scripts/prepare-generation-ab-rootfs.sh
+bash -n distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 python3 scripts/test-boot-ipc-health.py
 python3 scripts/test-build-arch-root-volume.py
 bash -n scripts/build-flowerly-ab-disk.sh
