@@ -84,7 +84,10 @@ def validate_partition_layout(disk, manifest):
     # Validate the *actual GPT* in addition to the potentially stale runtime
     # disk manifest. ESP boot counters and persistent data are expected to
     # change on real boot; they are deliberately not hash-pinned here.
-    result = subprocess.run(["sfdisk", "-J", str(disk)], text=True,
+    sfdisk = shutil.which("sfdisk", path=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
+    if not sfdisk:
+        raise ValueError("missing actual sfdisk tool for GPT validation")
+    result = subprocess.run([sfdisk, "-J", str(disk)], text=True,
                             capture_output=True, check=True)
     partition_table = json.loads(result.stdout)["partitiontable"]
     if partition_table.get("label") != "gpt":
@@ -141,6 +144,9 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
                 raise ValueError(f"{slot} is not a staged ext4 root")
     esp = parts["esp"]
     root_b = parts["root-b"]
+    with disk.open("rb") as original:
+        data_before = slice_digest(original.fileno(), parts["data"]["offset_bytes"],
+                                   parts["data"]["size_bytes"])
     with tempfile.TemporaryDirectory(prefix="flowerly-arm-") as workspace:
         temp = Path(workspace)
         staging_disk = temp / "armed.img"
@@ -206,6 +212,11 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
         files["/loader/loader.conf"] = digest(loader)
         if inject_before_publish:
             raise RuntimeError("injected power loss before publishing armed disk")
+        with staging_disk.open("rb") as armed:
+            data_after = slice_digest(armed.fileno(), parts["data"]["offset_bytes"],
+                                      parts["data"]["size_bytes"])
+        if data_before != data_after:
+            raise ValueError("data partition changed while arming EFI")
         # Publish only new paths, never overwrite the source image/manifest.
         # If a crash leaves a disk without its manifest, it is untrusted.
         with output_manifest.open("xb") as target:
@@ -223,7 +234,7 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
             raise
     return {"status": "ARMED_OFFLINE_NOT_BOOT_VERIFIED", "boot_entry": entry,
             "disk_sha256": new_manifest["disk"]["sha256"],
-            "data_partition_sha256": parts["data"]["sha256"]}
+            "data_partition_sha256": data_before}
 
 
 def main():
