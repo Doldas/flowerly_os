@@ -67,8 +67,18 @@ DATA_START=$(( ROOT_B_START + ROOT_MB ))
 TOTAL_MB=$(( DATA_START + DATA_MB + 1 ))
 
 uuid() { cat /proc/sys/kernel/random/uuid; }
-DISK_UUID="$(uuid)"; ESP_UUID="$(uuid)"; ROOT_A_UUID="$(uuid)"
-ROOT_B_UUID="$(uuid)"; DATA_UUID="$(uuid)"
+DISK_UUID="$(uuid)"; ESP_UUID="$(uuid)"; DATA_UUID="$(uuid)"
+ROOT_A_UUID="${FLOWERLY_AB_ROOT_A_PARTUUID:-$(uuid)}"
+ROOT_B_UUID="${FLOWERLY_AB_ROOT_B_PARTUUID:-$(uuid)}"
+# Root identity is baked into the image BEFORE GPT assembly. Preserve
+# canonical user-selected UUIDs instead of silently generating new ones.
+uuid_re="^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+[[ "$ROOT_A_UUID" =~ $uuid_re && "$ROOT_B_UUID" =~ $uuid_re ]] ||
+    fail "root slot PARTUUID must be a lowercase canonical UUID"
+[[ "$ROOT_A_UUID" != "$ROOT_B_UUID" && "$ROOT_A_UUID" != "$ESP_UUID" &&
+   "$ROOT_B_UUID" != "$ESP_UUID" && "$ROOT_A_UUID" != "$DATA_UUID" &&
+   "$ROOT_B_UUID" != "$DATA_UUID" ]] ||
+    fail "root slot PARTUUIDs must be distinct"
 
 WORK="$(mktemp -d "$(dirname "$OUTPUT")/.flowerly-ab.XXXXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
