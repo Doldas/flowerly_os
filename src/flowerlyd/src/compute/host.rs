@@ -34,7 +34,12 @@ pub(crate) struct LinuxHostTelemetry;
 
 impl HostTelemetry for LinuxHostTelemetry {
     fn memory_info(&self) -> io::Result<String> {
-        std::fs::read_to_string("/proc/meminfo")
+        std::fs::read_to_string("/proc/meminfo").inspect_err(|error| {
+            tracing::debug!(
+                failure = ?HostReadFailure::from(error),
+                "Linux memory telemetry read failed"
+            );
+        })
     }
 
     fn memory_pressure(&self) -> io::Result<String> {
