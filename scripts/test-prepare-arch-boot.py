@@ -41,6 +41,9 @@ def main():
         assert witness.is_symlink()
         assert (rootfs / "usr/lib/systemd/system/flowerly-boot-witness.service").is_file()
         assert (rootfs / "usr/lib/flowerly/boot-ipc-health.sh").is_file()
+        firstboot = rootfs / "etc/systemd/system/systemd-firstboot.service"
+        assert firstboot.is_symlink() and firstboot.readlink() == Path("/dev/null"), \
+            "interactive systemd-firstboot is not masked"
         assert invoke(rootfs).returncode != 0, "double enablement accepted"
     with tempfile.TemporaryDirectory() as tmp:
         rootfs = Path(tmp) / "arch"
@@ -52,6 +55,13 @@ def main():
         populate(rootfs)
         (rootfs / "usr/lib/os-release").write_text("ID=debian\n")
         assert invoke(rootfs).returncode != 0, "wrong distro accepted"
+    with tempfile.TemporaryDirectory() as tmp:
+        rootfs = Path(tmp) / "arch"
+        populate(rootfs)
+        unit = rootfs / "usr/lib/systemd/system/flowerlyd.service"
+        unit.unlink()
+        unit.symlink_to("/tmp/foreign-flowerly-unit")
+        assert invoke(rootfs).returncode != 0, "external service symlink accepted"
     print("Arch boot preparation: valid enablement and negative safety checks pass")
 
 

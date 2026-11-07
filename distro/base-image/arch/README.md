@@ -83,7 +83,11 @@ The rootfs may contain unreadable, security-sensitive package files.
 A real build observed `mkfs.ext4 -d` failing with `Permission denied` on
 `dbus-daemon-launch-helper`. This is **not** a successful ext4 build.
 Do not recursively change rootfs permissions or silently run all stages as
-root; an ownership-aware build fix and real acceptance are still needed.
+root. `build-arch-root-volume.sh` now enters the owning user namespace with
+`podman unshare` when the tree is unreadable, so `mkfs.ext4 -d` sees the real
+ids, and audits owner, group and mode of every setuid/setgid entry in the
+finished image (`scripts/audit-ext4-ownership.py`). Reproduced with
+subordinate-id files on a real host; a full mkosi rootfs run is still pending.
 
 The experimental `bash scripts/build-arch-initrd.sh` command builds a
 separate generic mkosi cpio initrd and stages it under

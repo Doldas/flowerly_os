@@ -49,6 +49,15 @@ class SecurityAlertInventoryTests(unittest.TestCase):
             self.assertIn("--paginate", command)
             self.assertIn("--slurp", command)
 
+    def test_malformed_page_cannot_be_treated_as_empty_or_leak_contents(self):
+        for payload in ('{}', '[{"secret":"DO_NOT_EXPORT"}]', '[[42]]', 'null'):
+            with self.subTest(payload=payload):
+                completed = subprocess.CompletedProcess([], 0, stdout=payload)
+                with patch.object(module.subprocess, "run", return_value=completed):
+                    with self.assertRaises(RuntimeError) as context:
+                        module.query("org/repo", "secret-scanning/alerts")
+                self.assertNotIn("DO_NOT_EXPORT", str(context.exception))
+
     def test_api_failure_does_not_leak_stderr(self):
         completed = subprocess.CompletedProcess([], 1, stdout="", stderr="SENSITIVE_TOKEN")
         with patch.object(module.subprocess, "run", return_value=completed):

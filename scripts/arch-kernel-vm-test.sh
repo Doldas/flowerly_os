@@ -33,6 +33,10 @@ flowerly_arch_vm_validate_disk_gb "$VM_DISK_GB"
 mkdir -p "$CACHE_DIR"
 rm -rf "$REPORT_DIR"
 mkdir -p "$REPORT_DIR"
+source "$ROOT/scripts/lib/arch-vm-stage-timing.sh"
+# The early EXIT handler records a failed image/setup stage before VM cleanup is installed.
+trap 'flowerly_stage_finish interrupted' EXIT
+flowerly_stage_begin host_preflight
 
 # #184: numeric host facts at the start, so the end of the run (or the next
 # run, after a host reset killed this one) can tell what happened.
@@ -65,6 +69,7 @@ for tool in curl git gzip qemu-img qemu-system-x86_64 cloud-localds ssh scp ssh-
     fi
 done
 
+flowerly_stage_begin image_acquisition
 checksum_text="$(curl --fail --location --silent --show-error --retry 4 "$ARCH_IMAGE_SHA_URL")"
 expected_sha="$(awk 'NF {print $1; exit}' <<<"$checksum_text")"
 if [[ ! "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
@@ -92,6 +97,7 @@ if [[ ! -f "$base_image" ]]; then
     mv "$tmp_image" "$base_image"
 fi
 
+flowerly_stage_begin overlay_setup
 overlay="$WORK_DIR/overlay.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base_image" "$overlay"
 flowerly_arch_vm_resize_overlay "$overlay" "$VM_DISK_GB"
@@ -197,6 +203,7 @@ launch_vm() {
         -pidfile "$pidfile"
 }
 
+flowerly_stage_begin vm_launch
 if ! launch_vm "$accel" "${accel_args[@]}"; then
     if [[ "$accel" == "kvm" ]]; then
         echo "KVM launch failed; retrying with TCG" >&2
@@ -213,6 +220,11 @@ resource_monitor_pid=""
 cleanup() {
     # First statement: anything earlier would overwrite the script's status.
     local exit_status=$?
+    if [[ "$exit_status" -eq 0 ]]; then
+        flowerly_stage_finish completed
+    else
+        flowerly_stage_finish interrupted
+    fi
     # Stop the background monitor before collecting final resource counters.
     if [[ -n "$resource_monitor_pid" ]]; then
         kill "$resource_monitor_pid" 2>/dev/null || true
@@ -280,6 +292,7 @@ cleanup() {
 }
 trap cleanup EXIT
 stage="boot"
+flowerly_stage_begin initial_boot_cloud_init
 
 # Capture resource pressure *before* any guest disconnection, not only at exit.
 # The collector is observational and never changes a release acceptance result.
@@ -337,6 +350,7 @@ wait_for_ssh() {
 wait_for_ssh "initial boot"
 ssh "${ssh_opts[@]}" "$guest" 'cloud-init status --wait'
 stage="upgrade"
+flowerly_stage_begin pacman_upgrade
 
 # Fail before a large pacman transaction if cloud-init did not expand the
 # partition/filesystem. Save this diagnostic even if the guest fails preflight.
@@ -354,15 +368,18 @@ ssh "${ssh_opts[@]}" "$guest" \
 
 echo "rebooting so tests execute on the kernel installed by the full upgrade"
 stage="reboot"
+flowerly_stage_begin post_upgrade_reboot
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl reboot' || true
 
 # Give sshd time to disappear before accepting a successful reconnect.
 sleep 8
 wait_for_ssh "post-upgrade reboot"
 
+flowerly_stage_begin rust_toolchain_install
 ssh "${ssh_opts[@]}" "$guest" \
     'rustup toolchain install stable --profile minimal --component rustfmt --component clippy && rustup default stable'
 
+flowerly_stage_begin source_transfer
 echo "exporting exact Git commit $TEST_SHA into the guest"
 git -C "$ROOT" archive --format=tar "$TEST_SHA" | \
     gzip -c > "$WORK_DIR/flowerly_os.tar.gz"
@@ -378,6 +395,7 @@ printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
 
 echo "running complete Flowerly verification inside Arch VM"
 stage="verify"
+flowerly_stage_begin guest_verification
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
     'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
@@ -385,6 +403,7 @@ ssh "${ssh_opts[@]}" "$guest" \
 guest_status=("${PIPESTATUS[@]}")
 guest_ssh_status="${guest_status[0]}"
 stage="report"
+flowerly_stage_begin guest_report_transfer
 set -e
 
 if ! scp "${scp_opts[@]}" \
@@ -413,6 +432,7 @@ fi
 
 echo "requesting clean guest shutdown"
 stage="shutdown"
+flowerly_stage_begin guest_shutdown
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl poweroff' || true
 if [[ -f "$pidfile" ]]; then
     pid="$(cat "$pidfile" 2>/dev/null || true)"

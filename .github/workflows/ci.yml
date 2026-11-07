@@ -272,6 +272,25 @@ jobs:
       - name: Verify populated ext4 image creation offline
         run: python3 ./scripts/test-build-arch-root-volume.py
 
+      # PRs run on hosted Ubuntu, while release pushes use the persistent
+      # flowerly-runner. The latter can lack sfdisk (Ubuntu's fdisk package);
+      # preserve the real GPT builder test instead of silently skipping it.
+      - name: Provision real A/B disk tools on the trusted release runner
+        if: github.event_name != 'pull_request'
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
+      - name: Verify two-slot disk builder offline
+        run: |
+          bash -n ./scripts/build-flowerly-ab-disk.sh
+          python3 ./scripts/test-build-flowerly-ab-disk.py
+
+      - name: Generation 0.0.5 offline safety contracts
+        run: |
+          for contract in scripts/test-generation-005-*.py; do
+            [[ -f "$contract" ]] || continue
+            python3 "$contract"
+          done
+
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 

@@ -4,6 +4,8 @@
 //! configuration must never silently enable cluster replication or delete data.
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -80,15 +82,31 @@ impl StorageMode {
 /// A missing mode file means standalone for backwards compatibility. Any other
 /// read/parse failure blocks activation of new storage features.
 pub fn read_mode_file(path: &Path) -> Result<StorageMode, ModeError> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    // Linux O_NOFOLLOW: do not follow an attacker-replaced symlink at open time.
+    const O_NOFOLLOW: i32 = 0o400000;
+    const MAX_MODE_BYTES: u64 = 64;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(O_NOFOLLOW);
+    let file = match options.open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(StorageMode::Standalone);
         }
         Err(_) => return Err(ModeError::ReadFailed),
     };
+    let metadata = file.metadata().map_err(|_| ModeError::ReadFailed)?;
+    if !metadata.is_file() || metadata.len() > MAX_MODE_BYTES {
+        return Err(ModeError::ReadFailed);
+    }
+    // Bound reads even if the file changes after the metadata check.
+    let mut bytes = Vec::new();
+    file.take(MAX_MODE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ModeError::ReadFailed)?;
+    if bytes.len() as u64 > MAX_MODE_BYTES {
+        return Err(ModeError::ReadFailed);
+    }
     let raw = std::str::from_utf8(&bytes).map_err(|_| ModeError::InvalidEncoding)?;
-    // Accept only the canonical token and a single optional trailing newline.
     let token = raw.strip_suffix("\n").unwrap_or(raw);
     StorageMode::from_str(token)
 }
@@ -124,12 +142,41 @@ mod tests {
     fn invalid_mode_is_not_silently_coerced() {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("mode");
-        for text in ["Cluster", "cluster extra", "cluster\n\n", "", "core-only"] {
+        for text in [
+            "Cluster",
+            "cluster extra",
+            "cluster\n\n",
+            "",
+            "core-only",
+            "standalone\r\n",
+            " standalone",
+            "standalone ",
+        ] {
             std::fs::write(&path, text).expect("write");
             assert_eq!(read_mode_file(&path), Err(ModeError::InvalidMode));
         }
         std::fs::write(&path, [0xff, 0xfe]).expect("write");
         assert_eq!(read_mode_file(&path), Err(ModeError::InvalidEncoding));
+    }
+
+    #[test]
+    fn mode_file_rejects_symlinks_and_non_regular_files() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let original = directory.path().join("actual");
+        std::fs::write(&original, b"cluster").expect("write");
+        let link = directory.path().join("mode");
+        symlink(&original, &link).expect("symlink");
+        assert_eq!(read_mode_file(&link), Err(ModeError::ReadFailed));
+        assert_eq!(read_mode_file(directory.path()), Err(ModeError::ReadFailed));
+    }
+
+    #[test]
+    fn mode_file_rejects_oversized_inputs() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("mode");
+        std::fs::write(&path, "cluster".repeat(100)).expect("write");
+        assert_eq!(read_mode_file(&path), Err(ModeError::ReadFailed));
     }
 
     #[test]

@@ -62,6 +62,8 @@ nav:
       - Roadmap: roadmap.md
       - Review Implementation Plan: review-implementation-plan-2026-10-12.md
       - 0.0.4 Completion Plan: release-0.0.4-completion-plan.md
+      - 0.0.5 Generations Plan: release-0.0.5-generations-plan.md
+      - 0.0.5 Step 1 Plan: release-0.0.5-step1-ab-boot-rollback-plan.md
       - Releases: releases.md
       - Build Guide: build.md
   - Contributing: contributing.md

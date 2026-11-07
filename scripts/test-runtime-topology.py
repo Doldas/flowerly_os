@@ -53,6 +53,11 @@ class RuntimeTopology(unittest.TestCase):
         self.assertEqual(checksummed, CORE_DAEMONS | {"providerd", "agenticctl"})
         self.assertFalse(checksummed & LEGACY_DAEMONS, checksummed)
 
+    def test_provider_is_not_required_for_core_boot(self):
+        unit = (ROOT / 'distro/overlay/usr/lib/systemd/system/flowerlyd.service').read_text()
+        for marker in ('Requires=providerd', 'Wants=providerd', 'After=providerd', 'OPENAI_API_KEY='):
+            self.assertNotIn(marker, unit)
+
     def test_unprovisioned_kvm_is_not_claimed_as_ready(self):
         source = (ROOT / "src/evolutiond/src/main.rs").read_text()
         self.assertIn('"execution_enabled": false', source)
