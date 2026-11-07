@@ -483,7 +483,7 @@ fn sha256_reader(reader: &mut impl Read) -> std::io::Result<String> {
 pub fn read_manifest(path: &Path) -> anyhow::Result<Vec<u8>> {
     // A manifest is a small declaration, not an unbounded stream or a link.
     const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
