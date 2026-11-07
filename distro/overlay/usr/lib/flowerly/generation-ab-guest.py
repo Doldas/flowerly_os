@@ -83,8 +83,42 @@ def verify_boot_identity(identity, cmdline, efi_entry):
     return actual
 
 
+def user_data_marker(path, create_first):
+    """One random data-partition marker created only on first slot A boot."""
+    target = Path(path)
+    if target.is_symlink() or target.parent.is_symlink() or not target.parent.is_dir():
+        raise ValueError("unsafe persistent data marker")
+    if not target.exists():
+        if not create_first:
+            raise ValueError("persistent data marker missing after initial boot")
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            data = os.urandom(32)
+            if os.write(fd, data) != len(data):
+                raise OSError("short persistent marker write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size != 32:
+            raise ValueError("invalid persistent data marker")
+        value = os.read(fd, 33)
+    finally:
+        os.close(fd)
+    if len(value) != 32:
+        raise ValueError("persistent data marker unreadable")
+    return hashlib.sha256(value).hexdigest()
+
+
 def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
-                   root_device, data_device):
+                   root_device, data_device, marker_path=None):
     if root_device == data_device:
         raise ValueError("data ledger is not on a separate filesystem")
     if not isinstance(boot_id, str) or not re.fullmatch(
@@ -127,6 +161,8 @@ def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
             if any(json.loads(row).get("boot_id") == boot_id for row in lines):
                 raise ValueError("duplicate kernel boot ID")
             sequence = last["sequence"] + 1
+        marker_hash = (user_data_marker(marker_path, not lines and slot == "root-a")
+                       if marker_path is not None else None)
         evidence = {
             "schema": "flowerly-generation-boot/v1",
             "boot_id": boot_id, "sequence": sequence, "slot": slot,
@@ -135,6 +171,7 @@ def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
             "input_manifest_sha256": identity["input_manifest_sha256"],
             "build_id": identity["build_id"],
             "health": "NOT_YET_TESTED",
+            "user_data_sha256": marker_hash,
         }
         output = (json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n").encode()
         if len(output) > 2048 or os.write(fd, output) != len(output):
@@ -162,10 +199,12 @@ def main():
         # successful witness when the persistent data partition failed to mount.
         evidence = append_witness(
             LEDGER, identity, cmdline, efi_bytes, boot_id,
-            os.stat("/").st_dev, data.stat().st_dev)
+            os.stat("/").st_dev, data.stat().st_dev,
+            data / "generation-user-marker.bin")
     except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as error:
         sys.exit(f"Flowerly Generation witness refused: {error}")
     print("FLOWERLY_GENERATION_ROOT_VERIFIED")
+    print("FLOWERLY_GENERATION_USER_MARKER_SHA256=" + evidence["user_data_sha256"])
     print(json.dumps({"boot_id": evidence["boot_id"],
                       "root_partuuid": evidence["root_partuuid"],
                       "slot": evidence["slot"]}, sort_keys=True))
