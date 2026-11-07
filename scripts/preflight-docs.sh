@@ -30,6 +30,7 @@ python3 scripts/test-build-arch-root-volume.py
 bash -n scripts/build-flowerly-ab-disk.sh
 python3 scripts/test-build-flowerly-ab-disk.py
 python3 scripts/test-verify-ab-slot-layout.py
+python3 scripts/test-generation-slot-stage-image.py
 # All Generation 0.0.5 offline contracts present in the checkout must pass.
 for contract in scripts/test-generation-005-*.py; do
     [[ -f "$contract" ]] || continue

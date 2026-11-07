@@ -291,6 +291,9 @@ jobs:
             python3 "$contract"
           done
 
+      - name: Verify fsynced inactive Generation slot staging and interrupted writes
+        run: python3 ./scripts/test-generation-slot-stage-image.py
+
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 
