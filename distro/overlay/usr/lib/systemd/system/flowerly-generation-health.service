@@ -1,0 +1,20 @@
+[Unit]
+Description=Flowerly A/B IPC health gate before systemd-boot blessing (test image only)
+Requires=flowerlyd.service flowerly-generation-witness.service
+After=flowerlyd.service flowerly-generation-witness.service
+RequiresMountsFor=/var/lib/flowerly
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+TimeoutStartSec=65
+ExecStartPre=/usr/bin/bash /usr/lib/flowerly/generation-health-gate.sh
+ExecStart=/usr/lib/systemd/systemd-bless-boot good
+StandardOutput=journal+console
+StandardError=journal+console
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
