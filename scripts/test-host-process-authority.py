@@ -16,7 +16,7 @@ DOMAINS = ("flow", "goal", "generation", "provenance", "agentic",
 FORBIDDEN = re.compile(
     r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?"
     r"(?:std|tokio)::process\b|"
-    r"(?m:(?:/sys/fs/cgroup/|cgroup\.procs|cgroup\.kill))"
+    r"(?m:(?:/sys/fs/cgroup/|cgroup\.procs|cgroup\.kill))|"\n    r"(?m:(?:std|tokio)::process::Command::new\\s*\\()"
 )
 
 
@@ -46,6 +46,7 @@ class ProcessAuthorityBoundaryTests(unittest.TestCase):
                 "pub use tokio::process::Command;\n",
                 "const C: &str = \"/sys/fs/cgroup/cgroup.kill\";\n",
                 "const F: &str = \"cgroup.procs\";\n",
+                "let cmd = std::process::Command::new(\"sh\");\n",
             ):
                 with self.subTest(source=text):
                     file.write_text(text)
