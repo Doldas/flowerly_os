@@ -235,7 +235,7 @@ def arm_image(
         # Default selector prefers B while its boot count is nonzero. When B
         # exhausts its count, systemd-boot must choose the known good A entry.
         loader = temp / "loader.conf"
-        loader.write_text("default flowerly-b*\ntimeout 0\nconsole-mode keep\n")
+        loader.write_text("default flowerly-*\ntimeout 0\nconsole-mode keep\n")
         run_mtools(
             "mcopy", "-o", "-i", str(esp_file), str(loader), "::/loader/loader.conf"
         )

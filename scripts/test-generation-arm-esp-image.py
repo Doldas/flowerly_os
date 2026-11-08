@@ -159,7 +159,7 @@ class ArmTests(unittest.TestCase):
             self.assertIn("root=PARTUUID=" + B_UUID, entry)
             self.assertIn("flowerly.test.fail_health=1", entry)
             loader = run(tool("mtype"), "-i", str(esp), "::/loader/loader.conf").stdout
-            self.assertIn("default flowerly-b*", loader)
+            self.assertIn("default flowerly-*", loader)
             self.assertEqual(updated["partitions"][0]["sha256"], sha(esp.read_bytes()))
 
     def test_fault_before_publish_never_modifies_disk(self):
