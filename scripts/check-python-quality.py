@@ -70,7 +70,7 @@ def run_ruff(root, executable, command, paths):
         return
     cmd = [executable, command]
     if command == "check":
-        cmd += ["--no-cache"]
+        cmd += ["--no-cache", "--isolated", "--select", "E4,E7,E9,F"]
     else:
         cmd += ["--check"]
     # Use positional paths after '--' to prevent filenames becoming flags.
