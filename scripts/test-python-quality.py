@@ -66,7 +66,7 @@ class PythonQualityTests(unittest.TestCase):
             return []
         return [json.loads(row) for row in self.log.read_text().splitlines()]
 
-    def test_only_changed_linted_and_new_files_formatted(self):
+    def test_added_and_modified_sources_are_both_formatted(self):
         result = self.gate("--base", self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
@@ -82,7 +82,7 @@ class PythonQualityTests(unittest.TestCase):
                     "existing.py",
                     "new file.py",
                 ],
-                ["format", "--check", "--", "new file.py"],
+                ["format", "--check", "--", "existing.py", "new file.py"],
             ],
         )
 
@@ -110,7 +110,7 @@ class PythonQualityTests(unittest.TestCase):
         result = self.gate("--base", self.base)
         self.assertNotEqual(result.returncode, 0)
 
-    def test_all_mode_lints_all_without_reformatting_legacy(self):
+    def test_all_mode_lints_and_formats_all_tracked_python(self):
         result = self.gate("--all")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
@@ -126,9 +126,27 @@ class PythonQualityTests(unittest.TestCase):
                     "existing.py",
                     "new file.py",
                     "unchanged.py",
-                ]
+                ],
+                [
+                    "format",
+                    "--check",
+                    "--",
+                    "existing.py",
+                    "new file.py",
+                    "unchanged.py",
+                ],
             ],
         )
+
+    def test_existing_modified_file_fails_on_formatting_error(self):
+        self.ruff.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "if sys.argv[1] == 'format' and 'existing.py' in sys.argv:\n"
+            "    sys.exit(7)\n"
+        )
+        result = self.gate("--base", self.base)
+        self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":
