@@ -9,6 +9,7 @@ import re
 
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
+
 def verify_artifact(path, expected):
     if not isinstance(expected, str) or DIGEST.fullmatch(expected) is None:
         raise ValueError("invalid expected SHA256")
