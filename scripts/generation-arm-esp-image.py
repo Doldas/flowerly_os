@@ -224,7 +224,7 @@ def arm_image(
             "title Flowerly OS slot B (test image)\n"
             "linux /flowerly/b/vmlinuz\n"
             "initrd /flowerly/b/initramfs.img\n"
-            f"options root=PARTUUID={root_b['partuuid']} rw rootfstype=ext4 "
+            f"options root=PARTUUID={root_b['partuuid']} ro rootfstype=ext4 "
             "console=ttyS0 systemd.unit=multi-user.target loglevel=6" + flags + "\n"
         )
         run_mtools(
