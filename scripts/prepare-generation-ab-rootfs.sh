@@ -44,6 +44,7 @@ for path in etc etc/systemd etc/systemd/system etc/fstab usr/lib/flowerly \
 done
 for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab-test-profile \
             usr/lib/flowerly/generation-ab-guest.py usr/lib/flowerly/generation-health-gate.sh \
+            usr/lib/flowerly/generation-bless.sh \
             usr/lib/systemd/system/flowerly-generation-witness.service \
             usr/lib/systemd/system/flowerly-generation-health.service \
             usr/lib/systemd/system/flowerlyd.service.d/10-generation-witness.conf \
@@ -67,6 +68,8 @@ install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-ab-guest.py" \
     "$ROOTFS/usr/lib/flowerly/generation-ab-guest.py"
 install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-health-gate.sh" \
     "$ROOTFS/usr/lib/flowerly/generation-health-gate.sh"
+install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-bless.sh" \
+    "$ROOTFS/usr/lib/flowerly/generation-bless.sh"
 for name in flowerly-generation-witness flowerly-generation-health; do
     install -m 0644 "$ROOT/distro/overlay/usr/lib/systemd/system/$name.service" \
         "$ROOTFS/usr/lib/systemd/system/$name.service"

@@ -201,6 +201,8 @@ class BootTests(unittest.TestCase):
             )
             self.assertIn("PARTLABEL=esp /efi vfat", (root / "etc/fstab").read_text())
             self.assertTrue((root / "efi").is_dir())
+            bless = root / "usr/lib/flowerly/generation-bless.sh"
+            self.assertTrue(bless.is_file() and os.access(bless, os.X_OK))
             self.assertEqual((root / "etc/passwd").read_text(), "baked\n")
             mask = root / "etc/systemd/system/systemd-bless-boot.service"
             self.assertEqual(mask.readlink(), Path("/dev/null"))
