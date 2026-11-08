@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #325."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_05",Path(__file__).with_name("generation-005-05-efi.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 class Tests(unittest.TestCase):
     def test_accepted(self):
         self.assertEqual(mod.selected_entry("flowerly-a+3.conf")["slot"],"root-a")

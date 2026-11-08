@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #323."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_03",Path(__file__).with_name("generation-005-03-root.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 A="12345678-1234-1234-1234-1234567890ab"
 B="12345678-1234-1234-1234-1234567890cd"
 M={"partitions":[{"name":"root-a","partuuid":A},{"name":"root-b","partuuid":B}]}

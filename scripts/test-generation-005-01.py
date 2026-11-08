@@ -2,13 +2,12 @@
 """Offline 0.0.5 regression for issue #321."""
 import importlib.util
 from pathlib import Path
-spec=importlib.util.spec_from_file_location("generation_005_01",Path(__file__).with_name("generation-005-01-artifact.py"))
-mod=importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
 import hashlib
 import tempfile
 import unittest
-from pathlib import Path
+spec=importlib.util.spec_from_file_location("generation_005_01",Path(__file__).with_name("generation-005-01-artifact.py"))
+mod=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
 
 class Tests(unittest.TestCase):
     def test_match_and_tamper(self):
