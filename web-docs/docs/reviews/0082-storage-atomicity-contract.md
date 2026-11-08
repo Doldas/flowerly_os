@@ -79,3 +79,17 @@ No tests have been executed **by this document**. Passing existing unit tests or
 5. Leave security/release gates, #55 and all PTY trust boundaries unchanged.
 
 **Decision requested:** approve the domain/transaction ownership mapping separately from any physical split. Neither this review nor a green PR check accepts ADR-0017.
+
+## Machine-checkable schema inventory (2026-11-07)
+
+Run `python3 scripts/audit-storage-schema.py` to apply all present SQL
+migrations in fresh in-memory SQLite with foreign-key enforcement and emit
+a JSON inventory of tables and FK edges. The offline preflight also verifies
+that core tables exist and fails closed if a proposed memory-candidate table
+has a direct FK to/from a core table; synthetic negative fixtures guard the
+rule. All `user_facts`, `user_observations` and `user_inferences` labels
+remain review candidates only. This is an **inventory**, not a migration,
+not proof that all provenance/command transactions are isolated, and not
+an authorization to split database files. Core ACID and accepted ADR-0011
+remain unchanged. Owner approval and full real-SQLite backup/crash/rollback
+acceptance still block physical relocation.

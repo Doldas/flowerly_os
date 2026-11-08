@@ -44,6 +44,10 @@
             "integration_id": 15368
           },
           {
+            "context": "python-quality",
+            "integration_id": 15368
+          },
+          {
             "context": "Validate branch policy and issue link",
             "integration_id": 15368
           },

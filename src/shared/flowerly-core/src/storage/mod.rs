@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod memory_contract;
 pub mod remote;
 pub mod repository;
 pub mod scoped;

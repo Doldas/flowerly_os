@@ -1,0 +1,19 @@
+[Unit]
+Description=Flowerly A/B root identity witness (test image only)
+RequiresMountsFor=/var/lib/flowerly
+After=local-fs.target
+Before=flowerlyd.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+TimeoutStartSec=20
+ExecStart=/usr/bin/python3 -I /usr/lib/flowerly/generation-ab-guest.py witness
+StandardOutput=journal+console
+StandardError=journal+console
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

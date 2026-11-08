@@ -1,0 +1,5 @@
+# #86 — isolated offline memory vector prototype
+
+Status 2026-11-07: **experimental stand-alone Python prototype; no runtime wiring**. `tools/offline-memory-prototype.py` creates only a separately named SQLite file, refuses `state.db` and `system_state.db`, supports per-owner memory insertion, deletion, model/version filtered cosine similarity with deterministic ID ties, bounded result count, and finite/nonzero input vector checks. `scripts/test-offline-memory-prototype.py` exercises isolation, persistence, deletion, bad vectors and core DB refusal.
+
+The actor UID argument is only test data: real authorization MUST be derived from kernel-attested IPC identity before this can become production. Remaining: Rust typed adapter, tenant authorization, privacy/retention policy, schema migration/rebuild, backups, stress and latency/memory measurements, robust corruption handling, explicit owner decision and integration tests. This prototype does not enable AI providers or migrate existing user_* tables.

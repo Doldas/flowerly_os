@@ -5,6 +5,7 @@ This is NOT a partitioned/standalone bootable disk image. QEMU boots the
 kernel and initramfs extracted from the associated rootfs. The disk is
 opened read-only from the host's perspective (QEMU snapshot mode).
 """
+
 import argparse
 import hashlib
 import json
@@ -18,6 +19,7 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = ROOT / "target/flowerly-arch-rootfs"
+KVM_DEVICE = Path(os.environ.get("FLOWERLY_KVM_DEVICE", "/dev/kvm"))
 
 
 def fail(message):
@@ -29,8 +31,11 @@ def artifact_identity(path):
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
-    return {"path": str(path), "bytes": path.stat().st_size,
-            "sha256": digest.hexdigest()}
+    return {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "sha256": digest.hexdigest(),
+    }
 
 
 def run(args):
@@ -53,7 +58,9 @@ def run(args):
     # to the host kernel: it must come from this exact built rootfs.
     kernels = [rootfs / "boot/vmlinuz-linux"]
     kernels.extend(sorted((rootfs / "usr/lib/modules").glob("*/vmlinuz")))
-    existing = [p for p in kernels if p.is_file() and not p.is_symlink() and p.stat().st_size]
+    existing = [
+        p for p in kernels if p.is_file() and not p.is_symlink() and p.stat().st_size
+    ]
     if len(existing) != 1:
         fail(
             "expected exactly one kernel in this rootfs (/boot/vmlinuz-linux "
@@ -65,7 +72,11 @@ def run(args):
     # initramfs or retained in the directory rootfs. Do not guess or use
     # one from the host; require an actual initramfs from this build.
     initramfs = rootfs / "boot/initramfs-linux.img"
-    if not initramfs.is_file() or initramfs.is_symlink() or initramfs.stat().st_size == 0:
+    if (
+        not initramfs.is_file()
+        or initramfs.is_symlink()
+        or initramfs.stat().st_size == 0
+    ):
         fail(
             "missing rootfs boot/initramfs-linux.img; mkosi's temporary "
             "kernel-modules initrd is not a verified full initramfs. "
@@ -83,21 +94,41 @@ def run(args):
             fail(f"refusing to overwrite evidence report: {args.report}")
         if args.report.resolve() == args.log.resolve():
             fail("evidence report and serial log must differ")
+    if args.accel == "kvm" and not os.access(KVM_DEVICE, os.R_OK | os.W_OK):
+        fail(
+            f"--accel kvm needs read-write access to {KVM_DEVICE}; use tcg or fix group membership"
+        )
     args.log.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        qemu, "-machine", "q35,accel=tcg", "-m", "2048",
-        "-smp", "2", "-nographic", "-no-reboot", "-monitor", "none",
-        "-kernel", str(kernel), "-initrd", str(initramfs),
+        qemu,
+        "-machine",
+        f"q35,accel={args.accel}",
+        "-m",
+        "2048",
+        *(["-cpu", "host"] if args.accel == "kvm" else []),
+        "-smp",
+        "2",
+        "-nographic",
+        "-no-reboot",
+        "-monitor",
+        "none",
+        "-kernel",
+        str(kernel),
+        "-initrd",
+        str(initramfs),
         "-append",
         "root=/dev/vda rw rootfstype=ext4 console=ttyS0 "
         "systemd.unit=multi-user.target loglevel=6",
-        "-drive", f"file={volume},format=raw,if=virtio,snapshot=on",
-        "-net", "none",
+        "-drive",
+        f"file={volume},format=raw,if=virtio,snapshot=on",
+        "-net",
+        "none",
     ]
     started = time.monotonic()
     with args.log.open("xb") as output:
-        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                stdout=output, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT
+        )
         try:
             proc.wait(timeout=args.timeout)
             fail(f"QEMU exited before boot observation (exit {proc.returncode})")
@@ -109,18 +140,27 @@ def run(args):
                 proc.kill()
                 proc.wait(timeout=5)
     log = args.log.read_text(encoding="utf-8", errors="replace")
-    if any(marker in log for marker in ("Kernel panic", "Failed to start Flowerly OS Unified Supervisor")):
+    if any(
+        marker in log
+        for marker in ("Kernel panic", "Failed to start Flowerly OS Unified Supervisor")
+    ):
         fail("kernel panic or Flowerly supervisor failure detected; inspect serial log")
     if not re.search(r"Reached target .*Multi-User System", log):
-        fail(f"systemd multi-user boot not observed within {args.timeout}s; inspect {args.log}")
+        fail(
+            f"systemd multi-user boot not observed within {args.timeout}s; inspect {args.log}"
+        )
     # Require the witness emitted by boot-ipc-health.sh on its own line.
     # A quoted command, diagnostic or partial token is not boot evidence.
-    if not re.search(r"(?m)^FLOWERLY_BOOT_IPC_HEALTHY\r?$", log):
+    # systemd prefixes console output of journal+console units with the kernel
+    # timestamp and the writing process: "[    7.52] bash[348]: <line>".
+    if not re.search(
+        r"(?m)^(?:\[\s*\d+\.\d+\] bash\[\d+\]: )?FLOWERLY_BOOT_IPC_HEALTHY\r?$", log
+    ):
         fail("Flowerly IPC health witness not observed; inspect serial log")
     if args.report is not None:
         evidence = {
             "schema": 1,
-            "probe": "direct-kernel-qemu-tcg",
+            "probe": f"direct-kernel-qemu-{args.accel}",
             "accepted": True,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "timeout_seconds": args.timeout,
@@ -137,17 +177,31 @@ def run(args):
         with args.report.open("x", encoding="utf-8") as output:
             json.dump(evidence, output, sort_keys=True, indent=2)
             output.write("\n")
-    print(f"Direct QEMU boot reached multi-user target and Flowerly IPC health witness; serial log: {args.log}")
-    print("Witness means flowerlyd answered IPC Ping at boot, NOT sustained health or a standalone bootable disk.")
+    print(
+        f"Direct QEMU boot reached multi-user target and Flowerly IPC health witness; serial log: {args.log}"
+    )
+    print(
+        "Witness means flowerlyd answered IPC Ping at boot, NOT sustained health or a standalone bootable disk."
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rootfs", type=Path, default=DEFAULT_DIR / "flowerly-rootfs")
-    parser.add_argument("--volume", type=Path, default=DEFAULT_DIR / "flowerly-root.ext4")
+    parser.add_argument(
+        "--volume", type=Path, default=DEFAULT_DIR / "flowerly-root.ext4"
+    )
     parser.add_argument("--log", type=Path, default=DEFAULT_DIR / "qemu-serial.log")
     parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("--report", type=Path, help="write JSON evidence; never overwrite")
+    parser.add_argument(
+        "--accel",
+        choices=("tcg", "kvm"),
+        default="tcg",
+        help="QEMU accelerator; kvm needs a read-write /dev/kvm",
+    )
+    parser.add_argument(
+        "--report", type=Path, help="write JSON evidence; never overwrite"
+    )
     args = parser.parse_args()
     try:
         run(args)

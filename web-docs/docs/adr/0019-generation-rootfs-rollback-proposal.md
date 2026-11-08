@@ -1,7 +1,10 @@
 # Proposed ADR: Generation root filesystem rollback substrate
 
-**Status:** Proposed — requires maintainer decision and kernel/VM proof.
-**Issues:** #48, #9, #31. **Scope:** 0.0.5 design only.
+**Status:** Proposed — A/B root slots chosen as the **prototype** substrate
+(2026-11-01, see [Prototype decision](#prototype-decision-2026-11-01));
+not Accepted until the maintainer reviews a real boot/rollback run (step S7/S8
+of the [step 1 plan](../release-0.0.5-step1-ab-boot-rollback-plan.md)).
+**Issues:** #48, #9, #31, #51. **Scope:** 0.0.5 design only.
 This document does **not** implement Generation activation or rollback.
 
 ## Context
@@ -30,6 +33,89 @@ decision. They make it easiest to falsify a false-success claim: after a
 failed activation, the next boot must identify the previous root-image hash.
 The final choice depends on tested disk overhead, boot reliability and
 maintenance burden. This direction must not displace current 0.0.4 work.
+
+## Prototype decision (2026-11-01)
+
+The owner asked to proceed with step S3 on the recommended direction, so
+the prototype uses **A/B root slots on one GPT disk**. This is a decision to
+*build and measure* one substrate, not to ship it. Nothing here authorizes
+a rollback claim in `flowerlyd`.
+
+### Why A/B first
+
+- **Falsifiable.** After a failed activation the next boot must witness the
+  previous slot's image hash; a wrong answer is visible, not inferred.
+- **Small trusted surface.** Slot choice is made by systemd-boot boot
+  counting and `systemd-bless-boot`, with no Flowerly code in the fallback
+  path, so a broken daemon cannot prevent rollback.
+- **Fits what exists.** `build-arch-rootfs.sh` → ext4 volume already boots
+  under KVM ([#51 evidence](../reviews/0051-flowerly-volume-kvm-boot-2026-11-01.md)):
+  a slot is that volume plus an identity file.
+- btrfs snapshots keep a single mutable pool whose bootloader and
+  subvolume-default semantics must be proven; LVM thin snapshots add
+  thin-pool exhaustion as a boot-time failure mode; OSTree needs a
+  package-workflow integration that conflicts with pinned Arch inputs (#49).
+  All three remain candidates if A/B measures badly.
+
+### Disk layout
+
+| Partition | Format | Content | Written by |
+| --- | --- | --- | --- |
+| ESP | vfat | systemd-boot, one loader entry per slot with boot counting (`+3`), slot kernels/initramfs | slot tool only |
+| root-a / root-b | ext4 | immutable rootfs image, never mounted read-write by the staging tool | slot tool (inactive slot only) |
+| data | ext4 | `/var/lib/flowerly` state, SQLite, boot-witness ledger | the running system |
+
+Slot images and the data partition never overlap. The slot tool refuses the
+active slot, and never opens the data partition for writing.
+
+### Identity
+
+A booted root is identified by **all** of: root partition UUID, SHA-256 of
+the slot image recorded in the disk manifest, the `generation-identity` file
+baked into the image (input-manifest digest, Flowerly commit, build id) and
+the loader entry id reported by the firmware (`LoaderEntrySelected`). A
+caller-supplied Generation id, path or UUID is never authority; the witness
+reads these from the running system.
+
+### Activation and fallback
+
+Extends the two-phase protocol below with concrete mechanics:
+
+1. `stage`: write and `fsync` the image into the inactive slot, re-read and
+   compare the SHA-256. No boot configuration changes.
+2. `arm`: atomically write `flowerly-<slot>+3.conf` (temp file, `fsync`,
+   rename, `fsync` of the directory), set it as the next boot, and append a
+   *pending* line to the ledger. Pending is not success.
+3. Boot: an early witness unit appends the observed identity to the ledger
+   on the data partition. It never decides anything.
+4. `flowerly-boot-health.service` waits for the `flowerlyd` IPC Ping with a
+   bounded timeout; only then does `systemd-bless-boot` mark the entry good.
+5. If tries run out, systemd-boot selects the previous entry. `status`
+   reports `FELL_BACK` from ledger plus witness, never from the ledger alone.
+
+A test-only switch (`flowerly.test.fail_health=1`) forces step 4 to fail and
+is refused unless the image was built with the test profile.
+
+### Recovery and garbage collection
+
+The slot tool never deletes the active, pending or last-healthy slot. There
+is no automatic GC in the prototype; reclaiming a slot is a separate,
+authorized operation. Operator recovery (broken ESP, both slots unbootable,
+full data partition) is documented from the S7 failure cases and must work
+from a rescue boot without Flowerly running.
+
+### Revisit triggers
+
+Reconsider the substrate if S7 measures: root storage that doubles beyond an
+agreed budget, boot counting that cannot be made reliable under OVMF in CI,
+stage or activation times that block the Gate D workflow, or any scenario
+where a power-loss case needs manual database repair.
+
+### Explicitly deferred
+
+dm-verity, Secure Boot, unified kernel images, TPM measurements, more than
+two slots, delta updates and encrypted data partitions. None is needed to
+falsify or confirm the substrate and each changes the boot trust model.
 
 ## Required identity and commit protocol
 
@@ -103,5 +189,5 @@ guest alone, must demonstrate all of the following:
    artifacts as an auditable CI record without credentials.
 
 The proposal is **not accepted** until the maintainer reviews a real
-boot/rollback run, chooses the substrate, documents its threat model and
-updates #48 and #9. No runtime activation claims are authorized by this ADR.
+boot/rollback run, confirms or replaces the prototype substrate, documents
+its threat model and updates #48 and #9. No runtime activation claims are authorized by this ADR.

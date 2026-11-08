@@ -8,9 +8,9 @@ package metadata, network access and free disk space.
 
 The following *separate* scripts stage Flowerly release binaries, prepare
 systemd, build an ext4 volume, and attempt a direct-kernel QEMU boot.
-They are not a standalone bootable image pipeline. The ext4 builder has
-an observed permission blocker when accessing `dbus-daemon-launch-helper`
-in a real Arch rootfs.
+They are not a standalone bootable image pipeline. The ext4 builder
+handles rootfs trees owned by subordinate ids by running `mkfs.ext4` inside
+`podman unshare` and verifies setuid/setgid ownership afterwards.
 
 See [Arch image setup](arch/README.md) and the
 [build requirements and troubleshooting](../../web-docs/docs/build.md).

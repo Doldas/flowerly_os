@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the release-branch policy validator (offline)."""
+
 import copy
 import json
 from pathlib import Path
@@ -72,7 +73,9 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             pr = root / ".github/workflows/release-promotion-validation.yml"
-            pr.write_text(pr.read_text().replace("wait-release-promotion.py", "verify-later.py"))
+            pr.write_text(
+                pr.read_text().replace("wait-release-promotion.py", "verify-later.py")
+            )
             with self.assertRaisesRegex(ValueError, "exact-SHA master evidence"):
                 gates.validate(root)
 
@@ -81,7 +84,11 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             pr = root / ".github/workflows/pr-validation.yml"
-            pr.write_text(pr.read_text().replace("branches: ['release/**']", "branches: [master, 'release/**']"))
+            pr.write_text(
+                pr.read_text().replace(
+                    "branches: ['release/**']", "branches: [master, 'release/**']"
+                )
+            )
             with self.assertRaisesRegex(ValueError, "release-only"):
                 gates.validate(root)
 
@@ -94,6 +101,29 @@ class ReleaseGateTests(unittest.TestCase):
             data["bypass_actors"] = [{"actor_type": "User", "actor_id": 1}]
             config.write_text(json.dumps(data))
             with self.assertRaisesRegex(ValueError, "bypass actors"):
+                gates.validate(root)
+
+    def test_missing_python_quality_required_check_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._copy(root)
+            config = root / gates.POLICY_FILE
+            data = json.loads(config.read_text())
+            checks = data["rules"][1]["parameters"]["required_status_checks"]
+            checks[:] = [x for x in checks if x["context"] != "python-quality"]
+            config.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "required check contexts drifted"):
+                gates.validate(root)
+
+    def test_python_quality_job_cannot_disappear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._copy(root)
+            ci = root / ".github/workflows/ci.yml"
+            ci.write_text(
+                ci.read_text().replace("name: python-quality", "name: python-optional")
+            )
+            with self.assertRaisesRegex(ValueError, "python-quality"):
                 gates.validate(root)
 
     def test_remote_missing_check_is_rejected(self):

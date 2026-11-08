@@ -124,3 +124,59 @@ and any reference to PR #206 as open.
   `SHA256SUMS`; checksums were independently re-downloaded and verified.
 - Release notes were replaced with the accurate v0.0.4 section, exact SHA,
   evidence links and known limitations.
+
+## Pending verification follow-ups — 2026-11-07 (16-ticket tranche)
+
+The following are scoped **draft-only** verification increments, not accepted
+runtime features or closed issues. Each change has a separate branch based on
+`release/2`; merge in this listed order only after fresh exact-head checks,
+review and explicit owner approval, rebasing each successor if necessary:
+
+| Order | Issue | Evidence document | Status |
+| --- | --- | --- | --- |
+| 1 | #285 | [Review](reviews/2026-11-07-issue-285-verification.md) | Draft, incomplete |
+| 2 | #263 | [Review](reviews/2026-11-07-issue-263-verification.md) | Draft, incomplete |
+| 3 | #257 | [Review](reviews/2026-11-07-issue-257-verification.md) | Draft, incomplete |
+| 4 | #249 | [Review](reviews/2026-11-07-issue-249-verification.md) | Draft, incomplete |
+| 5 | #187 | [Review](reviews/2026-11-07-issue-187-verification.md) | Draft, incomplete |
+| 6 | #112 | [Review](reviews/2026-11-07-issue-112-verification.md) | Draft, incomplete |
+| 7 | #95 | [Review](reviews/2026-11-07-issue-95-verification.md) | Draft, incomplete |
+| 8 | #94 | [Review](reviews/2026-11-07-issue-94-verification.md) | Draft, incomplete |
+| 9 | #93 | [Review](reviews/2026-11-07-issue-93-verification.md) | Draft, incomplete |
+| 10 | #91 | [Review](reviews/2026-11-07-issue-91-verification.md) | Draft, incomplete |
+| 11 | #85 | [Review](reviews/2026-11-07-issue-85-verification.md) | Draft, incomplete |
+| 12 | #82 | [Review](reviews/2026-11-07-issue-82-verification.md) | Draft, incomplete |
+| 13 | #64 | [Review](reviews/2026-11-07-issue-64-verification.md) | Draft, incomplete |
+| 14 | #51 | [Review](reviews/2026-11-07-issue-51-verification.md) | Draft, incomplete |
+| 15 | #49 | [Review](reviews/2026-11-07-issue-49-verification.md) | Draft, incomplete |
+| 16 | #48 | [Review](reviews/2026-11-07-issue-48-verification.md) | Draft, incomplete |
+
+The read-only Projects reconciliation (#257) cannot verify a live board without
+a real export and authorized token. Manifest date, A/B hash and unsafe-source
+guards are offline regressions, not substitutes for Arch/KVM evidence. All
+existing release/2 safety gates and manual master promotion policy remain.
+
+
+## 2026-11-07 release/2 → master promotion #279: push Docs tool regression
+
+**Observed at release/2 SHA `1e6cc17870fbec258448051121dcc99e7a8633ab`:**
+[push CI 42389245128](https://github.com/Doldas/flowerly_os/actions/runs/42389245128)
+failed in Docs, step `Verify two-slot disk builder offline`, because the
+self-hosted `flowerly-runner` lacked `sfdisk`. The hosted PR Docs job
+passed, but is not evidence of a successful release push. The separate
+[promotion validation 42389250137](https://github.com/Doldas/flowerly_os/actions/runs/42389250137)
+correctly refused promotion because that same SHA had a failing push CI.
+
+**Fix in this workstream:** before the existing offline A/B disk test,
+non-PR Docs jobs run `scripts/prepare-ab-disk-ci-tools.sh`, installing the
+real `fdisk` (providing `sfdisk`), `dosfstools`, `mtools` and
+`e2fsprogs` on an apt-based trusted runner only when missing, and checking
+every required executable afterward. Missing tools or failed installation
+remain hard failures; no fake partition builder, skipped test, downgraded
+Arch acceptance, or change to promotion predicates.
+
+**Still required:** merge the independently reviewed fix to `release/2`,
+then obtain a successful **new exact-SHA push CI** including Docs, Rust and
+the real Arch guest, plus security and CodeQL push workflows. Only after
+those runs pass can #279's verifier succeed for the new SHA. Master
+promotion remains manual and requires owner approval.

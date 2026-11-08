@@ -19,6 +19,35 @@ env:
   FLOWERLY_CACHE_VERSION: v1
 
 jobs:
+  python-quality:
+    name: python-quality
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout full history for exact changed-file review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Python syntax and incremental Ruff regression controls
+        run: python3 scripts/test-python-quality.py
+
+      - name: Install pinned Python quality checker
+        run: |
+          python3 -m pip install --disable-pip-version-check ruff==0.17.4
+          ruff --version
+
+      - name: Review Python syntax, lint and formatting
+        env:
+          DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$DIFF_BASE" =~ ^0+$ ]]; then
+            # Initial push has no valid previous SHA; validate all tracked code.
+            python3 scripts/check-python-quality.py --all
+          else
+            python3 scripts/check-python-quality.py --base "$DIFF_BASE"
+          fi
+
   rust:
     name: rust
     timeout-minutes: 120
@@ -271,6 +300,45 @@ jobs:
 
       - name: Verify populated ext4 image creation offline
         run: python3 ./scripts/test-build-arch-root-volume.py
+
+      # PRs run on hosted Ubuntu, while release pushes use the persistent
+      # flowerly-runner. The latter can lack sfdisk (Ubuntu's fdisk package);
+      # preserve the real GPT builder test instead of silently skipping it.
+      - name: Provision real A/B disk tools on the trusted release runner
+        if: github.event_name != 'pull_request'
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
+      - name: Verify two-slot disk builder offline
+        run: |
+          bash -n ./scripts/build-flowerly-ab-disk.sh
+          python3 ./scripts/test-build-flowerly-ab-disk.py
+
+      - name: Generation 0.0.5 offline safety contracts
+        run: |
+          for contract in scripts/test-generation-005-*.py; do
+            [[ -f "$contract" ]] || continue
+            python3 "$contract"
+          done
+
+      - name: Generation A/B exact-SHA OVMF KVM harness (offline negative controls)
+        run: |
+          python3 ./scripts/test-generation-ab-kvm-acceptance.py
+          python3 -m py_compile ./scripts/generation-ab-kvm-acceptance.py
+
+      - name: Verify fsynced inactive Generation slot staging and interrupted writes
+        run: python3 ./scripts/test-generation-slot-stage-image.py
+
+      - name: Generation A/B guest identity and opt-in health-gate installation
+        run: |
+          python3 ./scripts/test-generation-ab-guest.py
+          bash -n ./scripts/prepare-generation-ab-rootfs.sh
+          bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
+
+      - name: Provision real GPT FAT and ext4 tools for Generation A/B tests
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
+      - name: Verify real GPT FAT A/B EFI arming without changing user-data
+        run: python3 ./scripts/test-generation-arm-esp-image.py
 
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py

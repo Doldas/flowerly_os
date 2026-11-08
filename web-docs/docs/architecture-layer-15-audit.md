@@ -91,3 +91,13 @@ privilege separation.
 
 **Owner decision required before ADR-0018 can become Accepted.** This document
 does not implement #83/#92/#93/#94/#95 or alter release exit criteria.
+
+## Follow-up enforcement increment (2026-11-07, #91)
+
+The offline dependency boundary check now also rejects direct imports of
+`libc`, `nix` and `rustix` in the protected high-level command modules,
+including aliases and re-exports. Negative source fixtures accompany this
+change. Existing reviewed low-level IPC, PTY and host adapter ownership is
+unchanged. This is **not** exhaustive Rust dependency-graph enforcement or
+owner acceptance of ADR-0018; macro paths, indirect aliases, module paths,
+feature resolution and all runtime/kernel contracts remain for later review.

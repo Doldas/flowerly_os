@@ -191,6 +191,24 @@ fn validate_source(source: &Source, errors: &mut Vec<String>) {
         });
     if !date_ok {
         errors.push(format!("source.snapshot_date {date:?} is not YYYY-MM-DD"));
+    } else {
+        // A shaped date such as 2026-99-99 is not a real immutable snapshot day.
+        let year = date[0..4].parse::<u32>().unwrap_or_default();
+        let month = date[5..7].parse::<u32>().unwrap_or_default();
+        let day = date[8..10].parse::<u32>().unwrap_or_default();
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap => 29,
+            2 => 28,
+            _ => 0,
+        };
+        if year == 0 || day == 0 || day > days {
+            errors.push(format!(
+                "source.snapshot_date {date:?} is not a valid calendar date"
+            ));
+        }
     }
     let url = &source.snapshot_url;
     match url.strip_prefix("https://") {
@@ -481,10 +499,31 @@ fn sha256_reader(reader: &mut impl Read) -> std::io::Result<String> {
 }
 
 pub fn read_manifest(path: &Path) -> anyhow::Result<Vec<u8>> {
+    // A manifest is a small declaration, not an unbounded stream or a link.
+    const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| anyhow::anyhow!("opening manifest {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| anyhow::anyhow!("stat manifest {}: {error}", path.display()))?;
+    anyhow::ensure!(metadata.is_file(), "manifest must be a regular file");
+    anyhow::ensure!(
+        metadata.len() <= MAX_MANIFEST_BYTES,
+        "manifest exceeds {} byte limit",
+        MAX_MANIFEST_BYTES
+    );
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|error| anyhow::anyhow!("reading {}: {error}", path.display()))?;
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("reading manifest {}: {error}", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_MANIFEST_BYTES,
+        "manifest exceeds {} byte limit",
+        MAX_MANIFEST_BYTES
+    );
     Ok(bytes)
 }
 
@@ -541,6 +580,20 @@ mod tests {
     }
 
     #[test]
+    fn manifest_file_refuses_symlink_directory_and_large_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("manifest.json");
+        std::fs::write(&real, canonical_bytes(&manifest())).unwrap();
+        assert!(read_manifest(&real).is_ok());
+        let link = dir.path().join("linked.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(read_manifest(&link).is_err());
+        assert!(read_manifest(dir.path()).is_err());
+        std::fs::write(&real, vec![b'x'; 8 * 1024 * 1024 + 1]).unwrap();
+        assert!(read_manifest(&real).is_err());
+    }
+
+    #[test]
     fn non_canonical_formatting_is_rejected() {
         let compact = serde_json::to_vec(&manifest()).unwrap();
         let errors = check(&compact).unwrap_err().join("\n");
@@ -578,6 +631,20 @@ mod tests {
         assert!(errors_of(&m).contains("dated path"));
         m.source.snapshot_date = "yesterday".into();
         assert!(errors_of(&m).contains("YYYY-MM-DD"));
+        for invalid_date in [
+            "2026-02-30",
+            "2025-02-29",
+            "2026-13-01",
+            "2026-00-01",
+            "0000-01-01",
+        ] {
+            let mut invalid = manifest();
+            invalid.source.snapshot_date = invalid_date.into();
+            assert!(
+                errors_of(&invalid).contains("valid calendar date"),
+                "{invalid_date} was accepted"
+            );
+        }
         m = manifest();
         m.source.architecture = "any".into();
         assert!(errors_of(&m).contains("concrete architecture"));
