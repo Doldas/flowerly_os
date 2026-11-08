@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the release-branch policy validator (offline)."""
+
 import copy
 import json
 from pathlib import Path
@@ -72,7 +73,9 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             pr = root / ".github/workflows/release-promotion-validation.yml"
-            pr.write_text(pr.read_text().replace("wait-release-promotion.py", "verify-later.py"))
+            pr.write_text(
+                pr.read_text().replace("wait-release-promotion.py", "verify-later.py")
+            )
             with self.assertRaisesRegex(ValueError, "exact-SHA master evidence"):
                 gates.validate(root)
 
@@ -81,7 +84,11 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             pr = root / ".github/workflows/pr-validation.yml"
-            pr.write_text(pr.read_text().replace("branches: ['release/**']", "branches: [master, 'release/**']"))
+            pr.write_text(
+                pr.read_text().replace(
+                    "branches: ['release/**']", "branches: [master, 'release/**']"
+                )
+            )
             with self.assertRaisesRegex(ValueError, "release-only"):
                 gates.validate(root)
 
@@ -113,8 +120,9 @@ class ReleaseGateTests(unittest.TestCase):
             root = Path(tmp)
             self._copy(root)
             ci = root / ".github/workflows/ci.yml"
-            ci.write_text(ci.read_text().replace("name: python-quality",
-                                                  "name: python-optional"))
+            ci.write_text(
+                ci.read_text().replace("name: python-quality", "name: python-optional")
+            )
             with self.assertRaisesRegex(ValueError, "python-quality"):
                 gates.validate(root)
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline tests for direct QEMU boot preflight and serial acceptance."""
+
 import importlib.util
 import hashlib
 import json
@@ -33,15 +34,22 @@ class BootProbeTests(unittest.TestCase):
             dest.write_text(body)
         self.volume = self.base / "root.ext4"
         self.volume.write_bytes(b"ext4 fixture")
-        self.args = mock.Mock(rootfs=self.rootfs, volume=self.volume,
-                              log=self.base / "serial.log", timeout=10, report=None,
-                              accel="tcg")
+        self.args = mock.Mock(
+            rootfs=self.rootfs,
+            volume=self.volume,
+            log=self.base / "serial.log",
+            timeout=10,
+            report=None,
+            accel="tcg",
+        )
 
     def test_packaged_kernel_path_accepted(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
         packaged.parent.mkdir(parents=True)
         (self.rootfs / "boot/vmlinuz-linux").rename(packaged)
-        self.simulate("[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
+        self.simulate(
+            "[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n"
+        )
 
     def test_ambiguous_kernels_rejected(self):
         packaged = self.rootfs / "usr/lib/modules/7.2.11-arch1-1/vmlinuz"
@@ -62,24 +70,32 @@ class BootProbeTests(unittest.TestCase):
 
     def test_preexisting_log_rejected(self):
         self.args.log.write_text("prior boot")
-        with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
+        with mock.patch.object(
+            boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+        ):
             with self.assertRaisesRegex(ValueError, "overwrite serial log"):
                 boot.run(self.args)
 
     def test_journal_console_prefix_accepted_only_for_the_witness_process(self):
         ok = "[  OK  ] Reached target Multi-User System.\n"
         self.simulate(ok + "[    7.523691] bash[348]: FLOWERLY_BOOT_IPC_HEALTHY\r\n")
-        for forged in ("[    7.5] sh[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
-                       "x [    7.5] bash[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
-                       "[    7.5] bash[3]: echo FLOWERLY_BOOT_IPC_HEALTHY\n"):
+        for forged in (
+            "[    7.5] sh[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
+            "x [    7.5] bash[3]: FLOWERLY_BOOT_IPC_HEALTHY\n",
+            "[    7.5] bash[3]: echo FLOWERLY_BOOT_IPC_HEALTHY\n",
+        ):
             self.args.log = self.base / ("serial-%d.log" % hash(forged))
             with self.assertRaisesRegex(ValueError, "witness not observed"):
                 self.simulate(ok + forged)
 
     def test_kvm_refused_without_device_access(self):
         self.args.accel = "kvm"
-        with mock.patch.object(boot, "KVM_DEVICE", self.base / "no-kvm"), \
-             mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
+        with (
+            mock.patch.object(boot, "KVM_DEVICE", self.base / "no-kvm"),
+            mock.patch.object(
+                boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+            ),
+        ):
             with self.assertRaisesRegex(ValueError, "read-write access"):
                 boot.run(self.args)
 
@@ -91,7 +107,9 @@ class BootProbeTests(unittest.TestCase):
         class Spy:
             def __init__(self, command, **kwargs):
                 seen.append(command)
-                kwargs["stdout"].write(b"Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
+                kwargs["stdout"].write(
+                    b"Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n"
+                )
                 kwargs["stdout"].flush()
 
             def wait(self, timeout=None):
@@ -102,13 +120,21 @@ class BootProbeTests(unittest.TestCase):
             def terminate(self):
                 return None
 
-        with mock.patch.object(boot, "KVM_DEVICE", Path("/dev/null")), \
-             mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"), \
-             mock.patch.object(boot.subprocess, "Popen", Spy):
+        with (
+            mock.patch.object(boot, "KVM_DEVICE", Path("/dev/null")),
+            mock.patch.object(
+                boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+            ),
+            mock.patch.object(boot.subprocess, "Popen", Spy),
+        ):
             boot.run(self.args)
         command = seen[0]
-        assert "q35,accel=kvm" in command and command[command.index("-cpu") + 1] == "host"
-        self.assertEqual(json.loads(self.args.report.read_text())["probe"], "direct-kernel-qemu-kvm")
+        assert (
+            "q35,accel=kvm" in command and command[command.index("-cpu") + 1] == "host"
+        )
+        self.assertEqual(
+            json.loads(self.args.report.read_text())["probe"], "direct-kernel-qemu-kvm"
+        )
 
     def simulate(self, transcript):
         class FakeQemu:
@@ -129,51 +155,72 @@ class BootProbeTests(unittest.TestCase):
             def kill(self):
                 return None
 
-        with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"), \
-             mock.patch.object(boot.subprocess, "Popen", FakeQemu):
+        with (
+            mock.patch.object(
+                boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+            ),
+            mock.patch.object(boot.subprocess, "Popen", FakeQemu),
+        ):
             boot.run(self.args)
 
     def test_systemd_multi_user_accepted(self):
-        self.simulate("[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n")
+        self.simulate(
+            "[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n"
+        )
 
     def test_witness_mentioned_in_diagnostic_rejected(self):
         with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):
-            self.simulate("[  OK  ] Reached target Multi-User System.\n"
-                          "Boot witness expects FLOWERLY_BOOT_IPC_HEALTHY\n")
+            self.simulate(
+                "[  OK  ] Reached target Multi-User System.\n"
+                "Boot witness expects FLOWERLY_BOOT_IPC_HEALTHY\n"
+            )
 
     def test_partial_witness_rejected(self):
         with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):
-            self.simulate("[  OK  ] Reached target Multi-User System.\n"
-                          "FLOWERLY_BOOT_IPC_HEALTHY_NOT_YET\n")
+            self.simulate(
+                "[  OK  ] Reached target Multi-User System.\n"
+                "FLOWERLY_BOOT_IPC_HEALTHY_NOT_YET\n"
+            )
 
     def test_crlf_witness_accepted(self):
-        self.simulate("[  OK  ] Reached target Multi-User System.\r\n"
-                      "FLOWERLY_BOOT_IPC_HEALTHY\r\n")
+        self.simulate(
+            "[  OK  ] Reached target Multi-User System.\r\n"
+            "FLOWERLY_BOOT_IPC_HEALTHY\r\n"
+        )
 
     def test_evidence_report_contains_artifact_hashes(self):
         self.args.report = self.base / "evidence.json"
-        self.simulate("[  OK  ] Reached target Multi-User System.\n"
-                      "FLOWERLY_BOOT_IPC_HEALTHY\n")
+        self.simulate(
+            "[  OK  ] Reached target Multi-User System.\nFLOWERLY_BOOT_IPC_HEALTHY\n"
+        )
         evidence = json.loads(self.args.report.read_text())
         self.assertTrue(evidence["accepted"])
         self.assertEqual(evidence["schema"], 1)
-        self.assertEqual(evidence["artifacts"]["volume"]["sha256"],
-                         hashlib.sha256(self.volume.read_bytes()).hexdigest())
-        self.assertEqual(evidence["artifacts"]["serial_log"]["sha256"],
-                         hashlib.sha256(self.args.log.read_bytes()).hexdigest())
+        self.assertEqual(
+            evidence["artifacts"]["volume"]["sha256"],
+            hashlib.sha256(self.volume.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            evidence["artifacts"]["serial_log"]["sha256"],
+            hashlib.sha256(self.args.log.read_bytes()).hexdigest(),
+        )
         self.assertIn("elapsed_seconds", evidence)
 
     def test_evidence_report_never_overwritten(self):
         self.args.report = self.base / "evidence.json"
         self.args.report.write_text("prior evidence")
-        with mock.patch.object(boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"):
+        with mock.patch.object(
+            boot.shutil, "which", return_value="/usr/bin/qemu-system-x86_64"
+        ):
             with self.assertRaisesRegex(ValueError, "overwrite evidence report"):
                 boot.run(self.args)
         self.assertEqual(self.args.report.read_text(), "prior evidence")
 
     def test_kernel_panic_rejected(self):
         with self.assertRaisesRegex(ValueError, "kernel panic"):
-            self.simulate("Kernel panic - not syncing\nReached target Multi-User System\n")
+            self.simulate(
+                "Kernel panic - not syncing\nReached target Multi-User System\n"
+            )
 
     def test_missing_flowerly_witness_rejected(self):
         with self.assertRaisesRegex(ValueError, "IPC health witness not observed"):

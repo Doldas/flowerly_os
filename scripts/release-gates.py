@@ -4,6 +4,7 @@
 No network is used by 'validate'. Remote 'apply' needs an explicit opt-in
 and a GitHub token with repository administration/rulesets permission.
 """
+
 import argparse
 import json
 import os
@@ -29,8 +30,9 @@ ACTIONS_APP_ID = 15368
 
 
 def required_rule(policy):
-    matches = [rule for rule in policy["rules"]
-               if rule["type"] == "required_status_checks"]
+    matches = [
+        rule for rule in policy["rules"] if rule["type"] == "required_status_checks"
+    ]
     if len(matches) != 1:
         raise ValueError("exactly one required_status_checks rule is required")
     return matches[0]["parameters"]
@@ -79,8 +81,7 @@ def validate(root=ROOT):
     codeql = workflow("codeql.yml")
     pr = workflow("pr-validation.yml")
     promotion = workflow("release-promotion-validation.yml")
-    for name, content in (("ci", ci), ("security", security),
-                          ("codeql", codeql)):
+    for name, content in (("ci", ci), ("security", security), ("codeql", codeql)):
         if not re.search(r"(?m)^  pull_request:\s*$", content):
             raise ValueError(f"{name}: PR trigger required on release branches")
         if "branches: [master, 'release/**']" not in content:
@@ -88,17 +89,26 @@ def validate(root=ROOT):
     for name, content in (("security", security), ("codeql", codeql)):
         if "paths-ignore:" in content or re.search(r"(?m)^\s+paths:\s*$", content):
             raise ValueError(f"{name}: mandatory job cannot be skipped by file path")
-    if not re.search(r"(?m)^  pull_request:\s*$", pr) or "branches: ['release/**']" not in pr:
+    if (
+        not re.search(r"(?m)^  pull_request:\s*$", pr)
+        or "branches: ['release/**']" not in pr
+    ):
         raise ValueError("pr-validation: release-only PR trigger required")
     if "branches: [master]" in pr:
         raise ValueError("pr-validation must not run for master promotions")
     if "const developmentHead = /^(feature|bugfix|fix|docs)\\/.+/;" not in pr:
         raise ValueError("pr-validation must validate allowed development branches")
-    if ("branches: [master]" not in promotion
-            or "wait-release-promotion.py" not in promotion
-            or "name: Validate branch policy and issue link" not in promotion):
+    if (
+        "branches: [master]" not in promotion
+        or "wait-release-promotion.py" not in promotion
+        or "name: Validate branch policy and issue link" not in promotion
+    ):
         raise ValueError("exact-SHA master evidence gate missing")
-    if "name: rust" not in ci or "name: docs" not in ci or "name: python-quality" not in ci:
+    if (
+        "name: rust" not in ci
+        or "name: docs" not in ci
+        or "name: python-quality" not in ci
+    ):
         raise ValueError("CI must report rust, docs and python-quality check names")
     if "python3 scripts/check-python-quality.py" not in ci or "ruff==0.17.4" not in ci:
         raise ValueError("required Python lint job must run pinned Ruff")
@@ -107,7 +117,10 @@ def validate(root=ROOT):
     if re.search(r"(?m)^    if:", pr):
         raise ValueError("required PR branch policy check must never be skipped")
     forward = workflow("branch-forward.yml")
-    if "FLOWERLY_FORWARD_BOT_TOKEN" not in forward or "branch-forward.py reconcile" not in forward:
+    if (
+        "FLOWERLY_FORWARD_BOT_TOKEN" not in forward
+        or "branch-forward.py reconcile" not in forward
+    ):
         raise ValueError("bot branch propagation workflow missing or unprotected")
     if "name: cargo-audit" not in security or "name: cargo-deny" not in security:
         raise ValueError("security job names changed")
@@ -116,7 +129,10 @@ def validate(root=ROOT):
             raise ValueError(f"security matrix missing {matrix}")
     if "continue-on-error:" in security:
         raise ValueError("cargo-deny advisories must fail CI, never soft-fail")
-    if "run: cargo audit" not in security or "cargo deny --all-features check" not in security:
+    if (
+        "run: cargo audit" not in security
+        or "cargo deny --all-features check" not in security
+    ):
         raise ValueError("cargo audit and deny must actually execute")
     if "name: CodeQL" not in codeql or "language: [rust]" not in codeql:
         raise ValueError("CodeQL (rust) check must be generated")
@@ -132,7 +148,9 @@ def api(method, path, payload=None):
     url = "https://api.github.com/repos/" + REPOSITORY + path
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     req = request.Request(
-        url, data=data, method=method,
+        url,
+        data=data,
+        method=method,
         headers={
             "Authorization": "Bearer " + token,
             "Accept": "application/vnd.github+json",
@@ -152,8 +170,11 @@ def api(method, path, payload=None):
 
 def find_policy_ruleset():
     policies = api("GET", "/rulesets")
-    items = [entry for entry in policies
-             if entry.get("name") == "FLOWERLY_RELEASE_REQUIRED_CHECKS"]
+    items = [
+        entry
+        for entry in policies
+        if entry.get("name") == "FLOWERLY_RELEASE_REQUIRED_CHECKS"
+    ]
     if len(items) > 1:
         raise ValueError("multiple rulesets share the managed name")
     return items[0]["id"] if items else None
@@ -172,10 +193,14 @@ def assert_rule_enforcement(policy, actual):
         raise ValueError("remote status checks are not strict")
     if required.get("do_not_enforce_on_create") is not False:
         raise ValueError("remote create bypass is enabled")
-    observed = {(item.get("context"), item.get("integration_id"))
-                for item in required.get("required_status_checks", [])}
-    expected = {(item["context"], item["integration_id"])
-                for item in desired["required_status_checks"]}
+    observed = {
+        (item.get("context"), item.get("integration_id"))
+        for item in required.get("required_status_checks", [])
+    }
+    expected = {
+        (item["context"], item["integration_id"])
+        for item in desired["required_status_checks"]
+    }
     if observed != expected:
         raise ValueError(f"remote required check list mismatch: {observed}")
     if not any(item.get("type") == "pull_request" for item in actual.get("rules", [])):
@@ -197,17 +222,22 @@ def verify(policy):
         if not isinstance(effective, list):
             raise ValueError(f"bad effective rules payload for {branch}")
         candidates = [r for r in effective if r.get("type") == "required_status_checks"]
-        expected = {c["context"] for c in
-                    required_rule(policy)["required_status_checks"]}
-        if not any(expected <= {c.get("context") for c in
-                    r.get("parameters", {}).get("required_status_checks", [])}
-                   for r in candidates):
+        expected = {
+            c["context"] for c in required_rule(policy)["required_status_checks"]
+        }
+        if not any(
+            expected
+            <= {
+                c.get("context")
+                for c in r.get("parameters", {}).get("required_status_checks", [])
+            }
+            for r in candidates
+        ):
             raise ValueError(f"{branch}: GitHub effective rules omit required checks")
         if not any(r.get("type") == "pull_request" for r in effective):
             raise ValueError(f"{branch}: effective rules do not require a PR")
         print(f"{branch}: required checks and pull request rules active")
     print(f"verified ruleset {ruleset_id} (no bypass actors)")
-
 
 
 def verify_probe(policy, pr_number):
@@ -221,26 +251,37 @@ def verify_probe(policy, pr_number):
         raise ValueError(f"probe is not blocked: {pr.get('mergeable_state')}")
     head = pr["head"]["sha"]
     check_runs = api("GET", f"/commits/{head}/check-runs?per_page=100")
-    required = {item["context"] for item in
-                required_rule(policy)["required_status_checks"]}
+    required = {
+        item["context"] for item in required_rule(policy)["required_status_checks"]
+    }
     failures = [
-        item for item in check_runs.get("check_runs", [])
+        item
+        for item in check_runs.get("check_runs", [])
         if item.get("name") in required
         and item.get("app", {}).get("id") == ACTIONS_APP_ID
         and item.get("conclusion") in ("failure", "timed_out", "cancelled")
     ]
     if not failures:
         raise ValueError("probe has no failing required check on its current head")
-    print(f"negative blocking proof: PR {pr_number}, head {head}, "
-          f"failed {[item['name'] for item in failures]}, mergeable_state=blocked")
+    print(
+        f"negative blocking proof: PR {pr_number}, head {head}, "
+        f"failed {[item['name'] for item in failures]}, mergeable_state=blocked"
+    )
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("validate", "verify", "apply"))
-    parser.add_argument("--probe-pr", type=int,
-                        help="After verify, prove a failing required check blocks an open PR")
-    parser.add_argument("--confirm-apply", action="store_true",
-                        help="Explicitly authorize creating/updating GitHub ruleset")
+    parser.add_argument(
+        "--probe-pr",
+        type=int,
+        help="After verify, prove a failing required check blocks an open PR",
+    )
+    parser.add_argument(
+        "--confirm-apply",
+        action="store_true",
+        help="Explicitly authorize creating/updating GitHub ruleset",
+    )
     args = parser.parse_args()
     try:
         policy = validate()
@@ -252,7 +293,9 @@ def main():
                 verify_probe(policy, args.probe_pr)
         else:
             if not args.confirm_apply:
-                raise ValueError("apply requires --confirm-apply and an admin-scoped token")
+                raise ValueError(
+                    "apply requires --confirm-apply and an admin-scoped token"
+                )
             ruleset_id = find_policy_ruleset()
             if ruleset_id is None:
                 installed = api("POST", "/rulesets", policy)

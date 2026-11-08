@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression for #105: exactly two OS daemons; external providers are plugins."""
+
 from pathlib import Path
 import tomllib
 import unittest
@@ -7,8 +8,13 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 CORE_DAEMONS = {"flowerlyd", "evolutiond"}
 LEGACY_DAEMONS = {
-    "agenticd", "capabilityd", "flowd", "generationd", "goald",
-    "provenanced", "sessiond",
+    "agenticd",
+    "capabilityd",
+    "flowd",
+    "generationd",
+    "goald",
+    "provenanced",
+    "sessiond",
 }
 
 
@@ -16,8 +22,11 @@ class RuntimeTopology(unittest.TestCase):
     def test_workspace_runtime_boundary(self):
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
         members = workspace["workspace"]["members"]
-        runtime = {Path(m).name for m in members if m.startswith("src/") and
-                   "/shared/" not in m}
+        runtime = {
+            Path(m).name
+            for m in members
+            if m.startswith("src/") and "/shared/" not in m
+        }
         self.assertEqual(runtime & CORE_DAEMONS, CORE_DAEMONS)
         self.assertFalse(runtime & LEGACY_DAEMONS, runtime)
         # providerd is an optional inference provider process, not a core daemon.
@@ -54,8 +63,15 @@ class RuntimeTopology(unittest.TestCase):
         self.assertFalse(checksummed & LEGACY_DAEMONS, checksummed)
 
     def test_provider_is_not_required_for_core_boot(self):
-        unit = (ROOT / 'distro/overlay/usr/lib/systemd/system/flowerlyd.service').read_text()
-        for marker in ('Requires=providerd', 'Wants=providerd', 'After=providerd', 'OPENAI_API_KEY='):
+        unit = (
+            ROOT / "distro/overlay/usr/lib/systemd/system/flowerlyd.service"
+        ).read_text()
+        for marker in (
+            "Requires=providerd",
+            "Wants=providerd",
+            "After=providerd",
+            "OPENAI_API_KEY=",
+        ):
             self.assertNotIn(marker, unit)
 
     def test_unprovisioned_kvm_is_not_claimed_as_ready(self):
