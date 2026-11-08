@@ -162,6 +162,113 @@ class ArmTests(unittest.TestCase):
             self.assertIn("default flowerly-*", loader)
             self.assertEqual(updated["partitions"][0]["sha256"], sha(esp.read_bytes()))
 
+    def esp_listing(self, folder, image):
+        esp = folder / (image.name + ".esp")
+        esp.write_bytes(image.read_bytes()[MIB : 65 * MIB])
+        listing = run(tool("mdir"), "-b", "-i", str(esp), "::/loader/entries").stdout
+        loader = run(tool("mtype"), "-i", str(esp), "::/loader/loader.conf").stdout
+        return esp, sorted(Path(x).name for x in listing.split()), loader
+
+    def test_arm_fault_points_leave_the_documented_esp_state(self):
+        expected = {
+            "before-entry": (["flowerly-a+3.conf"], "default flowerly-a*"),
+            "tmp-entry": (
+                ["flowerly-a+3.conf", "flowerly-b+3.conf.tmp"],
+                "default flowerly-a*",
+            ),
+            "entry-no-default": (
+                ["flowerly-a+3.conf", "flowerly-b+3.conf"],
+                "default flowerly-a*",
+            ),
+            "torn-entry": (
+                ["flowerly-a+3.conf", "flowerly-b+3.conf"],
+                "default flowerly-*",
+            ),
+        }
+        for fault, (entries, default) in expected.items():
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                folder = Path(directory)
+                disk, manifest, kernel, initramfs = fixture(folder)
+                before = disk.read_bytes()
+                output = folder / "armed.img"
+                report = arm.arm_image(
+                    disk,
+                    manifest,
+                    kernel,
+                    initramfs,
+                    output,
+                    folder / "armed.json",
+                    fault=fault,
+                )
+                self.assertTrue(report["status"].startswith("ARM_INTERRUPTED_FIXTURE_"))
+                armed = output.read_bytes()
+                self.assertEqual(armed[65 * MIB :], before[65 * MIB :])
+                esp, names, loader = self.esp_listing(folder, output)
+                self.assertEqual(names, entries)
+                self.assertIn(default, loader)
+                if fault == "torn-entry":
+                    text = run(
+                        tool("mtype"),
+                        "-i",
+                        str(esp),
+                        "::/loader/entries/flowerly-b+3.conf",
+                    ).stdout
+                    self.assertTrue(
+                        text.rstrip().endswith("root=PARTUUID=22222222-2222")
+                    )
+
+    def test_unknown_arm_fault_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            disk, manifest, kernel, initramfs = fixture(folder)
+            with self.assertRaisesRegex(ValueError, "fault"):
+                arm.arm_image(
+                    disk,
+                    manifest,
+                    kernel,
+                    initramfs,
+                    folder / "a.img",
+                    folder / "a.json",
+                    fault="bogus",
+                )
+
+    def test_rollback_removes_b_entry_and_makes_a_the_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            disk, manifest, kernel, initramfs = fixture(folder)
+            arm.arm_image(
+                disk,
+                manifest,
+                kernel,
+                initramfs,
+                folder / "armed.img",
+                folder / "armed.json",
+            )
+            armed_before = (folder / "armed.img").read_bytes()
+            report = arm.rollback_image(
+                folder / "armed.img",
+                folder / "armed.json",
+                folder / "rolled.img",
+                folder / "rolled.json",
+            )
+            self.assertEqual(report["status"], "ROLLED_BACK_TO_A_OFFLINE_FIXTURE")
+            self.assertEqual((folder / "armed.img").read_bytes(), armed_before)
+            rolled = folder / "rolled.img"
+            _, names, loader = self.esp_listing(folder, rolled)
+            self.assertEqual(names, ["flowerly-a+3.conf"])
+            self.assertIn("default flowerly-a*", loader)
+            self.assertEqual(rolled.read_bytes()[65 * MIB :], armed_before[65 * MIB :])
+            updated = json.loads((folder / "rolled.json").read_text())
+            self.assertEqual(updated["disk"]["sha256"], sha(rolled.read_bytes()))
+            self.assertFalse([k for k in updated["esp_files"] if "flowerly-b" in k])
+            with self.assertRaisesRegex(ValueError, "no slot B entry"):
+                arm.rollback_image(
+                    rolled,
+                    folder / "rolled.json",
+                    folder / "again.img",
+                    folder / "again.json",
+                )
+
     def test_fault_before_publish_never_modifies_disk(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
