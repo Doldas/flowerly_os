@@ -305,3 +305,15 @@ is masked in this test profile. The `flowerly.test.fail_health=1` switch is
 supported only in this explicit fixture. **Not enabled in the normal distro**
 and not real KVM evidence. Installation is fail-closed if prerequisites are
 missing; no user state or current boot is modified by preparing the fixture.
+
+## S4 identity seam — deterministic PARTUUID for built A/B test images
+
+The A/B GPT builder accepts optional `FLOWERLY_AB_ROOT_A_PARTUUID` and
+`FLOWERLY_AB_ROOT_B_PARTUUID` from an explicitly prepared test-image build.
+Canonical lowercase UUIDs must be distinct. When unset, existing random UUID
+generation remains unchanged. This permits baking each root's identity into its
+rootfs **before** ext4 creation and having the firmware loader's
+`root=PARTUUID` and disk manifest match. The builder and offline regression
+prove the same UUID in all three places. It does not by itself validate
+a firmware boot or a signed/immutable package source; it only closes the
+builder/guest identity wiring prerequisite for S5–S7.
