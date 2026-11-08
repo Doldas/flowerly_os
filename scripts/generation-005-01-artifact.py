@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Read-only artifact digest verification for Generation inputs (#321)."""
+
 import hashlib
 import hmac
 from pathlib import Path
 import re
+
 
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -19,4 +21,8 @@ def verify_artifact(path, expected):
             digest.update(chunk)
     if not hmac.compare_digest(digest.hexdigest(), expected):
         raise ValueError("artifact SHA256 mismatch")
-    return {"sha256": expected, "bytes": target.stat().st_size, "status": "verified_offline"}
+    return {
+        "sha256": expected,
+        "bytes": target.stat().st_size,
+        "status": "verified_offline",
+    }
