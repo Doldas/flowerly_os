@@ -1,0 +1,99 @@
+{
+  "OVMF_VARS.fd_final_sha256": "c62c564116a7a1fde1b1767208a1d3a8df7b0b16b8928e05072e188b5cd72f21",
+  "armed-b.img_final_sha256": "69409e09962f4e66c0d7ef52626e33d0e0486c699fdd32fab3bdd0e06942ff90",
+  "audit": {
+    "boots": 5,
+    "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+    "source_sha": "b82704981859fddc0cafdff6fd315381dee0a446",
+    "status": "INTERNALLY_CONSISTENT_NOT_RELEASE_ACCEPTED"
+  },
+  "boot_tries": 3,
+  "boots": [
+    {
+      "kvm_fd_verified": true,
+      "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "5efb16604864772694bd83d686555e9942c6e5116de594bc19b064080e774c27",
+      "seconds": 12.505,
+      "serial": "boot-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "kvm_fd_verified": true,
+      "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "bce2657238d7c534947e6dfaf4326166bc46586f168ae4bf77cde77588a4b367",
+      "seconds": 10.004,
+      "serial": "unhealthy-b-1.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "kvm_fd_verified": true,
+      "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "bce2657238d7c534947e6dfaf4326166bc46586f168ae4bf77cde77588a4b367",
+      "seconds": 10.004,
+      "serial": "unhealthy-b-2.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "kvm_fd_verified": true,
+      "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "bce2657238d7c534947e6dfaf4326166bc46586f168ae4bf77cde77588a4b367",
+      "seconds": 10.004,
+      "serial": "unhealthy-b-3.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "kvm_fd_verified": true,
+      "marker_sha256": "3404548f208965d75f92e5e626f5c34c2045ea0ebbb6297a96dab57c26440720",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "bce2657238d7c534947e6dfaf4326166bc46586f168ae4bf77cde77588a4b367",
+      "seconds": 10.004,
+      "serial": "auto-fallback-a.serial.log",
+      "slot": "root-a"
+    }
+  ],
+  "disk_sha256_initial": "44f29df7a611244afa0f281ce5d3cb10e2ba272ae16f9f20fd4f279e8bfbba97",
+  "manifest_sha256": "102646f6b85439c4ec15e9bee4899b996d16b4a1d594e80b2613158679796f63",
+  "mutable_sha256_from_boot_a": {
+    "data": "9784b89501f6d77af8a9daf7ccc3b7002929fde5a83d289006962860a2c47bfe",
+    "esp": "e098c633a8801b0b39b076df09e86ea7b51b2a2ca60e42d0a12c5779579b5fd9"
+  },
+  "ovmf_code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+  "ovmf_vars_template_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e",
+  "qemu_version": "QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.3)",
+  "release_acceptance": false,
+  "root_a_partuuid": "5d2abbfd-0c68-46b7-baef-00f4187f1e6a",
+  "root_b_partuuid": "3da766fc-4e51-40f9-80df-8b41326cdfaf",
+  "root_reconstruction": "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES",
+  "root_sha256_after_boot_a": {
+    "root-a": "3e9192caf8e1439bad609a4ef4dfc8cda46de43056b433174ba25781698acf84",
+    "root-b": "b613064ce8969aede25f62c5022d5b45e8ce8206ff0ac867029628b7117ef0b6"
+  },
+  "root_sha256_after_fallback": {
+    "root-a": "3e9192caf8e1439bad609a4ef4dfc8cda46de43056b433174ba25781698acf84",
+    "root-b": "b613064ce8969aede25f62c5022d5b45e8ce8206ff0ac867029628b7117ef0b6"
+  },
+  "running-disk.img_final_sha256": "dd59d7a089dedcdc5764418547de88ffc2be6f6b976efa69f51707c4729e2adc",
+  "scenarios": {
+    "arm-after-rename": "NOT_RUN",
+    "arm-before-rename": "NOT_RUN",
+    "boot-before-bless": "PASS",
+    "data-survives": "PASS",
+    "stage-complete": "NOT_RUN",
+    "stage-interrupted": "NOT_RUN",
+    "tampered-b-refused": "NOT_RUN",
+    "unhealthy-b-fallback": "PASS"
+  },
+  "schema": "flowerly-generation-kvm-sequence/v1",
+  "sequence_verified": true,
+  "source_sha": "b82704981859fddc0cafdff6fd315381dee0a446",
+  "status": "SEQUENCE_OBSERVED_S7_INCOMPLETE"
+}

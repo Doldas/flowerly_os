@@ -6,6 +6,7 @@ Before=flowerlyd.service
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 User=root
 Group=root
 TimeoutStartSec=20
