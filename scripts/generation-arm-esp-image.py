@@ -225,7 +225,7 @@ def arm_image(
             "linux /flowerly/b/vmlinuz\n"
             "initrd /flowerly/b/initramfs.img\n"
             f"options root=PARTUUID={root_b['partuuid']} ro rootfstype=ext4 "
-            "systemd.volatile=state console=ttyS0 systemd.unit=multi-user.target loglevel=6"
+            "systemd.volatile=state fsck.mode=skip console=ttyS0 systemd.unit=multi-user.target loglevel=6"
             + flags
             + "\n"
         )

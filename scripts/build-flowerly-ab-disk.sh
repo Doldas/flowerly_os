@@ -100,7 +100,7 @@ cat > "$WORK/$ENTRY" <<ENTRY_EOF
 title Flowerly OS slot A
 linux /flowerly/a/vmlinuz
 initrd /flowerly/a/initramfs.img
-options root=PARTUUID=${ROOT_A_UUID} ro rootfstype=ext4 systemd.volatile=state console=ttyS0 systemd.unit=multi-user.target loglevel=6
+options root=PARTUUID=${ROOT_A_UUID} ro rootfstype=ext4 systemd.volatile=state fsck.mode=skip console=ttyS0 systemd.unit=multi-user.target loglevel=6
 ENTRY_EOF
 mcopy -i "$ESP" "$WORK/loader.conf" ::/loader/loader.conf
 mcopy -i "$ESP" "$WORK/$ENTRY" "::/loader/entries/$ENTRY"
