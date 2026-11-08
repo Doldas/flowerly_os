@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #329."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_09",Path(__file__).with_name("generation-005-09-health.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 OK={"elapsed_seconds":2,"ipc_healthy":True,"boot_id":"boot1","root_verified":True}
 class Tests(unittest.TestCase):
     def test_explicit_pass(self):

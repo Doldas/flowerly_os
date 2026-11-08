@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #332."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_12",Path(__file__).with_name("generation-005-12-status.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 H="a"*64
 H="a"*64
 B="b"*64

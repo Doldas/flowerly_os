@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #331."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_11",Path(__file__).with_name("generation-005-11-arm.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 H="a"*64
 class Tests(unittest.TestCase):
     def test_explicit_arm(self):
