@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 python3 scripts/test-release-gates.py
+python3 scripts/test-python-quality.py
 python3 scripts/test-branch-forward.py
 python3 scripts/test-project-sync-workflows.py
 python3 scripts/test-project-board-reconcile.py

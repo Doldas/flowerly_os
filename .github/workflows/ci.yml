@@ -19,6 +19,35 @@ env:
   FLOWERLY_CACHE_VERSION: v1
 
 jobs:
+  python-quality:
+    name: python-quality
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout full history for exact changed-file review
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Python syntax and incremental Ruff regression controls
+        run: python3 scripts/test-python-quality.py
+
+      - name: Install pinned Python quality checker
+        run: |
+          python3 -m pip install --disable-pip-version-check ruff==0.17.4
+          ruff --version
+
+      - name: Review Python syntax, lint and formatting
+        env:
+          DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$DIFF_BASE" =~ ^0+$ ]]; then
+            # Initial push has no valid previous SHA; validate all tracked code.
+            python3 scripts/check-python-quality.py --all
+          else
+            python3 scripts/check-python-quality.py --base "$DIFF_BASE"
+          fi
+
   rust:
     name: rust
     timeout-minutes: 120
