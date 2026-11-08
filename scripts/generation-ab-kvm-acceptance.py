@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in REAL OVMF/KVM A→failed-B→A acceptance on Flowerly-built raw images.
+"""Opt-in REAL OVMF/KVM A/B acceptance on Flowerly-built raw images.
 
 Requires both roots and the data partition in a disposable GPT disk. The
 guest's root identity, Flowerly IPC health, post-bless and persistent marker
@@ -29,7 +29,14 @@ SCENARIOS = (
     "unhealthy-b-fallback",
     "data-survives",
     "tampered-b-refused",
+    "healthy-b-activation",
+    "rollback-to-a",
+    "damaged-entry-fallback",
+    "measure-stage-and-boot",
 )
+# Seconds a damaged slot B entry is watched; the guest never reaches the
+# Flowerly witness, the loader just has to burn one boot-count try per boot.
+QUIET_SECONDS = 45
 BOOT_SHA = re.compile(r"FLOWERLY_GENERATION_USER_MARKER_SHA256=([0-9a-f]{64})")
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -111,8 +118,23 @@ def validate_source(args, *, actual_execution=False):
         or identities.get("root-b") != args.root_b
     ):
         raise ValueError("approved booted root UUIDs do not match the disk")
+    host = (args.unstaged_disk, args.unstaged_manifest, args.candidate_b)
+    if any(host) and not all(host):
+        raise ValueError(
+            "--unstaged-disk, --unstaged-manifest and --candidate-b go together"
+        )
+    for path in filter(None, host):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("missing or unsafe host-scenario input")
     if actual_execution:
-        for program in ("qemu-system-x86_64", "sfdisk", "mcopy", "mdir", "mtype"):
+        for program in (
+            "qemu-system-x86_64",
+            "sfdisk",
+            "mcopy",
+            "mdir",
+            "mtype",
+            "mdel",
+        ):
             if not shutil.which(program, path=os.environ["PATH"] + ":/usr/sbin:/sbin"):
                 raise ValueError("missing real host tool: " + program)
     return manifest
@@ -178,8 +200,15 @@ def verify_running_qemu(pid, command):
     }
 
 
-def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
-    """Start one real firmware boot; kill guest after the observed milestone."""
+def qemu_boot(
+    args, disk, vars_file, report, slot, *, bless, label, lineage="main", quiet=False
+):
+    """Start one real firmware boot; kill guest after the observed milestone.
+
+    With quiet=True the boot is expected NOT to reach the Flowerly witness
+    (damaged loader entry): the guest is watched for QUIET_SECONDS and must
+    have started the requested slot's kernel without any Flowerly marker.
+    """
     log = report / (label + ".serial.log")
     qemu = shutil.which("qemu-system-x86_64")
     if not qemu:
@@ -212,6 +241,7 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
         "if=virtio,format=raw,cache=none,file=" + str(disk),
     ]
     started = time.monotonic()
+    expect = "NO_WITNESS" if quiet else "BLESSED" if bless else "REJECTED"
     with log.open("xb") as output:
         process = subprocess.Popen(
             command,
@@ -221,28 +251,62 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
             start_new_session=True,
         )
         try:
-            while time.monotonic() - started <= args.timeout:
-                marker = observe_serial(log, slot, bless=bless, timeout=args.timeout)
-                if marker is not None:
-                    host_observed = verify_running_qemu(process.pid, command)
-                    # Permit systemd and ext4 a brief flush window before the
-                    # deliberate abrupt QEMU kill (simulated host power loss).
-                    time.sleep(2)
-                    return {
-                        "slot": slot,
-                        "marker_sha256": marker,
-                        **host_observed,
-                        "seconds": round(time.monotonic() - started, 3),
-                        "serial": log.name,
-                        "observed_health": "BLESSED" if bless else "REJECTED",
-                        "power_loss": "QEMU_SIGKILL",
-                    }
+            limit = QUIET_SECONDS if quiet else args.timeout
+            while time.monotonic() - started <= limit:
+                if quiet:
+                    text = log.read_text(encoding="utf-8", errors="replace")
+                    if "FLOWERLY_GENERATION_ROOT_VERIFIED" in text:
+                        raise ValueError(
+                            f"{label}: damaged entry unexpectedly reached the guest"
+                        )
+                else:
+                    marker = observe_serial(
+                        log, slot, bless=bless, timeout=args.timeout
+                    )
+                    if marker is not None:
+                        observed_at = time.monotonic() - started
+                        host_observed = verify_running_qemu(process.pid, command)
+                        # Permit systemd and ext4 a brief flush window before the
+                        # deliberate abrupt QEMU kill (simulated host power loss).
+                        time.sleep(2)
+                        return {
+                            "label": label,
+                            "slot": slot,
+                            "expect": expect,
+                            "lineage": lineage,
+                            "marker_sha256": marker,
+                            **host_observed,
+                            "seconds": round(time.monotonic() - started, 3),
+                            "seconds_to_observed": round(observed_at, 3),
+                            "serial": log.name,
+                            "observed_health": expect,
+                            "power_loss": "QEMU_SIGKILL",
+                        }
                 if process.poll() is not None:
                     raise ValueError(
                         f"QEMU exited before {label} witness: {process.returncode}"
                     )
                 time.sleep(0.5)
-            raise ValueError(f"timeout waiting for {label} boot identity/health")
+            if not quiet:
+                raise ValueError(f"timeout waiting for {label} boot identity/health")
+            host_observed = verify_running_qemu(process.pid, command)
+            text = log.read_text(encoding="utf-8", errors="replace")
+            wanted = "initrd=\\flowerly\\" + slot[-1] + "\\initramfs.img"
+            if wanted not in text or "FLOWERLY_GENERATION_ROOT_VERIFIED" in text:
+                raise ValueError(f"{label}: loader did not attempt the damaged slot")
+            return {
+                "label": label,
+                "slot": slot,
+                "expect": expect,
+                "lineage": lineage,
+                "marker_sha256": None,
+                **host_observed,
+                "seconds": round(time.monotonic() - started, 3),
+                "seconds_to_observed": None,
+                "serial": log.name,
+                "observed_health": expect,
+                "power_loss": "QEMU_SIGKILL",
+            }
         finally:
             if process.poll() is None:
                 process.kill()  # intentionally abrupt, not a clean shutdown
@@ -333,6 +397,173 @@ def reconcile_mutable_partitions(pristine_disk, booted_disk, out_disk, manifest)
     return copied
 
 
+def slice_hashes(disk, manifest):
+    """SHA-256 of every manifest partition of a regular disk image."""
+    hashes = {}
+    fd = os.open(disk, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        for part in manifest["partitions"]:
+            digest = hashlib.sha256()
+            cursor, remaining = part["offset_bytes"], part["size_bytes"]
+            while remaining:
+                block = os.pread(fd, min(1048576, remaining), cursor)
+                if not block:
+                    raise ValueError("short partition read")
+                digest.update(block)
+                cursor += len(block)
+                remaining -= len(block)
+            hashes[part["name"]] = digest.hexdigest()
+    finally:
+        os.close(fd)
+    return hashes
+
+
+def refuses(callable_, *arguments, **keywords):
+    """True when the real tool refuses (ValueError); anything else raises."""
+    try:
+        callable_(*arguments, **keywords)
+    except ValueError as error:
+        return str(error)[:160]
+    return None
+
+
+def host_stage_scenarios(args, out, result):
+    """Stage tool behaviour on real disk images (no guest needed)."""
+    stage_tool = module("generation_slot_stage", "generation-slot-stage-image.py")
+    verifier = module("generation_ab_verify_host", "verify-ab-slot-layout.py")
+    unstaged_manifest = json.loads(args.unstaged_manifest.read_text())
+    candidate_sha = sha_file(args.candidate_b)
+    checks = result.setdefault("host_checks", {})
+
+    # stage-complete: a full stage succeeds and is timed; an oversized
+    # candidate ("full disk") is refused before any byte is written.
+    disk = out / "stage-complete.img"
+    manifest_file = out / "stage-complete.manifest.json"
+    shutil.copyfile(args.unstaged_disk, disk)
+    shutil.copyfile(args.unstaged_manifest, manifest_file)
+    started = time.monotonic()
+    staged = stage_tool.stage(
+        disk, manifest_file, args.candidate_b, candidate_sha, args.root_a, "root-b"
+    )
+    result["measurements"]["stage_seconds"] = round(time.monotonic() - started, 3)
+    staged_manifest = json.loads(manifest_file.read_text())
+    verifier.verify(disk, staged_manifest)
+    before = sha_file(disk)
+    oversized = out / "oversized-candidate.bin"
+    with oversized.open("wb") as handle:
+        handle.truncate(
+            next(p for p in staged_manifest["partitions"] if p["name"] == "root-b")[
+                "size_bytes"
+            ]
+            + 1048576
+        )
+    refusal = refuses(
+        stage_tool.stage,
+        disk,
+        manifest_file,
+        oversized,
+        sha_file(oversized),
+        args.root_a,
+        "root-b",
+    )
+    oversized.unlink()
+    checks["stage-complete"] = {
+        "ok": staged["status"] == "STAGED_NOT_ARMED"
+        and staged["candidate_sha256"] == candidate_sha
+        and refusal is not None
+        and sha_file(disk) == before,
+        "staged_disk_sha256": staged["disk_sha256"],
+        "oversized_refusal": refusal,
+    }
+    disk.unlink()
+
+    # stage-interrupted: power loss in the middle of the inactive-slot write.
+    disk = out / "stage-interrupted.img"
+    manifest_file = out / "stage-interrupted.manifest.json"
+    shutil.copyfile(args.unstaged_disk, disk)
+    shutil.copyfile(args.unstaged_manifest, manifest_file)
+    manifest_before = manifest_file.read_bytes()
+    hashes_before = slice_hashes(disk, unstaged_manifest)
+    interrupted = None
+    try:
+        stage_tool.stage(
+            disk,
+            manifest_file,
+            args.candidate_b,
+            candidate_sha,
+            args.root_a,
+            "root-b",
+            inject_after_chunks=300,
+        )
+    except RuntimeError as error:
+        interrupted = str(error)[:120]
+    hashes_after = slice_hashes(disk, unstaged_manifest)
+    unchanged = all(
+        hashes_after[name] == hashes_before[name] for name in ("esp", "root-a", "data")
+    )
+    partial = hashes_after["root-b"] != hashes_before["root-b"]
+    reverify = refuses(verifier.verify, disk, unstaged_manifest)
+    checks["stage-interrupted"] = {
+        "ok": interrupted is not None
+        and unchanged
+        and partial
+        and reverify is not None
+        and manifest_file.read_bytes() == manifest_before,
+        "fault": interrupted,
+        "reverification_refusal": reverify,
+        "root_b_partially_written": partial,
+    }
+    result["_stage_interrupted"] = (disk, unstaged_manifest, hashes_after)
+    return checks
+
+
+def host_tamper_scenario(args, out, manifest, result):
+    """A tampered slot B must be refused everywhere and change nothing."""
+    verifier = module("generation_ab_verify_tamper", "verify-ab-slot-layout.py")
+    arm = module("generation_arm_efi_tamper", "generation-arm-esp-image.py")
+    stage_tool = module(
+        "generation_slot_stage_tamper", "generation-slot-stage-image.py"
+    )
+    disk = out / "tampered-b.img"
+    shutil.copyfile(args.disk, disk)
+    root_b = next(p for p in manifest["partitions"] if p["name"] == "root-b")
+    with disk.open("r+b") as handle:
+        handle.seek(root_b["offset_bytes"] + 1048576)
+        byte = handle.read(1)
+        handle.seek(root_b["offset_bytes"] + 1048576)
+        handle.write(bytes([(byte[0] ^ 0xFF) if byte else 0xFF]))
+    esp_before = slice_hashes(disk, manifest)["esp"]
+    verify_refusal = refuses(verifier.verify, disk, manifest)
+    outputs = (out / "tampered-armed.img", out / "tampered-armed.manifest.json")
+    arm_refusal = refuses(
+        arm.arm_image,
+        disk,
+        args.manifest,
+        args.kernel_b,
+        args.initramfs_b,
+        outputs[0],
+        outputs[1],
+    )
+    digest_refusal = refuses(
+        stage_tool.stage,
+        disk,
+        args.manifest,
+        args.candidate_b,
+        "0" * 63 + "1",
+        args.root_a,
+        "root-b",
+    )
+    result.setdefault("host_checks", {})["tampered-b-refused"] = {
+        "ok": all((verify_refusal, arm_refusal, digest_refusal))
+        and not any(path.exists() for path in outputs)
+        and slice_hashes(disk, manifest)["esp"] == esp_before,
+        "layout_verifier": verify_refusal,
+        "arm": arm_refusal,
+        "stage_digest": digest_refusal,
+    }
+    disk.unlink()
+
+
 def run(args):
     manifest = validate_source(args, actual_execution=True)
     args.output.mkdir(mode=0o700)
@@ -343,6 +574,12 @@ def run(args):
         "sequence_verified": False,
         "scenarios": {name: "NOT_RUN" for name in SCENARIOS},
         "boots": [],
+        "host_checks": {},
+        "measurements": {
+            "slot_bytes": {p["name"]: p["size_bytes"] for p in manifest["partitions"]},
+            "clean_shutdown": "NOT_MEASURED",
+        },
+        "s7_remaining": ["clean-shutdown-time", "production-slot-tool-power-loss"],
         "disk_sha256_initial": sha_file(args.disk),
         "ovmf_code_sha256": sha_file(args.ovmf_code),
         "ovmf_vars_template_sha256": sha_file(args.ovmf_vars),
@@ -353,6 +590,48 @@ def run(args):
         "boot_tries": args.tries,
     }
     file = args.output / "acceptance.json"
+    arm = module("generation_arm_efi", "generation-arm-esp-image.py")
+    out = args.output
+
+    def fresh_vars(name):
+        target = out / f"OVMF_VARS-{name}.fd"
+        shutil.copyfile(args.ovmf_vars, target)
+        return target
+
+    def boot(disk, vars_file, slot, label, *, bless, quiet=False, lineage="main"):
+        record = qemu_boot(
+            args,
+            disk,
+            vars_file,
+            out,
+            slot,
+            bless=bless,
+            label=label,
+            quiet=quiet,
+            lineage=lineage,
+        )
+        result["boots"].append(record)
+        return record
+
+    def arm_from(source, name, **keywords):
+        disk = out / f"{name}.img"
+        manifest_file = out / f"{name}.manifest.json"
+        arm.arm_image(
+            source,
+            args.manifest,
+            args.kernel_b,
+            args.initramfs_b,
+            disk,
+            manifest_file,
+            tries=args.tries,
+            **keywords,
+        )
+        return disk, manifest_file
+
+    def assert_data(record, reference, what):
+        if record["marker_sha256"] != reference["marker_sha256"]:
+            raise ValueError(f"persistent data marker changed: {what}")
+
     try:
         qemu = shutil.which("qemu-system-x86_64")
         if not qemu:
@@ -360,71 +639,127 @@ def run(args):
         result["qemu_version"] = subprocess.run(
             [qemu, "--version"], capture_output=True, text=True, check=True
         ).stdout.splitlines()[0][:160]
-        disk = args.output / "running-disk.img"
-        vars_file = args.output / "OVMF_VARS.fd"
+        disk = out / "running-disk.img"
+        vars_file = out / "OVMF_VARS.fd"
         shutil.copyfile(args.disk, disk)
         shutil.copyfile(args.ovmf_vars, vars_file)
-        a = qemu_boot(
-            args, disk, vars_file, args.output, "root-a", bless=True, label="boot-a"
-        )
-        result["boots"].append(a)
+        a = boot(disk, vars_file, "root-a", "boot-a", bless=True)
         result["root_sha256_after_boot_a"] = verify_immutable_roots(disk, manifest)
-        # The armed image is a NEW file based on A's current disk. It carries
-        # A's user-data changes forward rather than rolling them back.
-        arm = module("generation_arm_efi", "generation-arm-esp-image.py")
-        reconstructed = args.output / "post-a-pristine-roots.img"
-        # A's ext4 root can receive incidental journaling writes. A Generation
-        # root is immutable, so retain its original verified bytes and carry
-        # forward *only* the live ESP boot-counting state and user-data volume.
+        # Later disks are NEW files based on A's current disk. A Generation
+        # root is immutable, so retain its verified bytes and carry forward
+        # *only* the live ESP boot-counting state and the user-data volume.
+        reconstructed = out / "post-a-pristine-roots.img"
         result["mutable_sha256_from_boot_a"] = reconcile_mutable_partitions(
             args.disk, disk, reconstructed, manifest
         )
         result["root_reconstruction"] = "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES"
-        armed_disk = args.output / "armed-b.img"
-        armed_manifest = args.output / "armed-b.manifest.json"
-        arm.arm_image(
-            reconstructed,
-            args.manifest,
-            args.kernel_b,
-            args.initramfs_b,
-            armed_disk,
-            armed_manifest,
-            tries=args.tries,
-            failure_switch=True,
+
+        # --- unhealthy B: boot count runs out, loader falls back to A.
+        armed_disk, armed_manifest = arm_from(
+            reconstructed, "armed-b", failure_switch=True
         )
-        # Retry unhealthy B using the SAME EFI variables and writable image.
-        # systemd-boot must exhaust B's boot-count and select last healthy A.
         for index in range(args.tries):
-            attempt = qemu_boot(
-                args,
+            attempt = boot(
                 armed_disk,
                 vars_file,
-                args.output,
                 "root-b",
+                f"unhealthy-b-{index + 1}",
                 bless=False,
-                label=f"unhealthy-b-{index + 1}",
             )
-            result["boots"].append(attempt)
-            if attempt["marker_sha256"] != a["marker_sha256"]:
-                raise ValueError("persistent data marker changed on failed B boot")
-        result["scenarios"]["boot-before-bless"] = "PASS"
-        last = qemu_boot(
-            args,
-            armed_disk,
-            vars_file,
-            args.output,
-            "root-a",
-            bless=True,
-            label="auto-fallback-a",
-        )
-        result["boots"].append(last)
+            assert_data(attempt, a, "failed B boot")
+        last = boot(armed_disk, vars_file, "root-a", "auto-fallback-a", bless=True)
         result["root_sha256_after_fallback"] = verify_immutable_roots(
             armed_disk, json.loads(armed_manifest.read_text())
         )
-        if last["marker_sha256"] != a["marker_sha256"]:
-            raise ValueError("user data changed on automatic fallback to A")
-        result["scenarios"]["data-survives"] = "PASS"
-        result["scenarios"]["unhealthy-b-fallback"] = "PASS"
+        assert_data(last, a, "automatic fallback to A")
+        for name in ("boot-before-bless", "data-survives", "unhealthy-b-fallback"):
+            result["scenarios"][name] = "PASS"
+        armed_disk.unlink()
+
+        # --- healthy B: activation sticks across a reboot, then rollback to A.
+        ok_disk, ok_manifest = arm_from(reconstructed, "armed-b-ok")
+        ok_vars = fresh_vars("healthy-b")
+        b1 = boot(ok_disk, ok_vars, "root-b", "healthy-b-1", bless=True)
+        verify_immutable_roots(ok_disk, json.loads(ok_manifest.read_text()))
+        assert_data(b1, a, "first healthy B boot")
+        b2 = boot(ok_disk, ok_vars, "root-b", "healthy-b-2", bless=True)
+        assert_data(b2, a, "second healthy B boot")
+        result["scenarios"]["healthy-b-activation"] = "PASS"
+        rolled_disk = out / "rollback-a.img"
+        rolled_manifest = out / "rollback-a.manifest.json"
+        arm.rollback_image(ok_disk, ok_manifest, rolled_disk, rolled_manifest)
+        ok_disk.unlink()
+        rb = boot(
+            rolled_disk, fresh_vars("rollback"), "root-a", "rollback-a", bless=True
+        )
+        verify_immutable_roots(rolled_disk, json.loads(rolled_manifest.read_text()))
+        assert_data(rb, a, "rollback to A")
+        result["scenarios"]["rollback-to-a"] = "PASS"
+        rolled_disk.unlink()
+
+        # --- power loss during the arm sequence: loader stays on verified A.
+        for fault, label, scenario in (
+            ("tmp-entry", "arm-before-rename-a", "arm-before-rename"),
+            ("entry-no-default", "arm-after-rename-a", "arm-after-rename"),
+        ):
+            torn_disk, torn_manifest = arm_from(reconstructed, label, fault=fault)
+            record = boot(torn_disk, fresh_vars(label), "root-a", label, bless=True)
+            verify_immutable_roots(torn_disk, json.loads(torn_manifest.read_text()))
+            assert_data(record, a, scenario)
+            result["scenarios"][scenario] = "PASS"
+            torn_disk.unlink()
+
+        # --- damaged (torn) B entry: tries burn down without a witness, then A.
+        damaged_disk, damaged_manifest = arm_from(
+            reconstructed, "damaged-entry", fault="torn-entry"
+        )
+        damaged_vars = fresh_vars("damaged")
+        for index in range(args.tries):
+            boot(
+                damaged_disk,
+                damaged_vars,
+                "root-b",
+                f"damaged-b-{index + 1}",
+                bless=False,
+                quiet=True,
+            )
+        back = boot(
+            damaged_disk, damaged_vars, "root-a", "damaged-fallback-a", bless=True
+        )
+        verify_immutable_roots(damaged_disk, json.loads(damaged_manifest.read_text()))
+        assert_data(back, a, "damaged entry fallback")
+        result["scenarios"]["damaged-entry-fallback"] = "PASS"
+        damaged_disk.unlink()
+
+        # --- stage-level scenarios on real disk images.
+        if args.unstaged_disk:
+            checks = host_stage_scenarios(args, out, result)
+            interrupted_disk, interrupted_manifest, hashes_after = result.pop(
+                "_stage_interrupted"
+            )
+            host_tamper_scenario(args, out, manifest, result)
+            boot(
+                interrupted_disk,
+                fresh_vars("stage-interrupted"),
+                "root-a",
+                "stage-interrupted-a",
+                bless=True,
+                lineage="stage-interrupted",
+            )
+            now = slice_hashes(interrupted_disk, interrupted_manifest)
+            if (
+                now["root-a"] != hashes_after["root-a"]
+                or now["root-b"] != hashes_after["root-b"]
+            ):
+                raise ValueError("guest wrote a root slot after interrupted stage")
+            interrupted_disk.unlink()
+            for name, check in checks.items():
+                result["scenarios"][name] = "PASS" if check["ok"] else "FAIL"
+            result["scenarios"]["tampered-b-refused"] = (
+                "PASS" if result["host_checks"]["tampered-b-refused"]["ok"] else "FAIL"
+            )
+            if "stage_seconds" in result["measurements"]:
+                result["scenarios"]["measure-stage-and-boot"] = "PASS"
         result["sequence_verified"] = True
         result["status"] = "SEQUENCE_OBSERVED_S7_INCOMPLETE"
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
@@ -432,15 +767,16 @@ def run(args):
         result["error"] = str(error)[:350]
         raise
     finally:
-        for name in ("armed-b.img", "running-disk.img", "OVMF_VARS.fd"):
-            candidate = args.output / name
+        result.pop("_stage_interrupted", None)
+        for name in ("running-disk.img", "OVMF_VARS.fd"):
+            candidate = out / name
             if candidate.is_file():
                 result[name + "_final_sha256"] = sha_file(candidate)
         file.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
         # Hashes of serial evidence and the *final* disk may differ from the
         # initial manifest because systemd-boot and user data are mutable.
-        hashes = {p.name: sha_file(p) for p in args.output.glob("*.serial.log")}
-        (args.output / "serial-sha256.json").write_text(
+        hashes = {p.name: sha_file(p) for p in out.glob("*.serial.log")}
+        (out / "serial-sha256.json").write_text(
             json.dumps(hashes, indent=2, sort_keys=True) + "\n"
         )
     if result["sequence_verified"]:
@@ -448,7 +784,7 @@ def run(args):
             "generation_ab_evidence_audit", "generation-ab-evidence-audit.py"
         )
         try:
-            result["audit"] = auditor.audit(result, args.output)
+            result["audit"] = auditor.audit(result, out)
         except (ValueError, TypeError, KeyError, OSError) as error:
             result["status"] = "EVIDENCE_AUDIT_FAILED"
             result["sequence_verified"] = False
@@ -475,6 +811,8 @@ def main():
         parser.add_argument(
             "--" + name, dest=name.replace("-", "_"), type=Path, required=True
         )
+    for name in ("unstaged-disk", "unstaged-manifest", "candidate-b"):
+        parser.add_argument("--" + name, dest=name.replace("-", "_"), type=Path)
     parser.add_argument("--root-a", required=True)
     parser.add_argument("--root-b", required=True)
     parser.add_argument("--tries", type=int, default=3)
@@ -482,9 +820,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.execute:
-            print(
-                "Starting explicitly authorized real KVM A→B→A acceptance", flush=True
-            )
+            print("Starting explicitly authorized real KVM A/B acceptance", flush=True)
             result = run(args)
             print(
                 json.dumps(

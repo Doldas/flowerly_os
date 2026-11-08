@@ -260,6 +260,16 @@ tracks that do not block step 1:
   authority over activation in this step.
 
 
+## S7 — full scenario matrix observed 2026-11-08 (still not accepted)
+
+Second real run on `90492ed`: healthy B kept across a reboot, rollback to A,
+power loss at the arm steps, a torn B entry that burns its tries and falls back
+to A, interrupted/complete/oversized stage and a tampered slot B, plus
+measurements — 12 scenarios, 15 KVM boots, audit consistent. See
+[the matrix review](reviews/0048-s7-full-matrix-run-2026-11-08.md). Remaining
+for S7: clean-shutdown measurement and power loss against the production slot
+tool (S6, not built); owner review (D5) decides ADR-0019. Gate D is untouched.
+
 ## S7 — first real run executed 2026-11-08 (sequence observed, S7 incomplete)
 
 The harness has now run for real: firmware → systemd-boot → slot A blessed,
