@@ -88,6 +88,14 @@ chmod 0644 "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d/10-generation-wit
 # The stock systemd-bless-boot.service can otherwise bless before Flowerly's
 # health gate. Mask its unit but call the actual binary ONLY after IPC passes.
 ln -s /dev/null "$ROOTFS/etc/systemd/system/systemd-bless-boot.service"
+# The slot boots with a read-only root, so systemd-sysusers cannot create the
+# service accounts at first boot (found by the third real KVM run: "user
+# flowerly does not exist"). Bake them into the image instead.
+SYSUSERS="${FLOWERLY_SYSUSERS:-systemd-sysusers}"
+[[ -f "$ROOTFS/usr/lib/sysusers.d/flowerly.conf" && ! -L "$ROOTFS/usr/lib/sysusers.d/flowerly.conf" ]] ||
+    fail "missing Flowerly sysusers.d configuration"
+command -v "$SYSUSERS" >/dev/null 2>&1 || fail "missing host tool: systemd-sysusers"
+"$SYSUSERS" --root="$ROOTFS" >/dev/null || fail "baking Flowerly service accounts failed"
 # systemd-bless-boot renames the boot-counting entry on the ESP; without a
 # mounted $BOOT it fails ("Couldn't find $BOOT partition", found by the first
 # real KVM run). /boot is not usable: the root volume already holds files there.
