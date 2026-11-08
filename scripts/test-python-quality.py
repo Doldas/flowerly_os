@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline regression of the strict, incremental Python quality gate."""
+
 import json
 import os
 from pathlib import Path
@@ -71,7 +72,16 @@ class PythonQualityTests(unittest.TestCase):
         self.assertEqual(
             self.calls(),
             [
-                ["check", "--no-cache", "--isolated", "--select", "E4,E7,E9,F", "--", "existing.py", "new file.py"],
+                [
+                    "check",
+                    "--no-cache",
+                    "--isolated",
+                    "--select",
+                    "E4,E7,E9,F",
+                    "--",
+                    "existing.py",
+                    "new file.py",
+                ],
                 ["format", "--check", "--", "new file.py"],
             ],
         )
