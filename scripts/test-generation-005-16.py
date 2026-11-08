@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #336."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_16",Path(__file__).with_name("generation-005-16-packages.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 def package(name,version="1.0"):
     return {"name":name,"version":version,"architecture":"x86_64",
             "sha256":"a"*64,"repository":"core"}
