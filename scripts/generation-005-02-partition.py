@@ -8,6 +8,7 @@ NAMES = ("esp", "root-a", "root-b", "data")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 MIB = 1048576
 
+
 def validate_layout(manifest):
     if (
         not isinstance(manifest, dict)
