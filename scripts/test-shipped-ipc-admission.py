@@ -19,6 +19,7 @@ the image, and against mutated copies so each bypass is proven to be
 rejected. The real systemd behavior is accepted in the Arch guest by
 test-systemd-multi-user.py.
 """
+
 import pathlib
 import re
 import unittest
@@ -91,7 +92,12 @@ def common_problems(values):
     """Invariants of every supported configuration."""
     problems = []
     env = environment_of(values)
-    for key in ("EnvironmentFile", "PassEnvironment", "SupplementaryGroups", "DynamicUser"):
+    for key in (
+        "EnvironmentFile",
+        "PassEnvironment",
+        "SupplementaryGroups",
+        "DynamicUser",
+    ):
         if key in values:
             problems.append(f"sets {key}, which could widen admission or groups")
     if values.get("User") != ["flowerly"]:
@@ -101,12 +107,16 @@ def common_problems(values):
     if values.get("UMask") != ["0077"]:
         problems.append("UMask must be 0077")
     if env.get("AGENTIC_ADMIN_GROUP") != "flowerly-admin":
-        problems.append("AGENTIC_ADMIN_GROUP must stay flowerly-admin (deny by default)")
+        problems.append(
+            "AGENTIC_ADMIN_GROUP must stay flowerly-admin (deny by default)"
+        )
     for name, reason in MANAGER_UNSET.items():
         if name in env:
             problems.append(f"sets {name}: {reason}")
         if name not in unset_of(values):
-            problems.append(f"must UnsetEnvironment={name} so the manager cannot inject it")
+            problems.append(
+                f"must UnsetEnvironment={name} so the manager cannot inject it"
+            )
     exec_start = " ".join(values.get("ExecStart", []))
     if exec_start != "/usr/bin/flowerlyd --state-dir /var/lib/flowerly":
         problems.append(f"ExecStart changed: {exec_start!r}")
@@ -132,9 +142,13 @@ def opt_in_problems(values):
     if env.get("AGENTIC_USERS_GROUP") != "flowerly-users":
         problems.append(f"opt-in users group is {env.get('AGENTIC_USERS_GROUP')!r}")
     if "AGENTIC_USERS_GROUP" in unset_of(values):
-        problems.append("opt-in still unsets AGENTIC_USERS_GROUP (it would never apply)")
+        problems.append(
+            "opt-in still unsets AGENTIC_USERS_GROUP (it would never apply)"
+        )
     if values.get("Group") != ["flowerly-users"]:
-        problems.append(f"opt-in Group is {values.get('Group')}, expected flowerly-users")
+        problems.append(
+            f"opt-in Group is {values.get('Group')}, expected flowerly-users"
+        )
     if values.get("RuntimeDirectoryMode") != ["0750"]:
         problems.append("opt-in RuntimeDirectoryMode must be 0750")
     return problems
@@ -143,12 +157,21 @@ def opt_in_problems(values):
 def drop_in_problems(drop_in_text):
     """The drop-in may only change what multi-user access needs."""
     allowed = {"Group", "RuntimeDirectoryMode", "UnsetEnvironment", "Environment"}
-    problems = [f"drop-in sets {key}" for key, _ in directives(drop_in_text)
-                if key not in allowed]
-    names = [item.partition("=")[0] for key, value in directives(drop_in_text)
-             if key == "Environment" for item in value.split()]
+    problems = [
+        f"drop-in sets {key}"
+        for key, _ in directives(drop_in_text)
+        if key not in allowed
+    ]
+    names = [
+        item.partition("=")[0]
+        for key, value in directives(drop_in_text)
+        if key == "Environment"
+        for item in value.split()
+    ]
     if names != ["AGENTIC_USERS_GROUP"]:
-        problems.append(f"drop-in Environment must set only AGENTIC_USERS_GROUP: {names}")
+        problems.append(
+            f"drop-in Environment must set only AGENTIC_USERS_GROUP: {names}"
+        )
     return problems
 
 
@@ -161,13 +184,17 @@ def overlay_problems(sysusers_text, overlay_paths):
     for path in overlay_paths:
         name = path.as_posix()
         if name.endswith(".socket") or re.search(r"\.service\.d(/|$)", name):
-            problems.append(f"overlay ships {name}, an alternate socket or active unit override")
+            problems.append(
+                f"overlay ships {name}, an alternate socket or active unit override"
+            )
         if path == DROP_IN_PATH:
             continue
         absolute = OVERLAY / path
         if name.endswith((".toml", ".conf", ".env")) and absolute.is_file():
             text = absolute.read_text(errors="replace")
-            active = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+            active = "\n".join(
+                ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+            )
             if any(k in active for k in ("users_group", "AGENTIC_USERS_GROUP")):
                 problems.append(f"{name} configures the users group")
     return problems
@@ -195,33 +222,57 @@ class ShippedAdmission(unittest.TestCase):
         unset = UNIT_UNSET
         self.assertIn(unset, unit)
         mutations = {
-            "users group": unit.replace(env, env + "\nEnvironment=AGENTIC_USERS_GROUP=flowerly-users"),
-            "environment file": unit.replace(env, env + "\nEnvironmentFile=/etc/flowerly/env"),
-            "supplementary admin": unit.replace(env, env + "\nSupplementaryGroups=flowerly-admin"),
-            "group-owned socket": unit.replace("Group=flowerly", "Group=flowerly-users"),
-            "traversable runtime": unit.replace("RuntimeDirectoryMode=0700", "RuntimeDirectoryMode=0750"),
-            "readable state": unit.replace("StateDirectoryMode=0700", "StateDirectoryMode=0750"),
+            "users group": unit.replace(
+                env, env + "\nEnvironment=AGENTIC_USERS_GROUP=flowerly-users"
+            ),
+            "environment file": unit.replace(
+                env, env + "\nEnvironmentFile=/etc/flowerly/env"
+            ),
+            "supplementary admin": unit.replace(
+                env, env + "\nSupplementaryGroups=flowerly-admin"
+            ),
+            "group-owned socket": unit.replace(
+                "Group=flowerly", "Group=flowerly-users"
+            ),
+            "traversable runtime": unit.replace(
+                "RuntimeDirectoryMode=0700", "RuntimeDirectoryMode=0750"
+            ),
+            "readable state": unit.replace(
+                "StateDirectoryMode=0700", "StateDirectoryMode=0750"
+            ),
             "loose umask": unit.replace("UMask=0077", "UMask=0022"),
             "no admin group": unit.replace(env, ""),
             "inherits manager users group": unit.replace(unset, DROP_IN_UNSET),
-            **{f"inherits manager {name}": unit.replace(unset, unset.replace(f" {name}", ""))
-               for name in MANAGER_UNSET},
+            **{
+                f"inherits manager {name}": unit.replace(
+                    unset, unset.replace(f" {name}", "")
+                )
+                for name in MANAGER_UNSET
+            },
             "sets database path": unit.replace(
-                env, env + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/state.db"),
+                env, env + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/state.db"
+            ),
             "sets development PTY isolation": unit.replace(
-                env, env + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"),
-            "config file": unit.replace("ExecStart=/usr/bin/flowerlyd",
-                                        "ExecStart=/usr/bin/flowerlyd --config /etc/f.toml"),
+                env, env + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"
+            ),
+            "config file": unit.replace(
+                "ExecStart=/usr/bin/flowerlyd",
+                "ExecStart=/usr/bin/flowerlyd --config /etc/f.toml",
+            ),
             "root": unit.replace("User=flowerly", "User=root"),
         }
         for label, mutated in mutations.items():
             self.assertNotEqual(mutated, unit, label)
             self.assertTrue(default_problems(effective(mutated)), label)
-        self.assertTrue(overlay_problems(SYSUSERS.read_text() + "m flowerly flowerly-admin\n", []))
-        for extra in ("usr/lib/systemd/system/flowerlyd.socket",
-                      "usr/lib/systemd/system/flowerlyd.service.d/override.conf",
-                      "etc/systemd/system/flowerlyd.service.d/50-multi-user.conf",
-                      "usr/lib/systemd/system/flowerlyd.service.d"):
+        self.assertTrue(
+            overlay_problems(SYSUSERS.read_text() + "m flowerly flowerly-admin\n", [])
+        )
+        for extra in (
+            "usr/lib/systemd/system/flowerlyd.socket",
+            "usr/lib/systemd/system/flowerlyd.service.d/override.conf",
+            "etc/systemd/system/flowerlyd.service.d/50-multi-user.conf",
+            "usr/lib/systemd/system/flowerlyd.service.d",
+        ):
             self.assertTrue(overlay_problems("", [pathlib.Path(extra)]), extra)
 
     def test_each_drop_in_weakening_is_rejected(self):
@@ -232,38 +283,62 @@ class ShippedAdmission(unittest.TestCase):
         self.assertIn(DROP_IN_UNSET + "\n", drop_in)
         mutations = {
             "keeps unit unset list": drop_in.replace("UnsetEnvironment=\n", ""),
-            **{f"drops {name} unset": drop_in.replace(DROP_IN_UNSET, DROP_IN_UNSET.replace(f"={name} ", "=")
-                                                       .replace(f" {name}", ""))
-               for name in MANAGER_UNSET},
-            "database path": drop_in.replace(users, users + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/x.db"),
+            **{
+                f"drops {name} unset": drop_in.replace(
+                    DROP_IN_UNSET,
+                    DROP_IN_UNSET.replace(f"={name} ", "=").replace(f" {name}", ""),
+                )
+                for name in MANAGER_UNSET
+            },
+            "database path": drop_in.replace(
+                users, users + "\nEnvironment=AGENTIC_DATABASE_PATH=/dev/shm/x.db"
+            ),
             "development PTY isolation": drop_in.replace(
-                users, users + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"),
-            "other users group": drop_in.replace(users, "Environment=AGENTIC_USERS_GROUP=wheel"),
+                users, users + "\nEnvironment=FLOWERLY_PTY_ISOLATION=development"
+            ),
+            "other users group": drop_in.replace(
+                users, "Environment=AGENTIC_USERS_GROUP=wheel"
+            ),
             "no users group": drop_in.replace(users, ""),
-            "admin group swap": drop_in.replace(users, users + "\nEnvironment=AGENTIC_ADMIN_GROUP=wheel"),
-            "admin as users": drop_in.replace(users, users + " AGENTIC_ADMIN_GROUP=flowerly-users"),
-            "config": drop_in.replace(users, users + "\nEnvironment=AGENTIC_CONFIG=/etc/f.toml"),
+            "admin group swap": drop_in.replace(
+                users, users + "\nEnvironment=AGENTIC_ADMIN_GROUP=wheel"
+            ),
+            "admin as users": drop_in.replace(
+                users, users + " AGENTIC_ADMIN_GROUP=flowerly-users"
+            ),
+            "config": drop_in.replace(
+                users, users + "\nEnvironment=AGENTIC_CONFIG=/etc/f.toml"
+            ),
             "supplementary admin": drop_in + "SupplementaryGroups=flowerly-admin\n",
             "readable state": drop_in + "StateDirectoryMode=0750\n",
             "loose umask": drop_in + "UMask=0022\n",
             "environment file": drop_in + "EnvironmentFile=/etc/flowerly/env\n",
             "root": drop_in + "User=root\n",
-            "exec": drop_in + "ExecStart=\nExecStart=/usr/bin/flowerlyd --config /etc/f.toml\n",
-            "world runtime": drop_in.replace("RuntimeDirectoryMode=0750", "RuntimeDirectoryMode=0755"),
+            "exec": drop_in
+            + "ExecStart=\nExecStart=/usr/bin/flowerlyd --config /etc/f.toml\n",
+            "world runtime": drop_in.replace(
+                "RuntimeDirectoryMode=0750", "RuntimeDirectoryMode=0755"
+            ),
             "private group": drop_in.replace("Group=flowerly-users", "Group=flowerly"),
         }
         for label, mutated in mutations.items():
             self.assertNotEqual(mutated, drop_in, label)
-            self.assertTrue(drop_in_problems(mutated) or
-                            opt_in_problems(effective(unit, mutated)), label)
+            self.assertTrue(
+                drop_in_problems(mutated) or opt_in_problems(effective(unit, mutated)),
+                label,
+            )
 
     def test_a_commented_users_group_is_not_mistaken_for_a_setting(self):
         self.assertIn("AGENTIC_USERS_GROUP", UNIT.read_text())
-        self.assertNotIn("AGENTIC_USERS_GROUP", environment_of(effective(UNIT.read_text())))
+        self.assertNotIn(
+            "AGENTIC_USERS_GROUP", environment_of(effective(UNIT.read_text()))
+        )
 
     def test_merge_follows_systemd_list_and_reset_rules(self):
-        merged = effective("[Service]\nUnsetEnvironment=A B\nGroup=x\n",
-                           "[Service]\nUnsetEnvironment=\nUnsetEnvironment=B\nGroup=y\n")
+        merged = effective(
+            "[Service]\nUnsetEnvironment=A B\nGroup=x\n",
+            "[Service]\nUnsetEnvironment=\nUnsetEnvironment=B\nGroup=y\n",
+        )
         self.assertEqual(unset_of(merged), ["B"])
         self.assertEqual(merged["Group"], ["y"])
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Black-box two-daemon boundary, durable state, and IPC regression."""
+
 import json
 import os
 from pathlib import Path
@@ -49,12 +50,18 @@ def begin(binary, runtime, state):
     runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
     state.mkdir(parents=True, mode=0o700, exist_ok=True)
     # IPC shutdown needs an explicit admin group grant (#31).
-    environment = dict(os.environ,
-                       AGENTIC_RUNTIME_DIR=str(runtime),
-                       AGENTIC_STATE_DIR=str(state),
-                       AGENTIC_ADMIN_GROUP=str(os.getgid()))
-    proc = subprocess.Popen([str(binary)], env=environment,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    environment = dict(
+        os.environ,
+        AGENTIC_RUNTIME_DIR=str(runtime),
+        AGENTIC_STATE_DIR=str(state),
+        AGENTIC_ADMIN_GROUP=str(os.getgid()),
+    )
+    proc = subprocess.Popen(
+        [str(binary)],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
     sock = runtime / (binary.name + ".sock")
     for _ in range(150):
         if proc.poll() is not None:
@@ -80,7 +87,9 @@ def shutdown(proc, sock):
         try:
             code = proc.wait(timeout=6)
         except subprocess.TimeoutExpired as error:
-            raise AssertionError(f"{sock.name} did not drain within 6 seconds") from error
+            raise AssertionError(
+                f"{sock.name} did not drain within 6 seconds"
+            ) from error
         assert code == 0, f"{sock.name} shutdown exit code {code}"
         assert not sock.exists(), f"{sock.name} socket remained after shutdown"
     except (OSError, AssertionError) as error:
@@ -105,7 +114,9 @@ def main(bin_dir):
         flowerlyd = Path(bin_dir) / "flowerlyd"
         evolutiond = Path(bin_dir) / "evolutiond"
         supervisor, sock = begin(flowerlyd, root / "runtime", root / "state")
-        hypervisor, evosock = begin(evolutiond, root / "evolution-runtime", root / "evolution-state")
+        hypervisor, evosock = begin(
+            evolutiond, root / "evolution-runtime", root / "evolution-state"
+        )
         try:
             for service, path in (("flowerlyd", sock), ("evolutiond", evosock)):
                 ping = rpc(path, "ping")
@@ -120,15 +131,30 @@ def main(bin_dir):
             assert boundary["data"]["details"]["execution_enabled"] is False, boundary
             assert boundary["data"]["details"]["isolation_verified"] is False, boundary
             experiment = good(evosock, "evolution.experiment-status", {})
-            assert experiment["status"] == "unavailable" and experiment["provisioned"] is False
+            assert (
+                experiment["status"] == "unavailable"
+                and experiment["provisioned"] is False
+            )
             assert experiment["execution_enabled"] is False, experiment
             assert experiment["isolation_verified"] is False, experiment
             denied = rpc(evosock, "command", name="evolution.run_experiment", args={})
             assert denied["type"] == "err" and denied["code"] == "unavailable", denied
-            assert {p.name for p in (root / "runtime").glob("*.sock")} == {"flowerlyd.sock"}
-            assert {p.name for p in (root / "evolution-runtime").glob("*.sock")} == {"evolutiond.sock"}
-            created = good(sock, "flow.create", {"name": "Unified test", "operation_id": "unified-flow-1"})
-            repeat = good(sock, "flow.create", {"name": "Unified test", "operation_id": "unified-flow-1"})
+            assert {p.name for p in (root / "runtime").glob("*.sock")} == {
+                "flowerlyd.sock"
+            }
+            assert {p.name for p in (root / "evolution-runtime").glob("*.sock")} == {
+                "evolutiond.sock"
+            }
+            created = good(
+                sock,
+                "flow.create",
+                {"name": "Unified test", "operation_id": "unified-flow-1"},
+            )
+            repeat = good(
+                sock,
+                "flow.create",
+                {"name": "Unified test", "operation_id": "unified-flow-1"},
+            )
             assert repeat["id"] == created["id"], (created, repeat)
             goal = good(sock, "goal.create", {"objective": "Lifecycle test"})
             assert goal["id"].startswith("goal-")
@@ -142,8 +168,12 @@ def main(bin_dir):
             assert catalog["authorization"] == "not_implemented", catalog
             assert "evolution.run_experiment" in catalog["capabilities"], catalog
             # Listing a descriptor must not authorize privileged execution.
-            unsupported = rpc(sock, "command",
-                              name="capability.grant", args={"capability": "evolution.run_experiment"})
+            unsupported = rpc(
+                sock,
+                "command",
+                name="capability.grant",
+                args={"capability": "evolution.run_experiment"},
+            )
             assert unsupported["type"] == "err", unsupported
             assert unsupported["code"] == "invalid_argument", unsupported
             assert (root / "state" / "state.db").is_file()

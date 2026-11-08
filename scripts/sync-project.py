@@ -11,6 +11,7 @@ Usage (GitHub CLI authenticated with 'project' scope):
 
 CI usage: the same script runs with --project from the repository default.
 """
+
 import importlib.util
 import pathlib
 import sys

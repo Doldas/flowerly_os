@@ -23,10 +23,15 @@ def receive_exact(connection, length):
 
 def command(socket_path, name, args):
     identity = str(uuid.uuid4())
-    request = json.dumps({
-        "version": 1, "id": identity, "type": "command",
-        "name": name, "args": args,
-    }).encode()
+    request = json.dumps(
+        {
+            "version": 1,
+            "id": identity,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode()
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(5)
         connection.connect(str(socket_path))

@@ -4,6 +4,7 @@
 Exercises Flow, Goal and Session modules through the *same* local authenticated
 socket and durable SQLite database; restart the real supervisor before replay.
 """
+
 import json
 import os
 import pathlib
@@ -29,13 +30,15 @@ def recv_exact(conn, count):
 
 def request(socket_path, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1,
-        "id": correlation,
-        "type": "command",
-        "name": name,
-        "args": args,
-    }).encode("utf-8")
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": correlation,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode("utf-8")
     started = time.monotonic()
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
@@ -47,17 +50,20 @@ def request(socket_path, name, args):
     assert reply["id"] == correlation, (name, reply)
     assert reply["version"] == 1, (name, reply)
     elapsed_ms = (time.monotonic() - started) * 1000
-    print(f"ipc-observation command={name} request_id={correlation} "
-          f"elapsed_ms={elapsed_ms:.1f} outcome={reply['type']} "
-          f"object_id={reply.get('data', {}).get('id', '-')}", flush=True)
+    print(
+        f"ipc-observation command={name} request_id={correlation} "
+        f"elapsed_ms={elapsed_ms:.1f} outcome={reply['type']} "
+        f"object_id={reply.get('data', {}).get('id', '-')}",
+        flush=True,
+    )
     return reply
 
 
 def shutdown(socket_path):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1, "id": correlation, "type": "shutdown"
-    }).encode("utf-8")
+    message = json.dumps({"version": 1, "id": correlation, "type": "shutdown"}).encode(
+        "utf-8"
+    )
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -90,8 +96,12 @@ def main(bin_dir):
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
         # Admin commands and IPC shutdown need an explicit admin group (#31).
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
-                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        env = dict(
+            os.environ,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         processes = {}
 
         def start(name):
@@ -106,18 +116,36 @@ def main(bin_dir):
         try:
             start("flowerlyd")
             scenarios = [
-                ("flowd", "flow.create",
-                 {"name": "Persistent Flow", "operation_id": "flow-create-00001"}),
-                ("goald", "goal.create",
-                 {"objective": "Persistent Goal", "operation_id": "goal-create-00001"}),
-                ("sessiond", "session.create",
-                 {"kind": "local-pty", "operation_id": "session-create-00001"}),
+                (
+                    "flowd",
+                    "flow.create",
+                    {"name": "Persistent Flow", "operation_id": "flow-create-00001"},
+                ),
+                (
+                    "goald",
+                    "goal.create",
+                    {
+                        "objective": "Persistent Goal",
+                        "operation_id": "goal-create-00001",
+                    },
+                ),
+                (
+                    "sessiond",
+                    "session.create",
+                    {"kind": "local-pty", "operation_id": "session-create-00001"},
+                ),
             ]
             first = {}
             baseline = {
-                service: request(runtime / "flowerlyd.sock",
-                                 {"flowd": "flow.list", "goald": "goal.list",
-                                  "sessiond": "session.list"}[service], {})["data"]["count"]
+                service: request(
+                    runtime / "flowerlyd.sock",
+                    {
+                        "flowd": "flow.list",
+                        "goald": "goal.list",
+                        "sessiond": "session.list",
+                    }[service],
+                    {},
+                )["data"]["count"]
                 for service in ("flowd", "goald", "sessiond")
             }
             for service, command, args in scenarios:
@@ -133,14 +161,16 @@ def main(bin_dir):
             # The same key with changed command payload must not be treated as
             # a harmless retry, even if it contains a different fresh request ID.
             conflict = request(
-                runtime / "flowerlyd.sock", "flow.create",
+                runtime / "flowerlyd.sock",
+                "flow.create",
                 {"name": "Different Flow", "operation_id": "flow-create-00001"},
             )
             assert conflict["type"] == "err", conflict
             assert conflict["code"] == "conflict", conflict
 
             bad = request(
-                runtime / "flowerlyd.sock", "goal.create",
+                runtime / "flowerlyd.sock",
+                "goal.create",
                 {"objective": "Invalid", "operation_id": "??"},
             )
             assert bad["type"] == "err" and bad["code"] == "invalid_argument", bad
@@ -148,12 +178,15 @@ def main(bin_dir):
             # Goal-child creation is also non-idempotent and must use the same
             # operation record mechanism.
             child_args = {
-                "id": first["goald"], "objective": "Child Goal",
+                "id": first["goald"],
+                "objective": "Child Goal",
                 "operation_id": "goal-child-00001",
             }
             child = request(runtime / "flowerlyd.sock", "goal.child", child_args)
             assert child["type"] == "ok", child
-            repeated_child = request(runtime / "flowerlyd.sock", "goal.child", child_args)
+            repeated_child = request(
+                runtime / "flowerlyd.sock", "goal.child", child_args
+            )
             assert repeated_child["type"] == "ok", repeated_child
             assert repeated_child["data"] == child["data"], (child, repeated_child)
 
@@ -162,9 +195,7 @@ def main(bin_dir):
             shutdown(runtime / "flowerlyd.sock")
             assert processes["flowerlyd"].wait(timeout=5) == 0
             start("flowerlyd")
-            replay = request(
-                runtime / "flowerlyd.sock", "flow.create", scenarios[0][2]
-            )
+            replay = request(runtime / "flowerlyd.sock", "flow.create", scenarios[0][2])
             assert replay["type"] == "ok", replay
             assert replay["data"]["id"] == first["flowd"], replay
 
@@ -174,13 +205,16 @@ def main(bin_dir):
                 "sessiond": baseline["sessiond"] + 1,
             }
             for service, command in (
-                ("flowd", "flow.list"), ("goald", "goal.list"),
+                ("flowd", "flow.list"),
+                ("goald", "goal.list"),
                 ("sessiond", "session.list"),
             ):
                 listing = request(runtime / "flowerlyd.sock", command, {})
                 assert listing["type"] == "ok", listing
                 assert listing["data"]["count"] == expected[service], (
-                    service, expected[service], listing
+                    service,
+                    expected[service],
+                    listing,
                 )
 
             with sqlite3.connect(state / "state.db") as conn:
@@ -191,10 +225,15 @@ def main(bin_dir):
             # A durable operation record is the commit witness. Keep its
             # actor-scoped key and count visible in CI after the restart.
             for actor, command, key in sorted(rows):
-                print(f"durable-commit actor={actor} command={command} "
-                      f"operation_id={key}", flush=True)
-            print(f"durable-commit-count={len(rows)} "
-                  f"expected-object-counts={expected}", flush=True)
+                print(
+                    f"durable-commit actor={actor} command={command} "
+                    f"operation_id={key}",
+                    flush=True,
+                )
+            print(
+                f"durable-commit-count={len(rows)} expected-object-counts={expected}",
+                flush=True,
+            )
             assert all(actor == f"uid:{os.getuid()}" for actor, _, _ in rows), rows
             print(
                 "IPC idempotency OK: creates/child, exact replay, mismatch, "
@@ -214,5 +253,7 @@ def main(bin_dir):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        raise SystemExit("usage: python3 scripts/test-ipc-idempotency.py target/release")
+        raise SystemExit(
+            "usage: python3 scripts/test-ipc-idempotency.py target/release"
+        )
     main(pathlib.Path(sys.argv[1]).resolve())

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline tests for IPC-gated Flowerly boot witness."""
+
 from pathlib import Path
 import os
 import subprocess
@@ -10,9 +11,14 @@ SCRIPT = ROOT / "distro/overlay/usr/lib/flowerly/boot-ipc-health.sh"
 
 
 def invoke(executable, attempts):
-    env = dict(os.environ, FLOWERLY_BOOT_AGENTICCTL=str(executable),
-               FLOWERLY_BOOT_PING_ATTEMPTS=str(attempts))
-    return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    env = dict(
+        os.environ,
+        FLOWERLY_BOOT_AGENTICCTL=str(executable),
+        FLOWERLY_BOOT_PING_ATTEMPTS=str(attempts),
+    )
+    return subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True
+    )
 
 
 def main():
@@ -25,7 +31,9 @@ def main():
         assert ok.stdout.strip() == "FLOWERLY_BOOT_IPC_HEALTHY"
         mock.write_text("#!/bin/sh\nexit 1\n")
         failed = invoke(mock, 1)
-        assert failed.returncode != 0 and "FLOWERLY_BOOT_IPC_HEALTHY" not in failed.stdout
+        assert (
+            failed.returncode != 0 and "FLOWERLY_BOOT_IPC_HEALTHY" not in failed.stdout
+        )
         invalid = invoke(mock, 0)
         assert invalid.returncode != 0
         print("Flowerly boot IPC witness: positive, failed ping and invalid limits")

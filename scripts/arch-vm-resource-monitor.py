@@ -4,16 +4,21 @@
 Records numeric counters only, never environment variables, command lines,
 SSH material, guest files, or kernel journal entries.
 """
+
 import argparse
 import csv
-import os
 from pathlib import Path
 import time
 
 COLUMNS = (
-    "elapsed_seconds", "qemu_alive", "qemu_rss_kib",
-    "host_mem_available_kib", "host_swap_free_kib",
-    "cgroup_memory_current_bytes", "cgroup_oom", "cgroup_oom_kill",
+    "elapsed_seconds",
+    "qemu_alive",
+    "qemu_rss_kib",
+    "host_mem_available_kib",
+    "host_swap_free_kib",
+    "cgroup_memory_current_bytes",
+    "cgroup_oom",
+    "cgroup_oom_kill",
 )
 
 

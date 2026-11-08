@@ -6,6 +6,7 @@ separate OS process. Assertions cover correlated replies, responsive Ping,
 queued writes recovering after unlock, and bounded elapsed wall-clock time.
 No network, external dependencies or privileged access required.
 """
+
 import concurrent.futures
 import json
 import os
@@ -81,8 +82,12 @@ def main(bin_dir):
         state.mkdir(mode=0o700)
         sock = runtime / "flowerlyd.sock"
         # Admin commands and IPC shutdown need an explicit admin group (#31).
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
-                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        env = dict(
+            os.environ,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         daemon, holder = None, None
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         log_path = root / "flowerlyd.log"
@@ -90,8 +95,12 @@ def main(bin_dir):
         def start():
             nonlocal daemon
             with log_path.open("ab") as log:
-                daemon = subprocess.Popen([str(bin_dir / "flowerlyd")], env=env,
-                                          stdout=log, stderr=subprocess.STDOUT)
+                daemon = subprocess.Popen(
+                    [str(bin_dir / "flowerlyd")],
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
             wait_ready(sock, daemon, log_path)
 
         def cmd(name, args):
@@ -102,8 +111,11 @@ def main(bin_dir):
             assert holder is None
             holder = subprocess.Popen(
                 [sys.executable, __file__, "--hold-lock", str(state / "state.db")],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True)
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
             assert holder.stdout.readline().strip() == "LOCKED", "SQLite lock failed"
 
         def release_writer():
@@ -138,7 +150,9 @@ def main(bin_dir):
                     raise AssertionError("the Store never observed the external writer")
                 healthy(busy=True)
                 answer = future.result(timeout=TIMEOUT + 2)
-                assert answer["type"] == "err" and answer.get("code") == "unavailable", (name, answer)
+                assert (
+                    answer["type"] == "err" and answer.get("code") == "unavailable"
+                ), (name, answer)
             finally:
                 release_writer()
 
@@ -171,7 +185,10 @@ def main(bin_dir):
                 ("session.terminate", {"id": session_id}),
                 ("execution.create", {}),
                 ("generation.create", {}),
-                ("provenance.add", {"from": goal_id, "relation": "belongs_to", "to": flow_id}),
+                (
+                    "provenance.add",
+                    {"from": goal_id, "relation": "belongs_to", "to": flow_id},
+                ),
             ]:
                 blocked(name, args)
                 recovered = cmd(name, args)
@@ -185,25 +202,42 @@ def main(bin_dir):
             ]:
                 keyed = dict(args, operation_id="busy-" + name.replace(".", "-"))
                 first, second = cmd(name, keyed), cmd(name, keyed)
-                assert first["type"] == "ok" and second["data"] == first["data"], (name, first, second)
+                assert first["type"] == "ok" and second["data"] == first["data"], (
+                    name,
+                    first,
+                    second,
+                )
                 originals[name] = (keyed, first["data"])
                 conflict = cmd(name, dict(keyed, unexpected="change"))
-                assert conflict["type"] == "err" and conflict.get("code") == "conflict", conflict
+                assert (
+                    conflict["type"] == "err" and conflict.get("code") == "conflict"
+                ), conflict
 
             parent = cmd("goal.create", {"objective": "Parent goal for replay"})
             assert parent["type"] == "ok", parent
-            child = {"id": parent["data"]["id"], "objective": "Only child",
-                     "operation_id": "busy-child-replay"}
+            child = {
+                "id": parent["data"]["id"],
+                "objective": "Only child",
+                "operation_id": "busy-child-replay",
+            }
             first, repeated = cmd("goal.child", child), cmd("goal.child", child)
-            assert first["type"] == "ok" and repeated["data"] == first["data"], (first, repeated)
+            assert first["type"] == "ok" and repeated["data"] == first["data"], (
+                first,
+                repeated,
+            )
 
             assert request(sock, "shutdown")["type"] == "ok"
             assert daemon.wait(timeout=6) == 0
             start()
             for name, (args, expected) in originals.items():
                 reply = cmd(name, args)
-                assert reply["type"] == "ok" and reply["data"] == expected, (name, reply)
-            print("unified SQLite contention: external busy, prompt status, recovery and durable replay OK")
+                assert reply["type"] == "ok" and reply["data"] == expected, (
+                    name,
+                    reply,
+                )
+            print(
+                "unified SQLite contention: external busy, prompt status, recovery and durable replay OK"
+            )
         finally:
             if holder is not None and holder.poll() is None:
                 holder.terminate()
@@ -228,4 +262,6 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2:
         main(pathlib.Path(sys.argv[1]).resolve())
     else:
-        raise SystemExit("usage: python3 scripts/test-sqlite-ipc-contention.py target/release")
+        raise SystemExit(
+            "usage: python3 scripts/test-sqlite-ipc-contention.py target/release"
+        )

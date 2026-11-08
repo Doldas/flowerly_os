@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline mkosi initrd staging contract: no packages or root access."""
+
 from pathlib import Path
 import os
 import subprocess
@@ -23,19 +24,22 @@ def main():
         stub = bindir / "mkosi"
         stub.write_text(
             "#!/bin/sh\n"
-            "printf '%s\\n' \"$@\" > \"$MKOSI_ARGS\"\n"
-            "mkdir -p \"$(dirname \"$MKOSI_OUTPUT\")\"\n"
+            'printf \'%s\\n\' "$@" > "$MKOSI_ARGS"\n'
+            'mkdir -p "$(dirname "$MKOSI_OUTPUT")"\n'
             "printf 'mock compressed cpio' > \"$MKOSI_OUTPUT\"\n"
         )
         stub.chmod(0o755)
         env = dict(os.environ)
-        env.update(PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                   MKOSI_ARGS=str(base / "args"),
-                   MKOSI_OUTPUT=str(OUTPUT))
+        env.update(
+            PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+            MKOSI_ARGS=str(base / "args"),
+            MKOSI_OUTPUT=str(OUTPUT),
+        )
         try:
             command = ["bash", str(SCRIPT), str(rootfs)]
-            first = subprocess.run(command, cwd=ROOT, env=env,
-                                   capture_output=True, text=True)
+            first = subprocess.run(
+                command, cwd=ROOT, env=env, capture_output=True, text=True
+            )
             assert first.returncode == 0, first.stderr
             args = (base / "args").read_text().splitlines()
             assert args[-1] == "build" and any(
@@ -43,18 +47,24 @@ def main():
             ), args
             dest = rootfs / "boot/initramfs-linux.img"
             assert dest.read_bytes() == b"mock compressed cpio"
-            second = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+            second = subprocess.run(
+                command, cwd=ROOT, env=env, capture_output=True, text=True
+            )
             assert second.returncode != 0, "existing initramfs overwritten"
             dest.unlink()
             (rootfs / "usr/lib/os-release").write_text("ID=debian\n")
-            third = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+            third = subprocess.run(
+                command, cwd=ROOT, env=env, capture_output=True, text=True
+            )
             assert third.returncode != 0, "non-Arch rootfs accepted"
         finally:
             if OUTPUT.exists():
                 OUTPUT.unlink()
             if OUTPUT.parent.exists():
                 OUTPUT.parent.rmdir()
-    print("Initrd builder: staging, no overwrite and distro validation verified offline")
+    print(
+        "Initrd builder: staging, no overwrite and distro validation verified offline"
+    )
 
 
 if __name__ == "__main__":

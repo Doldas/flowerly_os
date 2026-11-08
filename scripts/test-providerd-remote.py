@@ -10,6 +10,7 @@ and that the sentinel key never appears in any output, IPC reply or log.
 TLS, HTTP status, limit and outcome semantics are covered in-process by
 `cargo test -p providerd` against a local HTTPS mock server.
 """
+
 import json
 import os
 import pathlib
@@ -36,9 +37,15 @@ def recv_exact(conn, count):
 
 def request(socket_path, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1, "id": correlation, "type": "command", "name": name, "args": args,
-    }).encode("utf-8")
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": correlation,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode("utf-8")
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(15)
         client.connect(str(socket_path))
@@ -77,16 +84,26 @@ def main(bin_dir):
             probe.bind(("127.0.0.1", 0))
             closed_port = probe.getsockname()[1]
         base = f"https://localhost:{closed_port}"
-        clean_env = {key: value for key, value in os.environ.items()
-                     if key not in ("SSL_CERT_FILE", "SSL_CERT_DIR", "CREDENTIALS_DIRECTORY")}
-        env = dict(clean_env, AGENTIC_RUNTIME_DIR=str(runtime), CREDENTIALS_DIRECTORY=str(creds))
+        clean_env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("SSL_CERT_FILE", "SSL_CERT_DIR", "CREDENTIALS_DIRECTORY")
+        }
+        env = dict(
+            clean_env,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            CREDENTIALS_DIRECTORY=str(creds),
+        )
 
         def self_test(config, env_row):
             path = root / "remote.toml"
             path.write_text(config)
             result = subprocess.run(
                 [providerd, "--remote-config", str(path), "--self-test"],
-                env=env_row, capture_output=True, text=True, timeout=30,
+                env=env_row,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             output = result.stdout + result.stderr
             assert SENTINEL not in output, "self-test output leaked the key"
@@ -96,12 +113,30 @@ def main(bin_dir):
         assert code == 0 and "no network request made" in output, output
 
         for case, config, env_row, expected in [
-            ("missing credential directory", config_text(base),
-             {k: v for k, v in env.items() if k != "CREDENTIALS_DIRECTORY"}, "LoadCredential"),
-            ("plain http", config_text(f"http://localhost:{closed_port}"), env, "https"),
-            ("unknown field", config_text(base, "verify_tls = false\n"), env, "unknown field"),
-            ("trust override", config_text(base), dict(env, SSL_CERT_FILE=str(root / "ca.pem")),
-             "SSL_CERT_FILE"),
+            (
+                "missing credential directory",
+                config_text(base),
+                {k: v for k, v in env.items() if k != "CREDENTIALS_DIRECTORY"},
+                "LoadCredential",
+            ),
+            (
+                "plain http",
+                config_text(f"http://localhost:{closed_port}"),
+                env,
+                "https",
+            ),
+            (
+                "unknown field",
+                config_text(base, "verify_tls = false\n"),
+                env,
+                "unknown field",
+            ),
+            (
+                "trust override",
+                config_text(base),
+                dict(env, SSL_CERT_FILE=str(root / "ca.pem")),
+                "SSL_CERT_FILE",
+            ),
         ]:
             code, output = self_test(config, env_row)
             assert code != 0, f"{case}: started"
@@ -112,8 +147,10 @@ def main(bin_dir):
         config.write_text(config_text(base))
         log = root / "providerd.log"
         proc = subprocess.Popen(
-            [providerd, "--remote-config", str(config)], env=env,
-            stdout=log.open("ab"), stderr=subprocess.STDOUT,
+            [providerd, "--remote-config", str(config)],
+            env=env,
+            stdout=log.open("ab"),
+            stderr=subprocess.STDOUT,
         )
         sock = runtime / "providerd.sock"
         try:
@@ -124,20 +161,39 @@ def main(bin_dir):
                     break
                 time.sleep(0.05)
             discovered = request(sock, "provider.discover", {})
-            assert discovered["type"] == "err" and discovered["code"] == "permission_denied", discovered
+            assert (
+                discovered["type"] == "err"
+                and discovered["code"] == "permission_denied"
+            ), discovered
             assert "address_refused" in discovered["message"], discovered
 
-            generate = request(sock, "provider.generate", {"request_id": "r", "prompt": "hi"})
-            assert generate["type"] == "err" and generate["code"] == "invalid_argument", generate
+            generate = request(
+                sock, "provider.generate", {"request_id": "r", "prompt": "hi"}
+            )
+            assert (
+                generate["type"] == "err" and generate["code"] == "invalid_argument"
+            ), generate
 
-            submitted = request(sock, "provider.submit", {
-                "request_id": "bb-1", "prompt": "Reply with exactly: flowerly-ready",
-                "max_tokens": 16, "created_by": "uid:1000",
-            })
-            assert submitted["type"] == "ok" and submitted["data"]["state"] == "pending", submitted
+            submitted = request(
+                sock,
+                "provider.submit",
+                {
+                    "request_id": "bb-1",
+                    "prompt": "Reply with exactly: flowerly-ready",
+                    "max_tokens": 16,
+                    "created_by": "uid:1000",
+                },
+            )
+            assert (
+                submitted["type"] == "ok" and submitted["data"]["state"] == "pending"
+            ), submitted
             status = None
             for _ in range(200):
-                status = request(sock, "provider.poll", {"request_id": "bb-1", "created_by": "uid:1000"})
+                status = request(
+                    sock,
+                    "provider.poll",
+                    {"request_id": "bb-1", "created_by": "uid:1000"},
+                )
                 if status["data"]["state"] != "pending":
                     break
                 time.sleep(0.05)
@@ -156,7 +212,9 @@ def main(bin_dir):
                 proc.wait()
                 raise AssertionError("providerd ignored SIGTERM")
         assert SENTINEL not in log.read_text(), "providerd log leaked the key"
-    print("providerd remote backend black box: fail-closed startup, address policy, typed outcomes, no key leakage")
+    print(
+        "providerd remote backend black box: fail-closed startup, address policy, typed outcomes, no key leakage"
+    )
 
 
 if __name__ == "__main__":

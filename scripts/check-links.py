@@ -30,11 +30,13 @@ def check_file(md):
             target, _ = split_target(raw)
             if not target:
                 continue
-            if target.endswith('/'):
+            if target.endswith("/"):
                 continue
             resolved = (md.parent / target).resolve()
             if not resolved.exists():
-                failures.append(f"{md.relative_to(ROOT)}:{lineno}: missing target `{raw}`")
+                failures.append(
+                    f"{md.relative_to(ROOT)}:{lineno}: missing target `{raw}`"
+                )
     return failures
 
 
