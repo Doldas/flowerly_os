@@ -4,6 +4,7 @@
 No mounted ESP or block-device mutation. The source disk and user-data slice
 are never written. This cannot stand in for a crash-safe production EFI arm.
 """
+
 import argparse
 import copy
 import hashlib
@@ -55,24 +56,44 @@ def safe_file(path):
 
 
 def validate_partition_layout(disk, manifest):
-    if not isinstance(manifest, dict) or manifest.get("schema") != "flowerly-ab-disk/v1":
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema") != "flowerly-ab-disk/v1"
+    ):
         raise ValueError("invalid A/B disk manifest")
     parts = manifest.get("partitions")
     if not isinstance(parts, list) or [p.get("name") for p in parts] != [
-        "esp", "root-a", "root-b", "data"
+        "esp",
+        "root-a",
+        "root-b",
+        "data",
     ]:
         raise ValueError("unexpected A/B partition order")
     declared = manifest.get("disk", {})
-    if type(declared.get("size_bytes")) is not int or declared["size_bytes"] != disk.stat().st_size:
+    if (
+        type(declared.get("size_bytes")) is not int
+        or declared["size_bytes"] != disk.stat().st_size
+    ):
         raise ValueError("disk size mismatch")
     fd = os.open(disk, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         current = 0
         for p in parts:
             off, size = p.get("offset_bytes"), p.get("size_bytes")
-            if type(off) is not int or type(size) is not int or off < current or size < MIB or off % MIB or size % MIB:
+            if (
+                type(off) is not int
+                or type(size) is not int
+                or off < current
+                or size < MIB
+                or off % MIB
+                or size % MIB
+            ):
                 raise ValueError("bad partition geometry")
-            if off + size > declared["size_bytes"] or not isinstance(p.get("partuuid"), str) or not UUID.fullmatch(p["partuuid"]):
+            if (
+                off + size > declared["size_bytes"]
+                or not isinstance(p.get("partuuid"), str)
+                or not UUID.fullmatch(p["partuuid"])
+            ):
                 raise ValueError("invalid GPT bounds/identity")
             if p["name"] in ("root-a", "root-b"):
                 if slice_digest(fd, off, size) != p.get("sha256"):
@@ -83,11 +104,14 @@ def validate_partition_layout(disk, manifest):
     # Validate the *actual GPT* in addition to the potentially stale runtime
     # disk manifest. ESP boot counters and persistent data are expected to
     # change on real boot; they are deliberately not hash-pinned here.
-    sfdisk = shutil.which("sfdisk", path=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
+    sfdisk = shutil.which(
+        "sfdisk", path=os.environ.get("PATH", "") + ":/usr/sbin:/sbin"
+    )
     if not sfdisk:
         raise ValueError("missing actual sfdisk tool for GPT validation")
-    result = subprocess.run([sfdisk, "-J", str(disk)], text=True,
-                            capture_output=True, check=True)
+    result = subprocess.run(
+        [sfdisk, "-J", str(disk)], text=True, capture_output=True, check=True
+    )
     partition_table = json.loads(result.stdout)["partitiontable"]
     if partition_table.get("label") != "gpt":
         raise ValueError("not a GPT disk")
@@ -95,10 +119,11 @@ def validate_partition_layout(disk, manifest):
     if len(actual) != 4:
         raise ValueError("unexpected actual GPT partition count")
     for expected, part in zip(parts, actual):
-        if part.get("name") != expected["name"] or (
-            part.get("uuid", "").lower() != expected["partuuid"]
-        ) or part.get("start") != expected["offset_bytes"] // 512 or (
-            part.get("size") != expected["size_bytes"] // 512
+        if (
+            part.get("name") != expected["name"]
+            or (part.get("uuid", "").lower() != expected["partuuid"])
+            or part.get("start") != expected["offset_bytes"] // 512
+            or (part.get("size") != expected["size_bytes"] // 512)
         ):
             raise ValueError("actual GPT differs from recorded partition identity")
     return {p["name"]: p for p in parts}
@@ -106,16 +131,27 @@ def validate_partition_layout(disk, manifest):
 
 def run_mtools(*args):
     try:
-        subprocess.run(list(args), check=True, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE)
+        subprocess.run(
+            list(args), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
     except subprocess.CalledProcessError as error:
         raise ValueError("FAT edit rejected by mtools") from error
 
 
-def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
-              tries=3, failure_switch=False, inject_before_publish=False):
+def arm_image(
+    disk,
+    manifest,
+    kernel,
+    initramfs,
+    output,
+    output_manifest,
+    tries=3,
+    failure_switch=False,
+    inject_before_publish=False,
+):
     disk, manifest, kernel, initramfs = map(
-        safe_file, (disk, manifest, kernel, initramfs))
+        safe_file, (disk, manifest, kernel, initramfs)
+    )
     output, output_manifest = Path(output), Path(output_manifest)
     input_paths = {p.resolve() for p in (disk, manifest, kernel, initramfs)}
     if output.resolve() == output_manifest.resolve() or any(
@@ -144,8 +180,11 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
     esp = parts["esp"]
     root_b = parts["root-b"]
     with disk.open("rb") as original:
-        data_before = slice_digest(original.fileno(), parts["data"]["offset_bytes"],
-                                   parts["data"]["size_bytes"])
+        data_before = slice_digest(
+            original.fileno(),
+            parts["data"]["offset_bytes"],
+            parts["data"]["size_bytes"],
+        )
     with tempfile.TemporaryDirectory(prefix="flowerly-arm-") as workspace:
         temp = Path(workspace)
         staging_disk = temp / "armed.img"
@@ -161,16 +200,23 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
                 dest.write(data)
                 remaining -= len(data)
         # Existing A entry must remain; never rebuild the ESP from scratch.
-        existing = subprocess.run(["mdir", "-b", "-i", str(esp_file),
-                                   "::/loader/entries"], text=True,
-                                  capture_output=True, check=True).stdout
+        existing = subprocess.run(
+            ["mdir", "-b", "-i", str(esp_file), "::/loader/entries"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
         if "flowerly-a" not in existing.lower():
             raise ValueError("no fallback slot A boot entry")
         if "flowerly-b" in existing.lower():
-            raise ValueError("B entry already exists; re-arming requires separate review")
+            raise ValueError(
+                "B entry already exists; re-arming requires separate review"
+            )
         run_mtools("mmd", "-i", str(esp_file), "::/flowerly/b")
         run_mtools("mcopy", "-i", str(esp_file), str(kernel), "::/flowerly/b/vmlinuz")
-        run_mtools("mcopy", "-i", str(esp_file), str(initramfs), "::/flowerly/b/initramfs.img")
+        run_mtools(
+            "mcopy", "-i", str(esp_file), str(initramfs), "::/flowerly/b/initramfs.img"
+        )
         entry = f"flowerly-b+{tries}.conf"
         entry_file = temp / entry
         flags = " flowerly.test.fail_health=1" if failure_switch else ""
@@ -179,17 +225,18 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
             "linux /flowerly/b/vmlinuz\n"
             "initrd /flowerly/b/initramfs.img\n"
             f"options root=PARTUUID={root_b['partuuid']} rw rootfstype=ext4 "
-            "console=ttyS0 systemd.unit=multi-user.target loglevel=6"
-            + flags + "\n"
+            "console=ttyS0 systemd.unit=multi-user.target loglevel=6" + flags + "\n"
         )
-        run_mtools("mcopy", "-i", str(esp_file), str(entry_file),
-                   "::/loader/entries/" + entry)
+        run_mtools(
+            "mcopy", "-i", str(esp_file), str(entry_file), "::/loader/entries/" + entry
+        )
         # Default selector prefers B while its boot count is nonzero. When B
         # exhausts its count, systemd-boot must choose the known good A entry.
         loader = temp / "loader.conf"
         loader.write_text("default flowerly-b*\ntimeout 0\nconsole-mode keep\n")
-        run_mtools("mcopy", "-o", "-i", str(esp_file),
-                   str(loader), "::/loader/loader.conf")
+        run_mtools(
+            "mcopy", "-o", "-i", str(esp_file), str(loader), "::/loader/loader.conf"
+        )
         fd = os.open(staging_disk, os.O_RDWR | os.O_NOFOLLOW)
         try:
             with esp_file.open("rb") as source:
@@ -212,8 +259,11 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
         if inject_before_publish:
             raise RuntimeError("injected power loss before publishing armed disk")
         with staging_disk.open("rb") as armed:
-            data_after = slice_digest(armed.fileno(), parts["data"]["offset_bytes"],
-                                      parts["data"]["size_bytes"])
+            data_after = slice_digest(
+                armed.fileno(),
+                parts["data"]["offset_bytes"],
+                parts["data"]["size_bytes"],
+            )
         if data_before != data_after:
             raise ValueError("data partition changed while arming EFI")
         # Publish only new paths, never overwrite the source image/manifest.
@@ -231,9 +281,12 @@ def arm_image(disk, manifest, kernel, initramfs, output, output_manifest,
         except Exception:
             output_manifest.unlink(missing_ok=True)
             raise
-    return {"status": "ARMED_OFFLINE_NOT_BOOT_VERIFIED", "boot_entry": entry,
-            "disk_sha256": new_manifest["disk"]["sha256"],
-            "data_partition_sha256": data_before}
+    return {
+        "status": "ARMED_OFFLINE_NOT_BOOT_VERIFIED",
+        "boot_entry": entry,
+        "disk_sha256": new_manifest["disk"]["sha256"],
+        "data_partition_sha256": data_before,
+    }
 
 
 def main():
@@ -241,15 +294,32 @@ def main():
     for key in ("disk", "manifest", "kernel", "initramfs", "output", "output-manifest"):
         p.add_argument("--" + key, type=Path, required=True)
     p.add_argument("--tries", type=int, default=3)
-    p.add_argument("--fail-health", action="store_true",
-                   help="KVM test fixture ONLY; B kernel line intentionally fails IPC health")
+    p.add_argument(
+        "--fail-health",
+        action="store_true",
+        help="KVM test fixture ONLY; B kernel line intentionally fails IPC health",
+    )
     opts = p.parse_args()
     try:
-        report = arm_image(opts.disk, opts.manifest, opts.kernel,
-                           opts.initramfs, opts.output, opts.output_manifest,
-                           tries=opts.tries, failure_switch=opts.fail_health)
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError,
-            subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        report = arm_image(
+            opts.disk,
+            opts.manifest,
+            opts.kernel,
+            opts.initramfs,
+            opts.output,
+            opts.output_manifest,
+            tries=opts.tries,
+            failure_switch=opts.fail_health,
+        )
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+        KeyError,
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+    ) as error:
         p.exit(1, f"A/B arm refused: {error}\n")
     print(json.dumps(report, sort_keys=True))
 
