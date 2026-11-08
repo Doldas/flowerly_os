@@ -260,7 +260,16 @@ tracks that do not block step 1:
   authority over activation in this step.
 
 
-## S7 — executable OVMF/KVM sequence harness awaiting actual run
+## S7 — first real run executed 2026-11-08 (sequence observed, S7 incomplete)
+
+The harness has now run for real: firmware → systemd-boot → slot A blessed,
+unhealthy B rejected three times, automatic return to A with the user-data
+marker intact. Seven defects found by the run are fixed on the same branch.
+See [the run review](reviews/0048-s7-first-real-kvm-run-2026-11-08.md). The
+S4 exit (disk boots through OVMF, no `-kernel`) is met; the healthy-B path,
+power-loss cases and measurements are still open, ADR-0019 stays Proposed.
+
+## S7 — executable OVMF/KVM sequence harness (historical note before the run)
 
 `scripts/generation-ab-kvm-acceptance.py` is an opt-in, exact-SHA, clean
 nonroot checkout runner that starts a **real** Flowerly-built GPT image via
