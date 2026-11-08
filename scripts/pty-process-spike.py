@@ -5,6 +5,7 @@ Creates a real session leader with forkpty, keeps the master open while the
 simulated frontend detaches, observes output after reattachment, then terminates
 and reaps the owned process group. Run only on Linux as an unprivileged user.
 """
+
 import fcntl
 import os
 import select
@@ -79,7 +80,9 @@ def main() -> None:
         _, status = os.waitpid(pid, 0)
         waited = True
         assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGTERM
-        print("PTY spike OK: forkpty, process group, detach, replay, input, resize, termination/reap")
+        print(
+            "PTY spike OK: forkpty, process group, detach, replay, input, resize, termination/reap"
+        )
     finally:
         if not waited:
             try:

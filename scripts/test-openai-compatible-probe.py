@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline loopback mock acceptance for the opt-in API probe."""
+
 import importlib.util
 import json
 import pathlib
@@ -38,9 +39,21 @@ class Handler(BaseHTTPRequestHandler):
 
 class ProbeTests(unittest.TestCase):
     def test_secure_url_validation(self):
-        self.assertEqual(probe.endpoint("https://example.org/v1", "/v1/models"), "https://example.org/v1/models")
-        self.assertEqual(probe.endpoint("https://example.org/api", "/api/models"), "https://example.org/api/models")
-        for url in ("http://example.org", "https://user:pass@example.org", "https://example.org/?key=secret", "file:///tmp/a", "https://example.org/evil"):
+        self.assertEqual(
+            probe.endpoint("https://example.org/v1", "/v1/models"),
+            "https://example.org/v1/models",
+        )
+        self.assertEqual(
+            probe.endpoint("https://example.org/api", "/api/models"),
+            "https://example.org/api/models",
+        )
+        for url in (
+            "http://example.org",
+            "https://user:pass@example.org",
+            "https://example.org/?key=secret",
+            "file:///tmp/a",
+            "https://example.org/evil",
+        ):
             with self.assertRaises(probe.ProbeError):
                 probe.endpoint(url, "/v1/models")
 

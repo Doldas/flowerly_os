@@ -7,6 +7,7 @@ an unrelated decoy (`sleep 300` as DECOY_USER) until one is born with
 exactly PID N. It replies {"pid": N} or {"error": ...}. The helper never
 signals anything; it only creates decoys, which it kills on exit.
 """
+
 import json
 import os
 import pwd
@@ -24,9 +25,15 @@ def decoy(target, user):
     for _ in range(50):
         with open(LAST_PID, "w") as last:
             last.write(str(target - 1))
-        process = subprocess.Popen(["sleep", "300"], user=record.pw_uid, group=record.pw_gid,
-                                   extra_groups=[], stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(
+            ["sleep", "300"],
+            user=record.pw_uid,
+            group=record.pw_gid,
+            extra_groups=[],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         if process.pid == target:
             return process
         process.kill()
@@ -49,7 +56,8 @@ def main(path, client_uid, user):
             client, _ = listener.accept()
             with client:
                 _pid, uid, _gid = struct.unpack(
-                    "3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    "3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )
                 if uid != client_uid:
                     continue
                 try:

@@ -39,16 +39,24 @@ def verify_management_cgroup_configuration():
     daemon_style = "management-" + uuid.uuid4().hex
     with patch.dict(os.environ, {guardian.MANAGEMENT_ENV: daemon_style}):
         assert guardian.management_name() == daemon_style
-    for raw in ("../escape", "", "management/../escape", "station-" + uuid.uuid4().hex,
-                "pty-session-" + uuid.uuid4().hex, "management-" + uuid.uuid4().hex + "x",
-                "MANAGEMENT"):
+    for raw in (
+        "../escape",
+        "",
+        "management/../escape",
+        "station-" + uuid.uuid4().hex,
+        "pty-session-" + uuid.uuid4().hex,
+        "management-" + uuid.uuid4().hex + "x",
+        "MANAGEMENT",
+    ):
         with patch.dict(os.environ, {guardian.MANAGEMENT_ENV: raw}):
             try:
                 guardian.management_name()
             except ValueError:
                 pass
             else:
-                raise AssertionError(f"unsafe management cgroup identity accepted: {raw!r}")
+                raise AssertionError(
+                    f"unsafe management cgroup identity accepted: {raw!r}"
+                )
     print("Management cgroup identity: default, daemon style and traversal refused")
 
 
@@ -127,7 +135,9 @@ def verify_write_only_cgroup_kill_probe():
             # An unprivileged service account must be able to probe a
             # WRITE-ONLY cgroup.kill without reading or modifying its contents.
             probe.require_writable("cgroup.kill")
-            assert kill_file.stat().st_size == 0, "capability probe wrote to cgroup.kill"
+            assert kill_file.stat().st_size == 0, (
+                "capability probe wrote to cgroup.kill"
+            )
 
             # A read-only kill file must never be accepted: cleanup would fail.
             kill_file.chmod(0o400)
@@ -197,6 +207,7 @@ def verify_shell_uid_configuration_rejected():
     guardian_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guardian_module)
     from unittest.mock import patch
+
     for raw in ("0", str(os.geteuid()), "not-a-uid"):
         with patch.dict(os.environ, {"FLOWERLY_PTY_SHELL_UID": raw}):
             try:
@@ -259,25 +270,38 @@ def require_explicit_delegation(root):
         env.pop("FLOWERLY_PTY_CGROUP_ROOT", None)
         result = subprocess.run(
             [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
-            env=env, capture_output=True, timeout=5,
+            env=env,
+            capture_output=True,
+            timeout=5,
         )
         assert result.returncode != 0, "guardian silently bypassed required cgroup"
         assert not path.exists(), "guardian exposed control socket without a cgroup"
     with tempfile.TemporaryDirectory(prefix="flowerly-pty-invalid-root-") as folder:
         path = Path(folder) / "invalid.sock"
-        env = dict(os.environ, FLOWERLY_PTY_ISOLATION="required",
-                   FLOWERLY_PTY_CGROUP_ROOT=folder)
+        env = dict(
+            os.environ,
+            FLOWERLY_PTY_ISOLATION="required",
+            FLOWERLY_PTY_CGROUP_ROOT=folder,
+        )
         result = subprocess.run(
             [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
-            env=env, capture_output=True, timeout=5,
+            env=env,
+            capture_output=True,
+            timeout=5,
         )
-        assert result.returncode != 0 and not path.exists(), "ordinary directory bypassed cgroup validation"
+        assert result.returncode != 0 and not path.exists(), (
+            "ordinary directory bypassed cgroup validation"
+        )
         env["FLOWERLY_PTY_CGROUP_NAME"] = "../../unsafe"
         result = subprocess.run(
             [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
-            env=env, capture_output=True, timeout=5,
+            env=env,
+            capture_output=True,
+            timeout=5,
         )
-        assert result.returncode != 0 and not path.exists(), "untrusted cgroup name accepted"
+        assert result.returncode != 0 and not path.exists(), (
+            "untrusted cgroup name accepted"
+        )
         assert b"invalid supervised cgroup identity" in result.stderr, result.stderr
     if root is None:
         print("Production fail-closed verified; delegated cgroup e2e NOT VERIFIED")
@@ -312,9 +336,13 @@ def assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name):
         command = (
             "python3 -c 'import base64; exec(base64.b64decode(\"" + encoded + "\"))'\n"
         ).encode()
-        assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+        assert request(path, {"op": "write", "data_hex": command.hex()})[
+            "written"
+        ] == len(command)
         pattern = re.compile(
-            rb"PTY_MIGRATION_" + label.encode("ascii") + rb"_(DENIED|ESCAPED|INVALID):(\d+)"
+            rb"PTY_MIGRATION_"
+            + label.encode("ascii")
+            + rb"_(DENIED|ESCAPED|INVALID):(\d+)"
         )
         for _ in range(150):
             reply = request(path, {"op": "read", "cursor": 0})
@@ -327,11 +355,15 @@ def assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name):
                     f"{label} migration bypassed session containment or returned an unexpected result: "
                     f"{outcome!r}, errno={error}"
                 )
-                print(f"Delegated cgroup: same-UID migration to {label.lower()} denied (errno={error})")
+                print(
+                    f"Delegated cgroup: same-UID migration to {label.lower()} denied (errno={error})"
+                )
                 break
             time.sleep(0.02)
         else:
-            raise AssertionError(f"{label} cgroup migration probe did not return a result")
+            raise AssertionError(
+                f"{label} cgroup migration probe did not return a result"
+            )
 
 
 def exercise_real_cgroup(root):
@@ -339,12 +371,17 @@ def exercise_real_cgroup(root):
         path = Path(folder) / "cgroup.sock"
         group_name = "pty-session-" + uuid.uuid4().hex
         group = Path(root) / group_name
-        env = dict(os.environ, FLOWERLY_PTY_ISOLATION="required",
-                   FLOWERLY_PTY_CGROUP_ROOT=root,
-                   FLOWERLY_PTY_CGROUP_NAME=group_name)
+        env = dict(
+            os.environ,
+            FLOWERLY_PTY_ISOLATION="required",
+            FLOWERLY_PTY_CGROUP_ROOT=root,
+            FLOWERLY_PTY_CGROUP_NAME=group_name,
+        )
         guardian = subprocess.Popen(
             [sys.executable, str(GUARDIAN), str(path), "/bin/sh", str(os.getpid())],
-            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
         descendant_pid = None
@@ -371,7 +408,9 @@ def exercise_real_cgroup(root):
                 for _ in range(150):
                     status = Path(f"/proc/{shell_pid}/status").read_text()
                     fields = dict(
-                        line.split(":", 1) for line in status.splitlines() if ":" in line
+                        line.split(":", 1)
+                        for line in status.splitlines()
+                        if ":" in line
                     )
                     uids = tuple(map(int, fields["Uid"].split()))
                     if uids == (expected_shell_uid,) * 4:
@@ -386,14 +425,18 @@ def exercise_real_cgroup(root):
                 assert fields["Groups"].strip() == "", (
                     "PTY shell retained supplementary groups"
                 )
-                print("PTY shell: separate UID, no effective/permitted/ambient capabilities")
+                print(
+                    "PTY shell: separate UID, no effective/permitted/ambient capabilities"
+                )
             assert_shell_cannot_migrate_out_of_cgroup(path, root, group_name)
             command = (
                 b"python3 -c 'import subprocess; p=subprocess.Popen("
-                b"[\"sleep\",\"60\"],start_new_session=True);"
-                b"print(\"FLOWERLY_SETSID:%s\"%p.pid,flush=True)'\n"
+                b'["sleep","60"],start_new_session=True);'
+                b'print("FLOWERLY_SETSID:%s"%p.pid,flush=True)\'\n'
             )
-            assert request(path, {"op": "write", "data_hex": command.hex()})["written"] == len(command)
+            assert request(path, {"op": "write", "data_hex": command.hex()})[
+                "written"
+            ] == len(command)
             for _ in range(150):
                 reply = request(path, {"op": "read", "cursor": 0})
                 match = re.search(
@@ -405,19 +448,23 @@ def exercise_real_cgroup(root):
                     break
                 time.sleep(0.02)
             assert descendant_pid, "escaped-session process PID not reported"
-            assert os.getsid(descendant_pid) != shell_pid, "child did not escape terminal session"
+            assert os.getsid(descendant_pid) != shell_pid, (
+                "child did not escape terminal session"
+            )
             # A new session/process-group is not allowed to escape the
             # kernel-owned cgroup. Checking only that the process died later
             # could falsely pass through the guardian parent-death fallback.
             descendant_group = Path(f"/proc/{descendant_pid}/cgroup").read_text()
             member = descendant_group.splitlines()
             assert len(member) == 1 and member[0].startswith("0::"), member
-            assert member[0].split("::", 1)[1].rstrip("/").endswith(
-                "/" + group_name
-            ), ("setsid descendant escaped assigned cgroup", member, group_name)
-            assert str(descendant_pid) in (
-                group / "cgroup.procs"
-            ).read_text().split(), "setsid descendant not owned by cgroup"
+            assert member[0].split("::", 1)[1].rstrip("/").endswith("/" + group_name), (
+                "setsid descendant escaped assigned cgroup",
+                member,
+                group_name,
+            )
+            assert (
+                str(descendant_pid) in (group / "cgroup.procs").read_text().split()
+            ), "setsid descendant not owned by cgroup"
             guardian.kill()
             guardian.wait(timeout=5)
             assert_not_running(shell_pid)
@@ -425,10 +472,14 @@ def exercise_real_cgroup(root):
             for _ in range(100):
                 if not group.exists():
                     break
-                time.sleep(.02)
+                time.sleep(0.02)
             else:
-                raise AssertionError("owned PTY cgroup was not removed after guardian death")
-            print("Real delegated cgroup v2: setsid descendant terminated after guardian SIGKILL")
+                raise AssertionError(
+                    "owned PTY cgroup was not removed after guardian death"
+                )
+            print(
+                "Real delegated cgroup v2: setsid descendant terminated after guardian SIGKILL"
+            )
         finally:
             if guardian.poll() is None:
                 guardian.kill()

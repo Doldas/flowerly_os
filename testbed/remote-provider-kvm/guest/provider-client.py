@@ -16,6 +16,7 @@ Output is one JSON object of metadata: never the prompt, never model text.
 admitted; a refused connect, a closed connection or any other reply means
 it was not.
 """
+
 import argparse
 import json
 import os
@@ -42,13 +43,22 @@ def recv_exact(conn, count):
 
 
 def request(path, name, args):
-    message = json.dumps({"version": 1, "id": str(uuid.uuid4()), "type": "command",
-                          "name": name, "args": args}).encode()
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": str(uuid.uuid4()),
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode()
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(60)
         client.connect(path)
         client.sendall(struct.pack("<I", len(message)) + message)
-        return json.loads(recv_exact(client, struct.unpack("<I", recv_exact(client, 4))[0]))
+        return json.loads(
+            recv_exact(client, struct.unpack("<I", recv_exact(client, 4))[0])
+        )
 
 
 def failure(reply):
@@ -56,12 +66,18 @@ def failure(reply):
     if reply.get("type") == "ok":
         error = (reply.get("data") or {}).get("error")
         if isinstance(error, dict):
-            return {"class": error.get("class"), "outcome": error.get("outcome"),
-                    "retry_after_ms": error.get("retry_after_ms")}
+            return {
+                "class": error.get("class"),
+                "outcome": error.get("outcome"),
+                "retry_after_ms": error.get("retry_after_ms"),
+            }
         return None
     match = DETAIL.search(str(reply.get("message", "")))
-    return {"code": reply.get("code"), "class": match["cls"] if match else None,
-            "outcome": match["outcome"] if match else None}
+    return {
+        "code": reply.get("code"),
+        "class": match["cls"] if match else None,
+        "outcome": match["outcome"] if match else None,
+    }
 
 
 def admission(path, wait_file):
@@ -71,9 +87,13 @@ def admission(path, wait_file):
             if time.monotonic() > deadline:
                 return {"admitted": False, "error": "wait_file_timeout"}
             time.sleep(0.1)
-    identity = {key: value for key, value in
-                (line.split(":", 1) for line in open("/proc/self/status") if ":" in line)
-                if key in ("Uid", "Gid", "Groups")}
+    identity = {
+        key: value
+        for key, value in (
+            line.split(":", 1) for line in open("/proc/self/status") if ":" in line
+        )
+        if key in ("Uid", "Gid", "Groups")
+    }
     identity = {key: value.split() for key, value in identity.items()}
     client = socket.socket(socket.AF_UNIX)
     client.settimeout(30)
@@ -82,19 +102,41 @@ def admission(path, wait_file):
     except OSError as err:
         client.close()
         # Refused before the provider saw us (the socket's file mode).
-        return {"admitted": False, "connect_error": os.strerror(err.errno) if err.errno else type(err).__name__,
-                "identity": identity}
-    message = json.dumps({"version": 1, "id": str(uuid.uuid4()), "type": "command", "name": "provider.poll",
-                          "args": {"request_id": f"admission-{uuid.uuid4()}"}}).encode()
+        return {
+            "admitted": False,
+            "connect_error": os.strerror(err.errno)
+            if err.errno
+            else type(err).__name__,
+            "identity": identity,
+        }
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": str(uuid.uuid4()),
+            "type": "command",
+            "name": "provider.poll",
+            "args": {"request_id": f"admission-{uuid.uuid4()}"},
+        }
+    ).encode()
     try:
         with client:
             client.sendall(struct.pack("<I", len(message)) + message)
-            reply = json.loads(recv_exact(client, struct.unpack("<I", recv_exact(client, 4))[0]))
+            reply = json.loads(
+                recv_exact(client, struct.unpack("<I", recv_exact(client, 4))[0])
+            )
     except (OSError, ValueError) as err:
         # Connected, then refused by the provider's peer check.
-        return {"admitted": False, "refused_after_connect": type(err).__name__, "identity": identity}
+        return {
+            "admitted": False,
+            "refused_after_connect": type(err).__name__,
+            "identity": identity,
+        }
     detail = failure(reply) or {}
-    return {"admitted": detail.get("class") == "unknown_request", "reply": detail, "identity": identity}
+    return {
+        "admitted": detail.get("class") == "unknown_request",
+        "reply": detail,
+        "identity": identity,
+    }
 
 
 def discover(path, model):
@@ -102,8 +144,12 @@ def discover(path, model):
     if reply.get("type") != "ok":
         return {"ok": False, "error": failure(reply)}
     data = reply["data"]
-    return {"ok": True, "model_served": model in (data.get("models_available") or []),
-            "discover_only": data.get("discover_only"), "destination": data.get("destination")}
+    return {
+        "ok": True,
+        "model_served": model in (data.get("models_available") or []),
+        "discover_only": data.get("discover_only"),
+        "destination": data.get("destination"),
+    }
 
 
 def summarize(status):
@@ -111,9 +157,14 @@ def summarize(status):
     out = {"state": data.get("state"), "sent": data.get("sent")}
     if data.get("state") == "succeeded":
         result = data.get("result") or {}
-        out.update(model_used=result.get("model_used"), usage=result.get("usage"),
-                   latency_ms=result.get("latency_ms"), finish_reason=result.get("finish_reason"),
-                   text_present="text" in result, text_length=len(result.get("text") or ""))
+        out.update(
+            model_used=result.get("model_used"),
+            usage=result.get("usage"),
+            latency_ms=result.get("latency_ms"),
+            finish_reason=result.get("finish_reason"),
+            text_present="text" in result,
+            text_length=len(result.get("text") or ""),
+        )
     else:
         out["error"] = failure(status)
     return out
@@ -123,8 +174,11 @@ def submit(path, model, tag, request_id, variant, wait):
     request_id = request_id or f"kvm-{tag}-{uuid.uuid4().hex[:12]}"
     prompt = f"{SENTINEL}-{tag}-{variant}: reply with one word."
     started = time.monotonic()
-    reply = request(path, "provider.submit", {"request_id": request_id, "prompt": prompt,
-                                              "model": model, "max_tokens": 16})
+    reply = request(
+        path,
+        "provider.submit",
+        {"request_id": request_id, "prompt": prompt, "model": model, "max_tokens": 16},
+    )
     out = {"request_id": request_id, "submit": {"type": reply.get("type")}}
     if reply.get("type") != "ok":
         out["submit"]["error"] = failure(reply)
@@ -138,7 +192,11 @@ def submit(path, model, tag, request_id, variant, wait):
         if status.get("type") != "ok" or status["data"]["state"] != "pending":
             break
         time.sleep(0.25)
-    out["final"] = summarize(status) if status.get("type") == "ok" else {"poll_error": failure(status)}
+    out["final"] = (
+        summarize(status)
+        if status.get("type") == "ok"
+        else {"poll_error": failure(status)}
+    )
     return out
 
 
@@ -169,11 +227,23 @@ def main(argv):
         elif args.mode == "discover":
             out = discover(args.socket, args.model)
         elif args.mode == "submit":
-            out = submit(args.socket, args.model, args.tag, args.request_id, args.variant, not args.no_wait)
+            out = submit(
+                args.socket,
+                args.model,
+                args.tag,
+                args.request_id,
+                args.variant,
+                not args.no_wait,
+            )
         else:
-            reply = request(args.socket, f"provider.{args.mode}", {"request_id": args.request_id})
-            out = {"type": reply.get("type"), "error": failure(reply),
-                   "state": (reply.get("data") or {}).get("state")}
+            reply = request(
+                args.socket, f"provider.{args.mode}", {"request_id": args.request_id}
+            )
+            out = {
+                "type": reply.get("type"),
+                "error": failure(reply),
+                "state": (reply.get("data") or {}).get("state"),
+            }
     except (OSError, ValueError) as err:
         out = {"client_error": type(err).__name__}
     print(json.dumps(out, sort_keys=True))

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unprivileged protocol negative tests; real kernel acceptance stays required."""
+
 import importlib.util
 import socket
 import os
@@ -24,10 +25,12 @@ class BrokerProtocolTests(unittest.TestCase):
     def test_fragmented_request_is_reassembled(self):
         left, right = socket.socketpair()
         try:
+
             def writer():
                 left.sendall(b'{"op":"reserve",')
-                left.sendall(b'"name":"pty-session-' + b'a' * 32 + b'"}\n')
+                left.sendall(b'"name":"pty-session-' + b"a" * 32 + b'"}\n')
                 left.close()
+
             thread = threading.Thread(target=writer)
             thread.start()
             response = module.read_request(right)
@@ -39,8 +42,13 @@ class BrokerProtocolTests(unittest.TestCase):
             right.close()
 
     def test_truncated_or_multiple_commands_are_rejected(self):
-        for raw in (b'{"op":"reserve"', b'{}\n{}\n',
-                    b'{}\ntrailing', b'\n', b'x' * 4097 + b'\n'):
+        for raw in (
+            b'{"op":"reserve"',
+            b"{}\n{}\n",
+            b"{}\ntrailing",
+            b"\n",
+            b"x" * 4097 + b"\n",
+        ):
             left, right = socket.socketpair()
             try:
                 left.sendall(raw)
@@ -94,8 +102,13 @@ class BrokerProtocolTests(unittest.TestCase):
             )
 
     def test_broad_or_traversing_names_rejected(self):
-        for value in ("../management", "/sys/fs/cgroup", "management",
-                      "pty-session-" + "a" * 31, "pty-session-" + "G" * 32):
+        for value in (
+            "../management",
+            "/sys/fs/cgroup",
+            "management",
+            "pty-session-" + "a" * 31,
+            "pty-session-" + "G" * 32,
+        ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.broker.execute({"op": "reserve", "name": value}, 1000)
 
@@ -115,7 +128,14 @@ class BrokerProtocolTests(unittest.TestCase):
             self.broker.execute({"op": "reap", "name": "pty-session-" + "b" * 32}, 1000)
 
     def test_wrong_json_shapes_rejected(self):
-        for value in ([], None, "reserve", 12, {"op": "reserve"}, {"op": 2, "name": "x"}):
+        for value in (
+            [],
+            None,
+            "reserve",
+            12,
+            {"op": "reserve"},
+            {"op": 2, "name": "x"},
+        ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.broker.execute(value, 1000)
 

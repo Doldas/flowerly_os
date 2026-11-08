@@ -6,6 +6,7 @@ The caller's UID must be different. No arbitrary PID or path is accepted.
 The Unix socket is private until independently reviewed systemd socket
 activation and cross-UID credential authorization are available.
 """
+
 import json
 import os
 import re
@@ -14,7 +15,11 @@ import struct
 import sys
 
 NAME = re.compile(r"pty-session-[0-9a-f]{32}\Z")
-LIMITS = {"pids.max": "64", "memory.max": str(512 * 1024 * 1024), "cpu.max": "100000 100000"}
+LIMITS = {
+    "pids.max": "64",
+    "memory.max": str(512 * 1024 * 1024),
+    "cpu.max": "100000 100000",
+}
 MAX_REQUEST = 4096
 MAX_SESSIONS = 64
 
@@ -43,7 +48,6 @@ def read_request(conn):
                 raise ValueError("invalid JSON") from error
 
 
-
 def peer_uid(sock):
     data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     return struct.unpack("3i", data)[1]
@@ -67,7 +71,9 @@ class CgroupBroker:
             raise PermissionError("broker and client must have separate UIDs")
         if not os.path.isfile("/sys/fs/cgroup/cgroup.controllers"):
             raise RuntimeError("unified cgroup v2 required")
-        self.root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        self.root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
         if os.fstat(self.root_fd).st_dev != os.stat("/sys/fs/cgroup").st_dev:
             os.close(self.root_fd)
             raise RuntimeError("root is not on cgroup v2 mount")
@@ -101,7 +107,11 @@ class CgroupBroker:
             if name in self.owned:
                 raise ValueError("already reserved")
             os.mkdir(name, 0o700, dir_fd=self.root_fd)
-            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.root_fd)
+            fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=self.root_fd,
+            )
             try:
                 for control, value in LIMITS.items():
                     write_control(fd, control, value)
@@ -120,7 +130,11 @@ class CgroupBroker:
         if op == "reap":
             if name not in self.owned or name not in self.identities:
                 raise PermissionError("unowned session")
-            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.root_fd)
+            fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=self.root_fd,
+            )
             try:
                 identity = os.fstat(fd)
                 if (identity.st_dev, identity.st_ino) != self.identities[name]:
@@ -166,5 +180,7 @@ def serve(socket_path, root, authorized_uid):
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        raise SystemExit("usage: pty-cgroup-broker.py SOCKET DELEGATED_ROOT AUTHORIZED_UID")
+        raise SystemExit(
+            "usage: pty-cgroup-broker.py SOCKET DELEGATED_ROOT AUTHORIZED_UID"
+        )
     serve(sys.argv[1], sys.argv[2], int(sys.argv[3]))

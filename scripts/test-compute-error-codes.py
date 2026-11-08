@@ -8,6 +8,7 @@ supervisor and asserts each refusal carries a typed snake_case error code
 No command may fail silently, panic, or return an untouched exception
 string without a code.
 """
+
 import json
 import os
 import pathlib
@@ -32,10 +33,15 @@ def recv_exact(conn, count):
 
 def request(socket_path, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1, "id": correlation, "type": "command",
-        "name": name, "args": args,
-    }).encode("utf-8")
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": correlation,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode("utf-8")
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -74,12 +80,18 @@ def main(bin_dir):
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
         # Admin commands and IPC shutdown need an explicit admin group (#31).
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
-                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        env = dict(
+            os.environ,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         log = root / "flowerlyd.log"
         proc = subprocess.Popen(
-            [str(bin_dir / "flowerlyd")], env=env,
-            stdout=log.open("ab"), stderr=subprocess.STDOUT,
+            [str(bin_dir / "flowerlyd")],
+            env=env,
+            stdout=log.open("ab"),
+            stderr=subprocess.STDOUT,
         )
         sock = runtime / "flowerlyd.sock"
         try:
@@ -88,62 +100,180 @@ def main(bin_dir):
             unknown_id = "model-" + uuid.uuid4().hex
             checks = [
                 # Model catalog classifications.
-                ("model.register", {"name": " "}, "invalid_argument", "model.register blank"),
-                ("model.register", {"name": "m", "backend": "WAT"}, "invalid_argument", "model.register backend"),
-                ("model.register", {"name": "m", "measured_memory_bytes": 1.5}, "invalid_argument", "model.register float"),
+                (
+                    "model.register",
+                    {"name": " "},
+                    "invalid_argument",
+                    "model.register blank",
+                ),
+                (
+                    "model.register",
+                    {"name": "m", "backend": "WAT"},
+                    "invalid_argument",
+                    "model.register backend",
+                ),
+                (
+                    "model.register",
+                    {"name": "m", "measured_memory_bytes": 1.5},
+                    "invalid_argument",
+                    "model.register float",
+                ),
                 ("model.show", {"id": unknown_id}, "not_found", "model.show unknown"),
-                ("model.show", {"id": "flow-123"}, "invalid_argument", "model.show bad id"),
+                (
+                    "model.show",
+                    {"id": "flow-123"},
+                    "invalid_argument",
+                    "model.show bad id",
+                ),
                 # Profile classifications.
-                ("profile.create", {"name": "p", "toml": "api_key = 'x'\n"}, "invalid_argument", "profile credentials"),
-                ("profile.create", {"name": "p", "toml": "unknown_key = 1\n"}, "invalid_argument", "profile unknown key"),
+                (
+                    "profile.create",
+                    {"name": "p", "toml": "api_key = 'x'\n"},
+                    "invalid_argument",
+                    "profile credentials",
+                ),
+                (
+                    "profile.create",
+                    {"name": "p", "toml": "unknown_key = 1\n"},
+                    "invalid_argument",
+                    "profile unknown key",
+                ),
                 # Provider classifications.
-                ("provider.register", {"name": "remote", "kind": "openai-api", "capabilities": ["text"]},
-                 "permission_denied", "provider remote kind"),
+                (
+                    "provider.register",
+                    {"name": "remote", "kind": "openai-api", "capabilities": ["text"]},
+                    "permission_denied",
+                    "provider remote kind",
+                ),
                 # Workload classifications.
-                ("workload.submit", {"profile_id": "profile-none", "model_id": "model-" + uuid.uuid4().hex},
-                 "not_found", "workload missing profile"),
+                (
+                    "workload.submit",
+                    {
+                        "profile_id": "profile-none",
+                        "model_id": "model-" + uuid.uuid4().hex,
+                    },
+                    "not_found",
+                    "workload missing profile",
+                ),
                 # Usage classifications.
-                ("usage.record", {"workload_id": "work-" + uuid.uuid4().hex, "tokens_in": 1, "tokens_out": 1,
-                  "latency_ms": 1, "cost_micros": 1}, "not_found", "usage missing workload"),
+                (
+                    "usage.record",
+                    {
+                        "workload_id": "work-" + uuid.uuid4().hex,
+                        "tokens_in": 1,
+                        "tokens_out": 1,
+                        "latency_ms": 1,
+                        "cost_micros": 1,
+                    },
+                    "not_found",
+                    "usage missing workload",
+                ),
                 # Inference classifications.
-                ("inference.request", {"workload_id": "work-" + uuid.uuid4().hex, "provider_id": "provider-" + uuid.uuid4().hex,
-                  "prompt": "hi", "request_id": "r-1"}, "not_found", "inference missing workload"),
+                (
+                    "inference.request",
+                    {
+                        "workload_id": "work-" + uuid.uuid4().hex,
+                        "provider_id": "provider-" + uuid.uuid4().hex,
+                        "prompt": "hi",
+                        "request_id": "r-1",
+                    },
+                    "not_found",
+                    "inference missing workload",
+                ),
             ]
             # Generation classifications.
             checks += [
-                ("generation.create", {"parent": "not-a-generation"},
-                 "invalid_argument", "generation.create bad parent"),
-                ("generation.create", {"parent": "gen-" + uuid.uuid4().hex},
-                 "not_found", "generation.create missing parent"),
-                ("generation.create", {"reason_goal": "goal-" + uuid.uuid4().hex},
-                 "not_found", "generation.create missing goal"),
-                ("generation.inspect", {}, "invalid_argument", "generation.inspect missing id"),
-                ("generation.inspect", {"id": "gen-" + uuid.uuid4().hex},
-                 "not_found", "generation.inspect unknown"),
-                ("generation.activate", {"id": 42}, "invalid_argument", "generation.activate bad id"),
-                ("generation.activate", {"id": "gen-" + uuid.uuid4().hex},
-                 "not_found", "generation.activate unknown"),
+                (
+                    "generation.create",
+                    {"parent": "not-a-generation"},
+                    "invalid_argument",
+                    "generation.create bad parent",
+                ),
+                (
+                    "generation.create",
+                    {"parent": "gen-" + uuid.uuid4().hex},
+                    "not_found",
+                    "generation.create missing parent",
+                ),
+                (
+                    "generation.create",
+                    {"reason_goal": "goal-" + uuid.uuid4().hex},
+                    "not_found",
+                    "generation.create missing goal",
+                ),
+                (
+                    "generation.inspect",
+                    {},
+                    "invalid_argument",
+                    "generation.inspect missing id",
+                ),
+                (
+                    "generation.inspect",
+                    {"id": "gen-" + uuid.uuid4().hex},
+                    "not_found",
+                    "generation.inspect unknown",
+                ),
+                (
+                    "generation.activate",
+                    {"id": 42},
+                    "invalid_argument",
+                    "generation.activate bad id",
+                ),
+                (
+                    "generation.activate",
+                    {"id": "gen-" + uuid.uuid4().hex},
+                    "not_found",
+                    "generation.activate unknown",
+                ),
             ]
             # Provenance classifications.
             checks += [
-                ("provenance.add", {"relation": "caused_by", "to": "goal-1"},
-                 "invalid_argument", "provenance.add missing from"),
-                ("provenance.add", {"from": "exec-123", "relation": "WAT", "to": "goal-1"},
-                 "invalid_argument", "provenance.add unknown relation"),
-                ("provenance.add", {"from": "plain", "relation": "caused_by", "to": "goal-1"},
-                 "invalid_argument", "provenance.add untyped from"),
-                ("provenance.to", {"ref": "plain-string"},
-                 "invalid_argument", "provenance.to untyped ref"),
+                (
+                    "provenance.add",
+                    {"relation": "caused_by", "to": "goal-1"},
+                    "invalid_argument",
+                    "provenance.add missing from",
+                ),
+                (
+                    "provenance.add",
+                    {"from": "exec-123", "relation": "WAT", "to": "goal-1"},
+                    "invalid_argument",
+                    "provenance.add unknown relation",
+                ),
+                (
+                    "provenance.add",
+                    {"from": "plain", "relation": "caused_by", "to": "goal-1"},
+                    "invalid_argument",
+                    "provenance.add untyped from",
+                ),
+                (
+                    "provenance.to",
+                    {"ref": "plain-string"},
+                    "invalid_argument",
+                    "provenance.to untyped ref",
+                ),
             ]
             # Execution (agentic) classifications.
             checks += [
-                ("execution.create", {"command": "true", "goal_id": "not-a-goal"},
-                 "invalid_argument", "execution.create bad goal"),
-                ("execution.create", {"command": "true", "goal_id": "goal-" + uuid.uuid4().hex},
-                 "not_found", "execution.create missing goal"),
+                (
+                    "execution.create",
+                    {"command": "true", "goal_id": "not-a-goal"},
+                    "invalid_argument",
+                    "execution.create bad goal",
+                ),
+                (
+                    "execution.create",
+                    {"command": "true", "goal_id": "goal-" + uuid.uuid4().hex},
+                    "not_found",
+                    "execution.create missing goal",
+                ),
                 ("execution.show", {}, "invalid_argument", "execution.show missing id"),
-                ("execution.show", {"id": "not-an-execution"},
-                 "invalid_argument", "execution.show bad id"),
+                (
+                    "execution.show",
+                    {"id": "not-an-execution"},
+                    "invalid_argument",
+                    "execution.show bad id",
+                ),
             ]
             # Capability classifications.
             checks += [
@@ -155,23 +285,45 @@ def main(bin_dir):
 
             # Duplicate profile name is a typed conflict.
             request(sock, "profile.create", {"name": "dup", "toml": "fallback='ask'\n"})
-            reply = request(sock, "profile.create", {"name": "dup", "toml": "fallback='fail'\n"})
+            reply = request(
+                sock, "profile.create", {"name": "dup", "toml": "fallback='fail'\n"}
+            )
             assert_error(reply, "conflict", "profile duplicate name")
 
             # Operation replay with changed payload is a typed conflict.
             op = "errcode-" + uuid.uuid4().hex
-            request(sock, "model.register", {
-                "name": "replay-model", "created_by": "uid:1000", "operation_id": op,
-            })
-            reply = request(sock, "model.register", {
-                "name": "replay-model-changed", "created_by": "uid:1000", "operation_id": op,
-            })
+            request(
+                sock,
+                "model.register",
+                {
+                    "name": "replay-model",
+                    "created_by": "uid:1000",
+                    "operation_id": op,
+                },
+            )
+            reply = request(
+                sock,
+                "model.register",
+                {
+                    "name": "replay-model-changed",
+                    "created_by": "uid:1000",
+                    "operation_id": op,
+                },
+            )
             assert_error(reply, "conflict", "replay payload mismatch")
 
             # Unknown commands stay typed invalid_argument.
-            for name in ["model.delete", "provider.connect", "workload.execute",
-                         "usage.spam", "inference.chat", "generation.delete",
-                         "provenance.delete", "execution.delete", "capability.delete"]:
+            for name in [
+                "model.delete",
+                "provider.connect",
+                "workload.execute",
+                "usage.spam",
+                "inference.chat",
+                "generation.delete",
+                "provenance.delete",
+                "execution.delete",
+                "capability.delete",
+            ]:
                 assert_error(request(sock, name, {}), "invalid_argument", name)
 
             # Healthy commands remain ok (codes are for failures, not noise).
@@ -192,8 +344,10 @@ def main(bin_dir):
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
-    print("Compute error-code surface: every refusal carries a typed "
-          "machine-readable code")
+    print(
+        "Compute error-code surface: every refusal carries a typed "
+        "machine-readable code"
+    )
 
 
 if __name__ == "__main__":

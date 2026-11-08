@@ -30,6 +30,7 @@ refuses to run unless FLOWERLY_DISPOSABLE_HOST=1.
 Prints an evidence report (systemd policy under test, effective permissions,
 results) to stdout.
 """
+
 import argparse
 import grp
 import importlib.util
@@ -67,19 +68,37 @@ EVIL_CONFIG = pathlib.Path("/etc/flowerly-injected.toml")
 EVIL_DB = pathlib.Path("/dev/shm/flowerly-injected.db")
 SERVICE = "flowerly"
 USERS, ADMINS, EVIL = "flowerly-users", "flowerly-admin", "flwt-evil"
-ALICE, BOB, DANA, CAROL, MALLORY = (f"flwt-{n}" for n in ("alice", "bob", "dana", "carol", "mallory"))
-MANAGER_ENV = [f"AGENTIC_USERS_GROUP={EVIL}", f"AGENTIC_CONFIG={EVIL_CONFIG}",
-               f"AGENTIC_DATABASE_PATH={EVIL_DB}",
-               # #240: would spawn PTYs without delegated-cgroup containment.
-               "FLOWERLY_PTY_ISOLATION=development", "FLOWERLY_PTY_CGROUP_ROOT=/sys/fs/cgroup",
-               "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=members-can-read-each-others-data"]
-UNSET_IN_EVERY_MODE = ("AGENTIC_CONFIG", "AGENTIC_DATABASE_PATH",
-                       "FLOWERLY_PTY_ISOLATION", "FLOWERLY_PTY_CGROUP_ROOT")
+ALICE, BOB, DANA, CAROL, MALLORY = (
+    f"flwt-{n}" for n in ("alice", "bob", "dana", "carol", "mallory")
+)
+MANAGER_ENV = [
+    f"AGENTIC_USERS_GROUP={EVIL}",
+    f"AGENTIC_CONFIG={EVIL_CONFIG}",
+    f"AGENTIC_DATABASE_PATH={EVIL_DB}",
+    # #240: would spawn PTYs without delegated-cgroup containment.
+    "FLOWERLY_PTY_ISOLATION=development",
+    "FLOWERLY_PTY_CGROUP_ROOT=/sys/fs/cgroup",
+    "AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP=members-can-read-each-others-data",
+]
+UNSET_IN_EVERY_MODE = (
+    "AGENTIC_CONFIG",
+    "AGENTIC_DATABASE_PATH",
+    "FLOWERLY_PTY_ISOLATION",
+    "FLOWERLY_PTY_CGROUP_ROOT",
+)
 PTY_FAIL_CLOSED = "PTY delegation unavailable; spawning disabled"
 PTY_DEVELOPMENT = "PTY isolation is development"
-ADMIN_COMMANDS = ["generation.activate", "generation.promote", "model.register",
-                  "ownership.inspect", "ownership.claim", "ownership.release",
-                  "provenance.add", "provider.register", "usage.record"]
+ADMIN_COMMANDS = [
+    "generation.activate",
+    "generation.promote",
+    "model.register",
+    "ownership.inspect",
+    "ownership.claim",
+    "ownership.release",
+    "provenance.add",
+    "provider.register",
+    "usage.record",
+]
 
 
 def sh(*argv, check=True):
@@ -99,8 +118,11 @@ def load(name, path):
 
 def mode_of(path):
     meta = path.lstat()
-    return (stat.S_IMODE(meta.st_mode), pwd.getpwuid(meta.st_uid).pw_name,
-            grp.getgrgid(meta.st_gid).gr_name)
+    return (
+        stat.S_IMODE(meta.st_mode),
+        pwd.getpwuid(meta.st_uid).pw_name,
+        grp.getgrgid(meta.st_gid).gr_name,
+    )
 
 
 class Host:
@@ -111,9 +133,26 @@ class Host:
     def raw(self, user, payload):
         """One request as `user`; outcome reply / eacces / closed."""
         result = subprocess.run(
-            ["runuser", "-u", user, "--", "env", "-i", "PATH=/usr/bin:/bin", sys.executable,
-             "-I", str(self.script), "--client", str(SOCKET), json.dumps(payload)],
-            check=True, capture_output=True, text=True, timeout=30)
+            [
+                "runuser",
+                "-u",
+                user,
+                "--",
+                "env",
+                "-i",
+                "PATH=/usr/bin:/bin",
+                sys.executable,
+                "-I",
+                str(self.script),
+                "--client",
+                str(SOCKET),
+                json.dumps(payload),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         return json.loads(result.stdout)
 
     def peer(self, user, spoof_user):
@@ -121,10 +160,16 @@ class Host:
 
     def journal(self):
         """Log lines of the current flowerlyd invocation only."""
-        invocation = sh("systemctl", "show", "-p", "InvocationID", "--value",
-                        "flowerlyd").stdout.strip()
-        return sh("journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "-o", "cat",
-                  "--no-pager").stdout
+        invocation = sh(
+            "systemctl", "show", "-p", "InvocationID", "--value", "flowerlyd"
+        ).stdout.strip()
+        return sh(
+            "journalctl",
+            f"_SYSTEMD_INVOCATION_ID={invocation}",
+            "-o",
+            "cat",
+            "--no-pager",
+        ).stdout
 
     def pty_contained(self, label):
         """The shipped unit has no Delegate=: PTY spawning must stay disabled,
@@ -146,11 +191,16 @@ class Host:
         sh("systemctl", "reset-failed", "flowerlyd", check=False)
         started = sh("systemctl", "restart", "flowerlyd", check=False)
         if started.returncode != 0:
-            status = sh("systemctl", "status", "--no-pager", "flowerlyd", check=False).stdout
-            journal = sh("journalctl", "-u", "flowerlyd", "-n", "60", "--no-pager",
-                         check=False).stdout
-            raise AssertionError(f"systemctl restart flowerlyd failed ({started.returncode}): "
-                                 f"{started.stderr}\n{status}\n{journal}")
+            status = sh(
+                "systemctl", "status", "--no-pager", "flowerlyd", check=False
+            ).stdout
+            journal = sh(
+                "journalctl", "-u", "flowerlyd", "-n", "60", "--no-pager", check=False
+            ).stdout
+            raise AssertionError(
+                f"systemctl restart flowerlyd failed ({started.returncode}): "
+                f"{started.stderr}\n{status}\n{journal}"
+            )
         for _ in range(300):
             if SOCKET.exists():
                 try:
@@ -159,19 +209,35 @@ class Host:
                 except subprocess.CalledProcessError:
                     pass
             time.sleep(0.1)
-        status = sh("systemctl", "status", "--no-pager", "flowerlyd", check=False).stdout
+        status = sh(
+            "systemctl", "status", "--no-pager", "flowerlyd", check=False
+        ).stdout
         raise AssertionError(f"flowerlyd not ready after restart:\n{status}")
 
     def as_daemon(self, *argv):
         """Run argv with the daemon's own uid and gid (no ptrace capability
         needed to read its /proc entries)."""
-        pid = sh("systemctl", "show", "-p", "MainPID", "--value", "flowerlyd").stdout.strip()
+        pid = sh(
+            "systemctl", "show", "-p", "MainPID", "--value", "flowerlyd"
+        ).stdout.strip()
         assert pid not in ("", "0"), pid
         status = pathlib.Path(f"/proc/{pid}/status").read_text()
-        gid = int(next(l for l in status.splitlines() if l.startswith("Gid:")).split()[1])
-        return subprocess.run(["runuser", "-u", SERVICE, "-g", grp.getgrgid(gid).gr_name, "--",
-                               *[a.replace("{pid}", pid) for a in argv]],
-                              check=True, capture_output=True).stdout
+        gid = int(
+            next(ln for ln in status.splitlines() if ln.startswith("Gid:")).split()[1]
+        )
+        return subprocess.run(
+            [
+                "runuser",
+                "-u",
+                SERVICE,
+                "-g",
+                grp.getgrgid(gid).gr_name,
+                "--",
+                *[a.replace("{pid}", pid) for a in argv],
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
 
     def environ(self):
         raw = self.as_daemon("cat", "/proc/{pid}/environ").split(b"\0")
@@ -179,7 +245,9 @@ class Host:
 
     def open_databases(self):
         """The *.db files the daemon has open (#237)."""
-        listing = self.as_daemon("find", "/proc/{pid}/fd", "-lname", "*.db", "-printf", "%l\n")
+        listing = self.as_daemon(
+            "find", "/proc/{pid}/fd", "-lname", "*.db", "-printf", "%l\n"
+        )
         return set(listing.decode().split())
 
     def status(self):
@@ -188,7 +256,11 @@ class Host:
         return reply["reply"]["data"]["details"]
 
     def command(self, user, name, **args):
-        return {"type": "command", "name": name, "args": dict({"admin": True, "uid": 0}, **args)}
+        return {
+            "type": "command",
+            "name": name,
+            "args": dict({"admin": True, "uid": 0}, **args),
+        }
 
     def denied(self, user, name, **args):
         outcome = self.raw(user, self.command(user, name, **args))
@@ -204,7 +276,9 @@ class Host:
         RUNTIME.chmod(0o755)
         SOCKET.chmod(0o666)
         try:
-            assert self.raw(user, self.command(user, "flow.list"))["outcome"] == "closed", user
+            assert (
+                self.raw(user, self.command(user, "flow.list"))["outcome"] == "closed"
+            ), user
         finally:
             SOCKET.chmod(socket_mode)
             RUNTIME.chmod(runtime_mode)
@@ -217,11 +291,19 @@ def check_state_private():
 
 
 def policy_evidence(label):
-    shown = sh("systemctl", "show", "flowerlyd", "-p",
-               "User,Group,RuntimeDirectoryMode,StateDirectoryMode,UMask,Environment,"
-               "UnsetEnvironment,DropInPaths").stdout
-    perms = "\n".join(f"{p}: mode={oct(m)} owner={o} group={g}"
-                      for p in (RUNTIME, SOCKET, STATE, DB) for m, o, g in [mode_of(p)])
+    shown = sh(
+        "systemctl",
+        "show",
+        "flowerlyd",
+        "-p",
+        "User,Group,RuntimeDirectoryMode,StateDirectoryMode,UMask,Environment,"
+        "UnsetEnvironment,DropInPaths",
+    ).stdout
+    perms = "\n".join(
+        f"{p}: mode={oct(m)} owner={o} group={g}"
+        for p in (RUNTIME, SOCKET, STATE, DB)
+        for m, o, g in [mode_of(p)]
+    )
     report(f"{label}: effective systemd policy", shown + "\n" + perms)
 
 
@@ -244,9 +326,12 @@ def default_phase(host, label):
     for name in ADMIN_COMMANDS:
         assert host.denied(SERVICE, name), name
     policy_evidence(label)
-    report(label, "service-account-only: users members, human admin, admin-only member and "
-           "non-member refused at filesystem and kernel check; state private; service "
-           "account not admin: PASS")
+    report(
+        label,
+        "service-account-only: users members, human admin, admin-only member and "
+        "non-member refused at filesystem and kernel check; state private; service "
+        "account not admin: PASS",
+    )
 
 
 def opt_in_phase(host, ownership, authorization):
@@ -282,7 +367,11 @@ def opt_in_phase(host, ownership, authorization):
         assert host.denied(user, "session.status"), user
     assert not host.denied(SERVICE, "session.status"), "service account PTY control"
 
-    alice, bob, dana = (host.peer(ALICE, BOB), host.peer(BOB, ALICE), host.peer(DANA, ALICE))
+    alice, bob, dana = (
+        host.peer(ALICE, BOB),
+        host.peer(BOB, ALICE),
+        host.peer(DANA, ALICE),
+    )
     uid = {name: pwd.getpwnam(name).pw_uid for name in (ALICE, BOB, DANA)}
     ownership.ownership_scenario(alice, bob, uid[ALICE], uid[BOB], DB, host.restart)
     ownership.compute_scenario(alice, bob, dana)
@@ -294,32 +383,48 @@ def opt_in_phase(host, ownership, authorization):
     host.restart()
     db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     try:
-        actors = {row[0] for row in db.execute("SELECT DISTINCT actor_uid FROM admin_audit")}
+        actors = {
+            row[0] for row in db.execute("SELECT DISTINCT actor_uid FROM admin_audit")
+        }
         audited = db.execute("SELECT COUNT(*) FROM admin_audit").fetchone()[0]
     finally:
         db.close()
     assert actors == {uid[DANA]} and audited >= 4, (actors, audited)
-    journal = sh("journalctl", "-u", "flowerlyd", "--since", started, "-o", "cat",
-                 "--no-pager").stdout
+    journal = sh(
+        "journalctl", "-u", "flowerlyd", "--since", started, "-o", "cat", "--no-pager"
+    ).stdout
     records = authorization.audit_fields(journal)
-    granted = [f for f in records
-               if f.get("peer_uid") == str(uid[DANA]) and f.get("outcome") != "denied"]
-    assert granted and all(f.get("service_account") == "false" for f in granted), records[-20:]
-    assert not any(f.get("peer_uid") == str(uid[ALICE]) and f.get("outcome") != "denied"
-                   for f in records), records[-20:]
+    granted = [
+        f
+        for f in records
+        if f.get("peer_uid") == str(uid[DANA]) and f.get("outcome") != "denied"
+    ]
+    assert granted and all(f.get("service_account") == "false" for f in granted), (
+        records[-20:]
+    )
+    assert not any(
+        f.get("peer_uid") == str(uid[ALICE]) and f.get("outcome") != "denied"
+        for f in records
+    ), records[-20:]
     assert alice.status()["foreground_flow"]["name"] == "General"
-    report("opt-in", "flowerly-users members admitted with per-uid ownership (Flows, Goals, "
-           "Sessions, Executions, provenance, Compute, Generations, foreground across restart, "
-           "audited claim/release); human admin runs audited Admin commands journaled by own "
-           f"uid ({audited} admin_audit rows, actor uid {uid[DANA]}); users members refused "
-           "Admin; PTY only for the service account; admin-only member and non-member refused; "
-           "manager-injected users group, config and database path ignored; state private: PASS")
+    report(
+        "opt-in",
+        "flowerly-users members admitted with per-uid ownership (Flows, Goals, "
+        "Sessions, Executions, provenance, Compute, Generations, foreground across restart, "
+        "audited claim/release); human admin runs audited Admin commands journaled by own "
+        f"uid ({audited} admin_audit rows, actor uid {uid[DANA]}); users members refused "
+        "Admin; PTY only for the service account; admin-only member and non-member refused; "
+        "manager-injected users group, config and database path ignored; state private: PASS",
+    )
 
 
 def install(bin_dir):
-    for source, target, mode in [(bin_dir / "flowerlyd", BINARY, 0o755),
-                                 (UNIT_SRC, UNIT, 0o644), (SYSUSERS_SRC, SYSUSERS, 0o644),
-                                 (DROP_IN_SRC, SHARED_DROP_IN, 0o644)]:
+    for source, target, mode in [
+        (bin_dir / "flowerlyd", BINARY, 0o755),
+        (UNIT_SRC, UNIT, 0o644),
+        (SYSUSERS_SRC, SYSUSERS, 0o644),
+        (DROP_IN_SRC, SHARED_DROP_IN, 0o644),
+    ]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         target.chmod(mode)
@@ -327,18 +432,37 @@ def install(bin_dir):
     service = pwd.getpwnam(SERVICE)
     members = [g.gr_name for g in grp.getgrall() if SERVICE in g.gr_mem]
     assert members == [], f"{SERVICE} must have no supplementary groups: {members}"
-    assert service.pw_uid < 1000 and service.pw_gid == grp.getgrnam(SERVICE).gr_gid, service
+    assert service.pw_uid < 1000 and service.pw_gid == grp.getgrnam(SERVICE).gr_gid, (
+        service
+    )
     sh("groupadd", EVIL)
-    for user, groups in [(ALICE, USERS), (BOB, USERS), (DANA, f"{USERS},{ADMINS}"),
-                         (CAROL, ADMINS), (MALLORY, EVIL)]:
-        sh("useradd", "--no-create-home", "--shell", shutil.which("nologin") or "/usr/sbin/nologin",
-           "--groups", groups, user)
+    for user, groups in [
+        (ALICE, USERS),
+        (BOB, USERS),
+        (DANA, f"{USERS},{ADMINS}"),
+        (CAROL, ADMINS),
+        (MALLORY, EVIL),
+    ]:
+        sh(
+            "useradd",
+            "--no-create-home",
+            "--shell",
+            shutil.which("nologin") or "/usr/sbin/nologin",
+            "--groups",
+            groups,
+            user,
+        )
     shutil.rmtree(STATE, ignore_errors=True)
 
 
 def cleanup():
     sh("systemctl", "stop", "flowerlyd", check=False)
-    sh("systemctl", "unset-environment", *[e.split("=")[0] for e in MANAGER_ENV], check=False)
+    sh(
+        "systemctl",
+        "unset-environment",
+        *[e.split("=")[0] for e in MANAGER_ENV],
+        check=False,
+    )
     for path in (DROP_IN, STALE_DROP_IN, EVIL_CONFIG, EVIL_DB):
         path.unlink(missing_ok=True)
     for user in (ALICE, BOB, DANA, CAROL, MALLORY):
@@ -352,8 +476,10 @@ def main():
     parser.add_argument("bin_dir")
     args = parser.parse_args()
     if os.geteuid() != 0 or os.environ.get("FLOWERLY_DISPOSABLE_HOST") != "1":
-        raise SystemExit("run as root on a disposable host with FLOWERLY_DISPOSABLE_HOST=1: "
-                         "this installs flowerlyd, its unit and test accounts system-wide")
+        raise SystemExit(
+            "run as root on a disposable host with FLOWERLY_DISPOSABLE_HOST=1: "
+            "this installs flowerlyd, its unit and test accounts system-wide"
+        )
     if pathlib.Path("/proc/1/comm").read_text().strip() != "systemd":
         raise SystemExit("PID 1 is not systemd")
     bin_dir = pathlib.Path(args.bin_dir).resolve()
@@ -365,11 +491,17 @@ def main():
     shutil.copyfile(ROOT / "scripts/test-user-ownership.py", client)
     client.chmod(0o644)
     host = Host(ownership, client)
-    report("host", "\n".join([
-        f"commit={os.environ.get('FLOWERLY_TEST_SHA', 'unknown')}",
-        f"kernel={os.uname().release}",
-        f"systemd={sh('systemctl', '--version').stdout.splitlines()[0]}",
-        f"os={sh('sh', '-c', '. /etc/os-release && echo $PRETTY_NAME').stdout.strip()}"]))
+    report(
+        "host",
+        "\n".join(
+            [
+                f"commit={os.environ.get('FLOWERLY_TEST_SHA', 'unknown')}",
+                f"kernel={os.uname().release}",
+                f"systemd={sh('systemctl', '--version').stdout.splitlines()[0]}",
+                f"os={sh('sh', '-c', '. /etc/os-release && echo $PRETTY_NAME').stdout.strip()}",
+            ]
+        ),
+    )
     try:
         install(bin_dir)
         default_phase(host, "default")
@@ -379,10 +511,14 @@ def main():
         EVIL_CONFIG.write_text(f'users_group = "{EVIL}"\n')
         sh("systemctl", "set-environment", *MANAGER_ENV)
         DROP_IN_DIR.mkdir(parents=True, exist_ok=True)
-        STALE_DROP_IN.write_text("[Service]\nEnvironment=AGENTIC_USERS_GROUP=flowerly-users\n"
-                                 "Environment=AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP="
-                                 "members-can-read-each-others-data\n")
-        default_phase(host, "default with injected manager environment and stale drop-in")
+        STALE_DROP_IN.write_text(
+            "[Service]\nEnvironment=AGENTIC_USERS_GROUP=flowerly-users\n"
+            "Environment=AGENTIC_TEST_ONLY_UNENFORCED_OWNERSHIP="
+            "members-can-read-each-others-data\n"
+        )
+        default_phase(
+            host, "default with injected manager environment and stale drop-in"
+        )
         STALE_DROP_IN.unlink()
 
         # Opt-in exactly as documented (manager injection still present).
@@ -396,18 +532,24 @@ def main():
         default_phase(host, "disabled again")
         db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         try:
-            kept = db.execute("SELECT COUNT(*) FROM flows WHERE owner_class = 'user'").fetchone()[0]
+            kept = db.execute(
+                "SELECT COUNT(*) FROM flows WHERE owner_class = 'user'"
+            ).fetchone()[0]
         finally:
             db.close()
         assert kept >= 2, kept
         assert mode_of(STATE)[2] == SERVICE, mode_of(STATE)
-        report("disabled again", f"data intact ({kept} user Flows), state re-owned by group "
-               f"{SERVICE}: PASS")
+        report(
+            "disabled again",
+            f"data intact ({kept} user Flows), state re-owned by group {SERVICE}: PASS",
+        )
     finally:
         cleanup()
         shutil.rmtree(work, ignore_errors=True)
-    print("\nSYSTEMD_MULTI_USER_ADMISSION=PASS (default service-account-only, opt-in drop-in, "
-          "disable)")
+    print(
+        "\nSYSTEMD_MULTI_USER_ADMISSION=PASS (default service-account-only, opt-in drop-in, "
+        "disable)"
+    )
 
 
 if __name__ == "__main__":
