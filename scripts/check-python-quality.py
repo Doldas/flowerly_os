@@ -5,6 +5,7 @@ All tracked Python files get a parser check. Changed Python files get Ruff
 linting; newly added files also get Ruff formatting. Baseline violations in
 untouched legacy files remain visible work, not an excuse to skip new code.
 """
+
 import argparse
 import ast
 import os
