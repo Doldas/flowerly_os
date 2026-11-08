@@ -2,10 +2,10 @@
 """Offline 0.0.5 regression for issue #324."""
 import importlib.util
 from pathlib import Path
+import unittest
 spec=importlib.util.spec_from_file_location("generation_005_04",Path(__file__).with_name("generation-005-04-loader.py"))
 mod=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-import unittest
 class Tests(unittest.TestCase):
     def test_counting_and_blessed(self):
         self.assertEqual(mod.parse_entry("flowerly-b+3.conf"),{"slot":"root-b","remaining_tries":3})

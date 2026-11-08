@@ -2,13 +2,12 @@
 """Offline 0.0.5 regression for issue #328."""
 import importlib.util
 from pathlib import Path
-spec=importlib.util.spec_from_file_location("generation_005_08",Path(__file__).with_name("generation-005-08-replay.py"))
-mod=importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
 import json
 import tempfile
 import unittest
-from pathlib import Path
+spec=importlib.util.spec_from_file_location("generation_005_08",Path(__file__).with_name("generation-005-08-replay.py"))
+mod=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
 
 def row(n,slot="root-a"):
     return {"schema":"flowerly-boot-witness/v1","boot_id":f"boot-{n}",

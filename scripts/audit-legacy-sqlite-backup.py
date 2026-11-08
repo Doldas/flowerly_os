@@ -2,7 +2,6 @@
 """Read-only legacy SQLite backup preflight; NEVER switches authority (#84)."""
 import argparse
 import json
-import os
 import sqlite3
 import stat
 import tempfile
