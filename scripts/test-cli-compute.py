@@ -5,6 +5,7 @@ Exercises the CLI's actual JSON args, server validation, kernel-bound actor,
 durable operation replay, missing evidence and retirement across restart.
 No network access, provider process, GPU dependency or root privileges.
 """
+
 import json
 import os
 from pathlib import Path
@@ -26,21 +27,31 @@ def main(binary_directory):
         state.mkdir(mode=0o700)
         log_file = root / "flowerlyd.log"
         # model register/retire need an explicit admin group grant (#31).
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime),
-                   AGENTIC_STATE_DIR=str(state), AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        env = dict(
+            os.environ,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         processes = []
 
         def invoke(*arguments, ok=True):
             result = subprocess.run(
                 [str(cli), "--runtime-dir", str(runtime), *arguments],
-                env=env, capture_output=True, text=True, timeout=12,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=12,
                 check=False,
             )
             if not ok:
                 assert result.returncode != 0, (arguments, result.stdout)
                 return result.stdout + result.stderr
             assert result.returncode == 0, (
-                arguments, result.returncode, result.stderr, log_file.read_text()
+                arguments,
+                result.returncode,
+                result.stderr,
+                log_file.read_text(),
             )
             return json.loads(result.stdout)
 
@@ -79,12 +90,21 @@ def main(binary_directory):
 
             key = "cli-compute-" + uuid.uuid4().hex
             registration = (
-                "model", "register", "Local evidence example",
-                "--backend", "CPU",
-                "--context-tokens", "2048",
-                "--modality", "text", "--modality", "vision",
-                "--evidence", "operator-recorded",
-                "--operation-id", key,
+                "model",
+                "register",
+                "Local evidence example",
+                "--backend",
+                "CPU",
+                "--context-tokens",
+                "2048",
+                "--modality",
+                "text",
+                "--modality",
+                "vision",
+                "--evidence",
+                "operator-recorded",
+                "--operation-id",
+                key,
             )
             model = invoke(*registration)
             model_id = model["id"]
@@ -101,21 +121,32 @@ def main(binary_directory):
             compatibility = invoke("model", "compatibility", model_id)
             assert compatibility["verdict"] == "UNKNOWN", compatibility
             assert compatibility["promise"] == "advisory-only", compatibility
-            assert any(
-                "memory" in reason for reason in compatibility["reasons"]
-            ), compatibility
+            assert any("memory" in reason for reason in compatibility["reasons"]), (
+                compatibility
+            )
 
             conflict = invoke(
-                "model", "register", "Changed payload",
-                "--operation-id", key, ok=False,
+                "model",
+                "register",
+                "Changed payload",
+                "--operation-id",
+                key,
+                ok=False,
             )
             assert "Conflict" in conflict, conflict
             assert "InvalidArgument" in invoke(
-                "model", "register", "Invalid backend",
-                "--backend", "NOT_A_BACKEND", ok=False,
+                "model",
+                "register",
+                "Invalid backend",
+                "--backend",
+                "NOT_A_BACKEND",
+                ok=False,
             )
             assert "NotFound" in invoke(
-                "model", "show", "model-does-not-exist", ok=False,
+                "model",
+                "show",
+                "model-does-not-exist",
+                ok=False,
             )
 
             retirement = invoke("model", "retire", model_id)
@@ -130,7 +161,9 @@ def main(binary_directory):
             assert invoke(*registration) == model, "replay survives restart"
             assert invoke("model", "list")["models"] == [], "replay must not unretire"
             assert invoke("ping")["pong"] is True
-            print("CLI model registration, replay, retirement, honest budget and restart: OK")
+            print(
+                "CLI model registration, replay, retirement, honest budget and restart: OK"
+            )
         finally:
             for process in processes:
                 if process.poll() is None:

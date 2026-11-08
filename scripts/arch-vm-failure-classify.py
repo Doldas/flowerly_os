@@ -22,6 +22,7 @@ Categories, first match wins:
 A host reboot that kills the runner itself cannot be recorded by the run
 it interrupts; the next run's host-resource-start.txt shows the boot time.
 """
+
 import argparse
 import re
 from pathlib import Path
@@ -29,10 +30,14 @@ from pathlib import Path
 GUEST_OOM = re.compile(r"Out of memory: Killed process|invoked oom-killer|oom-kill:")
 # "watchdog: BUG: soft lockup" is a crash; the shutdown notice "watchdog:
 # watchdog0: watchdog did not stop!" (seen on every clean poweroff) is not.
-GUEST_CRASH = re.compile(r"Kernel panic|BUG: |soft lockup|hard LOCKUP|"
-                         r"general protection fault|Oops:|blocked for more than")
+GUEST_CRASH = re.compile(
+    r"Kernel panic|BUG: |soft lockup|hard LOCKUP|"
+    r"general protection fault|Oops:|blocked for more than"
+)
 # Terminal control sequences: OSC (ESC ] ... BEL or ESC \\) and CSI.
-ESCAPES = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b.")
+ESCAPES = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b."
+)
 PRINTABLE = re.compile(r"[^\x20-\x7e]")
 
 
@@ -54,8 +59,11 @@ def serial_matches(path, limit=20):
 def classify(facts, oom_lines, crash_lines):
     if facts["exit_status"] == 0:
         return "success"
-    if facts["boot_id_start"] and facts["boot_id_end"] \
-            and facts["boot_id_start"] != facts["boot_id_end"]:
+    if (
+        facts["boot_id_start"]
+        and facts["boot_id_end"]
+        and facts["boot_id_start"] != facts["boot_id_end"]
+    ):
         return "host_reboot"
     if facts["qemu"] != "alive" and facts["stage"] not in ("before-vm", "shutdown"):
         if facts["oom_kill_end"] > facts["oom_kill_start"]:
@@ -78,19 +86,36 @@ def main(argv=None):
     parser.add_argument("--exit-status", required=True, type=int)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--ssh-status", type=int)
-    parser.add_argument("--qemu", choices=("alive", "absent", "no_pidfile"), required=True)
-    parser.add_argument("--guest-reachable", choices=("yes", "no", "unknown"), default="unknown")
+    parser.add_argument(
+        "--qemu", choices=("alive", "absent", "no_pidfile"), required=True
+    )
+    parser.add_argument(
+        "--guest-reachable", choices=("yes", "no", "unknown"), default="unknown"
+    )
     parser.add_argument("--oom-kill-start", type=int, default=0)
     parser.add_argument("--oom-kill-end", type=int, default=0)
     parser.add_argument("--boot-id-start", default="")
     parser.add_argument("--boot-id-end", default="")
     args = parser.parse_args(argv)
-    facts = {key: getattr(args, key) for key in (
-        "exit_status", "stage", "ssh_status", "qemu", "guest_reachable",
-        "oom_kill_start", "oom_kill_end", "boot_id_start", "boot_id_end")}
+    facts = {
+        key: getattr(args, key)
+        for key in (
+            "exit_status",
+            "stage",
+            "ssh_status",
+            "qemu",
+            "guest_reachable",
+            "oom_kill_start",
+            "oom_kill_end",
+            "boot_id_start",
+            "boot_id_end",
+        )
+    }
     oom_lines, crash_lines = serial_matches(args.report_dir / "qemu-serial.log")
     category = classify(facts, oom_lines, crash_lines)
-    lines = [f"category={category}"] + [f"{key}={value}" for key, value in facts.items()]
+    lines = [f"category={category}"] + [
+        f"{key}={value}" for key, value in facts.items()
+    ]
     lines += [f"guest_oom_line={line}" for line in oom_lines]
     lines += [f"guest_crash_line={line}" for line in crash_lines]
     (args.report_dir / "failure-classification.txt").write_text("\n".join(lines) + "\n")

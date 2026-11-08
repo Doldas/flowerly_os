@@ -23,6 +23,7 @@ Logged to <state>/events.jsonl: metadata only (role, path, status, sizes,
 whether the bearer token matched the dummy key's SHA-256). Never the
 prompt, the reply text, the token or a header value.
 """
+
 import argparse
 import hashlib
 import json
@@ -45,14 +46,31 @@ SENTINEL_REPLY = "FLOWERLY-SENTINEL-REPLY"
 SENTINEL_PROMPT = "FLOWERLY-SENTINEL-PROMPT"
 
 HTTP_SCENARIOS = {
-    "ok", "missing-model", "model-mismatch", "auth-failure", "rate-limited", "server-error",
-    "redirect", "oversized", "malformed-json", "tool-calls", "missing-usage", "unknown-outcome",
-    "delayed", "empty-output", "tls-untrusted", "tls-wrong-name",
+    "ok",
+    "missing-model",
+    "model-mismatch",
+    "auth-failure",
+    "rate-limited",
+    "server-error",
+    "redirect",
+    "oversized",
+    "malformed-json",
+    "tool-calls",
+    "missing-usage",
+    "unknown-outcome",
+    "delayed",
+    "empty-output",
+    "tls-untrusted",
+    "tls-wrong-name",
 }
 # Scenario -> address role the mock name resolves to (A or AAAA).
 ADDRESS_SCENARIOS = {
-    "addr-private": "private_rfc1918", "addr-cgnat": "cgnat", "addr-loopback": "loopback_v4",
-    "addr-link-local": "link_local_v4", "addr-metadata": "metadata_v4", "addr-ula": "ula",
+    "addr-private": "private_rfc1918",
+    "addr-cgnat": "cgnat",
+    "addr-loopback": "loopback_v4",
+    "addr-link-local": "link_local_v4",
+    "addr-metadata": "metadata_v4",
+    "addr-ula": "ula",
 }
 SCENARIOS = HTTP_SCENARIOS | set(ADDRESS_SCENARIOS) | {"rebind"}
 
@@ -92,7 +110,9 @@ class State:
             # "rebind <generation> [public-answers]": the first N A answers
             # are public, every later one private. A new line restarts.
             parts = line.split()
-            public_answers = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+            public_answers = (
+                int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+            )
             with self.lock:
                 if line != self.rebind_line:
                     self.rebind_line, self.rebind_answers = line, 0
@@ -104,6 +124,7 @@ class State:
 
 # --- DNS -----------------------------------------------------------------
 
+
 def parse_question(packet):
     labels, offset = [], 12
     while True:
@@ -113,9 +134,9 @@ def parse_question(packet):
             break
         if length & 0xC0:
             raise ValueError("compressed question")
-        labels.append(packet[offset + 1:offset + 1 + length].decode("ascii").lower())
+        labels.append(packet[offset + 1 : offset + 1 + length].decode("ascii").lower())
         offset += 1 + length
-    qtype, qclass = struct.unpack("!HH", packet[offset:offset + 4])
+    qtype, qclass = struct.unpack("!HH", packet[offset : offset + 4])
     return ".".join(labels), qtype, qclass, offset + 4
 
 
@@ -161,6 +182,7 @@ def serve_dns(state, sock):
 
 # --- sinks ---------------------------------------------------------------
 
+
 def serve_sink(state, role, sock):
     while True:
         conn, _peer = sock.accept()
@@ -170,12 +192,14 @@ def serve_sink(state, role, sock):
 
 # --- HTTPS mock ----------------------------------------------------------
 
+
 def tls_contexts(pki):
     def context(cert, key):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(pki / cert, pki / key)
         return ctx
+
     return {
         "good": context("mock.crt", "mock.key"),
         "tls-untrusted": context("untrusted-mock.crt", "untrusted-mock.key"),
@@ -211,10 +235,20 @@ def read_request(conn):
 
 
 def respond(conn, status, body=b"", headers=()):
-    reasons = {200: "OK", 302: "Found", 401: "Unauthorized", 404: "Not Found",
-               429: "Too Many Requests", 503: "Service Unavailable"}
-    lines = [f"HTTP/1.1 {status} {reasons.get(status, 'Status')}", "Connection: close",
-             f"Content-Length: {len(body)}", *headers]
+    reasons = {
+        200: "OK",
+        302: "Found",
+        401: "Unauthorized",
+        404: "Not Found",
+        429: "Too Many Requests",
+        503: "Service Unavailable",
+    }
+    lines = [
+        f"HTTP/1.1 {status} {reasons.get(status, 'Status')}",
+        "Connection: close",
+        f"Content-Length: {len(body)}",
+        *headers,
+    ]
     conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
 
 
@@ -230,13 +264,25 @@ def chat_reply(scenario, model, prompt):
     if scenario == "model-mismatch":
         reported = "mock-other-model"
     elif scenario == "tool-calls":
-        message = {"role": "assistant", "content": None,
-                   "tool_calls": [{"id": "call-1", "type": "function",
-                                   "function": {"name": "mock_tool", "arguments": "{}"}}]}
+        message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "mock_tool", "arguments": "{}"},
+                }
+            ],
+        }
     elif scenario == "empty-output":
         message["content"] = ""
-    body = {"id": "mock-1", "object": "chat.completion", "model": reported,
-            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}
+    body = {
+        "id": "mock-1",
+        "object": "chat.completion",
+        "model": reported,
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+    }
     if scenario != "missing-usage":
         body["usage"] = usage
     return body
@@ -255,54 +301,93 @@ def handle_http(state, args, conn):
         auth = "match" if digest == args.key_sha256 else "mismatch"
     else:
         auth = "absent"
-    event = {"kind": "http", "role": "mock", "scenario": scenario, "method": method,
-             "path": path.split("?")[0][:64], "auth": auth, "body_bytes": len(body)}
-    chat = path in ("/v1/chat/completions", "/api/chat/completions") and method == "POST"
+    event = {
+        "kind": "http",
+        "role": "mock",
+        "scenario": scenario,
+        "method": method,
+        "path": path.split("?")[0][:64],
+        "auth": auth,
+        "body_bytes": len(body),
+    }
+    chat = (
+        path in ("/v1/chat/completions", "/api/chat/completions") and method == "POST"
+    )
     models = path in ("/v1/models", "/api/models") and method == "GET"
     prompt = ""
     if chat:
         try:
             parsed = json.loads(body)
-            prompt = "".join(m.get("content") or "" for m in parsed.get("messages", [])
-                             if isinstance(m, dict) and isinstance(m.get("content"), str))
-            event.update(model=str(parsed.get("model"))[:128], max_tokens=parsed.get("max_tokens"),
-                         stream=parsed.get("stream"), tools_offered="tools" in parsed or "functions" in parsed)
+            prompt = "".join(
+                m.get("content") or ""
+                for m in parsed.get("messages", [])
+                if isinstance(m, dict) and isinstance(m.get("content"), str)
+            )
+            event.update(
+                model=str(parsed.get("model"))[:128],
+                max_tokens=parsed.get("max_tokens"),
+                stream=parsed.get("stream"),
+                tools_offered="tools" in parsed or "functions" in parsed,
+            )
         except (ValueError, AttributeError):
             event["unparsable_request"] = True
         # Lengths and markers only: the prompt itself is never logged.
-        event.update(prompt_chars=len(prompt), sentinel_prompt_seen=SENTINEL_PROMPT in prompt)
+        event.update(
+            prompt_chars=len(prompt), sentinel_prompt_seen=SENTINEL_PROMPT in prompt
+        )
     status, payload, extra = 404, b"", ()
     if auth != "match" or scenario == "auth-failure":
         status, payload = 401, json_body({"error": "unauthorized"})
     elif scenario == "rate-limited" and chat:
         # Discovery succeeds; the chat request is the one limited.
-        status, payload, extra = 429, json_body({"error": "slow down"}), (f"Retry-After: {RETRY_AFTER_SECONDS}",)
+        status, payload, extra = (
+            429,
+            json_body({"error": "slow down"}),
+            (f"Retry-After: {RETRY_AFTER_SECONDS}",),
+        )
     elif scenario == "server-error" and chat:
         status, payload = 503, json_body({"error": "unavailable"})
     elif scenario == "redirect":
         target = f"https://{args.network['names']['redirect_target']}:{args.network['mock_port']}{path}"
         status, extra = 302, (f"Location: {target}",)
     elif models:
-        listed = [] if scenario == "missing-model" else [{"id": args.model, "object": "model"}]
-        status, payload = 200, json_body({"object": "list", "data": listed + [{"id": "mock-other-model"}]})
+        listed = (
+            []
+            if scenario == "missing-model"
+            else [{"id": args.model, "object": "model"}]
+        )
+        status, payload = (
+            200,
+            json_body(
+                {"object": "list", "data": listed + [{"id": "mock-other-model"}]}
+            ),
+        )
     elif chat:
         if scenario == "delayed":
             time.sleep(DELAY_SECONDS)
         if scenario == "oversized":
             event["status"] = 200
             state.log(**event)
-            conn.sendall(f"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n"
-                         f"Content-Length: {OVERSIZED}\r\n\r\n".encode() + b" " * OVERSIZED)
+            conn.sendall(
+                f"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {OVERSIZED}\r\n\r\n".encode()
+                + b" " * OVERSIZED
+            )
             return
         if scenario == "malformed-json":
             status, payload = 200, b'{"model": "truncated'
         elif scenario == "unknown-outcome":
             event.update(status=200, dropped_mid_body=True)
             state.log(**event)
-            conn.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4096\r\n\r\n{\"model\":")
+            conn.sendall(
+                b'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4096\r\n\r\n{"model":'
+            )
             return
         else:
-            status, payload = 200, json_body(chat_reply(scenario, event.get("model", args.model), prompt))
+            status, payload = (
+                200,
+                json_body(chat_reply(scenario, event.get("model", args.model), prompt)),
+            )
     event["status"] = status
     state.log(**event)
     respond(conn, status, payload, ("Content-Type: application/json", *extra))
@@ -318,15 +403,19 @@ def serve_mock(state, args, sock, contexts):
                 conn.settimeout(30)
                 handle_http(state, args, conn)
         except (ssl.SSLError, OSError) as err:
-            state.log(kind="tls", role="mock", scenario=scenario, error=type(err).__name__)
+            state.log(
+                kind="tls", role="mock", scenario=scenario, error=type(err).__name__
+            )
         finally:
             raw.close()
+
     while True:
         raw, _peer = sock.accept()
         threading.Thread(target=worker, args=(raw,), daemon=True).start()
 
 
 # --- startup -------------------------------------------------------------
+
 
 def bind(kind, spec):
     host, _, port = spec.rpartition(":")
@@ -361,21 +450,34 @@ def guest_listeners(network):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description="Flowerly KVM acceptance mock (TEST ONLY)")
+    parser = argparse.ArgumentParser(
+        description="Flowerly KVM acceptance mock (TEST ONLY)"
+    )
     parser.add_argument("--network", required=True, type=pathlib.Path)
     parser.add_argument("--pki", required=True, type=pathlib.Path)
     parser.add_argument("--state", required=True, type=pathlib.Path)
     parser.add_argument("--model", required=True)
     parser.add_argument("--key-sha256", required=True)
-    parser.add_argument("--listen", action="append", default=[],
-                        help="role=address:port; replaces the plan's listeners (offline tests)")
-    parser.add_argument("--dns", help="address:port for the DNS server (default: the plan's stub, port 53)")
+    parser.add_argument(
+        "--listen",
+        action="append",
+        default=[],
+        help="role=address:port; replaces the plan's listeners (offline tests)",
+    )
+    parser.add_argument(
+        "--dns",
+        help="address:port for the DNS server (default: the plan's stub, port 53)",
+    )
     args = parser.parse_args(argv[1:])
     args.network = json.loads(args.network.read_text())
     if len(args.key_sha256) != 64:
         sys.exit("--key-sha256 must be a SHA-256 hex digest")
     state = State(args.state, args.network)
-    listen = dict(spec.split("=", 1) for spec in args.listen) if args.listen else guest_listeners(args.network)
+    listen = (
+        dict(spec.split("=", 1) for spec in args.listen)
+        if args.listen
+        else guest_listeners(args.network)
+    )
     contexts = tls_contexts(args.pki)
     bound = {}
     threads = []
@@ -384,10 +486,14 @@ def main(argv):
         bound[role] = list(sock.getsockname()[:2])
         target = serve_mock if role == "mock" else serve_sink
         extra = (args, sock, contexts) if role == "mock" else (role, sock)
-        threads.append(threading.Thread(target=target, args=(state, *extra), daemon=True))
+        threads.append(
+            threading.Thread(target=target, args=(state, *extra), daemon=True)
+        )
     dns_sock = bind(socket.SOCK_DGRAM, args.dns or f"{args.network['dns_stub']}:53")
     bound["dns"] = list(dns_sock.getsockname()[:2])
-    threads.append(threading.Thread(target=serve_dns, args=(state, dns_sock), daemon=True))
+    threads.append(
+        threading.Thread(target=serve_dns, args=(state, dns_sock), daemon=True)
+    )
     for thread in threads:
         thread.start()
     ports = args.state / "ports.json"

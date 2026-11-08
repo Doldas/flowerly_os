@@ -9,6 +9,7 @@ verdicts without invented numbers, soft retirement and restart durability.
 The catalog grants no OS authority: no command here touches processes,
 filesystem or network. Local-only; no provider or endpoint is configured.
 """
+
 import json
 import os
 import pathlib
@@ -33,13 +34,15 @@ def recv_exact(conn, count):
 
 def request(socket_path, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1,
-        "id": correlation,
-        "type": "command",
-        "name": name,
-        "args": args,
-    }).encode("utf-8")
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": correlation,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode("utf-8")
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -54,7 +57,9 @@ def request(socket_path, name, args):
 
 def shutdown(socket_path):
     correlation = str(uuid.uuid4())
-    message = json.dumps({"version": 1, "id": correlation, "type": "shutdown"}).encode("utf-8")
+    message = json.dumps({"version": 1, "id": correlation, "type": "shutdown"}).encode(
+        "utf-8"
+    )
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -96,8 +101,12 @@ def main(bin_dir):
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
         # Admin commands and IPC shutdown need an explicit admin group (#31).
-        env = dict(os.environ, AGENTIC_RUNTIME_DIR=str(runtime), AGENTIC_STATE_DIR=str(state),
-                   AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        env = dict(
+            os.environ,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         log_path = root / "flowerlyd.log"
         processes = []
 
@@ -105,7 +114,9 @@ def main(bin_dir):
             with log_path.open("ab") as log:
                 proc = subprocess.Popen(
                     [str(bin_dir / "flowerlyd")],
-                    env=env, stdout=log, stderr=subprocess.STDOUT,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
                 )
             processes.append(proc)
             wait_ready(runtime / "flowerlyd.sock", proc, log_path)
@@ -123,9 +134,9 @@ def main(bin_dir):
                 assert budget["total_memory_bytes"] > 0, budget
                 assert budget["available_memory_bytes"] > 0, budget
             else:
-                assert any(
-                    not budget["available_memory_bytes"] for _ in [0]
-                ), "absent source must not fabricate numbers"
+                assert any(not budget["available_memory_bytes"] for _ in [0]), (
+                    "absent source must not fabricate numbers"
+                )
             assert budget["enforcement"]["gpu_vram"] == "not-enforced", budget
             assert budget["enforcement"]["cpu_memory"] == "advisory-measured", budget
 
@@ -144,34 +155,42 @@ def main(bin_dir):
 
             # 3. Registration with measured evidence; replay-safe operation id.
             operation_id = "compute-model-" + uuid.uuid4().hex
-            registered = request(sock, "model.register", {
-                "name": "qwen2-coder-14b",
-                "family": "qwen2",
-                "architecture": "transformer",
-                "backend": "CPU",
-                "context_tokens": 32768,
-                "measured_memory_bytes": 9_000_000_000,
-                "modalities": ["text"],
-                "license": "apache-2.0",
-                "evidence": "measure:gold-rss",
-                "operation_id": operation_id,
-                "created_by": "uid:1000",
-            })["data"]
+            registered = request(
+                sock,
+                "model.register",
+                {
+                    "name": "qwen2-coder-14b",
+                    "family": "qwen2",
+                    "architecture": "transformer",
+                    "backend": "CPU",
+                    "context_tokens": 32768,
+                    "measured_memory_bytes": 9_000_000_000,
+                    "modalities": ["text"],
+                    "license": "apache-2.0",
+                    "evidence": "measure:gold-rss",
+                    "operation_id": operation_id,
+                    "created_by": "uid:1000",
+                },
+            )["data"]
             model_id = registered["id"]
             assert model_id.startswith("model-"), registered
-            replayed = request(sock, "model.register", {
-                "name": "qwen2-coder-14b",
-                "family": "qwen2",
-                "architecture": "transformer",
-                "backend": "CPU",
-                "context_tokens": 32768,
-                "measured_memory_bytes": 9_000_000_000,
-                "modalities": ["text"],
-                "license": "apache-2.0",
-                "evidence": "measure:gold-rss",
-                "operation_id": operation_id,
-                "created_by": "uid:1000",
-            })["data"]
+            replayed = request(
+                sock,
+                "model.register",
+                {
+                    "name": "qwen2-coder-14b",
+                    "family": "qwen2",
+                    "architecture": "transformer",
+                    "backend": "CPU",
+                    "context_tokens": 32768,
+                    "measured_memory_bytes": 9_000_000_000,
+                    "modalities": ["text"],
+                    "license": "apache-2.0",
+                    "evidence": "measure:gold-rss",
+                    "operation_id": operation_id,
+                    "created_by": "uid:1000",
+                },
+            )["data"]
             assert replayed["id"] == model_id, (model_id, replayed)
             listed = request(sock, "model.list", {})["data"]["models"]
             assert len(listed) == 1 and listed[0]["id"] == model_id, listed
@@ -181,20 +200,25 @@ def main(bin_dir):
             compat = request(sock, "model.compatibility", {"id": model_id})["data"]
             assert compat["verdict"] in ("FITS", "EXCEEDS_BUDGET"), compat
             assert compat["promise"] == "advisory-only", compat
-            evidence_light = request(sock, "model.register", {
-                "name": "unmeasured-model",
-                "created_by": "uid:1000",
-            })["data"]
-            compat = request(
-                sock, "model.compatibility", {"id": evidence_light["id"]}
+            evidence_light = request(
+                sock,
+                "model.register",
+                {
+                    "name": "unmeasured-model",
+                    "created_by": "uid:1000",
+                },
             )["data"]
+            compat = request(sock, "model.compatibility", {"id": evidence_light["id"]})[
+                "data"
+            ]
             assert compat["verdict"] == "UNKNOWN", compat
             assert any("memory" in reason for reason in compat["reasons"]), compat
 
             # 5. Unknown ids are typed NotFound, including retirement.
             for name in ("model.show", "model.compatibility", "model.retire"):
                 message = assert_error(
-                    sock, name,
+                    sock,
+                    name,
                     {"id": "model-" + uuid.uuid4().hex},
                     "not_found",
                 )
@@ -212,19 +236,23 @@ def main(bin_dir):
             sock = start()
             detail = request(sock, "model.show", {"id": model_id})["data"]
             assert detail["retired_at"], detail
-            replayed_again = request(sock, "model.register", {
-                "name": "qwen2-coder-14b",
-                "family": "qwen2",
-                "architecture": "transformer",
-                "backend": "CPU",
-                "context_tokens": 32768,
-                "measured_memory_bytes": 9_000_000_000,
-                "modalities": ["text"],
-                "license": "apache-2.0",
-                "evidence": "measure:gold-rss",
-                "operation_id": operation_id,
-                "created_by": "uid:1000",
-            })["data"]
+            replayed_again = request(
+                sock,
+                "model.register",
+                {
+                    "name": "qwen2-coder-14b",
+                    "family": "qwen2",
+                    "architecture": "transformer",
+                    "backend": "CPU",
+                    "context_tokens": 32768,
+                    "measured_memory_bytes": 9_000_000_000,
+                    "modalities": ["text"],
+                    "license": "apache-2.0",
+                    "evidence": "measure:gold-rss",
+                    "operation_id": operation_id,
+                    "created_by": "uid:1000",
+                },
+            )["data"]
             assert replayed_again["id"] == model_id, replayed_again
 
             budget = request(sock, "device.budget", {})["data"]
@@ -239,8 +267,10 @@ def main(bin_dir):
                 except subprocess.TimeoutExpired:
                     proc.kill()
             sock = None
-    print("Compute catalog black box: registration, replay, honest verdicts, "
-          "retirement and restart durability verified")
+    print(
+        "Compute catalog black box: registration, replay, honest verdicts, "
+        "retirement and restart durability verified"
+    )
 
 
 if __name__ == "__main__":

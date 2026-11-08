@@ -65,6 +65,7 @@ def drop_to_shell(credentials):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
+
     # A non-root-to-non-root UID transition does not reliably clear all
     # process capabilities. Empty the effective, permitted and inheritable
     # sets explicitly with Linux capset v3 before executing untrusted code.
@@ -93,7 +94,8 @@ def verify_shell_migration_boundary(credentials, root_fd):
     management = management_name()
     targets = (("cgroup.procs", root_fd),)
     management_fd = os.open(
-        management, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        management,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
         dir_fd=root_fd,
     )
     try:
@@ -104,7 +106,9 @@ def verify_shell_migration_boundary(credentials, root_fd):
                 drop_to_shell(credentials)
                 for name, directory in targets:
                     try:
-                        fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory)
+                        fd = os.open(
+                            name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=directory
+                        )
                     except OSError as error:
                         if error.errno not in (errno.EPERM, errno.EACCES):
                             os._exit(10)
@@ -121,7 +125,6 @@ def verify_shell_migration_boundary(credentials, root_fd):
             )
     finally:
         os.close(management_fd)
-
 
 
 class SessionCgroup:
@@ -160,7 +163,8 @@ class SessionCgroup:
                 verify_shell_migration_boundary(self.shell_creds, self.parent_fd)
             os.mkdir(self.name, mode=0o700, dir_fd=self.parent_fd)
             self.group_fd = os.open(
-                self.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                self.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                 dir_fd=self.parent_fd,
             )
             self.write("pids.max", "64")
@@ -212,7 +216,8 @@ class SessionCgroup:
         try:
             try:
                 fd = os.open(
-                    "cgroup.procs", os.O_WRONLY | os.O_NOFOLLOW,
+                    "cgroup.procs",
+                    os.O_WRONLY | os.O_NOFOLLOW,
                     dir_fd=management_fd,
                 )
             except OSError as error:
@@ -281,10 +286,13 @@ class SessionCgroup:
                         if error.errno not in (errno.EBUSY, errno.ENOTEMPTY):
                             raise
                         if attempt == 99:
-                            raise RuntimeError("delegated PTY cgroup remained populated")
+                            raise RuntimeError(
+                                "delegated PTY cgroup remained populated"
+                            )
                         time.sleep(0.02)
             os.close(self.parent_fd)
             self.parent_fd = None
+
 
 def _kill_owned_terminal_session(shell_sid):
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
@@ -300,7 +308,10 @@ def _kill_owned_terminal_session(shell_sid):
             if candidate == os.getpid():
                 continue
             try:
-                if os.stat("/proc/" + raw).st_uid != uid or os.getsid(candidate) != shell_sid:
+                if (
+                    os.stat("/proc/" + raw).st_uid != uid
+                    or os.getsid(candidate) != shell_sid
+                ):
                     continue
                 fd = os.pidfd_open(candidate)
             except (ProcessLookupError, PermissionError, FileNotFoundError):
@@ -315,7 +326,7 @@ def _kill_owned_terminal_session(shell_sid):
                 os.close(fd)
         if not found:
             break
-        time.sleep(.02)
+        time.sleep(0.02)
 
 
 def _watch_guardian(shell_sid, parent_pid, ready_fd, isolation):
@@ -338,7 +349,7 @@ def _watch_guardian(shell_sid, parent_pid, ready_fd, isolation):
     finally:
         os.close(ready_fd)
     while not stopped and os.getppid() == parent_pid:
-        time.sleep(.05)
+        time.sleep(0.05)
     if isolation.mode == "required":
         isolation.kill()
         isolation.cleanup()
@@ -351,7 +362,9 @@ def supervise(path, shell, parent_pid):
     if shell not in ("/bin/sh", "/bin/bash") or os.path.lexists(path):
         raise ValueError("shell not allowlisted or socket already exists")
     if os.geteuid() == 0:
-        raise PermissionError("refusing root-owned PTY shell; run as an unprivileged user")
+        raise PermissionError(
+            "refusing root-owned PTY shell; run as an unprivileged user"
+        )
     isolation = SessionCgroup()
     guardian_pid = os.getpid()
     release_read, release_write = os.pipe()
@@ -374,7 +387,9 @@ def supervise(path, shell, parent_pid):
                 os._exit(127)
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))
+        resource.setrlimit(
+            resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024)
+        )
         os.execv(shell, [shell, "-i"])
     os.close(release_read)
     try:
@@ -464,11 +479,17 @@ def supervise(path, shell, parent_pid):
                     if fd in ready:
                         harvest()
                     poll()
-            return {"pid": pid, "running": exit_code is None,
-                    "isolation": isolation.mode,
-                    "exit_code": exit_code, "cursor": cursor,
-                    "truncated": position < first,
-                    "output_base64": base64.b64encode(replay[max(first, position) - first:]).decode()}
+            return {
+                "pid": pid,
+                "running": exit_code is None,
+                "isolation": isolation.mode,
+                "exit_code": exit_code,
+                "cursor": cursor,
+                "truncated": position < first,
+                "output_base64": base64.b64encode(
+                    replay[max(first, position) - first :]
+                ).decode(),
+            }
         if operation == "write":
             if exit_code is not None:
                 return {"error": "exited"}
@@ -487,7 +508,11 @@ def supervise(path, shell, parent_pid):
                 return {"error": "backpressure"}
         if operation == "resize":
             rows, cols = command.get("rows"), command.get("cols")
-            if type(rows) is not int or type(cols) is not int or not (1 <= rows <= 1000 and 1 <= cols <= 1000):
+            if (
+                type(rows) is not int
+                or type(cols) is not int
+                or not (1 <= rows <= 1000 and 1 <= cols <= 1000)
+            ):
                 return {"error": "bad dimensions", "code": "invalid_argument"}
             fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
             return {"rows": rows, "cols": cols}
@@ -501,7 +526,7 @@ def supervise(path, shell, parent_pid):
                     poll()
                     if exit_code is not None:
                         break
-                    time.sleep(.02)
+                    time.sleep(0.02)
                 if exit_code is None:
                     if isolation.mode == "development":
                         try:
@@ -516,14 +541,17 @@ def supervise(path, shell, parent_pid):
     try:
         while os.getppid() == parent_pid:
             poll()
-            ready, _, _ = select.select([listener, fd], [], [], .05)
+            ready, _, _ = select.select([listener, fd], [], [], 0.05)
             if fd in ready:
                 harvest()
             if listener in ready:
                 client, _ = listener.accept()
                 with client:
                     client.settimeout(2)
-                    peer_pid, uid, _gid = struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    peer_pid, uid, _gid = struct.unpack(
+                        "3i",
+                        client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12),
+                    )
                     if uid != os.getuid() or peer_pid != parent_pid:
                         client.sendall(b'{"error":"unauthorized"}\n')
                         continue
@@ -575,6 +603,7 @@ def supervise(path, shell, parent_pid):
                 os.unlink(path)
         except FileNotFoundError:
             pass
+
 
 if __name__ == "__main__":
     if sys.platform != "linux" or len(sys.argv) != 4:

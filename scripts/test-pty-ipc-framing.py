@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for partial IPC socket reads in the PTY acceptance client."""
+
 import importlib.util
 from pathlib import Path
 import socket
@@ -21,7 +22,13 @@ class FrameReadTests(unittest.TestCase):
 
         def transmit():
             try:
-                for part in [frame[:1], frame[1:3], frame[3:4], frame[4:100], frame[100:]]:
+                for part in [
+                    frame[:1],
+                    frame[1:3],
+                    frame[3:4],
+                    frame[4:100],
+                    frame[100:],
+                ]:
                     sender.sendall(part)
             finally:
                 sender.close()

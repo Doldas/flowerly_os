@@ -17,7 +17,6 @@ import pathlib
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -35,10 +34,15 @@ def recv_exact(conn, count):
 
 def request(socket_path, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({
-        "version": 1, "id": correlation, "type": "command",
-        "name": name, "args": args,
-    }).encode("utf-8")
+    message = json.dumps(
+        {
+            "version": 1,
+            "id": correlation,
+            "type": "command",
+            "name": name,
+            "args": args,
+        }
+    ).encode("utf-8")
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(12)
         client.connect(str(socket_path))
@@ -85,15 +89,18 @@ def main():
         state = root / "state"
         runtime.mkdir(mode=0o700)
         state.mkdir(mode=0o700)
-        env = dict(os.environ,
+        env = dict(
+            os.environ,
             AGENTIC_RUNTIME_DIR=str(runtime),
             AGENTIC_STATE_DIR=str(state),
         )
         env["FLOWERLY_PTY_ISOLATION"] = "development"
         log = root / "flowerlyd.log"
         proc = subprocess.Popen(
-            [str(pathlib.Path("target/release/flowerlyd"))], env=env,
-            stdout=log.open("ab"), stderr=subprocess.STDOUT,
+            [str(pathlib.Path("target/release/flowerlyd"))],
+            env=env,
+            stdout=log.open("ab"),
+            stderr=subprocess.STDOUT,
         )
         sock = runtime / "flowerlyd.sock"
         try:
@@ -108,16 +115,26 @@ def main():
             }
             spawn_response = request(sock, "session.spawn", spawn_args)
             assert spawn_response["type"] == "ok", spawn_response
-            lookup = request(sock, "session.spawn.lookup", {
-                "created_by": "uid:1000", "operation_id": "retry-pty-001",
-            })
+            lookup = request(
+                sock,
+                "session.spawn.lookup",
+                {
+                    "created_by": "uid:1000",
+                    "operation_id": "retry-pty-001",
+                },
+            )
             assert lookup["type"] == "ok", lookup
             assert lookup["data"]["session_id"] == spawn_response["data"]["id"]
             assert lookup["data"]["guardian_supervised"] is True, lookup
             assert lookup["data"]["session_recorded"] is True, lookup
-            missing_lookup = request(sock, "session.spawn.lookup", {
-                "created_by": "uid:1000", "operation_id": "missing-pty-key",
-            })
+            missing_lookup = request(
+                sock,
+                "session.spawn.lookup",
+                {
+                    "created_by": "uid:1000",
+                    "operation_id": "missing-pty-key",
+                },
+            )
             assert missing_lookup["type"] == "err", missing_lookup
             assert missing_lookup["code"] == "not_found", missing_lookup
             with sqlite3.connect(state / "state.db") as db:
@@ -126,23 +143,30 @@ def main():
                     "WHERE command = 'session.spawn' AND operation_id = ?",
                     ("retry-pty-001",),
                 ).fetchall()
-            assert records == [(f"uid:{os.getuid()}", spawn_response["data"]["id"])], records
+            assert records == [(f"uid:{os.getuid()}", spawn_response["data"]["id"])], (
+                records
+            )
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-                replies = list(pool.map(
-                    lambda _: request(sock, "session.spawn", spawn_args),
-                    range(4),
-                ))
+                replies = list(
+                    pool.map(
+                        lambda _: request(sock, "session.spawn", spawn_args),
+                        range(4),
+                    )
+                )
             assert all(
-                r["type"] == "err" and r["code"] == "unavailable"
-                for r in replies
+                r["type"] == "err" and r["code"] == "unavailable" for r in replies
             ), replies
             before = request(sock, "session.list", {})
             before_ids = {entry["id"] for entry in before["data"]["sessions"]}
             repeat = request(sock, "session.spawn", spawn_args)
             assert repeat["type"] == "err", repeat
             assert repeat["code"] == "unavailable", repeat
-            mismatch = request(sock, "session.spawn", dict(spawn_args, shell="/bin/bash"))
-            assert mismatch["type"] == "err" and mismatch["code"] == "conflict", mismatch
+            mismatch = request(
+                sock, "session.spawn", dict(spawn_args, shell="/bin/bash")
+            )
+            assert mismatch["type"] == "err" and mismatch["code"] == "conflict", (
+                mismatch
+            )
             after = request(sock, "session.list", {})
             assert {entry["id"] for entry in after["data"]["sessions"]} == before_ids
             print("PTY durable key: no duplicate guardian or shell", flush=True)
@@ -176,7 +200,11 @@ def main():
 
             # Attach to get attachment token (requires control_token from spawn)
             control_token = spawn_response["data"]["control_token"]
-            attach = request(sock, "session.attach", {"id": session_id, "control_token": control_token})
+            attach = request(
+                sock,
+                "session.attach",
+                {"id": session_id, "control_token": control_token},
+            )
             print(f"Attach: {attach}")
             assert attach["type"] == "ok"
             attachment_token = attach["data"]["attachment_token"]
@@ -184,15 +212,25 @@ def main():
 
             # Test PTY write (requires attachment_token)
             cmd = "echo 'hello from PTY integration test'\n"
-            write_resp = request(sock, "session.write", {"id": session_id, "attachment_token": attachment_token, "data": cmd})
+            write_resp = request(
+                sock,
+                "session.write",
+                {"id": session_id, "attachment_token": attachment_token, "data": cmd},
+            )
             print(f"Write: {write_resp}")
             assert write_resp["type"] == "ok"
 
             # Read command output
             for _ in range(50):
-                read_resp = request(sock, "session.read", {"id": session_id, "control_token": control_token})
+                read_resp = request(
+                    sock,
+                    "session.read",
+                    {"id": session_id, "control_token": control_token},
+                )
                 if read_resp["type"] == "ok":
-                    output = base64.b64decode(read_resp["data"]["output_base64"]).decode("utf-8", errors="replace")
+                    output = base64.b64decode(
+                        read_resp["data"]["output_base64"]
+                    ).decode("utf-8", errors="replace")
                     if "hello from PTY integration test" in output:
                         print("Command output verified")
                         break
@@ -201,14 +239,27 @@ def main():
                 raise AssertionError("Command output not found in PTY replay")
 
             # Test PTY resize (requires attachment_token)
-            resize = request(sock, "session.resize", {"id": session_id, "attachment_token": attachment_token, "rows": 40, "cols": 120})
+            resize = request(
+                sock,
+                "session.resize",
+                {
+                    "id": session_id,
+                    "attachment_token": attachment_token,
+                    "rows": 40,
+                    "cols": 120,
+                },
+            )
             print(f"Resize: {resize}")
             assert resize["type"] == "ok"
             assert resize["data"]["rows"] == 40 and resize["data"]["cols"] == 120
             print("PTY resize verified")
 
             # Test PTY terminate (requires control_token)
-            term = request(sock, "session.terminate", {"id": session_id, "control_token": control_token})
+            term = request(
+                sock,
+                "session.terminate",
+                {"id": session_id, "control_token": control_token},
+            )
             print(f"Terminate: {term}")
             assert term["type"] == "ok"
             assert term["data"]["terminated"] is True
@@ -217,7 +268,11 @@ def main():
             # Verify session state updated
             for _ in range(50):
                 list_response = request(sock, "session.list", {})
-                session = next(s for s in list_response["data"]["sessions"] if s["id"] == session_id)
+                session = next(
+                    s
+                    for s in list_response["data"]["sessions"]
+                    if s["id"] == session_id
+                )
                 if session["state"] == "EXITED":
                     print(f"Session state updated to: {session['state']}")
                     break
@@ -258,37 +313,58 @@ def main():
                     "INSERT INTO ipc_operations "
                     "(actor, command, operation_id, request_payload, response_payload, created_at) "
                     "VALUES (?, 'session.spawn', ?, ?, ?, ?)",
-                    (f"uid:{os.getuid()}", orphan_key, payload, orphan_id,
-                     int(time.time() * 1000)),
+                    (
+                        f"uid:{os.getuid()}",
+                        orphan_key,
+                        payload,
+                        orphan_id,
+                        int(time.time() * 1000),
+                    ),
                 )
             proc = subprocess.Popen(
-                [str(pathlib.Path("target/release/flowerlyd"))], env=env,
-                stdout=log.open("ab"), stderr=subprocess.STDOUT,
+                [str(pathlib.Path("target/release/flowerlyd"))],
+                env=env,
+                stdout=log.open("ab"),
+                stderr=subprocess.STDOUT,
             )
             wait_ready(sock, proc, log)
-            orphan = request(sock, "session.spawn.lookup", {
-                "operation_id": orphan_key,
-            })
+            orphan = request(
+                sock,
+                "session.spawn.lookup",
+                {
+                    "operation_id": orphan_key,
+                },
+            )
             assert orphan["type"] == "ok", orphan
             assert orphan["data"]["session_id"] == orphan_id, orphan
             assert orphan["data"]["session_recorded"] is False, orphan
             orphan_retry = request(
                 sock, "session.spawn", dict(spawn_args, operation_id=orphan_key)
             )
-            assert orphan_retry["type"] == "err" and orphan_retry["code"] == "unavailable"
+            assert (
+                orphan_retry["type"] == "err" and orphan_retry["code"] == "unavailable"
+            )
             before_restart_retry = request(sock, "session.list", {})
             retry_after_restart = request(sock, "session.spawn", spawn_args)
             assert retry_after_restart["type"] == "err", retry_after_restart
             assert retry_after_restart["code"] == "unavailable", retry_after_restart
-            lookup_restart = request(sock, "session.spawn.lookup", {
-                "created_by": "uid:1000", "operation_id": "retry-pty-001",
-            })
+            lookup_restart = request(
+                sock,
+                "session.spawn.lookup",
+                {
+                    "created_by": "uid:1000",
+                    "operation_id": "retry-pty-001",
+                },
+            )
             assert lookup_restart["type"] == "ok", lookup_restart
             assert lookup_restart["data"]["session_id"] == session_id
             assert lookup_restart["data"]["guardian_supervised"] is False
             assert lookup_restart["data"]["external_outcome"] == "unknown"
             after_restart_retry = request(sock, "session.list", {})
-            assert after_restart_retry["data"]["count"] == before_restart_retry["data"]["count"]
+            assert (
+                after_restart_retry["data"]["count"]
+                == before_restart_retry["data"]["count"]
+            )
             print("PTY durable reservation preserved across restart", flush=True)
 
             print("\nPTY supervisor integration test PASSED")

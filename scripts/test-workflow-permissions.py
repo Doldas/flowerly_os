@@ -8,6 +8,7 @@ Write scopes are granted per job and only where this table records why.
 Offline structural check of the block-style YAML used in this repository;
 any permissions syntax it does not understand fails closed.
 """
+
 from pathlib import Path
 import re
 import sys
@@ -35,14 +36,21 @@ def strip_comment(text):
 
 def permission_blocks(text):
     """Yield (job or None, {scope: level} or error string) for each block."""
-    lines = [line for line in text.splitlines()
-             if line.strip() and not line.lstrip().startswith("#")]
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
     job, in_jobs = None, False
     for index, line in enumerate(lines):
         found = KEY.match(line)
         if not found:
             continue
-        indent, name, rest = len(found.group(1)), found.group(2), strip_comment(found.group(3))
+        indent, name, rest = (
+            len(found.group(1)),
+            found.group(2),
+            strip_comment(found.group(3)),
+        )
         if indent == 0:
             in_jobs, job = name == "jobs", None
         elif in_jobs and indent == 2:
@@ -57,7 +65,7 @@ def permission_blocks(text):
             yield owner, f"unsupported permissions value {rest!r}"
             continue
         scopes = {}
-        for child in lines[index + 1:]:
+        for child in lines[index + 1 :]:
             nested = KEY.match(child)
             if not nested or len(nested.group(1)) <= indent:
                 break

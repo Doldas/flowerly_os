@@ -9,14 +9,15 @@ that promotion is blocked when:
 - Wrong release branch order (via branch_names mock)
 """
 
-import sys
 import pathlib
 import importlib.util
 import os
 import unittest
 
 # Load branch_forward.py as a module
-spec = importlib.util.spec_from_file_location("branch_forward", pathlib.Path(__file__).parent / "branch-forward.py")
+spec = importlib.util.spec_from_file_location(
+    "branch_forward", pathlib.Path(__file__).parent / "branch-forward.py"
+)
 bf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bf)
 
@@ -95,35 +96,42 @@ class TestNegativeMergeGate(unittest.TestCase):
 
     def _mock_successful_run(self, mock_sr):
         """Helper to mock successful_run in bf module."""
-        bf.__dict__['successful_run'] = mock_sr
+        bf.__dict__["successful_run"] = mock_sr
 
     def _mock_branch_names(self, names):
         """Helper to mock branch_names in bf module."""
-        bf.__dict__['branch_names'] = lambda client: names
+        bf.__dict__["branch_names"] = lambda client: names
 
     def _mock_api(self, mock_fn):
         """Helper to mock api in bf module and update verify_master default."""
-        bf.__dict__['api'] = mock_fn
+        bf.__dict__["api"] = mock_fn
         # Also update verify_master's default parameter
-        if hasattr(bf.verify_master, '__defaults__') and bf.verify_master.__defaults__:
+        if hasattr(bf.verify_master, "__defaults__") and bf.verify_master.__defaults__:
             defaults = list(bf.verify_master.__defaults__)
             # Find and replace the api function in defaults
             for i, d in enumerate(defaults):
-                if d is bf.__dict__.get('api', None) or (hasattr(d, '__name__') and d.__name__ == 'api'):
+                if d is bf.__dict__.get("api", None) or (
+                    hasattr(d, "__name__") and d.__name__ == "api"
+                ):
                     defaults[i] = mock_fn
                     break
             bf.verify_master.__defaults__ = tuple(defaults)
 
     def test_verify_master_rejects_failed_ci(self):
         """Promotion blocked when CI run fails."""
+
         def mock_sr(workflow, branch, sha, client):
             if workflow == "ci.yml":
-                raise ValueError(f"{workflow}: no successful completed PUSH run on {branch}@{sha}")
+                raise ValueError(
+                    f"{workflow}: no successful completed PUSH run on {branch}@{sha}"
+                )
             return {"id": 123, "head_sha": sha, "head_branch": branch}
+
         def mock_api(method, path, data=None):
             if path.startswith("/branches/"):
                 return {"commit": {"sha": "a" * 40}}
             raise ValueError(f"Unexpected API call: {method} {path}")
+
         self._mock_branch_names(["release/1", "release/2"])
         self._mock_successful_run(mock_sr)
         self._mock_api(mock_api)
@@ -134,32 +142,44 @@ class TestNegativeMergeGate(unittest.TestCase):
 
     def test_verify_master_rejects_failed_security(self):
         """Promotion blocked when security check fails."""
+
         def mock_sr(workflow, branch, sha, client):
             if workflow == "ci.yml":
                 return {"id": 123, "head_sha": sha, "head_branch": branch}
-            raise ValueError(f"{workflow}: no successful completed PUSH run on {branch}@{sha}")
+            raise ValueError(
+                f"{workflow}: no successful completed PUSH run on {branch}@{sha}"
+            )
+
         def mock_api(method, path, data=None):
             if path.startswith("/branches/"):
                 return {"commit": {"sha": "a" * 40}}
             raise ValueError(f"Unexpected API call: {method} {path}")
+
         self._mock_branch_names(["release/1", "release/2"])
         self._mock_successful_run(mock_sr)
         self._mock_api(mock_api)
 
         with self.assertRaises(ValueError) as cm:
             bf.verify_master("release/2", "a" * 40)
-        self.assertIn("security.yml: no successful completed PUSH run", str(cm.exception))
+        self.assertIn(
+            "security.yml: no successful completed PUSH run", str(cm.exception)
+        )
 
     def test_verify_master_rejects_failed_codeql(self):
         """Promotion blocked when CodeQL fails."""
+
         def mock_sr(workflow, branch, sha, client):
             if workflow in ("ci.yml", "security.yml"):
                 return {"id": 123, "head_sha": sha, "head_branch": branch}
-            raise ValueError(f"{workflow}: no successful completed PUSH run on {branch}@{sha}")
+            raise ValueError(
+                f"{workflow}: no successful completed PUSH run on {branch}@{sha}"
+            )
+
         def mock_api(method, path, data=None):
             if path.startswith("/branches/"):
                 return {"commit": {"sha": "a" * 40}}
             raise ValueError(f"Unexpected API call: {method} {path}")
+
         self._mock_branch_names(["release/1", "release/2"])
         self._mock_successful_run(mock_sr)
         self._mock_api(mock_api)
@@ -171,15 +191,19 @@ class TestNegativeMergeGate(unittest.TestCase):
     def test_verify_master_rejects_wrong_release_order(self):
         """Promotion blocked when trying to promote non-latest release."""
         self._mock_branch_names(["release/1", "release/2", "release/3"])
+
         def mock_api(method, path, data=None):
             if path.startswith("/branches/"):
                 return {"commit": {"sha": "a" * 40}}
             raise ValueError(f"Unexpected API call: {method} {path}")
+
         self._mock_api(mock_api)
 
         with self.assertRaises(ValueError) as cm:
             bf.verify_master("release/2", "a" * 40)
-        self.assertIn("only latest release release/3 can enter master", str(cm.exception))
+        self.assertIn(
+            "only latest release release/3 can enter master", str(cm.exception)
+        )
 
 
 if __name__ == "__main__":

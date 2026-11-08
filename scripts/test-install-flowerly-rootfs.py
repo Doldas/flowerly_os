@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline regression for Flowerly binary/service staging into Arch rootfs."""
+
 from pathlib import Path
 import os
 import subprocess
@@ -11,8 +12,11 @@ BINARIES = ("agenticctl", "evolutiond", "flowerlyd")
 
 
 def invoke(rootfs, binaries):
-    return subprocess.run(["bash", str(INSTALLER), str(rootfs), str(binaries)],
-                          capture_output=True, text=True)
+    return subprocess.run(
+        ["bash", str(INSTALLER), str(rootfs), str(binaries)],
+        capture_output=True,
+        text=True,
+    )
 
 
 def main():
@@ -39,14 +43,22 @@ def main():
             assert os.access(rootfs / "usr/bin" / name, os.X_OK)
         for name in ("flowerlyd", "evolutiond"):
             assert (rootfs / "usr/lib/systemd/system" / (name + ".service")).is_file()
-            assert not (rootfs / "etc/systemd/system/multi-user.target.wants" / (name + ".service")).exists()
+            assert not (
+                rootfs
+                / "etc/systemd/system/multi-user.target.wants"
+                / (name + ".service")
+            ).exists()
         # The multi-user drop-in is staged for administrators, never active.
-        assert (rootfs / "usr/share/flowerly/systemd/flowerlyd-multi-user.conf").is_file()
+        assert (
+            rootfs / "usr/share/flowerly/systemd/flowerlyd-multi-user.conf"
+        ).is_file()
         assert not (rootfs / "usr/lib/systemd/system/flowerlyd.service.d").exists()
         assert not (rootfs / "etc/systemd/system/flowerlyd.service.d").exists()
         users = (rootfs / "usr/lib/sysusers.d/flowerly.conf").read_text()
         assert "u flowerly " in users and "u flowerly-evolution " in users
-        print("Flowerly rootfs installation: missing inputs rejected, units staged but not enabled, multi-user drop-in staged inactive")
+        print(
+            "Flowerly rootfs installation: missing inputs rejected, units staged but not enabled, multi-user drop-in staged inactive"
+        )
 
 
 if __name__ == "__main__":

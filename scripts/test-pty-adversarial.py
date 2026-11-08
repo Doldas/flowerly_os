@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import re
-import signal
 import stat
 import socket
 import sqlite3
@@ -29,13 +28,15 @@ def receive_exact(connection, size):
 
 def request(path, name, arguments, timeout=12):
     identifier = str(uuid.uuid4())
-    payload = json.dumps({
-        "version": 1,
-        "id": identifier,
-        "type": "command",
-        "name": name,
-        "args": arguments,
-    }).encode()
+    payload = json.dumps(
+        {
+            "version": 1,
+            "id": identifier,
+            "type": "command",
+            "name": name,
+            "args": arguments,
+        }
+    ).encode()
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(timeout)
         connection.connect(str(path))
@@ -143,9 +144,15 @@ def output(response):
 
 
 def write(session, identifier, token, data):
-    return successful(session, "session.write", {
-        "id": identifier, "attachment_token": token, "data": data,
-    })
+    return successful(
+        session,
+        "session.write",
+        {
+            "id": identifier,
+            "attachment_token": token,
+            "data": data,
+        },
+    )
 
 
 def test_independent_readers_backpressure_and_disconnection(daemon):
@@ -153,18 +160,28 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
     spawned = daemon.spawn()
     identifier = spawned["id"]
     control = spawned["control_token"]
-    attachment = successful(session, "session.attach", {
-        "id": identifier, "control_token": control,
-    })
+    attachment = successful(
+        session,
+        "session.attach",
+        {
+            "id": identifier,
+            "control_token": control,
+        },
+    )
     token = attachment["attachment_token"]
     try:
         # A burst of independent IPC clients competing for the existing writer
         # must never acquire an additional lease. The single active writer
         # remains usable despite this concurrent denial-of-service attempt.
         def competing_attach(_):
-            return request(session, "session.attach", {
-                "id": identifier, "control_token": control,
-            })
+            return request(
+                session,
+                "session.attach",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                },
+            )
 
         with ThreadPoolExecutor(max_workers=12) as pool:
             contenders = list(pool.map(competing_attach, range(24)))
@@ -172,29 +189,50 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             reply["type"] == "err" and reply.get("code") == "conflict"
             for reply in contenders
         ), [(reply.get("type"), reply.get("code")) for reply in contenders]
-        assert successful(session, "session.heartbeat", {
-            "id": identifier, "attachment_token": token,
-        })["lease_active"]
+        assert successful(
+            session,
+            "session.heartbeat",
+            {
+                "id": identifier,
+                "attachment_token": token,
+            },
+        )["lease_active"]
 
         # A control token is an opaque capability. Same-UID connectivity to
         # the socket does not authorize reading another session's replay.
         for command, arguments in (
             ("session.read", {"id": identifier, "control_token": "wrong", "cursor": 0}),
-            ("session.follow", {"id": identifier, "control_token": "wrong",
-                                "cursor": 0, "wait_ms": 0}),
+            (
+                "session.follow",
+                {"id": identifier, "control_token": "wrong", "cursor": 0, "wait_ms": 0},
+            ),
             ("session.terminate", {"id": identifier, "control_token": "wrong"}),
-            ("session.write", {"id": identifier, "attachment_token": "wrong",
-                               "data": "echo forbidden\\n"}),
-            ("session.resize", {"id": identifier, "attachment_token": "wrong",
-                                "rows": 25, "cols": 90}),
+            (
+                "session.write",
+                {
+                    "id": identifier,
+                    "attachment_token": "wrong",
+                    "data": "echo forbidden\\n",
+                },
+            ),
+            (
+                "session.resize",
+                {"id": identifier, "attachment_token": "wrong", "rows": 25, "cols": 90},
+            ),
         ):
             reply = request(session, command, arguments)
             assert reply["type"] == "err" and reply.get("code") == "conflict", (
-                command, reply.get("type"), reply.get("code")
+                command,
+                reply.get("type"),
+                reply.get("code"),
             )
-        assert successful(session, "session.status", {
-            "id": identifier,
-        })["running"]
+        assert successful(
+            session,
+            "session.status",
+            {
+                "id": identifier,
+            },
+        )["running"]
 
         other = daemon.spawn()
         try:
@@ -203,26 +241,41 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             assert other_id != identifier and other_control != control
             for operation, arguments in (
                 ("session.attach", {"id": other_id, "control_token": control}),
-                ("session.read", {"id": other_id, "control_token": control,
-                                  "cursor": 0}),
+                (
+                    "session.read",
+                    {"id": other_id, "control_token": control, "cursor": 0},
+                ),
                 ("session.terminate", {"id": other_id, "control_token": control}),
-                ("session.attach", {"id": identifier,
-                                    "control_token": other_control}),
-                ("session.write", {"id": other_id,
-                                   "attachment_token": token,
-                                   "data": "echo unauthorized\\n"}),
+                ("session.attach", {"id": identifier, "control_token": other_control}),
+                (
+                    "session.write",
+                    {
+                        "id": other_id,
+                        "attachment_token": token,
+                        "data": "echo unauthorized\\n",
+                    },
+                ),
             ):
                 rejected = request(session, operation, arguments)
-                assert rejected["type"] == "err" and rejected.get("code") == "conflict", (
-                    operation, rejected.get("type"), rejected.get("code")
-                )
+                assert (
+                    rejected["type"] == "err" and rejected.get("code") == "conflict"
+                ), (operation, rejected.get("type"), rejected.get("code"))
             assert successful(session, "session.status", {"id": other_id})["running"]
         finally:
-            successful(session, "session.terminate", {
-                "id": other["id"], "control_token": other["control_token"],
-            })
+            successful(
+                session,
+                "session.terminate",
+                {
+                    "id": other["id"],
+                    "control_token": other["control_token"],
+                },
+            )
 
-        burst = 'python3 -c ' + "'import sys; sys.stdout.write(\"Q\"*180000); sys.stdout.flush()'" + "\n"
+        burst = (
+            "python3 -c "
+            + "'import sys; sys.stdout.write(\"Q\"*180000); sys.stdout.flush()'"
+            + "\n"
+        )
         assert write(session, identifier, token, burst)["written"] == len(burst)
         for _ in range(250):
             status = successful(session, "session.status", {"id": identifier})
@@ -239,9 +292,15 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         previous = None
         stable = 0
         for _ in range(250):
-            snapshot = successful(session, "session.read", {
-                "id": identifier, "cursor": 0, "control_token": control,
-            })
+            snapshot = successful(
+                session,
+                "session.read",
+                {
+                    "id": identifier,
+                    "cursor": 0,
+                    "control_token": control,
+                },
+            )
             current = snapshot["cursor"]
             if current == previous:
                 stable += 1
@@ -252,12 +311,20 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             previous = current
             time.sleep(0.04)
         else:
-            raise AssertionError("PTY burst cursor never stabilized before parallel reads")
+            raise AssertionError(
+                "PTY burst cursor never stabilized before parallel reads"
+            )
 
         def historical_reader(_):
-            return successful(session, "session.read", {
-                "id": identifier, "cursor": 0, "control_token": control,
-            })
+            return successful(
+                session,
+                "session.read",
+                {
+                    "id": identifier,
+                    "cursor": 0,
+                    "control_token": control,
+                },
+            )
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             historical = list(pool.map(historical_reader, range(16)))
@@ -274,7 +341,9 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             for index, reply in enumerate(historical)
         ]
         assert all(reply["truncated"] for reply in historical), observations
-        assert all(0 < len(output(reply)) <= 65536 for reply in historical), observations
+        assert all(0 < len(output(reply)) <= 65536 for reply in historical), (
+            observations
+        )
         assert len({reply["cursor"] for reply in historical}) == 1, observations
 
         cursor = historical[-1]["cursor"]
@@ -284,10 +353,16 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         def independent_follower(_):
             position = cursor
             for _ in range(12):
-                reply = successful(session, "session.follow", {
-                    "id": identifier, "control_token": control,
-                    "cursor": position, "wait_ms": 200,
-                })
+                reply = successful(
+                    session,
+                    "session.follow",
+                    {
+                        "id": identifier,
+                        "control_token": control,
+                        "cursor": position,
+                        "wait_ms": 200,
+                    },
+                )
                 if marker.encode() in output(reply):
                     return reply
                 position = reply["cursor"]
@@ -300,28 +375,45 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         # Each follow is allowed to wait 250ms, but a backlog of idle
         # followers must not serialize a writer resize behind their combined
         # waits. The guardian wakes its follower when a new client connects.
-        idle_cursor = successful(session, "session.status", {
-            "id": identifier,
-        })["cursor"]
+        idle_cursor = successful(
+            session,
+            "session.status",
+            {
+                "id": identifier,
+            },
+        )["cursor"]
         from threading import Barrier
+
         barrier = Barrier(13)
 
         def waiting_follower(_):
             barrier.wait(timeout=5)
-            return successful(session, "session.follow", {
-                "id": identifier, "control_token": control,
-                "cursor": idle_cursor, "wait_ms": 250,
-            })
+            return successful(
+                session,
+                "session.follow",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                    "cursor": idle_cursor,
+                    "wait_ms": 250,
+                },
+            )
 
         with ThreadPoolExecutor(max_workers=12) as pool:
             pending = [pool.submit(waiting_follower, i) for i in range(12)]
             barrier.wait(timeout=5)
             time.sleep(0.04)
             began = time.monotonic()
-            resized = successful(session, "session.resize", {
-                "id": identifier, "attachment_token": token,
-                "rows": 37, "cols": 95,
-            })
+            resized = successful(
+                session,
+                "session.resize",
+                {
+                    "id": identifier,
+                    "attachment_token": token,
+                    "rows": 37,
+                    "cols": 95,
+                },
+            )
             latency = time.monotonic() - began
             assert resized["rows"] == 37 and resized["cols"] == 95
             assert latency < 1.25, (
@@ -334,40 +426,64 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
         # capability holders to reserve a follower slot. With 24 observers,
         # each accepted follow must finish within its own bounded wait;
         # rejected excess requests must report an explicit unavailable.
-        crowd_cursor = successful(session, "session.status", {
-            "id": identifier,
-        })["cursor"]
+        crowd_cursor = successful(
+            session,
+            "session.status",
+            {
+                "id": identifier,
+            },
+        )["cursor"]
         with ThreadPoolExecutor(max_workers=24) as pool:
-            crowded = list(pool.map(
-                lambda _: request(session, "session.follow", {
-                    "id": identifier, "control_token": control,
-                    "cursor": crowd_cursor, "wait_ms": 250,
-                }), range(24),
-            ))
+            crowded = list(
+                pool.map(
+                    lambda _: request(
+                        session,
+                        "session.follow",
+                        {
+                            "id": identifier,
+                            "control_token": control,
+                            "cursor": crowd_cursor,
+                            "wait_ms": 250,
+                        },
+                    ),
+                    range(24),
+                )
+            )
         assert all(
             reply["type"] == "ok"
             or (reply["type"] == "err" and reply.get("code") == "unavailable")
             for reply in crowded
         ), [(reply.get("type"), reply.get("code")) for reply in crowded]
-        assert successful(session, "session.heartbeat", {
-            "id": identifier, "attachment_token": token,
-        })["lease_active"]
-
-        follower_cursor = successful(session, "session.status", {
-            "id": identifier,
-        })["cursor"]
-        disconnect_payload = json.dumps({
-            "version": 1,
-            "id": str(uuid.uuid4()),
-            "type": "command",
-            "name": "session.follow",
-            "args": {
+        assert successful(
+            session,
+            "session.heartbeat",
+            {
                 "id": identifier,
-                "control_token": control,
-                "cursor": follower_cursor,
-                "wait_ms": 250,
+                "attachment_token": token,
             },
-        }).encode()
+        )["lease_active"]
+
+        follower_cursor = successful(
+            session,
+            "session.status",
+            {
+                "id": identifier,
+            },
+        )["cursor"]
+        disconnect_payload = json.dumps(
+            {
+                "version": 1,
+                "id": str(uuid.uuid4()),
+                "type": "command",
+                "name": "session.follow",
+                "args": {
+                    "id": identifier,
+                    "control_token": control,
+                    "cursor": follower_cursor,
+                    "wait_ms": 250,
+                },
+            }
+        ).encode()
 
         def abandon_response(_):
             with socket.socket(socket.AF_UNIX) as connection:
@@ -381,47 +497,93 @@ def test_independent_readers_backpressure_and_disconnection(daemon):
             list(pool.map(abandon_response, range(8)))
 
         assert successful(session, "session.status", {"id": identifier})["running"]
-        assert successful(session, "session.heartbeat", {
-            "id": identifier, "attachment_token": token,
-        })["lease_active"]
+        assert successful(
+            session,
+            "session.heartbeat",
+            {
+                "id": identifier,
+                "attachment_token": token,
+            },
+        )["lease_active"]
 
-        successful(session, "session.detach", {
-            "id": identifier, "attachment_token": token,
-        })
-        stale = request(session, "session.write", {
-            "id": identifier, "attachment_token": token, "data": "echo stale\n",
-        })
+        successful(
+            session,
+            "session.detach",
+            {
+                "id": identifier,
+                "attachment_token": token,
+            },
+        )
+        stale = request(
+            session,
+            "session.write",
+            {
+                "id": identifier,
+                "attachment_token": token,
+                "data": "echo stale\n",
+            },
+        )
         assert stale["type"] == "err", stale
-        replacement = successful(session, "session.attach", {
-            "id": identifier, "control_token": control,
-        })
+        replacement = successful(
+            session,
+            "session.attach",
+            {
+                "id": identifier,
+                "control_token": control,
+            },
+        )
         new_token = replacement["attachment_token"]
         assert new_token and new_token != token
         operations = [
-            ("session.follow", {"id": identifier, "control_token": control,
-                                "cursor": follower_cursor, "wait_ms": 0}),
-            ("session.resize", {"id": identifier, "attachment_token": new_token,
-                                "rows": 38, "cols": 100}),
+            (
+                "session.follow",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                    "cursor": follower_cursor,
+                    "wait_ms": 0,
+                },
+            ),
+            (
+                "session.resize",
+                {
+                    "id": identifier,
+                    "attachment_token": new_token,
+                    "rows": 38,
+                    "cols": 100,
+                },
+            ),
             ("session.heartbeat", {"id": identifier, "attachment_token": new_token}),
             ("session.terminate", {"id": identifier, "control_token": control}),
         ]
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda entry: request(session, *entry), operations))
-        assert time.monotonic() - started < 8, "terminal races exceeded bounded response time"
+        assert time.monotonic() - started < 8, (
+            "terminal races exceeded bounded response time"
+        )
         assert all(
             result["type"] == "ok"
             or (result["type"] == "err" and result.get("code") == "unavailable")
             for result in results[:3]
         ), results
-        assert results[-1]["type"] == "ok" and results[-1]["data"]["terminated"], results
+        assert results[-1]["type"] == "ok" and results[-1]["data"]["terminated"], (
+            results
+        )
         assert successful(session, "session.list", {})["count"] >= 1
-        print("PTY multi-client: bounded replay, independent followers, disconnect, writer revocation, concurrent terminate")
+        print(
+            "PTY multi-client: bounded replay, independent followers, disconnect, writer revocation, concurrent terminate"
+        )
     finally:
         try:
-            successful(session, "session.terminate", {
-                "id": identifier, "control_token": control,
-            })
+            successful(
+                session,
+                "session.terminate",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                },
+            )
         except AssertionError:
             pass
 
@@ -434,16 +596,27 @@ def test_long_poll_contract(daemon):
     spawned = daemon.spawn()
     identifier = spawned["id"]
     control = spawned["control_token"]
-    token = successful(session, "session.attach", {
-        "id": identifier, "control_token": control,
-    })["attachment_token"]
+    token = successful(
+        session,
+        "session.attach",
+        {
+            "id": identifier,
+            "control_token": control,
+        },
+    )["attachment_token"]
 
     def follow_until(cursor, marker, rounds=40):
         for _ in range(rounds):
-            reply = successful(session, "session.follow", {
-                "id": identifier, "control_token": control,
-                "cursor": cursor, "wait_ms": 200,
-            })
+            reply = successful(
+                session,
+                "session.follow",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                    "cursor": cursor,
+                    "wait_ms": 200,
+                },
+            )
             if marker in output(reply):
                 return reply
             cursor = reply["cursor"]
@@ -460,41 +633,77 @@ def test_long_poll_contract(daemon):
     # (which tells clients to retry).
     current = successful(session, "session.status", {"id": identifier})["cursor"]
     for command in ("session.read", "session.follow"):
-        future = request(session, command, {
-            "id": identifier, "control_token": control,
-            "cursor": current + 1_000_000, "wait_ms": 0,
-        })
-        assert future["type"] == "err" and future.get("code") == "invalid_argument", (command, future)
-    negative = request(session, "session.read", {
-        "id": identifier, "control_token": control, "cursor": -1,
-    })
-    assert negative["type"] == "err" and negative.get("code") == "invalid_argument", negative
+        future = request(
+            session,
+            command,
+            {
+                "id": identifier,
+                "control_token": control,
+                "cursor": current + 1_000_000,
+                "wait_ms": 0,
+            },
+        )
+        assert future["type"] == "err" and future.get("code") == "invalid_argument", (
+            command,
+            future,
+        )
+    negative = request(
+        session,
+        "session.read",
+        {
+            "id": identifier,
+            "control_token": control,
+            "cursor": -1,
+        },
+    )
+    assert negative["type"] == "err" and negative.get("code") == "invalid_argument", (
+        negative
+    )
 
     # A cursor that fell out of the bounded replay window is reported as
     # truncated with at most 64 KiB, and the reader can continue from there.
     stale = successful(session, "session.status", {"id": identifier})["cursor"]
-    flood = 'python3 -c ' + "'import sys; sys.stdout.write(\"S\"*150000); sys.stdout.flush()'" + "\n"
+    flood = (
+        "python3 -c "
+        + "'import sys; sys.stdout.write(\"S\"*150000); sys.stdout.flush()'"
+        + "\n"
+    )
     write(session, identifier, token, flood)
     for _ in range(250):
-        if successful(session, "session.status", {"id": identifier})["cursor"] > stale + 140000:
+        if (
+            successful(session, "session.status", {"id": identifier})["cursor"]
+            > stale + 140000
+        ):
             break
         time.sleep(0.025)
     else:
         raise AssertionError("flood output never reached replay")
-    lagging = successful(session, "session.read", {
-        "id": identifier, "control_token": control, "cursor": stale,
-    })
-    assert lagging["truncated"] is True and 0 < len(output(lagging)) <= 65536, lagging["cursor"]
+    lagging = successful(
+        session,
+        "session.read",
+        {
+            "id": identifier,
+            "control_token": control,
+            "cursor": stale,
+        },
+    )
+    assert lagging["truncated"] is True and 0 < len(output(lagging)) <= 65536, lagging[
+        "cursor"
+    ]
     write(session, identifier, token, "echo FLOWERLY_AFTER_LAG\n")
     follow_until(lagging["cursor"], b"FLOWERLY_AFTER_LAG")
 
     # Slow consumer: clients that send a large read and then never drain
     # their socket must not stall the writer or other observers.
-    request_body = json.dumps({
-        "version": 1, "id": str(uuid.uuid4()), "type": "command",
-        "name": "session.read",
-        "args": {"id": identifier, "control_token": control, "cursor": stale},
-    }).encode()
+    request_body = json.dumps(
+        {
+            "version": 1,
+            "id": str(uuid.uuid4()),
+            "type": "command",
+            "name": "session.read",
+            "args": {"id": identifier, "control_token": control, "cursor": stale},
+        }
+    ).encode()
     stalled = []
     try:
         for _ in range(4):
@@ -505,12 +714,19 @@ def test_long_poll_contract(daemon):
             stalled.append(connection)
         time.sleep(0.3)
         began = time.monotonic()
-        assert successful(session, "session.heartbeat", {
-            "id": identifier, "attachment_token": token,
-        })["lease_active"]
+        assert successful(
+            session,
+            "session.heartbeat",
+            {
+                "id": identifier,
+                "attachment_token": token,
+            },
+        )["lease_active"]
         write(session, identifier, token, "echo FLOWERLY_SLOW_CONSUMER\n")
-        follow_until(successful(session, "session.status", {"id": identifier})["cursor"] - 64,
-                     b"FLOWERLY_SLOW_CONSUMER")
+        follow_until(
+            successful(session, "session.status", {"id": identifier})["cursor"] - 64,
+            b"FLOWERLY_SLOW_CONSUMER",
+        )
         assert time.monotonic() - began < 3, "slow consumers stalled the session"
     finally:
         for connection in stalled:
@@ -519,17 +735,28 @@ def test_long_poll_contract(daemon):
     # Concurrent writes by the single owner are each accepted whole.
     lines = [f"echo FLOWERLY_W{index:02d}\n" for index in range(16)]
     with ThreadPoolExecutor(max_workers=8) as pool:
-        accepted = list(pool.map(
-            lambda line: write(session, identifier, token, line)["written"], lines,
-        ))
+        accepted = list(
+            pool.map(
+                lambda line: write(session, identifier, token, line)["written"],
+                lines,
+            )
+        )
     assert accepted == [len(line) for line in lines], accepted
     seen = b""
-    position = successful(session, "session.status", {"id": identifier})["cursor"] - 4096
+    position = (
+        successful(session, "session.status", {"id": identifier})["cursor"] - 4096
+    )
     for _ in range(60):
-        reply = successful(session, "session.follow", {
-            "id": identifier, "control_token": control,
-            "cursor": max(position, 0), "wait_ms": 200,
-        })
+        reply = successful(
+            session,
+            "session.follow",
+            {
+                "id": identifier,
+                "control_token": control,
+                "cursor": max(position, 0),
+                "wait_ms": 200,
+            },
+        )
         seen += output(reply)
         position = reply["cursor"]
         if all(f"FLOWERLY_W{index:02d}".encode() in seen for index in range(16)):
@@ -541,26 +768,50 @@ def test_long_poll_contract(daemon):
     # its bounded wait with either the exited snapshot or `unavailable`.
     idle = successful(session, "session.status", {"id": identifier})["cursor"]
     with ThreadPoolExecutor(max_workers=6) as pool:
-        waiting = [pool.submit(request, session, "session.follow", {
-            "id": identifier, "control_token": control,
-            "cursor": idle, "wait_ms": 250,
-        }) for _ in range(6)]
+        waiting = [
+            pool.submit(
+                request,
+                session,
+                "session.follow",
+                {
+                    "id": identifier,
+                    "control_token": control,
+                    "cursor": idle,
+                    "wait_ms": 250,
+                },
+            )
+            for _ in range(6)
+        ]
         time.sleep(0.05)
         began = time.monotonic()
-        terminated = successful(session, "session.terminate", {
-            "id": identifier, "control_token": control,
-        })
+        terminated = successful(
+            session,
+            "session.terminate",
+            {
+                "id": identifier,
+                "control_token": control,
+            },
+        )
         assert terminated["terminated"], terminated
         for future in waiting:
             reply = future.result(timeout=5)
             assert reply["type"] == "ok" or reply.get("code") == "unavailable", reply
         assert time.monotonic() - began < 3, "blocked followers outlived termination"
-    after = request(session, "session.follow", {
-        "id": identifier, "control_token": control, "cursor": idle, "wait_ms": 0,
-    })
+    after = request(
+        session,
+        "session.follow",
+        {
+            "id": identifier,
+            "control_token": control,
+            "cursor": idle,
+            "wait_ms": 0,
+        },
+    )
     assert after["type"] == "err" and after.get("code") == "unavailable", after
-    print("PTY long-poll: reconnect resume, future/negative cursor typed, stale-cursor truncation, "
-          "slow consumers, concurrent owner writes, terminate with blocked followers")
+    print(
+        "PTY long-poll: reconnect resume, future/negative cursor typed, stale-cursor truncation, "
+        "slow consumers, concurrent owner writes, terminate with blocked followers"
+    )
 
 
 def test_failed_durable_spawn_reaps_guardian(daemon):
@@ -618,25 +869,41 @@ def test_failed_durable_spawn_reaps_guardian(daemon):
     assert reserved is not None, "failed spawn lost its durable reservation"
     assert reserved[0] == f"uid:{os.geteuid()}", reserved
     assert re.fullmatch(r"session-[0-9a-f]{32}", reserved[1]), reserved
-    lookup = successful(session, "session.spawn.lookup", {
-        "operation_id": operation_key,
-    })
+    lookup = successful(
+        session,
+        "session.spawn.lookup",
+        {
+            "operation_id": operation_key,
+        },
+    )
     assert lookup["session_id"] == reserved[1], lookup
     assert lookup["session_recorded"] is False, lookup
     assert lookup["external_outcome"] == "unknown", lookup
     rejected_retry = request(session, "session.spawn", spawn_args)
-    assert rejected_retry["type"] == "err" and rejected_retry["code"] == "unavailable", rejected_retry
+    assert (
+        rejected_retry["type"] == "err" and rejected_retry["code"] == "unavailable"
+    ), rejected_retry
     mismatch = request(
-        session, "session.spawn", dict(spawn_args, shell="/bin/bash"),
+        session,
+        "session.spawn",
+        dict(spawn_args, shell="/bin/bash"),
     )
     assert mismatch["type"] == "err" and mismatch["code"] == "conflict", mismatch
-    assert {row["id"] for row in successful(session, "session.list", {})["sessions"]} == known_sessions
+    assert {
+        row["id"] for row in successful(session, "session.list", {})["sessions"]
+    } == known_sessions
     replacement = daemon.spawn()
-    successful(session, "session.terminate", {
-        "id": replacement["id"],
-        "control_token": replacement["control_token"],
-    })
-    print("PTY failed SQLite spawn: guardian reaped, durable reservation retained, retry refused")
+    successful(
+        session,
+        "session.terminate",
+        {
+            "id": replacement["id"],
+            "control_token": replacement["control_token"],
+        },
+    )
+    print(
+        "PTY failed SQLite spawn: guardian reaped, durable reservation retained, retry refused"
+    )
 
 
 def create_spawn_with_lost_response(daemon):
@@ -644,13 +911,15 @@ def create_spawn_with_lost_response(daemon):
     existing = {
         entry["id"] for entry in successful(session, "session.list", {})["sessions"]
     }
-    command = json.dumps({
-        "version": 1,
-        "id": str(uuid.uuid4()),
-        "type": "command",
-        "name": "session.spawn",
-        "args": {"shell": "/bin/sh"},
-    }).encode()
+    command = json.dumps(
+        {
+            "version": 1,
+            "id": str(uuid.uuid4()),
+            "type": "command",
+            "name": "session.spawn",
+            "args": {"shell": "/bin/sh"},
+        }
+    ).encode()
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(12)
         connection.connect(str(session))
@@ -659,7 +928,8 @@ def create_spawn_with_lost_response(daemon):
         assert 0 < reply_bytes <= 1024 * 1024
 
     new_sessions = [
-        entry for entry in successful(session, "session.list", {})["sessions"]
+        entry
+        for entry in successful(session, "session.list", {})["sessions"]
         if entry["id"] not in existing
     ]
     assert len(new_sessions) == 1, new_sessions
@@ -667,7 +937,9 @@ def create_spawn_with_lost_response(daemon):
     assert record["pid"] > 0 and record["state"].lower() == "running", record
     identity = process_identity(record["pid"])
     assert identity is not None and identity[0] not in ("Z", "X")
-    print("PTY ambiguous response: one durable live Session despite discarded reply body")
+    print(
+        "PTY ambiguous response: one durable live Session despite discarded reply body"
+    )
     return record["id"], record["pid"], identity
 
 
@@ -681,16 +953,27 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     shell_identity = process_identity(shell_pid)
     supervisor_identity = process_identity(supervisor_pid)
     assert shell_identity is not None and supervisor_identity is not None
-    writer = successful(session, "session.attach", {
-        "id": identifier, "control_token": control,
-    })["attachment_token"]
+    writer = successful(
+        session,
+        "session.attach",
+        {
+            "id": identifier,
+            "control_token": control,
+        },
+    )["attachment_token"]
     background_command = "sleep 60 & echo FLOWERLY_ABRUPT_JOB:$!\n"
     write(session, identifier, writer, background_command)
     job_pid = None
     for _ in range(120):
-        reply = successful(session, "session.read", {
-            "id": identifier, "cursor": 0, "control_token": control,
-        })
+        reply = successful(
+            session,
+            "session.read",
+            {
+                "id": identifier,
+                "cursor": 0,
+                "control_token": control,
+            },
+        )
         match = re.search(rb"FLOWERLY_ABRUPT_JOB:(\d+)", output(reply))
         if match:
             job_pid = int(match.group(1))
@@ -699,7 +982,9 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     assert job_pid, "background process did not start"
     job_identity = process_identity(job_pid)
     assert job_identity and job_identity[0] not in ("Z", "X")
-    uncertain_id, uncertain_pid, uncertain_identity = create_spawn_with_lost_response(daemon)
+    uncertain_id, uncertain_pid, uncertain_identity = create_spawn_with_lost_response(
+        daemon
+    )
     daemon.stop(abrupt=True)
     assert_original_process_exited(shell_pid, shell_identity)
     assert_original_process_exited(job_pid, job_identity)
@@ -714,17 +999,22 @@ def test_abrupt_daemon_loss_and_restart(daemon):
     daemon.start()
     print("PTY daemon SIGKILL: verified stale IPC socket recovered automatically")
 
-    historical = next(row for row in successful(
-        session, "session.list", {}
-    )["sessions"] if row["id"] == identifier)
+    historical = next(
+        row
+        for row in successful(session, "session.list", {})["sessions"]
+        if row["id"] == identifier
+    )
     assert historical["state"].lower() == "suspended", historical
     assert historical["presentation_state"].lower() == "detached", historical
     uncertain_history = next(
-        row for row in successful(session, "session.list", {})["sessions"]
+        row
+        for row in successful(session, "session.list", {})["sessions"]
         if row["id"] == uncertain_id
     )
     assert uncertain_history["state"].lower() == "suspended", uncertain_history
-    assert uncertain_history["presentation_state"].lower() == "detached", uncertain_history
+    assert uncertain_history["presentation_state"].lower() == "detached", (
+        uncertain_history
+    )
     for name, args in (
         ("session.attach", {"id": identifier, "control_token": control}),
         ("session.read", {"id": identifier, "control_token": control, "cursor": 0}),
@@ -735,10 +1025,17 @@ def test_abrupt_daemon_loss_and_restart(daemon):
         assert outcome["type"] == "err", (name, outcome)
     successor = daemon.spawn()
     assert successor["id"] != identifier
-    successful(session, "session.terminate", {
-        "id": successor["id"], "control_token": successor["control_token"],
-    })
-    print("PTY abrupt SIGKILL: original shell/job/guardian exited, stale Session unavailable, fresh spawn succeeds")
+    successful(
+        session,
+        "session.terminate",
+        {
+            "id": successor["id"],
+            "control_token": successor["control_token"],
+        },
+    )
+    print(
+        "PTY abrupt SIGKILL: original shell/job/guardian exited, stale Session unavailable, fresh spawn succeeds"
+    )
 
 
 def main(binary_directory):

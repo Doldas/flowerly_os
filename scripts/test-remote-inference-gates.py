@@ -16,6 +16,7 @@ Verifies, with real processes and real IPC:
 - no refusal discloses a uid;
 - the unit templates keep their confinement settings.
 """
+
 import json
 import os
 import pathlib
@@ -47,8 +48,9 @@ def recv_exact(conn, count):
 
 def request(sock, name, args):
     correlation = str(uuid.uuid4())
-    message = json.dumps({"version": 1, "id": correlation, "type": "command",
-                          "name": name, "args": args}).encode()
+    message = json.dumps(
+        {"version": 1, "id": correlation, "type": "command", "name": name, "args": args}
+    ).encode()
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(15)
         client.connect(str(sock))
@@ -72,7 +74,9 @@ def refused(reply, code, needle):
     message = reply["message"].lower()
     # A whole-number match: as root (the self-hosted runner) a bare "0" in a
     # temporary path or mode is not a uid.
-    assert "uid" not in message and not re.search(rf"(?<![\w.]){os.getuid()}(?![\w.])", message), reply
+    assert "uid" not in message and not re.search(
+        rf"(?<![\w.]){os.getuid()}(?![\w.])", message
+    ), reply
 
 
 def wait_socket(path, proc, log):
@@ -145,69 +149,164 @@ def main(bin_dir):
             f'socket = "{provider_socket}"\n'
             'destination = "localhost"\nmodels = ["gpt-oss:20b"]\n'
         )
-        base_env = {k: v for k, v in os.environ.items()
-                    if k not in ("SSL_CERT_FILE", "SSL_CERT_DIR", "CREDENTIALS_DIRECTORY")}
-        provider_env = dict(base_env, AGENTIC_RUNTIME_DIR=str(provider_runtime),
-                            CREDENTIALS_DIRECTORY=str(creds))
+        base_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("SSL_CERT_FILE", "SSL_CERT_DIR", "CREDENTIALS_DIRECTORY")
+        }
+        provider_env = dict(
+            base_env,
+            AGENTIC_RUNTIME_DIR=str(provider_runtime),
+            CREDENTIALS_DIRECTORY=str(creds),
+        )
         # flowerlyd never gets the credential directory.
-        flowerlyd_env = dict(base_env, AGENTIC_RUNTIME_DIR=str(runtime),
-                             AGENTIC_STATE_DIR=str(state), AGENTIC_ADMIN_GROUP=str(os.getgid()))
+        flowerlyd_env = dict(
+            base_env,
+            AGENTIC_RUNTIME_DIR=str(runtime),
+            AGENTIC_STATE_DIR=str(state),
+            AGENTIC_ADMIN_GROUP=str(os.getgid()),
+        )
         processes = []
-        logs = [root / "providerd.log", root / "flowerlyd-unsafe.log", root / "flowerlyd.log"]
+        logs = [
+            root / "providerd.log",
+            root / "flowerlyd-unsafe.log",
+            root / "flowerlyd.log",
+        ]
 
         def start(argv, env, log, sock):
-            proc = subprocess.Popen(argv, env=env, stdout=log.open("ab"), stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(
+                argv, env=env, stdout=log.open("ab"), stderr=subprocess.STDOUT
+            )
             processes.append(proc)
             wait_socket(sock, proc, log)
             return proc
 
         try:
-            start([str(bin_dir / "providerd"), "--remote-config", str(remote_config)],
-                  provider_env, logs[0], provider_socket)
+            start(
+                [str(bin_dir / "providerd"), "--remote-config", str(remote_config)],
+                provider_env,
+                logs[0],
+                provider_socket,
+            )
 
             # An unsafe (group-writable) policy leaves remote inference off.
             policy.chmod(0o664)
-            unsafe = start([str(bin_dir / "flowerlyd"), "--remote-providers", str(policy)],
-                           flowerlyd_env, logs[1], runtime / "flowerlyd.sock")
+            unsafe = start(
+                [str(bin_dir / "flowerlyd"), "--remote-providers", str(policy)],
+                flowerlyd_env,
+                logs[1],
+                runtime / "flowerlyd.sock",
+            )
             sock = runtime / "flowerlyd.sock"
-            refused(request(sock, "provider.register", {
-                "name": "local-test", "kind": "remote-openai-compatible", "capabilities": ["text"]}),
-                "permission_denied", "writable")
+            refused(
+                request(
+                    sock,
+                    "provider.register",
+                    {
+                        "name": "local-test",
+                        "kind": "remote-openai-compatible",
+                        "capabilities": ["text"],
+                    },
+                ),
+                "permission_denied",
+                "writable",
+            )
             stop(unsafe)
             sock.unlink(missing_ok=True)
 
             policy.chmod(0o644)
-            start([str(bin_dir / "flowerlyd"), "--remote-providers", str(policy)],
-                  flowerlyd_env, logs[2], sock)
-            provider = ok(request(sock, "provider.register", {
-                "name": "local-test", "kind": "remote-openai-compatible", "capabilities": ["text"]}))["id"]
-            assert ok(request(sock, "provider.show", {"id": provider}))["destination"] == "localhost"
-            model = ok(request(sock, "model.register", {
-                "name": "gpt-oss:20b", "backend": "CPU", "measured_memory_bytes": 100_000_000}))["id"]
-            remote_profile = ok(request(sock, "profile.create", {
-                "name": "remote", "toml": "locality = 'approved-remote-opt-in'\nfallback = 'ask'\n"}))["id"]
-            local_profile = ok(request(sock, "profile.create", {
-                "name": "local", "toml": "fallback = 'ask'\n"}))["id"]
+            start(
+                [str(bin_dir / "flowerlyd"), "--remote-providers", str(policy)],
+                flowerlyd_env,
+                logs[2],
+                sock,
+            )
+            provider = ok(
+                request(
+                    sock,
+                    "provider.register",
+                    {
+                        "name": "local-test",
+                        "kind": "remote-openai-compatible",
+                        "capabilities": ["text"],
+                    },
+                )
+            )["id"]
+            assert (
+                ok(request(sock, "provider.show", {"id": provider}))["destination"]
+                == "localhost"
+            )
+            model = ok(
+                request(
+                    sock,
+                    "model.register",
+                    {
+                        "name": "gpt-oss:20b",
+                        "backend": "CPU",
+                        "measured_memory_bytes": 100_000_000,
+                    },
+                )
+            )["id"]
+            remote_profile = ok(
+                request(
+                    sock,
+                    "profile.create",
+                    {
+                        "name": "remote",
+                        "toml": "locality = 'approved-remote-opt-in'\nfallback = 'ask'\n",
+                    },
+                )
+            )["id"]
+            local_profile = ok(
+                request(
+                    sock,
+                    "profile.create",
+                    {"name": "local", "toml": "fallback = 'ask'\n"},
+                )
+            )["id"]
 
             def workload(profile):
-                submitted = ok(request(sock, "workload.submit", {"profile_id": profile, "model_id": model}))
+                submitted = ok(
+                    request(
+                        sock,
+                        "workload.submit",
+                        {"profile_id": profile, "model_id": model},
+                    )
+                )
                 assert submitted["state"] == "ADMITTED", submitted
                 return submitted["id"]
 
             remote_work, local_work = workload(remote_profile), workload(local_profile)
 
             def ask(work, **extra):
-                args = {"workload_id": work, "provider_id": provider, "remote": True,
-                        "prompt": f"Reply with exactly: flowerly-ready {MARKER}",
-                        "request_id": "bb-1", "max_tokens": 16}
+                args = {
+                    "workload_id": work,
+                    "provider_id": provider,
+                    "remote": True,
+                    "prompt": f"Reply with exactly: flowerly-ready {MARKER}",
+                    "request_id": "bb-1",
+                    "max_tokens": 16,
+                }
                 args.update(extra)
                 return request(sock, "inference.request", args)
 
             refused(ask(remote_work), "permission_denied", "no active consent")
-            refused(request(sock, "inference.consent_grant", {
-                "provider_id": provider, "destination": "evil.example"}), "invalid_argument", "destination")
-            grant = ok(request(sock, "inference.consent_grant", {
-                "provider_id": provider, "destination": "localhost", "days": 1}))
+            refused(
+                request(
+                    sock,
+                    "inference.consent_grant",
+                    {"provider_id": provider, "destination": "evil.example"},
+                ),
+                "invalid_argument",
+                "destination",
+            )
+            grant = ok(
+                request(
+                    sock,
+                    "inference.consent_grant",
+                    {"provider_id": provider, "destination": "localhost", "days": 1},
+                )
+            )
             assert grant["valid"] is True, grant
             refused(ask(remote_work, remote=False), "permission_denied", "remote: true")
             refused(ask(local_work), "permission_denied", "local-only")
@@ -226,9 +325,16 @@ def main(bin_dir):
             assert result["attempt"]["outcome"] == "not_sent", result
             # A retry reports the same attempt; nothing is resubmitted.
             retry = ok(ask(remote_work, operation_id="bb-op-1"))
-            assert retry["attempt"]["id"] == attempt and retry["resubmitted"] is False, retry
+            assert (
+                retry["attempt"]["id"] == attempt and retry["resubmitted"] is False
+            ), retry
 
-            assert ok(request(sock, "inference.consent_revoke", {"provider_id": provider}))["revoked"] == 1
+            assert (
+                ok(
+                    request(sock, "inference.consent_revoke", {"provider_id": provider})
+                )["revoked"]
+                == 1
+            )
             refused(ask(remote_work), "permission_denied", "no active consent")
             listed = ok(request(sock, "inference.consent_list", {}))
             assert listed["consents"][0]["active"] is False, listed
@@ -237,12 +343,18 @@ def main(bin_dir):
                 stop(proc)
 
         database = b"".join(path.read_bytes() for path in state.glob("state.db*"))
-        assert attempt.encode() in database, "attempt metadata missing from the database"
-        for blob, where in [(database, "state database")] + [(log.read_bytes(), log.name) for log in logs]:
+        assert attempt.encode() in database, (
+            "attempt metadata missing from the database"
+        )
+        for blob, where in [(database, "state database")] + [
+            (log.read_bytes(), log.name) for log in logs
+        ]:
             assert SENTINEL.encode() not in blob, f"{where} contains the provider key"
             assert MARKER.encode() not in blob, f"{where} contains the prompt"
-    print("remote inference gates black box: disabled when unsafe, consent/profile/remote gates, "
-          "durable not-sent attempt, no resubmission, revocation, no key or prompt at rest or in logs")
+    print(
+        "remote inference gates black box: disabled when unsafe, consent/profile/remote gates, "
+        "durable not-sent attempt, no resubmission, revocation, no key or prompt at rest or in logs"
+    )
 
 
 if __name__ == "__main__":

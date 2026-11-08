@@ -5,6 +5,7 @@ Uses only the standard library, no Rust build or dependencies. Fail closed on
 unrecognized recipes rather than trusting names or silently normalizing away
 different build flags. A separate check tests docs against actual paths.
 """
+
 from pathlib import Path
 import re
 
@@ -14,9 +15,25 @@ JUST = (ROOT / "justfile").read_text()
 BUILD = (ROOT / "web-docs/docs/build.md").read_text()
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
 
-SHARED = ("fmt", "fmt-check", "lint", "check", "build", "test", "verify",
-          "run", "serve", "stop", "status", "release", "image-inputs",
-          "image-rootfs", "image", "vm", "vm-test")
+SHARED = (
+    "fmt",
+    "fmt-check",
+    "lint",
+    "check",
+    "build",
+    "test",
+    "verify",
+    "run",
+    "serve",
+    "stop",
+    "status",
+    "release",
+    "image-inputs",
+    "image-rootfs",
+    "image",
+    "vm",
+    "vm-test",
+)
 
 
 def recipes(text, flavor):
@@ -30,7 +47,7 @@ def recipes(text, flavor):
             name = match[1]
             deps = (match[2] or "").split()
             commands = []
-            for following in lines[index + 1:]:
+            for following in lines[index + 1 :]:
                 if following.startswith("\t"):
                     commands.append(following.strip())
                 else:
@@ -42,7 +59,7 @@ def recipes(text, flavor):
             name = match[1]
             deps = (match[2] or "").split()
             commands = []
-            for following in lines[index + 1:]:
+            for following in lines[index + 1 :]:
                 if following.startswith("    "):
                     commands.append(following.strip())
                 else:
@@ -91,10 +108,9 @@ assert make["image-rootfs"] == just["image-rootfs"], "image-rootfs tasks differ"
 for name in ("image", "vm", "vm-test"):
     for flavor, recipeset in (("make", make), ("just", just)):
         joined = "\n".join(recipeset[name][1])
-        assert (
-            "exit 1" in joined
-            or "exit 1" in joined.replace("@", "")
-        ), f"{flavor} {name} must fail closed until implemented"
+        assert "exit 1" in joined or "exit 1" in joined.replace("@", ""), (
+            f"{flavor} {name} must fail closed until implemented"
+        )
 assert "web-docs/docs/releases.md" in MAKE, "release doc link must use actual case"
 assert (ROOT / "web-docs/docs/releases.md").is_file()
 assert "docs/RELEASES.md" not in MAKE
