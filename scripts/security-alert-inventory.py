@@ -18,6 +18,7 @@ FAMILIES = {
     "secret_scanning": "secret-scanning/alerts",
 }
 
+
 def query(repo, endpoint):
     command = [
         "gh",
