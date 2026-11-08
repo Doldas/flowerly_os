@@ -305,6 +305,12 @@ jobs:
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 
+      - name: Provision real GPT FAT and ext4 tools for Generation A/B tests
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
+      - name: Verify real GPT FAT A/B EFI arming without changing user-data
+        run: python3 ./scripts/test-generation-arm-esp-image.py
+
       - name: Verify direct QEMU boot probe offline
         run: python3 ./scripts/test-probe-arch-qemu-boot.py
 
