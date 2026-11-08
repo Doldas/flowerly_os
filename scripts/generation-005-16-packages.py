@@ -12,7 +12,8 @@ ARCH={"x86_64","aarch64"}
 def package_set_identity(packages):
     if not isinstance(packages,list) or not packages:
         raise ValueError("empty or invalid package list")
-    inventory=[];seen=set()
+    inventory=[]
+    seen=set()
     for p in packages:
         if not isinstance(p,dict) or set(p)!={"name","version","architecture","sha256","repository"}:
             raise ValueError("package metadata incomplete")
@@ -26,7 +27,8 @@ def package_set_identity(packages):
         key=(name,arch)
         if key in seen:
             raise ValueError("duplicate or conflicting package")
-        seen.add(key);inventory.append(p)
+        seen.add(key)
+        inventory.append(p)
     inventory.sort(key=lambda p:(p["name"],p["architecture"]))
     blob=json.dumps(inventory,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode()
     return {"sha256":hashlib.sha256(blob).hexdigest(),"package_count":len(inventory),

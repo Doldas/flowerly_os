@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Strict boot-witness ledger replay; incomplete/tampered ledger never PASS (#328)."""
+"""Strict boot-witness ledger replay
+incomplete/tampered ledger never PASS (#328)."""
 import json
 from pathlib import Path
 
@@ -23,7 +24,8 @@ def replay_witness(path):
             raise ValueError("unparseable witness row") from e
         if not isinstance(row,dict) or set(row)!={"schema","boot_id","sequence","slot","manifest_sha256"}:
             raise ValueError("unexpected witness fields")
-        seq=row["sequence"];boot=row["boot_id"]
+        seq=row["sequence"]
+        boot=row["boot_id"]
         if row["schema"]!="flowerly-boot-witness/v1" or type(seq) is not int or seq<=last:
             raise ValueError("duplicate or nonmonotonic witness sequence")
         if not isinstance(boot,str) or not boot or boot in seen or row["slot"] not in ("root-a","root-b"):
@@ -31,5 +33,7 @@ def replay_witness(path):
         h=row["manifest_sha256"]
         if not isinstance(h,str) or len(h)!=64 or any(c not in "0123456789abcdef" for c in h):
             raise ValueError("invalid witness hash")
-        seen.add(boot);last=seq;rows.append(row)
+        seen.add(boot)
+        last=seq
+        rows.append(row)
     return {"witnesses":len(rows),"last_sequence":last,"last_slot":rows[-1]["slot"]}

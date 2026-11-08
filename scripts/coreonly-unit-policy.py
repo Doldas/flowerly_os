@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Offline CoreOnly startup policy contract (#88), NOT a daemon switch."""
-from pathlib import Path
 
 CORE_SERVICE = "flowerlyd.service"
 OPTIONAL_SERVICES = frozenset(("evolutiond.service", "providerd.service"))
