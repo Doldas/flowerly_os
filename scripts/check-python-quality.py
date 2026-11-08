@@ -2,8 +2,8 @@
 """Fail-closed, incremental Python quality gate for Flowerly CI.
 
 All tracked Python files get a parser check. Changed Python files get Ruff
-linting; newly added files also get Ruff formatting. Baseline violations in
-untouched legacy files remain visible work, not an excuse to skip new code.
+linting and Ruff formatting, including modified existing files. Unchanged
+legacy formatting remains outside the incremental gate until touched.
 """
 
 import argparse
@@ -86,21 +86,20 @@ def check(root, base, all_files, ruff):
     check_syntax(root, tracked)
     if all_files:
         lint = tracked
-        fresh = []  # historical formatting is not yet migrated
+        formatted = tracked  # explicit --all checks the entire Python baseline
     else:
         if not base or not base.strip() or base == "0" * 40:
             raise ValueError("exact Git base is required; no silent lint bypass")
         candidates = changes(root, base, "ACMR")
-        added = changes(root, base, "A")
         lint = sorted(set(tracked).intersection(candidates))
-        fresh = sorted(set(tracked).intersection(added))
+        formatted = lint
     print(
         f"Ruff linting {len(lint)} changed Python files; "
-        f"format-checking {len(fresh)} added files",
+        f"format-checking {len(formatted)} added or modified files",
         flush=True,
     )
     run_ruff(root, ruff, "check", lint)
-    run_ruff(root, ruff, "format", fresh)
+    run_ruff(root, ruff, "format", formatted)
 
 
 def main(argv=None):
