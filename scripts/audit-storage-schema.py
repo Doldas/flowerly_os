@@ -4,6 +4,7 @@
 Only schema-level FKs are discoverable here. Application-level references and
 transaction boundaries require a separate manual review before any split.
 """
+
 import json
 import sqlite3
 from pathlib import Path
@@ -16,9 +17,12 @@ CORE_REQUIRED = {"flows", "goals", "sessions", "ipc_operations", "provenance_edg
 
 
 def inspect(conn):
-    tables = sorted(name for (name,) in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ))
+    tables = sorted(
+        name
+        for (name,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    )
     edges = []
     for table in tables:
         # Names come from sqlite_master, not user input.
@@ -58,9 +62,13 @@ def main():
         "status": "review_only_not_approved_for_split",
         "migrations": [path.name for path in migrations],
         "tables": tables,
-        "foreign_keys": [{"from": src, "to": dst, "column": col, "target_column": dstcol}
-                         for src, dst, col, dstcol in edges],
-        "memory_candidates_not_approved": sorted(MEMORY_CANDIDATES.intersection(tables)),
+        "foreign_keys": [
+            {"from": src, "to": dst, "column": col, "target_column": dstcol}
+            for src, dst, col, dstcol in edges
+        ],
+        "memory_candidates_not_approved": sorted(
+            MEMORY_CANDIDATES.intersection(tables)
+        ),
         "warnings": [
             "No app-level provenance, IPC receipt or transaction coupling is proven by this report",
             "ADR-0011 remains authoritative; never split physical databases based on this audit",

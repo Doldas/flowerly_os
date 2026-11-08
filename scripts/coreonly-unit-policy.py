@@ -23,4 +23,6 @@ def check_plan(mode, requested):
 
 
 if __name__ == "__main__":
-    raise SystemExit("policy prototype only; systemd has not been wired to /etc/flowerly/mode")
+    raise SystemExit(
+        "policy prototype only; systemd has not been wired to /etc/flowerly/mode"
+    )
