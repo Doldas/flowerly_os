@@ -6,6 +6,7 @@ guest's root identity, Flowerly IPC health, post-bless and persistent marker
 are observed from each serial log. A guest is SIGKILLed to simulate power
 loss. This is NOT a production updater or complete 0.0.5 acceptance.
 """
+
 import argparse
 import hashlib
 import importlib.util
@@ -20,9 +21,14 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 SCENARIOS = (
-    "stage-complete", "stage-interrupted", "arm-before-rename",
-    "arm-after-rename", "boot-before-bless", "unhealthy-b-fallback",
-    "data-survives", "tampered-b-refused",
+    "stage-complete",
+    "stage-interrupted",
+    "arm-before-rename",
+    "arm-after-rename",
+    "boot-before-bless",
+    "unhealthy-b-fallback",
+    "data-survives",
+    "tampered-b-refused",
 )
 BOOT_SHA = re.compile(r"FLOWERLY_GENERATION_USER_MARKER_SHA256=([0-9a-f]{64})")
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
@@ -50,13 +56,21 @@ def module(name, file):
 def validate_source(args, *, actual_execution=False):
     if not COMMIT.fullmatch(args.approved_sha):
         raise ValueError("exact lowercase commit SHA required")
-    sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-                         text=True, capture_output=True, check=True).stdout.strip()
+    sha = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
     if sha != args.approved_sha:
         raise ValueError("approved SHA does not match checked-out source")
     if actual_execution:
-        clean = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"],
-                               text=True, capture_output=True, check=True).stdout
+        clean = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain"],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
         if clean:
             raise ValueError("dirty git checkout must not execute KVM")
         if os.geteuid() == 0:
@@ -65,8 +79,14 @@ def validate_source(args, *, actual_execution=False):
             raise ValueError("explicit Generation KVM environment approval missing")
         if not os.access("/dev/kvm", os.R_OK | os.W_OK):
             raise ValueError("usable real /dev/kvm required; no TCG fallback")
-    for name in ("disk", "manifest", "kernel_b", "initramfs_b",
-                 "ovmf_code", "ovmf_vars"):
+    for name in (
+        "disk",
+        "manifest",
+        "kernel_b",
+        "initramfs_b",
+        "ovmf_code",
+        "ovmf_vars",
+    ):
         path = getattr(args, name)
         if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
             raise ValueError("missing or unsafe input: " + name)
@@ -76,13 +96,20 @@ def validate_source(args, *, actual_execution=False):
         raise ValueError("unsafe evidence parent")
     if not 30 <= args.timeout <= 600 or not 1 <= args.tries <= 9:
         raise ValueError("unsafe timeout / tries configuration")
-    if not UUID.fullmatch(args.root_a) or not UUID.fullmatch(args.root_b) or args.root_a == args.root_b:
+    if (
+        not UUID.fullmatch(args.root_a)
+        or not UUID.fullmatch(args.root_b)
+        or args.root_a == args.root_b
+    ):
         raise ValueError("invalid or duplicate root UUIDs")
     manifest = json.loads(args.manifest.read_text())
     verifier = module("generation_ab_verify", "verify-ab-slot-layout.py")
     verifier.verify(args.disk, manifest)
     identities = {p["name"]: p["partuuid"] for p in manifest["partitions"]}
-    if identities.get("root-a") != args.root_a or identities.get("root-b") != args.root_b:
+    if (
+        identities.get("root-a") != args.root_a
+        or identities.get("root-b") != args.root_b
+    ):
         raise ValueError("approved booted root UUIDs do not match the disk")
     if actual_execution:
         for program in ("qemu-system-x86_64", "sfdisk", "mcopy", "mdir", "mtype"):
@@ -94,11 +121,15 @@ def validate_source(args, *, actual_execution=False):
 def observe_serial(log, slot, *, bless, timeout):
     """Observe a real guest, not a mocked count or host-side assertion."""
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
-    if "Kernel panic" in text or "Failed to start Flowerly OS Unified Supervisor" in text:
+    if (
+        "Kernel panic" in text
+        or "Failed to start Flowerly OS Unified Supervisor" in text
+    ):
         raise ValueError("guest kernel panic or Flowerly supervisor failure")
-    seen = all(phrase in text for phrase in (
-        "FLOWERLY_GENERATION_ROOT_VERIFIED", '"slot": "' + slot + '"'
-    ))
+    seen = all(
+        phrase in text
+        for phrase in ("FLOWERLY_GENERATION_ROOT_VERIFIED", '"slot": "' + slot + '"')
+    )
     marker = BOOT_SHA.findall(text)
     if not seen or len(set(marker)) != 1:
         return None
@@ -118,14 +149,20 @@ def verify_running_qemu(pid, command):
         raise ValueError("invalid QEMU process identity")
     proc = Path("/proc") / str(pid)
     actual_raw = (proc / "cmdline").read_bytes()
-    actual_argv = [arg.decode("utf-8", errors="strict")
-                   for arg in actual_raw.split(bytes([0])) if arg]
-    if actual_argv != command or not all(arg in actual_argv for arg in (
-        "-net", "none", "-no-reboot", "-nodefaults", "q35,accel=kvm"
-    )):
+    actual_argv = [
+        arg.decode("utf-8", errors="strict")
+        for arg in actual_raw.split(bytes([0]))
+        if arg
+    ]
+    if actual_argv != command or not all(
+        arg in actual_argv
+        for arg in ("-net", "none", "-no-reboot", "-nodefaults", "q35,accel=kvm")
+    ):
         raise ValueError("running QEMU command differs from approved KVM firmware boot")
     if any(value in actual_argv for value in ("-kernel", "-initrd", "-nic", "-netdev")):
-        raise ValueError("direct-kernel or networked QEMU is not valid firmware evidence")
+        raise ValueError(
+            "direct-kernel or networked QEMU is not valid firmware evidence"
+        )
     fd_directory = proc / "fd"
     devices = []
     for fd in fd_directory.iterdir():
@@ -135,8 +172,10 @@ def verify_running_qemu(pid, command):
             continue
     if "/dev/kvm" not in devices:
         raise ValueError("no open /dev/kvm descriptor in actual QEMU process")
-    return {"kvm_fd_verified": True,
-            "qemu_cmdline_sha256": hashlib.sha256(actual_raw).hexdigest()}
+    return {
+        "kvm_fd_verified": True,
+        "qemu_cmdline_sha256": hashlib.sha256(actual_raw).hexdigest(),
+    }
 
 
 def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
@@ -146,18 +185,41 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
     if not qemu:
         raise ValueError("qemu-system-x86_64 not installed")
     command = [
-        qemu, "-machine", "q35,accel=kvm", "-cpu", "host", "-smp", "2",
-        "-m", "2048", "-nodefaults", "-display", "none",
-        "-serial", "stdio", "-monitor", "none", "-net", "none",
+        qemu,
+        "-machine",
+        "q35,accel=kvm",
+        "-cpu",
+        "host",
+        "-smp",
+        "2",
+        "-m",
+        "2048",
+        "-nodefaults",
+        "-display",
+        "none",
+        "-serial",
+        "stdio",
+        "-monitor",
+        "none",
+        "-net",
+        "none",
         "-no-reboot",
-        "-drive", "if=pflash,format=raw,readonly=on,file=" + str(args.ovmf_code),
-        "-drive", "if=pflash,format=raw,file=" + str(vars_file),
-        "-drive", "if=virtio,format=raw,cache=none,file=" + str(disk),
+        "-drive",
+        "if=pflash,format=raw,readonly=on,file=" + str(args.ovmf_code),
+        "-drive",
+        "if=pflash,format=raw,file=" + str(vars_file),
+        "-drive",
+        "if=virtio,format=raw,cache=none,file=" + str(disk),
     ]
     started = time.monotonic()
     with log.open("xb") as output:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
             while time.monotonic() - started <= args.timeout:
                 marker = observe_serial(log, slot, bless=bless, timeout=args.timeout)
@@ -166,13 +228,19 @@ def qemu_boot(args, disk, vars_file, report, slot, *, bless, label):
                     # Permit systemd and ext4 a brief flush window before the
                     # deliberate abrupt QEMU kill (simulated host power loss).
                     time.sleep(2)
-                    return {"slot": slot, "marker_sha256": marker,
-                            **host_observed,
-                            "seconds": round(time.monotonic() - started, 3),
-                            "serial": log.name, "observed_health": "BLESSED" if bless else "REJECTED",
-                            "power_loss": "QEMU_SIGKILL"}
+                    return {
+                        "slot": slot,
+                        "marker_sha256": marker,
+                        **host_observed,
+                        "seconds": round(time.monotonic() - started, 3),
+                        "serial": log.name,
+                        "observed_health": "BLESSED" if bless else "REJECTED",
+                        "power_loss": "QEMU_SIGKILL",
+                    }
                 if process.poll() is not None:
-                    raise ValueError(f"QEMU exited before {label} witness: {process.returncode}")
+                    raise ValueError(
+                        f"QEMU exited before {label} witness: {process.returncode}"
+                    )
                 time.sleep(0.5)
             raise ValueError(f"timeout waiting for {label} boot identity/health")
         finally:
@@ -189,7 +257,10 @@ def verify_immutable_roots(disk_path, manifest):
     """
     parts = manifest.get("partitions", [])
     if not isinstance(parts, list) or [p.get("name") for p in parts] != [
-        "esp", "root-a", "root-b", "data"
+        "esp",
+        "root-a",
+        "root-b",
+        "data",
     ]:
         raise ValueError("cannot verify unknown A/B roots")
     image = Path(disk_path)
@@ -201,11 +272,15 @@ def verify_immutable_roots(disk_path, manifest):
         for part in parts[1:3]:
             offset, size = part.get("offset_bytes"), part.get("size_bytes")
             expected = part.get("sha256")
-            if type(offset) is not int or type(size) is not int or (
-                size <= 0 or offset < 0 or offset + size > os.fstat(fd).st_size
+            if (
+                type(offset) is not int
+                or type(size) is not int
+                or (size <= 0 or offset < 0 or offset + size > os.fstat(fd).st_size)
             ):
                 raise ValueError("invalid pinned root partition extent")
-            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            if not isinstance(expected, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", expected
+            ):
                 raise ValueError("missing expected pinned root SHA256")
             hash_value = hashlib.sha256()
             remaining = size
@@ -218,8 +293,11 @@ def verify_immutable_roots(disk_path, manifest):
                 remaining -= len(block)
             actual = hash_value.hexdigest()
             if actual != expected:
-                raise ValueError("guest changed pinned " + part["name"] +
-                                 " root image; refuse immutable-generation claim")
+                raise ValueError(
+                    "guest changed pinned "
+                    + part["name"]
+                    + " root image; refuse immutable-generation claim"
+                )
             results[part["name"]] = actual
     finally:
         os.close(fd)
@@ -280,14 +358,15 @@ def run(args):
         if not qemu:
             raise ValueError("real QEMU not installed")
         result["qemu_version"] = subprocess.run(
-            [qemu, "--version"], capture_output=True, text=True,
-            check=True).stdout.splitlines()[0][:160]
+            [qemu, "--version"], capture_output=True, text=True, check=True
+        ).stdout.splitlines()[0][:160]
         disk = args.output / "running-disk.img"
         vars_file = args.output / "OVMF_VARS.fd"
         shutil.copyfile(args.disk, disk)
         shutil.copyfile(args.ovmf_vars, vars_file)
-        a = qemu_boot(args, disk, vars_file, args.output,
-                      "root-a", bless=True, label="boot-a")
+        a = qemu_boot(
+            args, disk, vars_file, args.output, "root-a", bless=True, label="boot-a"
+        )
         result["boots"].append(a)
         result["root_sha256_after_boot_a"] = verify_immutable_roots(disk, manifest)
         # The armed image is a NEW file based on A's current disk. It carries
@@ -298,27 +377,50 @@ def run(args):
         # root is immutable, so retain its original verified bytes and carry
         # forward *only* the live ESP boot-counting state and user-data volume.
         result["mutable_sha256_from_boot_a"] = reconcile_mutable_partitions(
-            args.disk, disk, reconstructed, manifest)
+            args.disk, disk, reconstructed, manifest
+        )
         result["root_reconstruction"] = "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES"
         armed_disk = args.output / "armed-b.img"
         armed_manifest = args.output / "armed-b.manifest.json"
-        arm.arm_image(reconstructed, args.manifest, args.kernel_b, args.initramfs_b,
-                      armed_disk, armed_manifest, tries=args.tries,
-                      failure_switch=True)
+        arm.arm_image(
+            reconstructed,
+            args.manifest,
+            args.kernel_b,
+            args.initramfs_b,
+            armed_disk,
+            armed_manifest,
+            tries=args.tries,
+            failure_switch=True,
+        )
         # Retry unhealthy B using the SAME EFI variables and writable image.
         # systemd-boot must exhaust B's boot-count and select last healthy A.
         for index in range(args.tries):
-            attempt = qemu_boot(args, armed_disk, vars_file, args.output,
-                                "root-b", bless=False, label=f"unhealthy-b-{index+1}")
+            attempt = qemu_boot(
+                args,
+                armed_disk,
+                vars_file,
+                args.output,
+                "root-b",
+                bless=False,
+                label=f"unhealthy-b-{index + 1}",
+            )
             result["boots"].append(attempt)
             if attempt["marker_sha256"] != a["marker_sha256"]:
                 raise ValueError("persistent data marker changed on failed B boot")
         result["scenarios"]["boot-before-bless"] = "PASS"
-        last = qemu_boot(args, armed_disk, vars_file, args.output,
-                         "root-a", bless=True, label="auto-fallback-a")
+        last = qemu_boot(
+            args,
+            armed_disk,
+            vars_file,
+            args.output,
+            "root-a",
+            bless=True,
+            label="auto-fallback-a",
+        )
         result["boots"].append(last)
         result["root_sha256_after_fallback"] = verify_immutable_roots(
-            armed_disk, json.loads(armed_manifest.read_text()))
+            armed_disk, json.loads(armed_manifest.read_text())
+        )
         if last["marker_sha256"] != a["marker_sha256"]:
             raise ValueError("user data changed on automatic fallback to A")
         result["scenarios"]["data-survives"] = "PASS"
@@ -339,9 +441,12 @@ def run(args):
         # initial manifest because systemd-boot and user data are mutable.
         hashes = {p.name: sha_file(p) for p in args.output.glob("*.serial.log")}
         (args.output / "serial-sha256.json").write_text(
-            json.dumps(hashes, indent=2, sort_keys=True) + "\n")
+            json.dumps(hashes, indent=2, sort_keys=True) + "\n"
+        )
     if result["sequence_verified"]:
-        auditor = module("generation_ab_evidence_audit", "generation-ab-evidence-audit.py")
+        auditor = module(
+            "generation_ab_evidence_audit", "generation-ab-evidence-audit.py"
+        )
         try:
             result["audit"] = auditor.audit(result, args.output)
         except (ValueError, TypeError, KeyError, OSError) as error:
@@ -358,10 +463,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--approved-sha", required=True)
-    for name in ("disk", "manifest", "kernel-b", "initramfs-b",
-                 "ovmf-code", "ovmf-vars", "output"):
-        parser.add_argument("--" + name, dest=name.replace("-", "_"),
-                            type=Path, required=True)
+    for name in (
+        "disk",
+        "manifest",
+        "kernel-b",
+        "initramfs-b",
+        "ovmf-code",
+        "ovmf-vars",
+        "output",
+    ):
+        parser.add_argument(
+            "--" + name, dest=name.replace("-", "_"), type=Path, required=True
+        )
     parser.add_argument("--root-a", required=True)
     parser.add_argument("--root-b", required=True)
     parser.add_argument("--tries", type=int, default=3)
@@ -369,15 +482,26 @@ def main():
     args = parser.parse_args()
     try:
         if args.execute:
-            print("Starting explicitly authorized real KVM A→B→A acceptance", flush=True)
+            print(
+                "Starting explicitly authorized real KVM A→B→A acceptance", flush=True
+            )
             result = run(args)
-            print(json.dumps({"status": result["status"],
-                              "sequence_verified": result["sequence_verified"],
-                              "release_acceptance": False}, sort_keys=True))
+            print(
+                json.dumps(
+                    {
+                        "status": result["status"],
+                        "sequence_verified": result["sequence_verified"],
+                        "release_acceptance": False,
+                    },
+                    sort_keys=True,
+                )
+            )
         else:
             validate_source(args)
-            print("VALIDATED ONLY; A→B→A KVM NOT_RUN. --execute requires "
-                  "explicit approved SHA, clean nonroot checkout and /dev/kvm.")
+            print(
+                "VALIDATED ONLY; A→B→A KVM NOT_RUN. --execute requires "
+                "explicit approved SHA, clean nonroot checkout and /dev/kvm."
+            )
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"Generation A/B KVM refusal/failure: {error}", file=sys.stderr)
         return 1
