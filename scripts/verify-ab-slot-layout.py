@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline A/B partition identity preflight (#48). NOT a boot/rollback proof."""
+
 import argparse
 import hashlib
 import json
@@ -26,7 +27,10 @@ def verify(disk_path, manifest):
         raise ValueError("full disk SHA256 differs from manifest")
     parts = manifest.get("partitions")
     if not isinstance(parts, list) or [p.get("name") for p in parts] != [
-        "esp", "root-a", "root-b", "data"
+        "esp",
+        "root-a",
+        "root-b",
+        "data",
     ]:
         raise ValueError("unexpected A/B partition layout")
     seen = set()
@@ -35,11 +39,19 @@ def verify(disk_path, manifest):
         for p in parts:
             offset, size = p.get("offset_bytes"), p.get("size_bytes")
             uuid, expected = p.get("partuuid"), p.get("sha256")
-            if not isinstance(offset, int) or not isinstance(size, int) or (
-                offset < cursor or size <= 0 or offset % 1048576
-                or size % 1048576 or not isinstance(uuid, str)
-                or uuid in seen or not isinstance(expected, str)
-                or len(expected) != 64
+            if (
+                not isinstance(offset, int)
+                or not isinstance(size, int)
+                or (
+                    offset < cursor
+                    or size <= 0
+                    or offset % 1048576
+                    or size % 1048576
+                    or not isinstance(uuid, str)
+                    or uuid in seen
+                    or not isinstance(expected, str)
+                    or len(expected) != 64
+                )
             ):
                 raise ValueError("overlapping, malformed or duplicated partition")
             seen.add(uuid)
@@ -60,7 +72,10 @@ def verify(disk_path, manifest):
             cursor = end
     if cursor > manifest.get("disk", {}).get("size_bytes", -1):
         raise ValueError("declared disk size too small")
-    return {"partitions_verified": len(parts), "status": "layout_only_not_boot_verified"}
+    return {
+        "partitions_verified": len(parts),
+        "status": "layout_only_not_boot_verified",
+    }
 
 
 def main():
