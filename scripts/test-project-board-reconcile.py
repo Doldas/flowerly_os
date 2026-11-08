@@ -13,9 +13,13 @@ spec.loader.exec_module(module)
 class BoardReconcileTests(unittest.TestCase):
     def test_consistent_snapshot_and_drift(self):
         issues = [{"number": 8, "state": "closed"}, {"number": 31, "state": "open"}]
-        board = [{"issue_number": 8, "issue_state": "closed"},
-                 {"issue_number": 31, "issue_state": "open"}]
-        self.assertEqual(module.reconcile(issues, board)["status"], "consistent_snapshot_only")
+        board = [
+            {"issue_number": 8, "issue_state": "closed"},
+            {"issue_number": 31, "issue_state": "open"},
+        ]
+        self.assertEqual(
+            module.reconcile(issues, board)["status"], "consistent_snapshot_only"
+        )
         board[1]["issue_state"] = "closed"
         self.assertEqual(module.reconcile(issues, board)["state_mismatches"], [31])
         board.pop()
