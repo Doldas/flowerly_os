@@ -18,6 +18,7 @@ REPOSITORY = "Doldas/flowerly_os"
 EXPECTED_CONTEXTS = (
     "rust",
     "docs",
+    "python-quality",
     "Validate branch policy and issue link",
     "cargo-audit",
     "cargo-deny (advisories)",
@@ -97,8 +98,10 @@ def validate(root=ROOT):
             or "wait-release-promotion.py" not in promotion
             or "name: Validate branch policy and issue link" not in promotion):
         raise ValueError("exact-SHA master evidence gate missing")
-    if "name: rust" not in ci or "name: docs" not in ci:
-        raise ValueError("CI must report rust and docs check names")
+    if "name: rust" not in ci or "name: docs" not in ci or "name: python-quality" not in ci:
+        raise ValueError("CI must report rust, docs and python-quality check names")
+    if "python3 scripts/check-python-quality.py" not in ci or "ruff==0.17.4" not in ci:
+        raise ValueError("required Python lint job must run pinned Ruff")
     if "name: Validate branch policy and issue link" not in pr:
         raise ValueError("PR validation check was renamed")
     if re.search(r"(?m)^    if:", pr):
