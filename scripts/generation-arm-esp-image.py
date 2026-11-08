@@ -230,14 +230,15 @@ def arm_image(
             "title Flowerly OS slot B (test image)\n"
             "linux /flowerly/b/vmlinuz\n"
             "initrd /flowerly/b/initramfs.img\n"
-            f"options root=PARTUUID={root_b['partuuid']} ro rootfstype=ext4 "
-            "systemd.volatile=state fsck.mode=skip console=ttyS0 systemd.unit=multi-user.target loglevel=6"
+            f"options console=ttyS0 root=PARTUUID={root_b['partuuid']} ro rootfstype=ext4 "
+            "systemd.volatile=state fsck.mode=skip systemd.unit=multi-user.target loglevel=6"
             + flags
             + "\n"
         )
         if fault == "torn-entry":
-            # A write cut off in the middle of the root PARTUUID.
-            marker = "options root=PARTUUID="
+            # A write cut off in the middle of the root PARTUUID; console= comes
+            # first so the guest still shows that the kernel was started.
+            marker = "root=PARTUUID="
             entry_text = entry_text[: entry_text.index(marker) + len(marker) + 13]
         entry_file.write_text(entry_text)
         # "tmp-entry" is the state just before the atomic rename: the entry
