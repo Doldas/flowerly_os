@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -44,6 +45,7 @@ def create_root(root):
         "usr/lib/systemd/systemd-bless-boot",
         "usr/lib/systemd/system/flowerlyd.service",
         "usr/lib/flowerly/boot-ipc-health.sh",
+        "usr/lib/sysusers.d/flowerly.conf",
     ):
         target = root / file
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +69,13 @@ def prepare(root, partuuid=UUID_A):
         "fixture-a",
         "--test-profile",
     ]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    fake = Path(root).parent / (Path(root).name + "-sysusers")
+    fake.write_text(
+        '#!/bin/sh\nr="${1#--root=}"\nmkdir -p "$r/etc" && echo baked > "$r/etc/passwd"\n'
+    )
+    fake.chmod(0o755)
+    env = dict(os.environ, FLOWERLY_SYSUSERS=str(fake))
+    return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 
 class BootTests(unittest.TestCase):
@@ -191,6 +199,11 @@ class BootTests(unittest.TestCase):
             self.assertIn(
                 "PARTLABEL=data /var/lib/flowerly", (root / "etc/fstab").read_text()
             )
+            self.assertIn("PARTLABEL=esp /efi vfat", (root / "etc/fstab").read_text())
+            self.assertTrue((root / "efi").is_dir())
+            bless = root / "usr/lib/flowerly/generation-bless.sh"
+            self.assertTrue(bless.is_file() and os.access(bless, os.X_OK))
+            self.assertEqual((root / "etc/passwd").read_text(), "baked\n")
             mask = root / "etc/systemd/system/systemd-bless-boot.service"
             self.assertEqual(mask.readlink(), Path("/dev/null"))
             self.assertIn(

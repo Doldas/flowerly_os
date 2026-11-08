@@ -11,23 +11,7 @@ flowerly_stage_begin guest_verification
 flowerly_stage_started="$(( $(date +%s) - 2 ))"
 flowerly_stage_finish interrupted
 flowerly_stage_finish interrupted # Idempotent, not a duplicate row.
-if flowerly_stage_begin 
-python3 - "$REPORT_DIR/host-stage-timings.tsv" <<'PY'
-from pathlib import Path
-import sys
-
-rows = Path(sys.argv[1]).read_text().splitlines()
-assert rows[0] == "stage\tduration_seconds\toutcome"
-first = rows[1].split("\t")
-second = rows[2].split("\t")
-assert first[0] == "image_acquisition" and first[2] == "completed", rows
-assert second[0] == "guest_verification" and second[2] == "interrupted", rows
-assert 3 <= int(first[1]) <= 5, rows
-assert 2 <= int(second[1]) <= 4, rows
-assert len(rows) == 3, rows
-print("arch VM stage ledger regression passed")
-PY
-evil\tstage'; then echo 'unsafe stage name accepted' >&2; exit 1; fi
+if flowerly_stage_begin $'evil\tstage'; then echo 'unsafe stage name accepted' >&2; exit 1; fi
 if flowerly_stage_finish unverified; then echo 'invalid outcome accepted' >&2; exit 1; fi
 python3 - "$REPORT_DIR/host-stage-timings.tsv" <<'PY'
 from pathlib import Path
