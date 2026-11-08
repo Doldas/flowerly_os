@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Host-side validator and future Arch rootfs/ISO builder"
 
+[features]
+# Test builds only: SIGKILL the slot tool at the point named by
+# FLOWERLY_SLOT_FAULT, for real power-loss runs. Never enabled by default.
+fault-injection = []
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

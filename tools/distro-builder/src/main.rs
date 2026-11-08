@@ -1,5 +1,6 @@
 mod manifest;
 mod signature;
+mod slot;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -24,6 +25,73 @@ enum Action {
     /// Check or verify a Generation input manifest (#49). Offline only.
     #[command(subcommand)]
     Manifest(ManifestAction),
+    /// Stage, arm, roll back and inspect A/B root slots on a disk image
+    /// (#48, ADR-0019). Edits disk images only, never block devices.
+    #[command(subcommand)]
+    Slot(SlotAction),
+}
+
+#[derive(clap::Args)]
+struct SlotDisk {
+    /// Raw GPT disk image (a regular file).
+    #[arg(long)]
+    disk: PathBuf,
+    /// Disk manifest written by build-flowerly-ab-disk.sh.
+    #[arg(long)]
+    manifest: PathBuf,
+    /// PARTUUID of the running root. A claim, not authority: the tool only
+    /// uses it to refuse touching that slot. Default: root= in /proc/cmdline.
+    #[arg(long)]
+    active_partuuid: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum SlotAction {
+    /// Write a root image into the inactive slot; changes no boot entry.
+    Stage {
+        #[command(flatten)]
+        target: SlotDisk,
+        #[arg(long)]
+        slot: String,
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        sha256: String,
+    },
+    /// Publish a boot-counting entry for a staged slot (pending, not success).
+    Arm {
+        #[command(flatten)]
+        target: SlotDisk,
+        #[arg(long)]
+        slot: String,
+        #[arg(long)]
+        kernel: PathBuf,
+        #[arg(long)]
+        initramfs: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        tries: u32,
+        /// Extra kernel option for the new entry (repeatable).
+        #[arg(long = "extra-option")]
+        extra_options: Vec<String>,
+    },
+    /// Remove the other slot's boot entries so the loader boots `--to`.
+    Rollback {
+        #[command(flatten)]
+        target: SlotDisk,
+        #[arg(long)]
+        to: String,
+    },
+    /// Report entries, slot identity and, with a witness ledger, the verdict.
+    Status {
+        #[command(flatten)]
+        target: SlotDisk,
+        /// Copy of the guest's boot-witness.jsonl.
+        #[arg(long)]
+        witness: Option<PathBuf>,
+        /// Also hash both root slots against the manifest (slow).
+        #[arg(long)]
+        verify_slots: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -49,6 +117,7 @@ fn main() -> Result<()> {
         Action::Build => {
             bail!("bootable Arch rootfs/ISO output is not implemented; run distro-builder validate")
         }
+        Action::Slot(action) => run_slot(action),
         Action::Manifest(ManifestAction::Check { path }) => {
             let checked = check_manifest(&path)?;
             println!("manifest_sha256={}", checked.sha256);
@@ -75,6 +144,89 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+#[cfg(feature = "fault-injection")]
+fn slot_faults() -> slot::Faults {
+    slot::Faults::from_env()
+}
+
+#[cfg(not(feature = "fault-injection"))]
+fn slot_faults() -> slot::Faults {
+    slot::Faults::none()
+}
+
+fn active_slot(disk: &slot::Disk, claim: &SlotDisk) -> Result<slot::Slot> {
+    let partuuid = match &claim.active_partuuid {
+        Some(value) => value.clone(),
+        None => slot::cmdline_root_partuuid()?,
+    };
+    disk.active_slot(&partuuid)
+}
+
+fn run_slot(action: SlotAction) -> Result<()> {
+    let faults = slot_faults();
+    let report = match action {
+        SlotAction::Stage {
+            target,
+            slot: name,
+            candidate,
+            sha256,
+        } => {
+            let (image, mut disk) = slot::open_bound(&target.disk, &target.manifest, true)?;
+            let esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            let request = slot::StageRequest {
+                manifest_path: &target.manifest,
+                active: active_slot(&disk, &target)?,
+                target: slot::Slot::parse(&name)?,
+                candidate: &candidate,
+                expected_sha: &sha256,
+            };
+            slot::stage(&image, &mut disk, &esp, &request, &faults)?
+        }
+        SlotAction::Arm {
+            target,
+            slot: name,
+            kernel,
+            initramfs,
+            tries,
+            extra_options,
+        } => {
+            let (image, disk) = slot::open_bound(&target.disk, &target.manifest, true)?;
+            let mut esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            let request = slot::ArmRequest {
+                kernel: &kernel,
+                initramfs: &initramfs,
+                tries,
+                extra_options: &extra_options,
+            };
+            slot::arm(
+                &image,
+                &disk,
+                active_slot(&disk, &target)?,
+                slot::Slot::parse(&name)?,
+                &mut esp,
+                &request,
+                &faults,
+            )?
+        }
+        SlotAction::Rollback { target, to } => {
+            let (image, disk) = slot::open_bound(&target.disk, &target.manifest, true)?;
+            let mut esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            slot::rollback(&image, &disk, slot::Slot::parse(&to)?, &mut esp, &faults)?
+        }
+        SlotAction::Status {
+            target,
+            witness,
+            verify_slots,
+        } => {
+            let (image, disk) = slot::open_bound(&target.disk, &target.manifest, false)?;
+            let esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            slot::status(&image, &disk, &esp, witness.as_deref(), verify_slots)?
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn repo_root() -> PathBuf {
