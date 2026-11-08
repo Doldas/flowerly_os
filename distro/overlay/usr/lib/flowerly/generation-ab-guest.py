@@ -4,6 +4,7 @@
 Read only kernel/EFI/root identity; append an fsynced record on a physically
 separate data mount. Never marks a generation active and never blesses a boot.
 """
+
 import fcntl
 import hashlib
 import json
@@ -16,7 +17,9 @@ import sys
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
-LOADER = re.compile(r"flowerly-([ab])(?:\+(?:0|[1-9][0-9]?)(?:-(?:0|[1-9][0-9]?))?)?(?:\.conf)?\Z")
+LOADER = re.compile(
+    r"flowerly-([ab])(?:\+(?:0|[1-9][0-9]?)(?:-(?:0|[1-9][0-9]?))?)?(?:\.conf)?\Z"
+)
 EFI_LOADER_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 MAX_LEDGER = 2097152
 IDENTITY = Path("/usr/lib/flowerly/generation-root.json")
@@ -49,8 +52,11 @@ def selected_loader(path):
 def kernel_root(cmdline):
     if not isinstance(cmdline, str) or "\x00" in cmdline or len(cmdline) > 8192:
         raise ValueError("invalid kernel command line")
-    roots = [token.removeprefix("root=") for token in cmdline.split()
-             if token.startswith("root=")]
+    roots = [
+        token.removeprefix("root=")
+        for token in cmdline.split()
+        if token.startswith("root=")
+    ]
     if len(roots) != 1 or not roots[0].startswith("PARTUUID="):
         raise ValueError("unknown or ambiguous kernel root")
     identity = roots[0][9:].lower()
@@ -60,18 +66,33 @@ def kernel_root(cmdline):
 
 
 def verify_boot_identity(identity, cmdline, efi_entry):
-    if not isinstance(identity, dict) or set(identity) != {
-        "schema", "slot", "root_partuuid", "source_commit",
-        "input_manifest_sha256", "build_id"
-    } or identity["schema"] != "flowerly-generation-root/v1":
+    if (
+        not isinstance(identity, dict)
+        or set(identity)
+        != {
+            "schema",
+            "slot",
+            "root_partuuid",
+            "source_commit",
+            "input_manifest_sha256",
+            "build_id",
+        }
+        or identity["schema"] != "flowerly-generation-root/v1"
+    ):
         raise ValueError("invalid baked identity schema")
     if identity["slot"] not in ("root-a", "root-b"):
         raise ValueError("invalid baked root slot")
-    if not isinstance(identity["root_partuuid"], str) or not UUID.fullmatch(identity["root_partuuid"]):
+    if not isinstance(identity["root_partuuid"], str) or not UUID.fullmatch(
+        identity["root_partuuid"]
+    ):
         raise ValueError("invalid baked root UUID")
-    if not isinstance(identity["source_commit"], str) or not COMMIT.fullmatch(identity["source_commit"]):
+    if not isinstance(identity["source_commit"], str) or not COMMIT.fullmatch(
+        identity["source_commit"]
+    ):
         raise ValueError("invalid baked source commit")
-    if not isinstance(identity["input_manifest_sha256"], str) or not SHA.fullmatch(identity["input_manifest_sha256"]):
+    if not isinstance(identity["input_manifest_sha256"], str) or not SHA.fullmatch(
+        identity["input_manifest_sha256"]
+    ):
         raise ValueError("invalid input manifest digest")
     if not isinstance(identity["build_id"], str) or not re.fullmatch(
         r"[A-Za-z0-9_.-]{1,64}", identity["build_id"]
@@ -91,8 +112,11 @@ def user_data_marker(path, create_first):
     if not target.exists():
         if not create_first:
             raise ValueError("persistent data marker missing after initial boot")
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                     os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        fd = os.open(
+            target,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
         try:
             data = os.urandom(32)
             if os.write(fd, data) != len(data):
@@ -117,8 +141,16 @@ def user_data_marker(path, create_first):
     return hashlib.sha256(value).hexdigest()
 
 
-def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
-                   root_device, data_device, marker_path=None):
+def append_witness(
+    ledger,
+    identity,
+    cmdline,
+    efi_bytes,
+    boot_id,
+    root_device,
+    data_device,
+    marker_path=None,
+):
     if root_device == data_device:
         raise ValueError("data ledger is not on a separate filesystem")
     if not isinstance(boot_id, str) or not re.fullmatch(
@@ -140,8 +172,11 @@ def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
     target = Path(ledger)
     if target.is_symlink() or target.parent.is_symlink() or not target.parent.is_dir():
         raise ValueError("unsafe boot-witness ledger path")
-    fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_APPEND |
-                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    fd = os.open(
+        target,
+        os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > MAX_LEDGER:
@@ -161,19 +196,27 @@ def append_witness(ledger, identity, cmdline, efi_bytes, boot_id,
             if any(json.loads(row).get("boot_id") == boot_id for row in lines):
                 raise ValueError("duplicate kernel boot ID")
             sequence = last["sequence"] + 1
-        marker_hash = (user_data_marker(marker_path, not lines and slot == "root-a")
-                       if marker_path is not None else None)
+        marker_hash = (
+            user_data_marker(marker_path, not lines and slot == "root-a")
+            if marker_path is not None
+            else None
+        )
         evidence = {
             "schema": "flowerly-generation-boot/v1",
-            "boot_id": boot_id, "sequence": sequence, "slot": slot,
-            "root_partuuid": partuuid, "loader_entry": entry_name,
+            "boot_id": boot_id,
+            "sequence": sequence,
+            "slot": slot,
+            "root_partuuid": partuuid,
+            "loader_entry": entry_name,
             "source_commit": identity["source_commit"],
             "input_manifest_sha256": identity["input_manifest_sha256"],
             "build_id": identity["build_id"],
             "health": "NOT_YET_TESTED",
             "user_data_sha256": marker_hash,
         }
-        output = (json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n").encode()
+        output = (
+            json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n"
+        ).encode()
         if len(output) > 2048 or os.write(fd, output) != len(output):
             raise OSError("incomplete witness append")
         os.fsync(fd)
@@ -188,8 +231,9 @@ def main():
     try:
         identity = strict_json(IDENTITY)
         cmdline = Path("/proc/cmdline").read_text()
-        name = (Path("/sys/firmware/efi/efivars") /
-                ("LoaderEntrySelected-" + EFI_LOADER_GUID))
+        name = Path("/sys/firmware/efi/efivars") / (
+            "LoaderEntrySelected-" + EFI_LOADER_GUID
+        )
         if name.is_symlink():
             raise ValueError("EFI variable is symlinked")
         efi_bytes = name.read_bytes()
@@ -198,16 +242,29 @@ def main():
         # Explicitly refuse a rootfs-owned state directory, preventing a
         # successful witness when the persistent data partition failed to mount.
         evidence = append_witness(
-            LEDGER, identity, cmdline, efi_bytes, boot_id,
-            os.stat("/").st_dev, data.stat().st_dev,
-            data / "generation-user-marker.bin")
+            LEDGER,
+            identity,
+            cmdline,
+            efi_bytes,
+            boot_id,
+            os.stat("/").st_dev,
+            data.stat().st_dev,
+            data / "generation-user-marker.bin",
+        )
     except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as error:
         sys.exit(f"Flowerly Generation witness refused: {error}")
     print("FLOWERLY_GENERATION_ROOT_VERIFIED")
     print("FLOWERLY_GENERATION_USER_MARKER_SHA256=" + evidence["user_data_sha256"])
-    print(json.dumps({"boot_id": evidence["boot_id"],
-                      "root_partuuid": evidence["root_partuuid"],
-                      "slot": evidence["slot"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "boot_id": evidence["boot_id"],
+                "root_partuuid": evidence["root_partuuid"],
+                "slot": evidence["slot"],
+            },
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

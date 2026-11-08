@@ -3,6 +3,7 @@
 
 Not a trust implementation. mDNS discovery cannot grant this eligibility.
 """
+
 import dataclasses
 import ipaddress
 
@@ -16,9 +17,22 @@ class PeerPolicy:
     revoked: bool = False
 
 
-def eligible_peer(policy, peer_id, presented_key_sha256, address, memory_schema, *,
-                  encrypted, authenticated, operator_enabled):
-    if operator_enabled is not True or encrypted is not True or authenticated is not True:
+def eligible_peer(
+    policy,
+    peer_id,
+    presented_key_sha256,
+    address,
+    memory_schema,
+    *,
+    encrypted,
+    authenticated,
+    operator_enabled,
+):
+    if (
+        operator_enabled is not True
+        or encrypted is not True
+        or authenticated is not True
+    ):
         return False
     if policy.revoked is not False:
         return False
@@ -34,12 +48,15 @@ def eligible_peer(policy, peer_id, presented_key_sha256, address, memory_schema,
         return False
     try:
         ip = ipaddress.ip_address(address)
-        networks = tuple(ipaddress.ip_network(net, strict=True)
-                         for net in policy.allowed_networks)
+        networks = tuple(
+            ipaddress.ip_network(net, strict=True) for net in policy.allowed_networks
+        )
         return bool(networks) and any(ip in network for network in networks)
     except (ValueError, TypeError):
         return False
 
 
 if __name__ == "__main__":
-    raise SystemExit("policy contract only: real three-node TLS replication is not implemented")
+    raise SystemExit(
+        "policy contract only: real three-node TLS replication is not implemented"
+    )

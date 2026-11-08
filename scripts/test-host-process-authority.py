@@ -3,14 +3,22 @@
 
 Source-level guard only; privileged Arch/PTY adversarial tests remain required.
 """
+
 from pathlib import Path
 import re
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-DOMAINS = ("flow", "goal", "generation", "provenance", "agentic",
-           "ownership", "capability")
+DOMAINS = (
+    "flow",
+    "goal",
+    "generation",
+    "provenance",
+    "agentic",
+    "ownership",
+    "capability",
+)
 # These domains do not own raw PID-based authority. Trusted session/IPC
 # supervisors and the reviewed Linux compute host adapter remain separate.
 FORBIDDEN = re.compile(
@@ -45,9 +53,9 @@ class ProcessAuthorityBoundaryTests(unittest.TestCase):
             for text in (
                 "use std::process::Command;\n",
                 "pub use tokio::process::Command;\n",
-                "const C: &str = \"/sys/fs/cgroup/cgroup.kill\";\n",
-                "const F: &str = \"cgroup.procs\";\n",
-                "let cmd = std::process::Command::new(\"sh\");\n",
+                'const C: &str = "/sys/fs/cgroup/cgroup.kill";\n',
+                'const F: &str = "cgroup.procs";\n',
+                'let cmd = std::process::Command::new("sh");\n',
             ):
                 with self.subTest(source=text):
                     file.write_text(text)

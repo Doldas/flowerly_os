@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Offline 0.0.5 regression for issue #321."""
+
 import importlib.util
 from pathlib import Path
 import hashlib
 import tempfile
 import unittest
-spec=importlib.util.spec_from_file_location("generation_005_01",Path(__file__).with_name("generation-005-01-artifact.py"))
-mod=importlib.util.module_from_spec(spec)
+
+spec = importlib.util.spec_from_file_location(
+    "generation_005_01", Path(__file__).with_name("generation-005-01-artifact.py")
+)
+mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
 
 class Tests(unittest.TestCase):
     def test_match_and_tamper(self):
@@ -26,10 +31,15 @@ class Tests(unittest.TestCase):
             p.write_bytes(b"kernel")
             link = Path(temp) / "link"
             link.symlink_to(p)
-            for path, digest in [(p, "0"*63), (p, "G"*64), (link, hashlib.sha256(b"kernel").hexdigest())]:
+            for path, digest in [
+                (p, "0" * 63),
+                (p, "G" * 64),
+                (link, hashlib.sha256(b"kernel").hexdigest()),
+            ]:
                 with self.subTest(path=path, digest=digest):
                     with self.assertRaises(ValueError):
                         mod.verify_artifact(path, digest)
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     unittest.main()

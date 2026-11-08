@@ -21,15 +21,23 @@ class ABSlotTests(unittest.TestCase):
             path.write_bytes(payload)
             parts = []
             for number, name in enumerate(("esp", "root-a", "root-b", "data"), start=1):
-                parts.append({
-                    "name": name, "offset_bytes": number * MIB,
-                    "size_bytes": MIB, "partuuid": f"part-{number}",
-                    "sha256": hashlib.sha256(bytes([number])*MIB).hexdigest(),
-                })
-            manifest = {"schema": "flowerly-ab-disk/v1",
-                        "disk": {"size_bytes": len(payload),
-                                 "sha256": hashlib.sha256(payload).hexdigest()},
-                        "partitions": parts}
+                parts.append(
+                    {
+                        "name": name,
+                        "offset_bytes": number * MIB,
+                        "size_bytes": MIB,
+                        "partuuid": f"part-{number}",
+                        "sha256": hashlib.sha256(bytes([number]) * MIB).hexdigest(),
+                    }
+                )
+            manifest = {
+                "schema": "flowerly-ab-disk/v1",
+                "disk": {
+                    "size_bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                },
+                "partitions": parts,
+            }
             self.assertEqual(mod.verify(path, manifest)["partitions_verified"], 4)
             tampered = bytearray(payload)
             tampered[0] ^= 1
@@ -44,8 +52,8 @@ class ABSlotTests(unittest.TestCase):
             parts[2]["offset_bytes"] = parts[1]["offset_bytes"]
             with self.assertRaises(ValueError):
                 mod.verify(path, manifest)
-            parts[2]["offset_bytes"] = 3*MIB
-            parts[2]["sha256"] = "0"*64
+            parts[2]["offset_bytes"] = 3 * MIB
+            parts[2]["sha256"] = "0" * 64
             with self.assertRaises(ValueError):
                 mod.verify(path, manifest)
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Verify snapshot preflight never changes legacy authority (#84)."""
+
 import importlib.util
 import sqlite3
 import tempfile
@@ -27,7 +28,9 @@ class LegacyPreflightTests(unittest.TestCase):
             self.assertTrue(report["integrity_ok"])
             self.assertEqual(report["missing_core_tables"], [])
             self.assertEqual(path.read_bytes(), before)
-            self.assertEqual(connection.execute("SELECT id FROM flows").fetchone(), ("valuable",))
+            self.assertEqual(
+                connection.execute("SELECT id FROM flows").fetchone(), ("valuable",)
+            )
             connection.close()
 
     def test_refuses_symlink_and_incomplete_schema(self):
