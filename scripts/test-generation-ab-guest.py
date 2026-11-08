@@ -191,6 +191,8 @@ class BootTests(unittest.TestCase):
             self.assertIn(
                 "PARTLABEL=data /var/lib/flowerly", (root / "etc/fstab").read_text()
             )
+            self.assertIn("PARTLABEL=esp /efi vfat", (root / "etc/fstab").read_text())
+            self.assertTrue((root / "efi").is_dir())
             mask = root / "etc/systemd/system/systemd-bless-boot.service"
             self.assertEqual(mask.readlink(), Path("/dev/null"))
             self.assertIn(

@@ -39,7 +39,7 @@ for file in usr/bin/python3 usr/bin/runuser usr/lib/systemd/systemd-bless-boot \
 done
 for path in etc etc/systemd etc/systemd/system etc/fstab usr/lib/flowerly \
             usr/lib/systemd/system usr/lib/systemd/system/flowerlyd.service.d \
-            etc/systemd/system/multi-user.target.wants var/lib/flowerly; do
+            etc/systemd/system/multi-user.target.wants var/lib/flowerly efi; do
     [[ ! -L "$ROOTFS/$path" ]] || fail "symlink in Generation rootfs destination: $path"
 done
 for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab-test-profile \
@@ -62,7 +62,7 @@ if [[ -f "$ROOTFS/etc/fstab" ]] &&
 fi
 install -d -m 0755 \
     "$ROOTFS/usr/lib/flowerly" "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d" \
-    "$ROOTFS/etc/systemd/system/multi-user.target.wants" "$ROOTFS/var/lib/flowerly"
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants" "$ROOTFS/var/lib/flowerly" "$ROOTFS/efi"
 install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-ab-guest.py" \
     "$ROOTFS/usr/lib/flowerly/generation-ab-guest.py"
 install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-health-gate.sh" \
@@ -88,7 +88,12 @@ chmod 0644 "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d/10-generation-wit
 # The stock systemd-bless-boot.service can otherwise bless before Flowerly's
 # health gate. Mask its unit but call the actual binary ONLY after IPC passes.
 ln -s /dev/null "$ROOTFS/etc/systemd/system/systemd-bless-boot.service"
-printf '%s\n' 'PARTLABEL=data /var/lib/flowerly ext4 defaults,nosuid,nodev,x-systemd.device-timeout=20s 0 2' \
+# systemd-bless-boot renames the boot-counting entry on the ESP; without a
+# mounted $BOOT it fails ("Couldn't find $BOOT partition", found by the first
+# real KVM run). /boot is not usable: the root volume already holds files there.
+printf '%s\n' \
+    'PARTLABEL=data /var/lib/flowerly ext4 defaults,nosuid,nodev,x-systemd.device-timeout=20s 0 2' \
+    'PARTLABEL=esp /efi vfat umask=0077,nosuid,nodev,noexec,x-systemd.device-timeout=20s 0 2' \
     >> "$ROOTFS/etc/fstab"
 echo "Prepared test-only Generation A/B rootfs ($SLOT, $PARTUUID)."
 echo "No firmware boot, slot activation, boot counting or fallback has been verified yet."
