@@ -28,6 +28,7 @@ SCENARIOS = {
     "rollback-to-a",
     "damaged-entry-fallback",
     "measure-stage-and-boot",
+    "clean-shutdown",
 }
 EXPECTATIONS = {"BLESSED", "REJECTED", "NO_WITNESS"}
 HOST_CHECKS = {"stage-complete", "stage-interrupted", "tampered-b-refused"}
@@ -206,8 +207,14 @@ def audit(report, directory):
             ):
                 raise ValueError("missing data lineage")
             lineage_markers.setdefault(lineage, set()).add(observed["marker"])
-        if boot.get("power_loss") != "QEMU_SIGKILL":
+        clean = label == "clean-shutdown-a"
+        if boot.get("power_loss") != ("ACPI_POWERDOWN" if clean else "QEMU_SIGKILL"):
             raise ValueError("boot report and serial evidence disagree")
+        seconds = boot.get("clean_shutdown_seconds")
+        if clean != (seconds is not None) or (
+            clean and not (isinstance(seconds, (int, float)) and 0 < seconds < 120)
+        ):
+            raise ValueError("clean shutdown time missing, unexpected or implausible")
         if boot.get("kvm_fd_verified") is not True or (
             not isinstance(boot.get("qemu_cmdline_sha256"), str)
             or not SHA.fullmatch(boot["qemu_cmdline_sha256"])
@@ -279,6 +286,12 @@ def audit(report, directory):
         and ok("stage-interrupted-a", "root-a", "BLESSED"),
         "stage-complete": host_ok("stage-complete"),
         "tampered-b-refused": host_ok("tampered-b-refused"),
+        "clean-shutdown": ok("clean-shutdown-a", "root-a", "BLESSED")
+        and isinstance(measurements, dict)
+        and measurements.get("clean_shutdown_seconds")
+        == by_label.get("clean-shutdown-a", {}).get("clean_shutdown_seconds")
+        and measurements.get("data_fs_after_clean_shutdown")
+        == {"state": "clean", "needs_recovery": False},
         "measure-stage-and-boot": isinstance(measurements, dict)
         and isinstance(measurements.get("stage_seconds"), (int, float))
         and isinstance(measurements.get("slot_bytes"), dict)
