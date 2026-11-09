@@ -93,8 +93,8 @@ New table `generation_activations`: `id`, `generation`, `previous_generation`
    outcome is never retried blindly (see ipc-mutation-outcomes.md); the client
    reads the activation row.
 
-`flowerlyd` mapped to the broker's own `status` verdict is **evidence**, not
-authority: `ACTIVE`/`FELL_BACK` still require the witness.
+The slot tool's `status` verdict is **evidence**, not authority: `ACTIVE` and
+`FELL_BACK` still require the witness.
 
 ### 3. A Generation names its root
 
