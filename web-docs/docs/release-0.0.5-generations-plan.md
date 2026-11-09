@@ -94,6 +94,11 @@ Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 
 ### Gate D — Generation lifecycle and durable activation (#9)
 
+**Design draft (2026-11-09):** [ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)
+records the verified gaps in today's code (no transition check, no activation
+history, `STABLE` set by request, rollback unsafe across a schema change) and
+proposes the work breakdown G1–G5. Proposed, pending owner decisions Q1–Q6.
+
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/
   activate/rollback transitions. No public arbitrary status setter.

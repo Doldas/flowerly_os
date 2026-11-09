@@ -25,6 +25,12 @@ and the reasoning behind them.
 18. [Supervised Linux PTY Session ownership](0016-pty-session-supervision.md)
     — accepted by the owner 2026-10-25 (#73); containment and Arch VM
     verification remain release gates for #50, #72 and 0.0.4.
+19. [Generation lifecycle and durable activation (Gate D)](0023-generation-lifecycle-and-durable-activation.md)
+    — accepted by the owner 2026-11-09 (#9): typed, database-enforced
+    transitions; `STABLE` only from a witnessed, health-gated boot; a small
+    privileged slot broker; a rollback-compatible schema window proven with the
+    older binary. Implemented as G1–G5; no production activation before Gate D
+    is verified.
 
 ## Proposed decisions under review
 
