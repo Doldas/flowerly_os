@@ -82,6 +82,7 @@ class KvmGateTests(unittest.TestCase):
             ("healthy-b-1", "root-b", "BLESSED", "main"),
             ("healthy-b-2", "root-b", "BLESSED", "main"),
             ("rollback-a", "root-a", "BLESSED", "main"),
+            ("clean-shutdown-a", "root-a", "BLESSED", "main"),
             ("arm-after-payload-a", "root-a", "BLESSED", "main"),
             ("arm-before-rename-a", "root-a", "BLESSED", "main"),
             ("arm-after-rename-b", "root-b", "BLESSED", "main"),
@@ -138,7 +139,14 @@ class KvmGateTests(unittest.TestCase):
                         else marker_of[lineage],
                         "observed_health": expect,
                         "seconds_to_observed": None if expect == "NO_WITNESS" else 9.5,
-                        "power_loss": "QEMU_SIGKILL",
+                        "power_loss": "ACPI_POWERDOWN"
+                        if label == "clean-shutdown-a"
+                        else "QEMU_SIGKILL",
+                        **(
+                            {"clean_shutdown_seconds": 7.5}
+                            if label == "clean-shutdown-a"
+                            else {}
+                        ),
                         "kvm_fd_verified": True,
                         "qemu_cmdline_sha256": "c" * 64,
                     }
@@ -203,6 +211,11 @@ class KvmGateTests(unittest.TestCase):
                 },
                 "measurements": {
                     "stage_seconds": 12.0,
+                    "clean_shutdown_seconds": 7.5,
+                    "data_fs_after_clean_shutdown": {
+                        "state": "clean",
+                        "needs_recovery": False,
+                    },
                     "slot_bytes": {"root-a": 1, "root-b": 1},
                 },
                 "boots": boots,
@@ -235,6 +248,20 @@ class KvmGateTests(unittest.TestCase):
             refuses(lambda r: r["host_checks"]["stage-complete"].update(ok=False))
             refuses(lambda r: r["measurements"].pop("stage_seconds"))
             refuses(lambda r: r.pop("slot_tool_sha256"))
+            refuses(lambda r: boot(r, "clean-shutdown-a").pop("clean_shutdown_seconds"))
+            refuses(
+                lambda r: boot(r, "clean-shutdown-a").update(clean_shutdown_seconds=0)
+            )
+            refuses(
+                lambda r: boot(r, "clean-shutdown-a").update(power_loss="QEMU_SIGKILL")
+            )
+            refuses(lambda r: boot(r, "boot-a").update(clean_shutdown_seconds=3.0))
+            refuses(lambda r: r["measurements"].update(clean_shutdown_seconds=9.9))
+            refuses(
+                lambda r: r["measurements"]["data_fs_after_clean_shutdown"].update(
+                    needs_recovery=True
+                )
+            )
             refuses(
                 lambda r: r["status_checks"]["auto-fallback-a"].update(verdict="ACTIVE")
             )
@@ -332,6 +359,45 @@ class KvmGateTests(unittest.TestCase):
             self.assertEqual(
                 hashes["data"], hashlib.sha256(b[5 * MIB : 6 * MIB]).hexdigest()
             )
+
+    def test_qmp_powerdown_sends_the_acpi_button_and_refuses_errors(self):
+        import json
+        import socket
+        import threading
+
+        def serve(path, replies, seen):
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+                server.listen(1)
+                conn, _ = server.accept()
+                stream = conn.makefile("rw")
+                stream.write(json.dumps({"QMP": {"version": {}}}) + "\n")
+                stream.flush()
+                for reply in replies:
+                    seen.append(json.loads(stream.readline())["execute"])
+                    stream.write(json.dumps(reply) + "\n")
+                    stream.flush()
+                conn.close()
+
+        for replies, ok in (
+            ([{"return": {}}, {"return": {}}], True),
+            ([{"return": {}}, {"error": {"desc": "no"}}], False),
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "qmp.sock"
+                seen = []
+                thread = threading.Thread(target=serve, args=(path, replies, seen))
+                thread.start()
+                if ok:
+                    kvm.qmp_powerdown(path, 5)
+                else:
+                    with self.assertRaises(ValueError):
+                        kvm.qmp_powerdown(path, 5)
+                thread.join(5)
+                self.assertEqual(seen, ["qmp_capabilities", "system_powerdown"])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                kvm.qmp_powerdown(Path(directory) / "missing.sock", 1)
 
     def test_process_argv_never_fakes_kvm_evidence(self):
         import os

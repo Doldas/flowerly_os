@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ SCENARIOS = (
     "rollback-to-a",
     "damaged-entry-fallback",
     "measure-stage-and-boot",
+    "clean-shutdown",
 )
 # Seconds a damaged slot B entry is watched; the guest never reaches the
 # Flowerly witness, the loader just has to burn one boot-count try per boot.
@@ -206,8 +208,44 @@ def verify_running_qemu(pid, command):
     }
 
 
+def qmp_powerdown(path, timeout):
+    """Ask the guest to power off via ACPI (QMP system_powerdown)."""
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(5)
+        while True:
+            try:
+                client.connect(str(path))
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise ValueError("QMP socket never became available") from None
+                time.sleep(0.2)
+        stream = client.makefile("rw")
+        json.loads(stream.readline())  # greeting
+        for command in ("qmp_capabilities", "system_powerdown"):
+            stream.write(json.dumps({"execute": command}) + "\n")
+            stream.flush()
+            while True:
+                reply = json.loads(stream.readline())
+                if "return" in reply or "error" in reply:
+                    break
+            if "error" in reply:
+                raise ValueError(f"QMP {command} refused: {reply['error']}")
+
+
 def qemu_boot(
-    args, disk, vars_file, report, slot, *, bless, label, lineage="main", quiet=False
+    args,
+    disk,
+    vars_file,
+    report,
+    slot,
+    *,
+    bless,
+    label,
+    lineage="main",
+    quiet=False,
+    shutdown=False,
 ):
     """Start one real firmware boot; kill guest after the observed milestone.
 
@@ -246,6 +284,12 @@ def qemu_boot(
         "-drive",
         "if=virtio,format=raw,cache=none,file=" + str(disk),
     ]
+    qmp_dir = None
+    if shutdown:
+        # The one boot that is shut down cleanly gets a control socket (its
+        # argv hash is recorded like any other); all others stay without one.
+        qmp_dir = tempfile.TemporaryDirectory(prefix="flowerly-qmp-")
+        command += ["-qmp", f"unix:{qmp_dir.name}/qmp.sock,server=on,wait=off"]
     started = time.monotonic()
     expect = "NO_WITNESS" if quiet else "BLESSED" if bless else "REJECTED"
     with log.open("xb") as output:
@@ -272,10 +316,34 @@ def qemu_boot(
                     if marker is not None:
                         observed_at = time.monotonic() - started
                         host_observed = verify_running_qemu(process.pid, command)
-                        # Permit systemd and ext4 a brief flush window before the
-                        # deliberate abrupt QEMU kill (simulated host power loss).
-                        time.sleep(2)
+                        extra = {}
+                        if shutdown:
+                            # Clean path: ACPI power button, then time the guest's
+                            # own orderly shutdown until QEMU exits.
+                            sent = time.monotonic()
+                            qmp_powerdown(f"{qmp_dir.name}/qmp.sock", 30)
+                            try:
+                                process.wait(timeout=120)
+                            except subprocess.TimeoutExpired:
+                                raise ValueError(
+                                    f"{label}: guest did not shut down within 120 s"
+                                ) from None
+                            if process.returncode != 0:
+                                raise ValueError(
+                                    f"{label}: QEMU exited {process.returncode} "
+                                    "after powerdown"
+                                )
+                            extra = {
+                                "clean_shutdown_seconds": round(
+                                    time.monotonic() - sent, 3
+                                )
+                            }
+                        else:
+                            # Permit systemd and ext4 a brief flush window before the
+                            # deliberate abrupt QEMU kill (simulated host power loss).
+                            time.sleep(2)
                         return {
+                            **extra,
                             "label": label,
                             "slot": slot,
                             "expect": expect,
@@ -286,7 +354,9 @@ def qemu_boot(
                             "seconds_to_observed": round(observed_at, 3),
                             "serial": log.name,
                             "observed_health": expect,
-                            "power_loss": "QEMU_SIGKILL",
+                            "power_loss": "ACPI_POWERDOWN"
+                            if shutdown
+                            else "QEMU_SIGKILL",
                         }
                 if process.poll() is not None:
                     raise ValueError(
@@ -317,6 +387,8 @@ def qemu_boot(
             if process.poll() is None:
                 process.kill()  # intentionally abrupt, not a clean shutdown
             process.wait(timeout=15)
+            if qmp_dir is not None:
+                qmp_dir.cleanup()
 
 
 def verify_immutable_roots(disk_path, manifest):
@@ -513,6 +585,36 @@ def extract_witness(disk, manifest, target):
         raise ValueError("no boot-witness ledger on the data partition")
 
 
+def data_fs_state(disk, manifest):
+    """ext4 state of the data partition of a disk, from a throwaway copy."""
+    data = next(p for p in manifest["partitions"] if p["name"] == "data")
+    dumpe2fs = shutil.which("dumpe2fs", path=tool_env()["PATH"])
+    if not dumpe2fs:
+        raise ValueError("missing real host tool: dumpe2fs")
+    with tempfile.TemporaryDirectory(prefix="flowerly-datafs-") as work:
+        copy = Path(work) / "data.ext4"
+        with Path(disk).open("rb") as source, copy.open("wb") as sink:
+            source.seek(data["offset_bytes"])
+            remaining = data["size_bytes"]
+            while remaining:
+                block = source.read(min(1048576, remaining))
+                if not block:
+                    raise ValueError("short data partition read")
+                sink.write(block)
+                remaining -= len(block)
+        header = subprocess.run(
+            [dumpe2fs, "-h", str(copy)], capture_output=True, text=True, check=True
+        ).stdout
+    state = re.search(r"^Filesystem state:\s*(.+)$", header, re.M)
+    features = re.search(r"^Filesystem features:\s*(.+)$", header, re.M)
+    if not state or not features:
+        raise ValueError("cannot read the data filesystem state")
+    return {
+        "state": state.group(1).strip(),
+        "needs_recovery": "needs_recovery" in features.group(1).split(),
+    }
+
+
 def host_stage_scenarios(args, out, result):
     """Slot tool stage behaviour on real disk images (no guest needed)."""
     unstaged = json.loads(args.unstaged_manifest.read_text())
@@ -669,9 +771,8 @@ def run(args):
         "slot_tool_sha256": sha_file(args.slot_tool),
         "measurements": {
             "slot_bytes": {p["name"]: p["size_bytes"] for p in manifest["partitions"]},
-            "clean_shutdown": "NOT_MEASURED",
         },
-        "s7_remaining": ["clean-shutdown-time"],
+        "s7_remaining": [],
         "disk_sha256_initial": sha_file(args.disk),
         "ovmf_code_sha256": sha_file(args.ovmf_code),
         "ovmf_vars_template_sha256": sha_file(args.ovmf_vars),
@@ -690,7 +791,17 @@ def run(args):
         shutil.copyfile(args.ovmf_vars, target)
         return target
 
-    def boot(disk, vars_file, slot, label, *, bless, quiet=False, lineage="main"):
+    def boot(
+        disk,
+        vars_file,
+        slot,
+        label,
+        *,
+        bless,
+        quiet=False,
+        lineage="main",
+        shutdown=False,
+    ):
         record = qemu_boot(
             args,
             disk,
@@ -701,6 +812,7 @@ def run(args):
             label=label,
             quiet=quiet,
             lineage=lineage,
+            shutdown=shutdown,
         )
         result["boots"].append(record)
         return record
@@ -816,6 +928,30 @@ def run(args):
         check_status("rollback-a", ok_disk, ok_manifest, "NO_CANDIDATE", "root-a")
         result["scenarios"]["rollback-to-a"] = "PASS"
         ok_disk.unlink()
+
+        # --- clean shutdown: ACPI power button, timed, data fs left clean.
+        clean_disk, _ = phase_disk(reconstructed, "clean-shutdown")
+        clean = boot(
+            clean_disk,
+            fresh_vars("clean-shutdown"),
+            "root-a",
+            "clean-shutdown-a",
+            bless=True,
+            shutdown=True,
+        )
+        verify_immutable_roots(clean_disk, manifest)
+        assert_data(clean, a, "clean shutdown")
+        after_clean = data_fs_state(clean_disk, manifest)
+        result["measurements"]["clean_shutdown_seconds"] = clean[
+            "clean_shutdown_seconds"
+        ]
+        result["measurements"]["data_fs_after_clean_shutdown"] = after_clean
+        # For contrast: the data fs after the SIGKILLed first boot.
+        result["measurements"]["data_fs_after_sigkill"] = data_fs_state(disk, manifest)
+        if after_clean != {"state": "clean", "needs_recovery": False}:
+            raise ValueError(f"data fs not clean after shutdown: {after_clean}")
+        result["scenarios"]["clean-shutdown"] = "PASS"
+        clean_disk.unlink()
 
         # --- the tool is killed (SIGKILL) at each step of the arm sequence.
         for fault, label in (
