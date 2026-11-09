@@ -1,8 +1,14 @@
-# Proposed ADR: Generation lifecycle and durable activation (Gate D)
+# ADR: Generation lifecycle and durable activation (Gate D)
 
-**Status:** Proposed — needs owner decisions Q1–Q6 below before G1 starts.
-**Issues:** #9 (Gate D), #48, #49. **Scope:** 0.0.5. This document specifies;
-it does **not** implement activation or rollback in `flowerlyd`.
+**Status:** Accepted 2026-11-09 by the owner (direction, decisions Q1–Q6 and
+the additional requirements R1–R5 below); to be implemented as G1–G5, one PR
+each. **Issues:** #9 (Gate D), #48, #49. **Scope:** 0.0.5. This document
+specifies; it does **not** implement activation or rollback in `flowerlyd`.
+
+**No production activation before Gate D is verified.** G2 ships the commands
+with activation hard-disabled (`generation.activate` and `generation.rollback`
+refuse until an explicit release-gate switch is set); the switch is only
+enabled by the change that records the passing G5 evidence.
 
 Builds on [ADR-0019](0019-generation-rootfs-rollback-proposal.md) (accepted:
 A/B slots, boot counting, witness; the slot tool `distro-builder slot` exists)
@@ -41,7 +47,7 @@ pinned inputs). Today's Generation commands change metadata only.
    known-good root. The kernel-level rollback works; the service rollback does
    not.
 
-## Decision (proposed)
+## Decision
 
 ### 1. Lifecycle is typed, enforced in the database, and has no public setter
 
@@ -49,7 +55,7 @@ States: `CANDIDATE`, `TESTED`, `STABLE`, `SUPERSEDED`, `REJECTED`, `REVOKED`.
 
 | From | To | Who / how |
 | --- | --- | --- |
-| `CANDIDATE` | `TESTED` | `generation.test` — records evidence (below) |
+| `CANDIDATE` | `TESTED` | `generation.test` — **Admin only** (Q1), records evidence (below) |
 | `CANDIDATE`, `TESTED` | `REJECTED` | `generation.reject` — reason, terminal |
 | `TESTED` | `STABLE` | only by a **confirmed activation** (§2) |
 | `STABLE` | `SUPERSEDED` | in the same transaction as another's confirmation |
@@ -64,8 +70,9 @@ most one `STABLE` system Generation and at most one unresolved activation.
 `Store::set_generation_status` becomes crate-private and test-only. Legacy rows
 are validated by the migration, not rewritten.
 
-`TESTED` needs evidence: a provenance edge to an Experiment (or other result
-object) the caller can see, plus the identity fields of §3 being complete.
+`TESTED` needs verifiable evidence: a provenance edge to an Experiment (or
+other result object) the declaring Admin can see, plus the complete typed
+root identity of §3. Declaring `TESTED` is audited like `promote`.
 
 ### 2. Activation is a durable two-phase record; `STABLE` follows the witness
 
@@ -87,7 +94,9 @@ New table `generation_activations`: `id`, `generation`, `previous_generation`
    PARTUUID equal the expectation and its sequence is newer than the request →
    `CONFIRMED` and, in one transaction, the Generation becomes `STABLE` and the
    previous one `SUPERSEDED`. The witnessed slot is the previous one →
-   `FELL_BACK`; the Generation keeps its status and the row records why.
+   `FELL_BACK`; the Generation stays `TESTED`, the row records why, and the same
+candidate cannot be activated again without a new explicit Admin decision that
+acknowledges that `FELL_BACK` row (reason required, audited).
    Resolution is idempotent and safe to repeat after a crash.
 3. Requests carry the existing `operation_id` idempotency key. An unknown
    outcome is never retried blindly (see ipc-mutation-outcomes.md); the client
@@ -147,7 +156,7 @@ migrations block automatic rollback"). The downgrade test is part of the exit.
 - **Block any schema bump.** Safe but stops all development; the `min_reader`
   window keeps the check and makes rollback compatibility explicit.
 
-## Work breakdown (one PR each, tests first)
+## Work breakdown (one PR each, tests first; R5 applies to every one)
 
 1. **G1 storage:** migration 0015 (transition table + trigger, activation table,
    unique indexes), typed transitions, history API, private setter. Offline
@@ -156,29 +165,115 @@ migrations block automatic rollback"). The downgrade test is part of the exit.
 2. **G2 IPC:** `generation.test|reject|revoke|activate|rollback|history`,
    authorization classes, typed args, `agenticctl`. Tests: Admin only, caller
    identity from peer credentials, idempotent retry, redaction.
-3. **G3 resolution + schema window:** witness reader, start-up resolution,
-   `min_reader`/`schema_compat`. Tests: fabricated ledgers for confirm /
-   fell-back / truncated / replay, crash mid-resolution, old-binary-on-new-schema.
-4. **G4 broker:** socket service, peercred check, tests with fake ESP and the
-   real tool; shipped only in the test profile at first.
+3. **G3 resolution + schema window (R1, R2, R4):** hash-chained witness and
+   health records in the guest, the chain-verifying reader, start-up
+   resolution, `min_reader`/`schema_compat`, the baseline-binary compatibility
+   tests. Tests: fabricated ledgers for confirm / fell-back / truncated /
+   replayed / reordered / chain-broken, crash at every point of resolution,
+   old-binary-on-new-schema and the reverse.
+4. **G4 broker (R3, R4):** socket service, peercred plus admin-group check,
+   self-verification of integrity and schema compatibility, the irreversible
+   path (demoted fallback entry, backup); tests with a fake ESP and the real
+   tool; shipped only in the test profile at first.
 5. **G5 acceptance (real OVMF/KVM, exact SHA):** boot A → `activate` B → reboot
    into B → witness confirms → `STABLE`; `rollback` → A; forced-unhealthy B →
    `FELL_BACK`; downgrade across a schema bump; user data intact; history
    readable after every step. Evidence archived like the S7 runs.
 
-## Open decisions for the owner
+## Owner decisions (2026-11-09)
 
-- **Q1 — who may declare `TESTED`:** Admin only (proposed for 0.0.5), or also
-  the Evolution World service identity (0.0.6)?
-- **Q2 — broker transport:** socket with `SO_PEERCRED` (proposed) or path queue?
-- **Q3 — schema window:** `min_reader` window with explicit irreversible
-  activations (proposed), or "no migrations until the Generation is blessed"?
-- **Q4 — after `FELL_BACK`:** keep the Generation `TESTED` with the failure on
-  the activation row (proposed) or move it to `REJECTED` automatically?
-- **Q5 — revoking the active `STABLE`:** refuse until a rollback has been
-  confirmed (proposed), or allow and leave the machine without a `STABLE`?
-- **Q6 — free-form fields on `generation.create`:** keep validated-but-optional
-  (proposed) or make a breaking change now?
+- **Q1 — `TESTED`:** only an Admin may declare it in 0.0.5, and only with
+  verifiable evidence (§1). The Evolution World identity gets no such right yet.
+- **Q2 — broker transport:** root-owned Unix socket with `SO_PEERCRED` and
+  strict authorization; the broker re-verifies everything itself (R3).
+- **Q3 — schema:** `min_reader` plus explicit irreversible activations, but
+  backward compatibility must be **proven with the older binary**, and
+  automatic fallback must never go to a schema-incompatible root (R4).
+- **Q4 — after `FELL_BACK`:** the Generation stays `TESTED`, the reason is
+  logged, and re-activating the same candidate needs a new explicit Admin
+  decision.
+- **Q5 — revoking the active `STABLE`:** refused until another Generation has
+  been confirmed `STABLE`.
+- **Q6 — `generation.create`:** optional, validated fields stay for backward
+  compatibility; a complete typed root identity is required before `TESTED`.
+
+## Additional requirements (owner, 2026-11-09)
+
+**R1 — `STABLE` needs a verified boot identity and a passed health gate.** A
+successful activation *request*, an armed entry or a blessed entry is not
+enough. Confirmation needs, for one and the same boot: (a) a witness record
+whose slot, root PARTUUID, loader entry and baked identity (`source_commit`,
+`input_manifest_sha256`, `build_id`) equal the Generation's expectation; and
+(b) a **health record** for that boot id, appended by the health gate after the
+service-account IPC Ping and before it blesses the entry (the guest gains a
+`health` ledger record next to today's `NOT_YET_TESTED` witness). A boot that
+was blessed without a matching health record, or has a health record without a
+matching witness, confirms nothing.
+
+**R2 — witness resolution is protected against replay, tampering, wrong boot
+order and a crash in the middle.**
+- *Tamper evidence:* every ledger record carries `prev_sha256` (the SHA-256 of
+  the previous line); the reader walks the whole chain and refuses a break, a
+  gap or duplicate `sequence`, a duplicate `boot_id`, a malformed or truncated
+  record, an oversized file, a symlink, or a file not owned by root / not
+  readable only by root and the `flowerly` group.
+- *Replay:* the activation row stores the ledger's last `sequence` and head
+  hash at request time. Only a record with a strictly higher `sequence`,
+  chained from that head, can resolve it. A confirmation is only valid for the
+  **newest** record of the chain; resolving the live boot additionally requires
+  that record's `boot_id` to equal this kernel's
+  `/proc/sys/kernel/random/boot_id`, so a copied or rolled-back ledger cannot
+  confirm anything.
+- *Boot order:* the boots after the request must read, in order, the expected
+  target (counting) and then confirmation; an earlier boot of the *previous*
+  slot after a target boot is `FELL_BACK`, not noise.
+- *Crash safety:* resolution is one SQLite `IMMEDIATE` transaction (activation
+  state, status flip and supersede together) and idempotent; killing the
+  process at every point leaves either the old or the fully resolved state, and
+  a second run is a no-op.
+Each of these has a negative test (fabricated, replayed, reordered, truncated,
+chain-broken and crash-injected ledgers).
+
+**R3 — the broker handles only already verified slots and decides for itself.**
+It re-checks, on every intent and from its own state, never from the caller:
+authorization (the peer uid is the `flowerlyd` service account **and** the
+administrator uid that `flowerlyd` attests is still a member of
+`flowerly-admin`, read by the broker from the system group database),
+integrity (manifest bound to the real GPT, staged-slot hash against the
+manifest, the Generation's identity against the baked identity of the staged
+image) and schema compatibility (R4). Any mismatch is a refusal with a reason
+and no write. It never accepts a path, a command line or a Generation id as
+authority, and it refuses everything while activation is disabled.
+
+**R4 — `min_reader` is backed by real compatibility tests, a restore drill and
+a technically safe irreversible path.**
+- *Tests with the old binary:* the oldest supported reader is built from a
+  recorded commit and run against a database migrated by the newest code (read,
+  write, IPC Ping, `generation.list`), and the reverse (a newer binary on an
+  older database). Every migration must declare `min_reader`; a CI check fails a
+  migration without one and without a compatibility test entry. A migration
+  that raises `min_reader` past the baseline is *irreversible by definition*.
+- *Fallback never goes to an incompatible root:* before arming, the broker
+  compares the target's declared post-migration `min_reader` with the
+  fallback root's binary version. If the fallback would be incompatible the
+  activation is **irreversible**: it needs an explicit Admin acknowledgement,
+  and the broker demotes the previous slot's boot entry to manual-only before it
+  arms the target, so a failed boot cannot fall back automatically into a root
+  whose service cannot read the database; the system then waits in the boot menu
+  for an operator.
+- *Backup and restore drill:* a coherent pre-activation backup (`VACUUM INTO`,
+  integrity-checked, hash recorded on the activation row) is mandatory for an
+  irreversible activation, and G5 must restore it and boot the previous slot to
+  prove the way back works.
+
+**R5 — every G has negative tests and mandatory quality gates, none weakened.**
+Each of G1–G5 ships with refusal/failure-injection tests for what it adds and
+passes the required checks unchanged: `cargo fmt`, `clippy -D warnings`,
+`cargo test --workspace --locked` (and the slot/broker tests with the real
+disk tools), the Ruff gate, `bash scripts/preflight-docs.sh`, the `docs`,
+`rust`, CodeQL and security jobs. No test, check or guard may be skipped,
+loosened or removed to obtain a green CI; a failing check is fixed at its
+cause or reported.
 
 ## Non-goals
 
