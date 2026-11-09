@@ -42,6 +42,12 @@ and the reasoning behind them.
   and asynchronous unknown-outcome semantics for an OpenAI-compatible
   provider (#263); disabled unless an administrator installs it.
 
+- [0023: Generation lifecycle and durable activation](0023-generation-lifecycle-and-durable-activation.md)
+  — proposed Gate D design: typed, database-enforced transitions, a two-phase
+  activation record that becomes `STABLE` only from the witnessed boot, a
+  small privileged slot broker and a rollback-compatible schema window; owner
+  decisions Q1–Q6 pending (#9).
+
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
 [../rfcs/](../rfcs/).
