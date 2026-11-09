@@ -275,6 +275,17 @@ disk tools), the Ruff gate, `bash scripts/preflight-docs.sh`, the `docs`,
 loosened or removed to obtain a green CI; a failing check is fixed at its
 cause or reported.
 
+## Implementation notes
+
+**G2 (2026-11-09).** Nothing in production created Experiments, so
+`generation.evidence` records one bound to the Generation, with its outcome and
+the SHA-256 of the evidence archive; only a `passed` one can back `TESTED`.
+`generation.history` is Admin only, since it shows the actor and reason of every
+activation, so there is no redacted view. The commands that need the broker and
+the ledger have no working path yet: `generation.activate` and
+`generation.rollback` always refuse, and the release-gate switch arrives with
+the code it guards.
+
 ## Non-goals
 
 Package pinning and signatures (ADR-0020/#49), image building, `stage` as an

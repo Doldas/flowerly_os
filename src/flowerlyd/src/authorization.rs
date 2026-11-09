@@ -289,7 +289,42 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
     (
         "generation.activate",
         CommandClass::Admin,
-        "changes the active system Generation",
+        "changes the active system Generation (disabled until Gate D)",
+    ),
+    (
+        "generation.rollback",
+        CommandClass::Admin,
+        "changes the active system Generation (disabled until Gate D)",
+    ),
+    (
+        "generation.identity",
+        CommandClass::Admin,
+        "audited: names the root a candidate is compared with at boot",
+    ),
+    (
+        "generation.evidence",
+        CommandClass::Admin,
+        "audited: records the acceptance result a TESTED declaration rests on",
+    ),
+    (
+        "generation.test",
+        CommandClass::Admin,
+        "audited: declares a candidate TESTED",
+    ),
+    (
+        "generation.reject",
+        CommandClass::Admin,
+        "audited: terminal lifecycle decision",
+    ),
+    (
+        "generation.revoke",
+        CommandClass::Admin,
+        "audited: terminal lifecycle decision",
+    ),
+    (
+        "generation.history",
+        CommandClass::Admin,
+        "shows the actor and reason of every activation",
     ),
     (
         "generation.promote",
@@ -461,7 +496,7 @@ mod tests {
     #[test]
     fn admin_commands_require_admin_group_membership() {
         let admin = with_class(CommandClass::Admin);
-        assert_eq!(admin.len(), 10, "{admin:?}");
+        assert_eq!(admin.len(), 17, "{admin:?}");
         let configured = AccessPolicy {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),
@@ -644,7 +679,14 @@ mod tests {
     fn named_administrative_operations_are_admin() {
         for name in [
             "generation.activate",
+            "generation.evidence",
+            "generation.history",
+            "generation.identity",
             "generation.promote",
+            "generation.reject",
+            "generation.revoke",
+            "generation.rollback",
+            "generation.test",
             "model.register",
             "model.retire",
             "ownership.claim",

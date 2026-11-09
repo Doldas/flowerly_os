@@ -7,6 +7,8 @@
 //! a legal transition, a second `STABLE`, a `STABLE` without a confirmed
 //! activation, or a rewrite of history.
 
+use std::str::FromStr;
+
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -15,8 +17,8 @@ use super::admin::{load_generation, record_audit, validate_reason};
 use super::{insert_provenance_row, retry_on_busy, RetryConfig, Store};
 use super::{Result, StorageError};
 use crate::types::{
-    Caller, Generation, GenerationId, GenerationStatus, ObjectRef, Owner, ProvenanceEdge,
-    ProvenanceRelation, Timestamp,
+    Caller, ExperimentId, Generation, GenerationId, GenerationStatus, ObjectRef, Owner,
+    ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
 
 pub const MAX_OPERATION_ID: usize = 128;
@@ -64,6 +66,48 @@ impl RootIdentity {
         }
         Ok(())
     }
+}
+
+/// What an acceptance run concluded about a Generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceOutcome {
+    Passed,
+    Failed,
+}
+
+impl EvidenceOutcome {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for EvidenceOutcome {
+    type Err = String;
+
+    fn from_str(text: &str) -> std::result::Result<Self, Self::Err> {
+        match text {
+            "passed" => Ok(Self::Passed),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("outcome must be passed or failed, not `{other}`")),
+        }
+    }
+}
+
+/// An idempotency key: 1..128 of `[A-Za-z0-9_.-]`.
+pub fn validate_operation_id(key: &str) -> Result<()> {
+    if key.is_empty()
+        || key.len() > MAX_OPERATION_ID
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    {
+        return Err(invalid("operation_id must be 1..128 of [A-Za-z0-9_.-]"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,14 +278,7 @@ impl ActivationRequest {
     fn validate(&self) -> Result<()> {
         validate_reason(&self.reason)?;
         if let Some(key) = &self.operation_id {
-            if key.is_empty()
-                || key.len() > MAX_OPERATION_ID
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-            {
-                return Err(invalid("operation_id must be 1..128 of [A-Za-z0-9_.-]"));
-            }
+            validate_operation_id(key)?;
         }
         if !matches!(self.expected_slot.as_str(), "root-a" | "root-b") {
             return Err(invalid("expected_slot must be root-a or root-b"));
@@ -434,8 +471,80 @@ impl Store {
             .map_err(StorageError::from)
     }
 
+    /// Record the outcome of an acceptance run of a CANDIDATE as an Experiment
+    /// bound to it, naming the SHA-256 of the evidence archive. Recording the
+    /// same evidence again returns the same Experiment. Audited.
+    pub fn record_evidence(
+        &mut self,
+        admin: Caller,
+        id: &GenerationId,
+        outcome: EvidenceOutcome,
+        evidence_sha256: &str,
+        reason: &str,
+    ) -> Result<ExperimentId> {
+        validate_reason(reason)?;
+        if !is_hex(evidence_sha256, 64) {
+            return Err(invalid("evidence_sha256 must be 64 lowercase hex digits"));
+        }
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let generation = require_generation(&tx, id)?;
+            if generation.status != GenerationStatus::Candidate {
+                return Err(StorageError::OperationConflict(format!(
+                    "generation {id} is {} (CANDIDATE required)",
+                    generation.status
+                )));
+            }
+            let existing: Option<(String, Option<String>)> = tx
+                .query_row(
+                    "SELECT id, result FROM experiments
+                     WHERE candidate = ?1 AND json_extract(metrics, '$.evidence_sha256') = ?2",
+                    params![id.as_str(), evidence_sha256],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((experiment, result)) = existing {
+                if result.as_deref() != Some(outcome.as_str()) {
+                    return Err(StorageError::OperationConflict(format!(
+                        "evidence {evidence_sha256} was already recorded with another outcome"
+                    )));
+                }
+                let experiment = experiment
+                    .parse()
+                    .map_err(|_| invalid("invalid stored experiment id"))?;
+                tx.commit()?;
+                return Ok(experiment);
+            }
+            let experiment = ExperimentId::new();
+            tx.execute(
+                "INSERT INTO experiments (id, hypothesis, candidate, metrics, result, created_at)
+                 VALUES (?1, 'generation acceptance', ?2, ?3, ?4, ?5)",
+                params![
+                    experiment.as_str(),
+                    id.as_str(),
+                    json!({ "evidence_sha256": evidence_sha256 }).to_string(),
+                    outcome.as_str(),
+                    Timestamp::now().as_millis(),
+                ],
+            )?;
+            record_audit(
+                &tx,
+                admin,
+                "generation.evidence",
+                ObjectRef::from(id).as_str(),
+                audit_owner(&generation),
+                audit_owner(&generation),
+                reason,
+            )?;
+            tx.commit()?;
+            Ok(experiment)
+        })
+    }
+
     /// `CANDIDATE` -> `TESTED`, Admin only (Q1), with verifiable evidence: an
-    /// Experiment of this Generation with a recorded result. The complete root identity is
+    /// Experiment of this Generation with a passing result. The complete root identity is
     /// required by the database. Audited; adds a `TestedBy` provenance edge.
     pub fn declare_tested(
         &mut self,
@@ -473,9 +582,9 @@ impl Store {
                     evidence.as_str()
                 )));
             }
-            if result.is_none_or(|text| text.trim().is_empty()) {
+            if result.as_deref() != Some(EvidenceOutcome::Passed.as_str()) {
                 return Err(StorageError::OperationConflict(format!(
-                    "evidence {} has no recorded result",
+                    "evidence {} has no passing result",
                     evidence.as_str()
                 )));
             }
@@ -1439,6 +1548,7 @@ mod tests {
             insert(&store, Some(id.as_str()), Some("   ")),
             insert(&store, Some(other.as_str()), Some("passed")),
             insert(&store, None, Some("passed")),
+            insert(&store, Some(id.as_str()), Some("failed")),
         ] {
             assert_conflict(store.declare_tested(ADMIN, &id, &evidence, "x"));
             assert_eq!(status(&store, &id), GenerationStatus::Candidate);
@@ -1474,6 +1584,138 @@ mod tests {
         assert_invalid(store.reject_generation(ADMIN, &id, ""));
         assert_invalid(store.revoke_generation(ADMIN, &id, "  "));
         assert_invalid(store.set_root_identity(ADMIN, &id, COMMIT, &identity(), " "));
+    }
+
+    // --- recorded evidence ---------------------------------------------------
+
+    #[test]
+    fn evidence_is_bound_to_the_generation_and_audited() {
+        let mut store = store();
+        let id = candidate(&store);
+        store
+            .set_root_identity(ADMIN, &id, COMMIT, &identity(), "built")
+            .unwrap();
+        let experiment = store
+            .record_evidence(
+                Caller::new(77),
+                &id,
+                EvidenceOutcome::Passed,
+                &hash('9'),
+                "kvm run",
+            )
+            .unwrap();
+        let (candidate_ref, result, metrics): (String, String, String) = store
+            .conn
+            .query_row(
+                "SELECT candidate, result, metrics FROM experiments WHERE id = ?1",
+                params![experiment.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(candidate_ref, id.as_str());
+        assert_eq!(result, "passed");
+        let metrics: serde_json::Value = serde_json::from_str(&metrics).unwrap();
+        assert_eq!(metrics["evidence_sha256"], hash('9'));
+        let audit = store.admin_audit_for_object(&ObjectRef::from(&id)).unwrap();
+        let record = audit
+            .iter()
+            .find(|r| r.command == "generation.evidence")
+            .expect("audited");
+        assert_eq!((record.actor_uid, record.reason.as_str()), (77, "kvm run"));
+
+        let result = store
+            .declare_tested(ADMIN, &id, &ObjectRef::from(&experiment), "passed")
+            .unwrap();
+        assert_eq!(result.status, GenerationStatus::Tested);
+    }
+
+    #[test]
+    fn failed_evidence_cannot_back_tested() {
+        let mut store = store();
+        let id = candidate(&store);
+        store
+            .set_root_identity(ADMIN, &id, COMMIT, &identity(), "built")
+            .unwrap();
+        let experiment = store
+            .record_evidence(ADMIN, &id, EvidenceOutcome::Failed, &hash('9'), "kvm run")
+            .unwrap();
+        assert_conflict(store.declare_tested(ADMIN, &id, &ObjectRef::from(&experiment), "no"));
+        assert_eq!(status(&store, &id), GenerationStatus::Candidate);
+    }
+
+    #[test]
+    fn recording_the_same_evidence_again_returns_the_same_experiment() {
+        let mut store = store();
+        let id = candidate(&store);
+        let first = store
+            .record_evidence(ADMIN, &id, EvidenceOutcome::Passed, &hash('9'), "run")
+            .unwrap();
+        let retry = store
+            .record_evidence(ADMIN, &id, EvidenceOutcome::Passed, &hash('9'), "retry")
+            .unwrap();
+        assert_eq!(first, retry);
+        let audit = store.admin_audit_for_object(&ObjectRef::from(&id)).unwrap();
+        assert_eq!(
+            audit
+                .iter()
+                .filter(|r| r.command == "generation.evidence")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_same_evidence_cannot_change_outcome() {
+        let mut store = store();
+        let id = candidate(&store);
+        store
+            .record_evidence(ADMIN, &id, EvidenceOutcome::Failed, &hash('9'), "run")
+            .unwrap();
+        assert_conflict(store.record_evidence(
+            ADMIN,
+            &id,
+            EvidenceOutcome::Passed,
+            &hash('9'),
+            "x",
+        ));
+    }
+
+    #[test]
+    fn evidence_is_validated_and_only_for_a_candidate() {
+        let mut store = store();
+        let id = candidate(&store);
+        for bad in ["xyz".to_owned(), "A".repeat(64), "a".repeat(63)] {
+            assert_invalid(store.record_evidence(ADMIN, &id, EvidenceOutcome::Passed, &bad, "x"));
+        }
+        assert_invalid(store.record_evidence(ADMIN, &id, EvidenceOutcome::Passed, &hash('9'), " "));
+        let missing = GenerationId::new();
+        assert!(matches!(
+            store.record_evidence(ADMIN, &missing, EvidenceOutcome::Passed, &hash('9'), "x"),
+            Err(StorageError::NotFound(_))
+        ));
+        let done = tested(&mut store);
+        assert_conflict(store.record_evidence(
+            ADMIN,
+            &done,
+            EvidenceOutcome::Passed,
+            &hash('9'),
+            "x",
+        ));
+    }
+
+    #[test]
+    fn evidence_outcome_parses_only_known_values() {
+        assert_eq!(
+            "passed".parse::<EvidenceOutcome>(),
+            Ok(EvidenceOutcome::Passed)
+        );
+        assert_eq!(
+            "failed".parse::<EvidenceOutcome>(),
+            Ok(EvidenceOutcome::Failed)
+        );
+        for bad in ["", "PASSED", "ok"] {
+            assert!(bad.parse::<EvidenceOutcome>().is_err());
+        }
     }
 
     // --- reject and revoke ---------------------------------------------------

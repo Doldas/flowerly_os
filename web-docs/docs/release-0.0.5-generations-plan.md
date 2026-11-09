@@ -103,9 +103,14 @@ owner decisions Q1–Q6, the requirements R1–R5 and the work breakdown G1–G5
 database refuses every other route to `STABLE`, so `generation.activate` now
 always refuses (`conflict`) until G2–G5 replace it. Evidence for `TESTED` is an
 Experiment about that Generation; nothing in production creates Experiments
-yet, so G2 must settle how evidence is recorded. Crash injection in G1 covers
+yet, so G2 had to settle how evidence is recorded. Crash injection in G1 covers
 transaction failure and restart; killing the process at every point of witness
 resolution belongs to G3 (R2).
+
+**G2 IPC:** `generation.identity|evidence|test|reject|revoke|history`, plus
+`activate` and `rollback`, which validate and refuse until Gate D is verified.
+All are Admin only, attributed to the kernel-attested caller, and available in
+`agenticctl`. Next: G3 (witness resolution and the schema window).
 
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/

@@ -5,6 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Generation lifecycle commands (ADR-0023 G2, #9): `generation.identity`,
+  `evidence`, `test`, `reject`, `revoke` and `history`, Admin only, audited and
+  in `agenticctl`. `TESTED` needs recorded passing evidence and a complete root
+  identity. `generation.create` now rejects an empty, over-long or non-ASCII
+  `source_commit` or `system_manifest`. `generation.activate` and the new
+  `generation.rollback` still refuse until Gate D is verified.
 - Generation lifecycle storage (ADR-0023 G1, #9): migration 0015 enforces the
   typed status transitions, at most one `STABLE`, a complete root identity
   before `TESTED`, and an append-only activation history in the database for

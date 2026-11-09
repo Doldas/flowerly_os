@@ -7,37 +7,41 @@ system-generation rollback: rolling back the system never discards user data.
 
 ## Data model
 
-Defined in `crates/agentic-types` (`Generation`) and persisted by
-`generationd` through `crates/agentic-storage`:
+Defined in `src/shared/flowerly-core` (`Generation`) and persisted by
+`flowerlyd` in the shared SQLite database:
 
 ```text
 Generation {
     id:              GenerationId // gen-<uuid>
     parent:          Option<GenerationId>
     source_commit:   Option<String>  // git commit the candidate was built from
-    system_manifest: Option<String>  // hash of the system manifest
+    system_manifest: Option<String>
     reason_goal:     Option<GoalId>  // the goal that motivated the change
     experiment:      Option<ExperimentId>
     status:          GenerationStatus
     created_at:      Timestamp
+    owner:           Owner
 }
 ```
 
+A Generation meant for activation also has a typed root identity: the
+SHA-256 of its root filesystem, kernel, initramfs and input manifest, and its
+build id.
+
 ## Status lifecycle
 
-The intended lifecycle is `CANDIDATE`, `STABLE`, `SUPERSEDED` and `REVOKED`:
+The states and their rules are specified by
+[ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md) and
+enforced by the database for every writer:
 
 - `CANDIDATE` — built or being built and not yet trusted.
-- `STABLE` — verified and currently active on the machine.
+- `TESTED` — an Admin declared it tested, from recorded passing evidence and a
+  complete root identity.
+- `STABLE` — confirmed active on the machine. Only a confirmed activation can
+  set it, and at most one Generation holds it.
 - `SUPERSEDED` — a newer stable generation replaced it.
-- `REVOKED` — withdrawn because a defect or risk was discovered.
-
-> Implementation note: the current `crates/agentic-types::GenerationStatus` enum
-> uses `CANDIDATE`, `TESTED`, `STABLE`, `REJECTED` and `SUPERSEDED`. `TESTED`
-> records a candidate that booted and passed tests in the Evolution World;
-> `REJECTED` records an explicit evaluate-and-reject decision. The vocabulary
-> above is the intended model; reconciling `TESTED`/`REJECTED`/`REVOKED` is
-> planned.
+- `REJECTED` — an explicit decision against it (terminal).
+- `REVOKED` — withdrawn because a defect or risk was discovered (terminal).
 
 ## Arch package generations
 
@@ -70,18 +74,19 @@ of pacman transactions. Rollback selects a known previous Flowerly generation.
 
 ## Activation and rollback
 
-Activating a generation supersedes the previously active stable generation. On
-activation, the prior stable generation's status becomes `SUPERSEDED` and the
-activated one becomes `STABLE`; rollback reactivates a known prior generation.
-Generation history survives reboot. Operations are exposed through
-`generationd` and `agenticctl generation list|create|inspect|activate|rollback`.
+**Not available yet.** `agenticctl generation activate` and `rollback` refuse
+until Gate D is verified. `generation list|create|inspect|promote|identity|evidence|test|reject|revoke|history`
+work on the records only; none of them selects a root.
+
+When Gate D is complete, an activation is a durable two-phase record: an Admin
+requests it, the slot is armed, and `STABLE` follows only from the witnessed
+boot and its health gate. Generation history survives reboot, and user data is
+kept separate from system rollback.
 
 ## Implemented status and planned extensions
 
-- **Implemented:** the `Generation` model, status transitions, persistence and
-  provenance links to source commits, goals and experiments. `generationd` records
-  **metadata only** at this stage.
-- **Planned:** real root-filesystem snapshots, a true system manifest, actual
-  activation/rollback against the installed system, and coordinated boot loader
-  integration. The initial generation system may manage a constrained test root
-  filesystem before the full installed distribution.
+- **Implemented:** the `Generation` model, typed transitions enforced in the
+  database, activation history storage, root identity, recorded evidence and
+  provenance links.
+- **Planned (G3–G5 of ADR-0023):** witness-based confirmation, the
+  `min_reader` schema window, the slot broker and the real KVM acceptance.
