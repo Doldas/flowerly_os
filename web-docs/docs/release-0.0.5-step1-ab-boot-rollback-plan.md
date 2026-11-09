@@ -240,11 +240,11 @@ tracks that do not block step 1:
 
 ## Exit criteria for step 1
 
-- [ ] #51 closed with a firmware-booted Flowerly disk and in-guest IPC
+- [x] #51 closed (2026-11-09) with a firmware-booted Flowerly disk and in-guest IPC
       health evidence.
-- [ ] S7 run on one exact `release/2` SHA: all eight scenario groups PASS,
-      evidence bundle archived and schema-valid.
-- [ ] User-data marker survives A → B → A and every power-loss case.
+- [x] S7 run on one exact SHA: all scenario groups PASS (13 scenarios, 17 real
+      KVM boots on `4e44081`), evidence bundle archived and schema-valid.
+- [x] User-data marker survives A → B → A and every power-loss case.
 - [x] ADR-0019 Accepted by the owner 2026-11-09 (or reworked, with the reason written
       down).
 - [ ] Offline tests for every new script and the slot tool run in the
@@ -274,9 +274,10 @@ Second real run on `90492ed`: healthy B kept across a reboot, rollback to A,
 power loss at the arm steps, a torn B entry that burns its tries and falls back
 to A, interrupted/complete/oversized stage and a tampered slot B, plus
 measurements — 12 scenarios, 15 KVM boots, audit consistent. See
-[the matrix review](reviews/0048-s7-full-matrix-run-2026-11-08.md). Remaining
-for S7: clean-shutdown measurement and power loss against the production slot
-tool (S6, not built); owner review (D5) decides ADR-0019. Gate D is untouched.
+[the matrix review](reviews/0048-s7-full-matrix-run-2026-11-08.md). Update 2026-11-09: S6 (the slot tool) and the clean-shutdown measurement are
+done, 13 scenarios in total, see
+[the clean-shutdown review](reviews/0048-s7-clean-shutdown-2026-11-09.md);
+ADR-0019 is accepted. Gate D is untouched.
 
 ## S7 — first real run executed 2026-11-08 (sequence observed, S7 incomplete)
 

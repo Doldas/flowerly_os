@@ -28,7 +28,7 @@ Prototype acceptance criteria 1-8 below were measured on real KVM
 | 4 | Forced B health failure returns to A | met (B rejected x3, loader returns to A) |
 | 5 | Power loss around slot selection | met at **disk-image level**; no live slot tool yet (S6) |
 | 6 | Full storage, tampered artifact, damaged boot data, interrupted install | met; the invalid-signature case needs #49 |
-| 7 | Measure bytes, stage/activation and shutdown time | bytes, stage (31 s for 3 GiB) and boot-to-health (8-11 s) measured; clean shutdown **not yet** |
+| 7 | Measure bytes, stage/activation and shutdown time | met: bytes, stage (14 s for 3 GiB with the Rust slot tool), boot-to-health (8-11 s) and clean shutdown (0.77 s over QMP, data fs clean) |
 | 8 | Auditable exact-SHA record | met (`reviews/evidence/`) |
 
 Measured cost: two 3 GiB root slots plus 256 MiB ESP and 512 MiB data on a
@@ -41,9 +41,10 @@ at `/efi`; service accounts baked into the image; loader default must be
 `flowerly-*` (a slot-specific pattern re-selects an exhausted entry); bless only
 when the booted entry still has a boot counter.
 
-Conditions carried forward: S6 must replace the image-level fixtures with a
-tool that is power-loss tested while writing; the clean-shutdown time and the
-signed-input case are still to be measured; the revisit triggers stay in force.
+Conditions carried forward: S6 (the power-loss-tested slot tool) and the
+clean-shutdown measurement were completed on 2026-11-09 (see the S6 and clean
+shutdown reviews); the signed-input case (#49) is still open and the revisit
+triggers stay in force.
 
 ## Context
 
