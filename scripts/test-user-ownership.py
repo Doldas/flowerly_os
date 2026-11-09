@@ -548,7 +548,52 @@ def generation_scenario(alice, bob, admin, admin_uid):
     # Promotion does not activate: STABLE needs a witnessed boot (ADR-0023).
     assert error_of(admin.call("generation.activate", id=candidate))[0] == "conflict"
     assert bob.ok("generation.inspect", id=candidate)["status"] == "CANDIDATE"
+    lifecycle_scenario(bob, admin, admin_uid, candidate)
     assert alice.status()["ownership_pending_commands"] == 0
+
+
+def lifecycle_scenario(bob, admin, admin_uid, generation):
+    """ADR-0023 G2: Admin only, attributed to the kernel-attested caller."""
+    identity = {
+        "source_commit": "0123456789abcdef0123456789abcdef01234567",
+        "rootfs_sha256": "a" * 64,
+        "kernel_sha256": "b" * 64,
+        "initramfs_sha256": "c" * 64,
+        "input_manifest_sha256": "d" * 64,
+        "build_id": "build-1",
+        "reason": "built",
+    }
+    evidence = {"outcome": "passed", "evidence_sha256": "9" * 64, "reason": "kvm"}
+    for command, extra in (
+        ("generation.identity", identity),
+        ("generation.evidence", evidence),
+        ("generation.test", {"experiment": "exp-x", "reason": "mine"}),
+        ("generation.reject", {"reason": "mine"}),
+        ("generation.revoke", {"reason": "mine"}),
+        ("generation.rollback", {"reason": "mine"}),
+        ("generation.history", {}),
+    ):
+        code, _ = error_of(bob.call(command, id=generation, **extra))
+        assert code == "permission_denied", (command, code)
+    # A caller-supplied actor is ignored: the audit row names the real uid.
+    admin.ok("generation.identity", id=generation, actor_uid=1, **identity)
+    experiment = admin.ok("generation.evidence", id=generation, **evidence)[
+        "experiment"
+    ]
+    tested = admin.ok(
+        "generation.test", id=generation, experiment=experiment, reason="passed"
+    )
+    assert tested["status"] == "TESTED", tested
+    assert bob.ok("generation.inspect", id=generation)["status"] == "TESTED"
+    edges = {edge["to"] for edge in bob.ok("provenance.from", ref=generation)["edges"]}
+    assert f"actor:uid:{admin_uid}" not in edges, edges
+    # Activation and rollback stay refused, and leave no record behind.
+    for command in ("generation.activate", "generation.rollback"):
+        assert (
+            error_of(admin.call(command, id=generation, reason="go"))[0] == "conflict"
+        )
+    assert admin.ok("generation.history", id=generation)["count"] == 0
+    assert bob.ok("generation.inspect", id=generation)["status"] == "TESTED"
 
 
 def insert_legacy_rows(service, db_path, root_goal, child_goal, execution):
