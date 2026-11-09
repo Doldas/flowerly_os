@@ -376,9 +376,14 @@ fn run_command(
             let generation_id = GenerationId::from_str(id)
                 .map_err(|error| CommandFailure::invalid(error.to_string()))?;
             store
-                .activate_generation(&generation_id)
-                .map_err(CommandFailure::storage)?;
-            Ok(serde_json::json!({ "id": generation_id, "status": GenerationStatus::Stable }))
+                .get_generation(&generation_id)
+                .map_err(CommandFailure::storage)?
+                .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
+            // STABLE now follows a witnessed boot; no request can set it, and
+            // activation stays off until Gate D is verified (ADR-0023).
+            Err(CommandFailure::storage(StorageError::OperationConflict(
+                format!("generation {id} cannot be activated: activation is disabled until Gate D is verified"),
+            )))
         }
         // Admin, audited: the caller is the real admin uid (#225 PR 6).
         "generation.promote" => {
@@ -471,8 +476,14 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
         owner: Owner::System,
     };
     store.insert_generation(&second)?;
-    store.set_generation_status(&first.id, GenerationStatus::Stable)?;
-    store.set_generation_status(&first.id, GenerationStatus::Superseded)?;
+    let admin = Caller::new(0);
+    store.reject_generation(admin, &first.id, "self-test")?;
+    anyhow::ensure!(
+        store
+            .revoke_generation(admin, &second.id, "self-test")
+            .is_err(),
+        "a CANDIDATE must not be revocable"
+    );
     assert_eq!(store.list_generations()?.len(), 2);
     println!("generationd self-test ok: migrations={}", applied.len());
     Ok(())
@@ -889,10 +900,9 @@ mod tests {
     }
 
     #[test]
-    fn activation_is_transactional_at_service_boundary() {
+    fn activation_is_refused_until_gate_d_is_verified() {
         let mut store = migrated_store();
         let mut first = candidate(None);
-        first.status = GenerationStatus::Stable;
         first.owner = Owner::System;
         let second = candidate(Some(first.id.clone()));
         store.insert_generation(&first).expect("insert first");
@@ -906,15 +916,16 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(missing.code, ErrorCode::NotFound);
-        // A private candidate is promoted, with an audit row, before activation.
-        let private = run_command(
-            &mut store,
-            "generation.activate",
-            &serde_json::json!({ "id": second.id }),
-            TEST_CALLER,
-        )
-        .unwrap_err();
-        assert_eq!(private.code, ErrorCode::Conflict);
+        for id in [&first.id, &second.id] {
+            let refused = run_command(
+                &mut store,
+                "generation.activate",
+                &serde_json::json!({ "id": id }),
+                TEST_CALLER,
+            )
+            .unwrap_err();
+            assert_eq!(refused.code, ErrorCode::Conflict);
+        }
         let promoted = run_command(
             &mut store,
             "generation.promote",
@@ -923,37 +934,22 @@ mod tests {
         )
         .expect("promote second");
         assert_eq!(promoted["owner"], "system");
-        assert_eq!(
-            store
-                .admin_audit_for_object(&ObjectRef::from(&second.id))
-                .unwrap()
-                .len(),
-            1
-        );
 
-        run_command(
+        // Promotion does not open the path: nothing becomes STABLE.
+        let refused = run_command(
             &mut store,
             "generation.activate",
             &serde_json::json!({ "id": second.id }),
             TEST_CALLER,
         )
-        .expect("activate second");
-
-        assert_eq!(
-            store
-                .get_generation(&first.id)
-                .expect("first query")
-                .expect("first exists")
-                .status,
-            GenerationStatus::Superseded
-        );
-        assert_eq!(
-            store
-                .get_generation(&second.id)
-                .expect("second query")
-                .expect("second exists")
-                .status,
-            GenerationStatus::Stable
-        );
+        .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Conflict);
+        for id in [&first.id, &second.id] {
+            assert_eq!(
+                store.get_generation(id).unwrap().unwrap().status,
+                GenerationStatus::Candidate
+            );
+        }
+        assert!(store.activation_history().unwrap().is_empty());
     }
 }

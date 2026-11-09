@@ -5,6 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Generation lifecycle storage (ADR-0023 G1, #9): migration 0015 enforces the
+  typed status transitions, at most one `STABLE`, a complete root identity
+  before `TESTED`, and an append-only activation history in the database for
+  every writer. `STABLE` can only come from a confirmed activation, so
+  `generation.activate` now refuses with `conflict` until Gate D is verified;
+  the public status setter is gone.
 - Docs: 0.0.5 step 1 plan (S1–S8) and the ADR-0019 prototype decision for A/B root slots with boot counting (#48, #51); the ADR stays Proposed until a real boot/rollback run is reviewed.
 - The Flowerly-built ext4 root volume now boots in KVM to `multi-user.target`
   with the IPC health witness (#51, evidence in

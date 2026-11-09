@@ -60,7 +60,7 @@ States: `CANDIDATE`, `TESTED`, `STABLE`, `SUPERSEDED`, `REJECTED`, `REVOKED`.
 | `TESTED` | `STABLE` | only by a **confirmed activation** (§2) |
 | `STABLE` | `SUPERSEDED` | in the same transaction as another's confirmation |
 | `SUPERSEDED` | `STABLE` | only by a confirmed **rollback** activation to a Generation that was `STABLE` before |
-| `TESTED`, `STABLE`, `SUPERSEDED` | `REVOKED` | `generation.revoke` (Admin, reason, audited), terminal |
+| `TESTED`, `SUPERSEDED` | `REVOKED` | `generation.revoke` (Admin, reason, audited), terminal. A `STABLE` Generation is always the active one, so under Q5 it is revocable only once another is confirmed and it has become `SUPERSEDED` |
 
 `REJECTED` and `REVOKED` are terminal. Everything else is refused. The table
 lives in the database (`generation_transitions(from_status, to_status)`) and a
