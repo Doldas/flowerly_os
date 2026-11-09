@@ -1,11 +1,49 @@
-# Proposed ADR: Generation root filesystem rollback substrate
+# ADR: Generation root filesystem rollback substrate
 
-**Status:** Proposed — A/B root slots chosen as the **prototype** substrate
-(2026-11-01, see [Prototype decision](#prototype-decision-2026-11-01));
-not Accepted until the maintainer reviews a real boot/rollback run (step S7/S8
-of the [step 1 plan](../release-0.0.5-step1-ab-boot-rollback-plan.md)).
-**Issues:** #48, #9, #31, #51. **Scope:** 0.0.5 design only.
-This document does **not** implement Generation activation or rollback.
+**Status:** Accepted 2026-11-09 by the owner (maintainer): **A/B root slots on
+one GPT disk with systemd-boot boot counting** are the substrate for the
+Generation rollback prototype and for Gate D. Accepted on the basis of the
+real OVMF/KVM evidence in
+[the first run](../reviews/0048-s7-first-real-kvm-run-2026-11-08.md) and
+[the matrix run](../reviews/0048-s7-full-matrix-run-2026-11-08.md).
+**Issues:** #48, #9, #31, #51. **Scope:** substrate decision. File name keeps
+the original `proposal` slug so links stay valid (there is a second, unrelated
+`0019-distribution-first-two-daemon-boundary.md`).
+
+Acceptance means: build on this substrate. It does **not** mean Generation
+rollback exists in `flowerlyd` (Gate D), that the slot tool exists (S6), or
+that package inputs are pinned (#49); those remain open and tracked in the
+[step 1 plan](../release-0.0.5-step1-ab-boot-rollback-plan.md).
+
+## Acceptance record (2026-11-09)
+
+Prototype acceptance criteria 1-8 below were measured on real KVM
+(exact-SHA runs `b827049`, `90492ed`). Outcome per criterion:
+
+| # | Criterion | Outcome |
+| --- | --- | --- |
+| 1 | Two hashed root images from pinned inputs | images built and hashed; inputs **not pinned** (#49) |
+| 2 | Boot A, witnessed root hash | met |
+| 3 | Stage B, boot B, witnessed new hash | met (healthy B also stays on B across a reboot) |
+| 4 | Forced B health failure returns to A | met (B rejected x3, loader returns to A) |
+| 5 | Power loss around slot selection | met at **disk-image level**; no live slot tool yet (S6) |
+| 6 | Full storage, tampered artifact, damaged boot data, interrupted install | met; the invalid-signature case needs #49 |
+| 7 | Measure bytes, stage/activation and shutdown time | bytes, stage (31 s for 3 GiB) and boot-to-health (8-11 s) measured; clean shutdown **not yet** |
+| 8 | Auditable exact-SHA record | met (`reviews/evidence/`) |
+
+Measured cost: two 3 GiB root slots plus 256 MiB ESP and 512 MiB data on a
+prototype disk, i.e. root storage doubles as expected; none of the revisit
+triggers below fired.
+
+Findings that became part of the substrate (all found by real runs):
+read-only root with `systemd.volatile=state` and `fsck.mode=skip`; ESP mounted
+at `/efi`; service accounts baked into the image; loader default must be
+`flowerly-*` (a slot-specific pattern re-selects an exhausted entry); bless only
+when the booted entry still has a boot counter.
+
+Conditions carried forward: S6 must replace the image-level fixtures with a
+tool that is power-loss tested while writing; the clean-shutdown time and the
+signed-input case are still to be measured; the revisit triggers stay in force.
 
 ## Context
 
@@ -188,6 +226,6 @@ guest alone, must demonstrate all of the following:
 8. Save exact-SHA build inputs, QEMU version, boot logs, root witness and
    artifacts as an auditable CI record without credentials.
 
-The proposal is **not accepted** until the maintainer reviews a real
-boot/rollback run, confirms or replaces the prototype substrate, documents
-its threat model and updates #48 and #9. No runtime activation claims are authorized by this ADR.
+The maintainer reviewed the real boot/rollback runs and accepted the
+substrate on 2026-11-09 (see the acceptance record at the top). No runtime
+activation claims are authorized by this ADR.

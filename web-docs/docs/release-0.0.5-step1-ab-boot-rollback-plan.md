@@ -9,7 +9,7 @@ Parent plan: [0.0.5 Generations plan](release-0.0.5-generations-plan.md).
 Issues: [#51](https://github.com/Doldas/flowerly_os/issues/51) (bootable
 fixture), [#48](https://github.com/Doldas/flowerly_os/issues/48) (rollback
 substrate), [#9](https://github.com/Doldas/flowerly_os/issues/9) (tracking).
-Design input: [ADR-0019 (Proposed)](adr/0019-generation-rootfs-rollback-proposal.md).
+Design input: [ADR-0019 (Accepted 2026-11-09)](adr/0019-generation-rootfs-rollback-proposal.md).
 
 ## Why this is the next step
 
@@ -47,7 +47,7 @@ evidence that Gate D will build on.
 | D2 | **Answered 2026-11-01:** owner allowed the downloads the build needs (Arch container, packages); still unpinned until #49 | S1 |
 | D3 | Approve each KVM execution against an exact SHA (same model as #263) | S2, S7 |
 | D4 | Merge authorization per PR into `release/2` | each PR |
-| D5 | Whether the ADR may move to **Accepted** after the S7 evidence review | S8 |
+| D5 | **Answered 2026-11-09:** owner accepted ADR-0019 (A/B slots) after the S7 evidence review | S8 |
 
 ## Target disk layout (prototype, subject to D1)
 
@@ -245,7 +245,7 @@ tracks that do not block step 1:
 - [ ] S7 run on one exact `release/2` SHA: all eight scenario groups PASS,
       evidence bundle archived and schema-valid.
 - [ ] User-data marker survives A → B → A and every power-loss case.
-- [ ] ADR-0019 Accepted by the owner (or reworked, with the reason written
+- [x] ADR-0019 Accepted by the owner 2026-11-09 (or reworked, with the reason written
       down).
 - [ ] Offline tests for every new script and the slot tool run in the
       required `docs`/`rust` jobs and pass on the root push runner.
@@ -285,7 +285,7 @@ unhealthy B rejected three times, automatic return to A with the user-data
 marker intact. Seven defects found by the run are fixed on the same branch.
 See [the run review](reviews/0048-s7-first-real-kvm-run-2026-11-08.md). The
 S4 exit (disk boots through OVMF, no `-kernel`) is met; the healthy-B path,
-power-loss cases and measurements are still open, ADR-0019 stays Proposed.
+power-loss cases and measurements were still open then (see the matrix review); ADR-0019 was accepted 2026-11-09.
 
 ## S7 — executable OVMF/KVM sequence harness (historical note before the run)
 
