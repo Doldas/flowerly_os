@@ -1,0 +1,388 @@
+{
+  "OVMF_VARS.fd_final_sha256": "6f5de334bf128c0b5ec51a9d2ba8413b147dabeb2f7c06b47b10412028402f71",
+  "audit": {
+    "boots": 16,
+    "lineages": {
+      "main": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "stage-interrupted": "6ec55bc7c183d5756478fbc60df98227193280d2d05732eec40217946b9bafd3"
+    },
+    "scenarios_pass": [
+      "arm-after-rename",
+      "arm-before-rename",
+      "boot-before-bless",
+      "damaged-entry-fallback",
+      "data-survives",
+      "healthy-b-activation",
+      "measure-stage-and-boot",
+      "rollback-to-a",
+      "stage-complete",
+      "stage-interrupted",
+      "tampered-b-refused",
+      "unhealthy-b-fallback"
+    ],
+    "source_sha": "5b670d61e5b82ef4e99a58a868d8254d2aef11bb",
+    "status": "INTERNALLY_CONSISTENT_NOT_RELEASE_ACCEPTED"
+  },
+  "boot_tries": 3,
+  "boots": [
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "boot-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "ec34972969939b8a7e0437486d0cd043bf8764761b18b62fbbecd09d0af2b95c",
+      "seconds": 12.505,
+      "seconds_to_observed": 10.505,
+      "serial": "boot-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "REJECTED",
+      "kvm_fd_verified": true,
+      "label": "unhealthy-b-1",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "dc956ef76e18ede0faaa7f45fe2b352599722500d0e2813c6c020217b4695b83",
+      "seconds": 11.504,
+      "seconds_to_observed": 9.504,
+      "serial": "unhealthy-b-1.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "REJECTED",
+      "kvm_fd_verified": true,
+      "label": "unhealthy-b-2",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "dc956ef76e18ede0faaa7f45fe2b352599722500d0e2813c6c020217b4695b83",
+      "seconds": 11.004,
+      "seconds_to_observed": 9.004,
+      "serial": "unhealthy-b-2.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "REJECTED",
+      "kvm_fd_verified": true,
+      "label": "unhealthy-b-3",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "REJECTED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "dc956ef76e18ede0faaa7f45fe2b352599722500d0e2813c6c020217b4695b83",
+      "seconds": 11.004,
+      "seconds_to_observed": 9.004,
+      "serial": "unhealthy-b-3.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "auto-fallback-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "dc956ef76e18ede0faaa7f45fe2b352599722500d0e2813c6c020217b4695b83",
+      "seconds": 10.504,
+      "seconds_to_observed": 8.504,
+      "serial": "auto-fallback-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "healthy-b-1",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "53bea8c2c537ddaa9c10b0db3808ad3e2d282b3fb23c692d40ab514ac8ca3332",
+      "seconds": 10.004,
+      "seconds_to_observed": 8.003,
+      "serial": "healthy-b-1.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "healthy-b-2",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "53bea8c2c537ddaa9c10b0db3808ad3e2d282b3fb23c692d40ab514ac8ca3332",
+      "seconds": 10.504,
+      "seconds_to_observed": 8.504,
+      "serial": "healthy-b-2.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "rollback-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "db6fea5234347ff6d5cd7d8c34745f6926ce43fc93fc067e07228d22582717d2",
+      "seconds": 10.004,
+      "seconds_to_observed": 8.004,
+      "serial": "rollback-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "arm-after-payload-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "cab018ec2b6d9f1bf2465843f805356bf8f589a4e39147455f65f4f117b44af6",
+      "seconds": 11.004,
+      "seconds_to_observed": 9.004,
+      "serial": "arm-after-payload-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "arm-before-rename-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "bcaf064346e38cc0c736b09ad1b7e83b4bde77cc436cf47098650caa316fe078",
+      "seconds": 10.504,
+      "seconds_to_observed": 8.504,
+      "serial": "arm-before-rename-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "arm-after-rename-b",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "0ca18023d00a0caecd099dbec045a96eac2853a9033851dbe2d93041a96ea5b8",
+      "seconds": 11.004,
+      "seconds_to_observed": 9.004,
+      "serial": "arm-after-rename-b.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "NO_WITNESS",
+      "kvm_fd_verified": true,
+      "label": "damaged-b-1",
+      "lineage": "main",
+      "marker_sha256": null,
+      "observed_health": "NO_WITNESS",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "68fc6cb9801b868379a099193bee35a6bb8e848e40612d40fdfc60af7cc9ee45",
+      "seconds": 45.015,
+      "seconds_to_observed": null,
+      "serial": "damaged-b-1.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "NO_WITNESS",
+      "kvm_fd_verified": true,
+      "label": "damaged-b-2",
+      "lineage": "main",
+      "marker_sha256": null,
+      "observed_health": "NO_WITNESS",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "68fc6cb9801b868379a099193bee35a6bb8e848e40612d40fdfc60af7cc9ee45",
+      "seconds": 45.015,
+      "seconds_to_observed": null,
+      "serial": "damaged-b-2.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "NO_WITNESS",
+      "kvm_fd_verified": true,
+      "label": "damaged-b-3",
+      "lineage": "main",
+      "marker_sha256": null,
+      "observed_health": "NO_WITNESS",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "68fc6cb9801b868379a099193bee35a6bb8e848e40612d40fdfc60af7cc9ee45",
+      "seconds": 45.015,
+      "seconds_to_observed": null,
+      "serial": "damaged-b-3.serial.log",
+      "slot": "root-b"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "damaged-fallback-a",
+      "lineage": "main",
+      "marker_sha256": "88c86c4cfd6df386bb1404f5d02a9a2ef9a12a77f2880e73dbf4e1b9ad65f110",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "68fc6cb9801b868379a099193bee35a6bb8e848e40612d40fdfc60af7cc9ee45",
+      "seconds": 10.004,
+      "seconds_to_observed": 8.004,
+      "serial": "damaged-fallback-a.serial.log",
+      "slot": "root-a"
+    },
+    {
+      "expect": "BLESSED",
+      "kvm_fd_verified": true,
+      "label": "stage-interrupted-a",
+      "lineage": "stage-interrupted",
+      "marker_sha256": "6ec55bc7c183d5756478fbc60df98227193280d2d05732eec40217946b9bafd3",
+      "observed_health": "BLESSED",
+      "power_loss": "QEMU_SIGKILL",
+      "qemu_cmdline_sha256": "49a2273d2c9c0419c623ee69c7dd870502e175c85174e72ebf9d9131a2b381f1",
+      "seconds": 10.004,
+      "seconds_to_observed": 8.004,
+      "serial": "stage-interrupted-a.serial.log",
+      "slot": "root-a"
+    }
+  ],
+  "disk_sha256_initial": "1584e2835e21733cf282787af918fb9c8e2b0ecdbb020605110a9f3acc627933",
+  "host_checks": {
+    "stage-complete": {
+      "ok": true,
+      "oversized_refusal": "Error: candidate does not fit the exact root slot size",
+      "staged_disk_sha256": "1584e2835e21733cf282787af918fb9c8e2b0ecdbb020605110a9f3acc627933"
+    },
+    "stage-interrupted": {
+      "arm_refusal": "Error: root-b has not been staged",
+      "killed_at": "stage:chunk:300",
+      "ok": true,
+      "root_b_partially_written": true
+    },
+    "tampered-b-refused": {
+      "arm": "Error: staged root root-b does not match the manifest hash",
+      "ok": true,
+      "stage_digest": "Error: candidate digest mismatch",
+      "status": "MODIFIED"
+    }
+  },
+  "manifest_sha256": "4a288acd21c37ff9074884cd5f79cd81a84b494a66b3a34f6227ffb139b979ca",
+  "measurements": {
+    "clean_shutdown": "NOT_MEASURED",
+    "slot_bytes": {
+      "data": 536870912,
+      "esp": 268435456,
+      "root-a": 3221225472,
+      "root-b": 3221225472
+    },
+    "stage_seconds": 13.733
+  },
+  "mutable_sha256_from_boot_a": {
+    "data": "e1307afe0872b762cae028a8b62a70a7c46582627093968b9346ca7f9068947a",
+    "esp": "25df094bdbef2b595f540259b9097ae6c9507b23592c57dfe142914a2b61bea1"
+  },
+  "ovmf_code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+  "ovmf_vars_template_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e",
+  "qemu_version": "QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.3)",
+  "release_acceptance": false,
+  "root_a_partuuid": "52684b9e-c93a-4fa9-9be2-08a68b9bb4e9",
+  "root_b_partuuid": "f0393203-ee9c-4d47-8903-471c483b759f",
+  "root_reconstruction": "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES",
+  "root_sha256_after_boot_a": {
+    "root-a": "1ee4235b88801e848120efb5b5312ad887b752d3c5523beb1e40d00aeb656912",
+    "root-b": "2ac4c1f086af51bd3ef660619f914f159b389d5399e8425e2ceadf72d4a6ce9e"
+  },
+  "running-disk.img_final_sha256": "88ab42ffe54cdfffb7dfbdd9342d8ed8aef59005d98e118036c6bb8535271719",
+  "s7_remaining": [
+    "clean-shutdown-time"
+  ],
+  "scenarios": {
+    "arm-after-rename": "PASS",
+    "arm-before-rename": "PASS",
+    "boot-before-bless": "PASS",
+    "damaged-entry-fallback": "PASS",
+    "data-survives": "PASS",
+    "healthy-b-activation": "PASS",
+    "measure-stage-and-boot": "PASS",
+    "rollback-to-a": "PASS",
+    "stage-complete": "PASS",
+    "stage-interrupted": "PASS",
+    "tampered-b-refused": "PASS",
+    "unhealthy-b-fallback": "PASS"
+  },
+  "schema": "flowerly-generation-kvm-sequence/v1",
+  "sequence_verified": true,
+  "slot_tool_sha256": "a88385f6086b97981d1d871fd858f2aac33eeb85cc822565638cf2cf1826cbcb",
+  "source_sha": "5b670d61e5b82ef4e99a58a868d8254d2aef11bb",
+  "status": "SEQUENCE_OBSERVED_S7_INCOMPLETE",
+  "status_checks": {
+    "arm-after-payload-a": {
+      "bad_slots": [],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "NO_CANDIDATE",
+      "witness_slot": "root-a"
+    },
+    "arm-after-rename-b": {
+      "bad_slots": [],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "ACTIVE",
+      "witness_slot": "root-b"
+    },
+    "arm-before-rename-a": {
+      "bad_slots": [],
+      "pending_slots": [],
+      "stray_temp_entries": [
+        "flowerly-b+3.conf.tmp"
+      ],
+      "verdict": "NO_CANDIDATE",
+      "witness_slot": "root-a"
+    },
+    "auto-fallback-a": {
+      "bad_slots": [
+        "root-b"
+      ],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "FELL_BACK",
+      "witness_slot": "root-a"
+    },
+    "damaged-fallback-a": {
+      "bad_slots": [
+        "root-b"
+      ],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "FELL_BACK",
+      "witness_slot": "root-a"
+    },
+    "healthy-b-1": {
+      "bad_slots": [],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "ACTIVE",
+      "witness_slot": "root-b"
+    },
+    "rollback-a": {
+      "bad_slots": [],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "NO_CANDIDATE",
+      "witness_slot": "root-a"
+    },
+    "unhealthy-b-3": {
+      "bad_slots": [
+        "root-b"
+      ],
+      "pending_slots": [],
+      "stray_temp_entries": [],
+      "verdict": "FAILED_UNRESOLVED",
+      "witness_slot": "root-b"
+    }
+  }
+}
