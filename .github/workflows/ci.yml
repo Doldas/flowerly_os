@@ -108,8 +108,20 @@ jobs:
       - name: Compile check
         run: just check
 
+      # The slot tool's CLI tests drive the real builder, GPT, FAT and ext4
+      # tools; they must run, not skip (FLOWERLY_REQUIRE_AB_TOOLS=1).
+      - name: Provision real A/B disk tools for slot tool tests
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
       - name: Test
+        env:
+          FLOWERLY_REQUIRE_AB_TOOLS: "1"
         run: just test
+
+      - name: Slot tool power-loss tests (real SIGKILL, fault-injection feature)
+        env:
+          FLOWERLY_REQUIRE_AB_TOOLS: "1"
+        run: cargo test -p distro-builder --features fault-injection --locked
 
       - name: Release build
         run: just build

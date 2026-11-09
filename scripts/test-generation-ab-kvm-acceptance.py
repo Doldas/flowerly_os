@@ -82,8 +82,9 @@ class KvmGateTests(unittest.TestCase):
             ("healthy-b-1", "root-b", "BLESSED", "main"),
             ("healthy-b-2", "root-b", "BLESSED", "main"),
             ("rollback-a", "root-a", "BLESSED", "main"),
+            ("arm-after-payload-a", "root-a", "BLESSED", "main"),
             ("arm-before-rename-a", "root-a", "BLESSED", "main"),
-            ("arm-after-rename-a", "root-a", "BLESSED", "main"),
+            ("arm-after-rename-b", "root-b", "BLESSED", "main"),
         ]
         plan += [(f"damaged-b-{i}", "root-b", "NO_WITNESS", "main") for i in (1, 2)]
         plan += [
@@ -166,6 +167,40 @@ class KvmGateTests(unittest.TestCase):
                         "tampered-b-refused",
                     )
                 },
+                "slot_tool_sha256": H,
+                "status_checks": {
+                    "unhealthy-b-2": {
+                        "verdict": "FAILED_UNRESOLVED",
+                        "witness_slot": "root-b",
+                    },
+                    "auto-fallback-a": {
+                        "verdict": "FELL_BACK",
+                        "witness_slot": "root-a",
+                    },
+                    "healthy-b-1": {"verdict": "ACTIVE", "witness_slot": "root-b"},
+                    "rollback-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                    },
+                    "arm-after-payload-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                        "stray_temp_entries": [],
+                    },
+                    "arm-before-rename-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                        "stray_temp_entries": ["flowerly-b+2.conf.tmp"],
+                    },
+                    "arm-after-rename-b": {
+                        "verdict": "ACTIVE",
+                        "witness_slot": "root-b",
+                    },
+                    "damaged-fallback-a": {
+                        "verdict": "FELL_BACK",
+                        "witness_slot": "root-a",
+                    },
+                },
                 "measurements": {
                     "stage_seconds": 12.0,
                     "slot_bytes": {"root-a": 1, "root-b": 1},
@@ -199,6 +234,22 @@ class KvmGateTests(unittest.TestCase):
             # evidence may not be left as NOT_RUN either.
             refuses(lambda r: r["host_checks"]["stage-complete"].update(ok=False))
             refuses(lambda r: r["measurements"].pop("stage_seconds"))
+            refuses(lambda r: r.pop("slot_tool_sha256"))
+            refuses(
+                lambda r: r["status_checks"]["auto-fallback-a"].update(verdict="ACTIVE")
+            )
+            refuses(
+                lambda r: r["status_checks"]["healthy-b-1"].update(
+                    witness_slot="root-a"
+                )
+            )
+            refuses(lambda r: r["status_checks"].pop("rollback-a"))
+            refuses(
+                lambda r: r["status_checks"]["arm-before-rename-a"].update(
+                    stray_temp_entries=[]
+                )
+            )
+            refuses(lambda r: r["status_checks"].update(ghost={"verdict": "ACTIVE"}))
             refuses(lambda r: r["scenarios"].update({"rollback-to-a": "NOT_RUN"}))
             refuses(lambda r: r.update(boot_tries=3))
             refuses(lambda r: r["host_checks"].update(bogus={"ok": True}))

@@ -232,23 +232,49 @@ def audit(report, directory):
         entry = host.get(name)
         return isinstance(entry, dict) and entry.get("ok") is True
 
+    if not isinstance(report.get("slot_tool_sha256"), str) or not SHA.fullmatch(
+        report["slot_tool_sha256"]
+    ):
+        raise ValueError("slot tool binary is not bound by hash")
+    checks = report.get("status_checks", {})
+    if not isinstance(checks, dict) or set(checks) - set(by_label):
+        raise ValueError("status check without a matching boot")
+
+    def status_ok(label, verdict, witness_slot):
+        entry = checks.get(label)
+        return (
+            isinstance(entry, dict)
+            and entry.get("verdict") == verdict
+            and entry.get("witness_slot") == witness_slot
+        )
+
     unhealthy = [f"unhealthy-b-{i}" for i in range(1, tries + 1)]
     damaged = [f"damaged-b-{i}" for i in range(1, tries + 1)]
     measurements = report.get("measurements", {})
     evidence = {
         "boot-before-bless": all(ok(n, "root-b", "REJECTED") for n in unhealthy),
         "unhealthy-b-fallback": all(ok(n, "root-b", "REJECTED") for n in unhealthy)
-        and ok("auto-fallback-a", "root-a", "BLESSED"),
+        and ok("auto-fallback-a", "root-a", "BLESSED")
+        and status_ok(unhealthy[-1], "FAILED_UNRESOLVED", "root-b")
+        and status_ok("auto-fallback-a", "FELL_BACK", "root-a"),
         "data-survives": ok("auto-fallback-a", "root-a", "BLESSED")
         and len(lineage_markers.get("main", ())) == 1,
         "healthy-b-activation": ok("healthy-b-1", "root-b", "BLESSED")
-        and ok("healthy-b-2", "root-b", "BLESSED"),
+        and ok("healthy-b-2", "root-b", "BLESSED")
+        and status_ok("healthy-b-1", "ACTIVE", "root-b"),
         "rollback-to-a": ok("healthy-b-2", "root-b", "BLESSED")
-        and ok("rollback-a", "root-a", "BLESSED"),
-        "arm-before-rename": ok("arm-before-rename-a", "root-a", "BLESSED"),
-        "arm-after-rename": ok("arm-after-rename-a", "root-a", "BLESSED"),
+        and ok("rollback-a", "root-a", "BLESSED")
+        and status_ok("rollback-a", "NO_CANDIDATE", "root-a"),
+        "arm-before-rename": ok("arm-after-payload-a", "root-a", "BLESSED")
+        and ok("arm-before-rename-a", "root-a", "BLESSED")
+        and status_ok("arm-after-payload-a", "NO_CANDIDATE", "root-a")
+        and status_ok("arm-before-rename-a", "NO_CANDIDATE", "root-a")
+        and bool(checks.get("arm-before-rename-a", {}).get("stray_temp_entries")),
+        "arm-after-rename": ok("arm-after-rename-b", "root-b", "BLESSED")
+        and status_ok("arm-after-rename-b", "ACTIVE", "root-b"),
         "damaged-entry-fallback": all(ok(n, "root-b", "NO_WITNESS") for n in damaged)
-        and ok("damaged-fallback-a", "root-a", "BLESSED"),
+        and ok("damaged-fallback-a", "root-a", "BLESSED")
+        and status_ok("damaged-fallback-a", "FELL_BACK", "root-a"),
         "stage-interrupted": host_ok("stage-interrupted")
         and ok("stage-interrupted-a", "root-a", "BLESSED"),
         "stage-complete": host_ok("stage-complete"),

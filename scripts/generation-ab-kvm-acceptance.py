@@ -118,6 +118,9 @@ def validate_source(args, *, actual_execution=False):
         or identities.get("root-b") != args.root_b
     ):
         raise ValueError("approved booted root UUIDs do not match the disk")
+    tool = args.slot_tool
+    if tool.is_symlink() or not tool.is_file() or not os.access(tool, os.X_OK):
+        raise ValueError("--slot-tool must be an executable regular file")
     host = (args.unstaged_disk, args.unstaged_manifest, args.candidate_b)
     if any(host) and not all(host):
         raise ValueError(
@@ -134,6 +137,7 @@ def validate_source(args, *, actual_execution=False):
             "mdir",
             "mtype",
             "mdel",
+            "debugfs",
         ):
             if not shutil.which(program, path=os.environ["PATH"] + ":/usr/sbin:/sbin"):
                 raise ValueError("missing real host tool: " + program)
@@ -418,22 +422,91 @@ def slice_hashes(disk, manifest):
     return hashes
 
 
-def refuses(callable_, *arguments, **keywords):
-    """True when the real tool refuses (ValueError); anything else raises."""
-    try:
-        callable_(*arguments, **keywords)
-    except ValueError as error:
-        return str(error)[:160]
-    return None
+def tool_env(fault=None):
+    env = dict(os.environ)
+    env["PATH"] = env.get("PATH", "") + ":/usr/sbin:/sbin"
+    if fault:
+        env["FLOWERLY_SLOT_FAULT"] = fault
+    return env
+
+
+def slot_run(args, verb, disk, manifest, *extra, fault=None):
+    """Run the real Rust slot tool (built with --features fault-injection)."""
+    command = [
+        str(args.slot_tool),
+        "slot",
+        verb,
+        "--disk",
+        str(disk),
+        "--manifest",
+        str(manifest),
+        "--active-partuuid",
+        args.root_a,
+        *map(str, extra),
+    ]
+    return subprocess.run(
+        command, capture_output=True, text=True, env=tool_env(fault), timeout=3600
+    )
+
+
+def slot_json(args, verb, disk, manifest, *extra):
+    done = slot_run(args, verb, disk, manifest, *extra)
+    if done.returncode != 0:
+        raise ValueError(f"slot {verb} failed: {done.stderr.strip()[:200]}")
+    return json.loads(done.stdout)
+
+
+def slot_killed(args, verb, disk, manifest, fault, *extra):
+    """The tool must die by SIGKILL at the injected point (real power loss)."""
+    done = slot_run(args, verb, disk, manifest, *extra, fault=fault)
+    if done.returncode != -9:
+        raise ValueError(
+            f"slot {verb} was not killed at {fault}: rc={done.returncode} "
+            f"{done.stderr.strip()[:160]}"
+        )
+
+
+def slot_refused(args, verb, disk, manifest, *extra):
+    """A clean refusal: non-zero exit, not a crash, with a reason."""
+    done = slot_run(args, verb, disk, manifest, *extra)
+    if done.returncode <= 0 or not done.stderr.strip():
+        raise ValueError(f"slot {verb} was not refused: rc={done.returncode}")
+    return done.stderr.strip()[:160]
+
+
+def extract_witness(disk, manifest, target):
+    """Copy the guest's boot-witness ledger out of the data partition."""
+    data = next(p for p in manifest["partitions"] if p["name"] == "data")
+    debugfs = shutil.which("debugfs", path=tool_env()["PATH"])
+    if not debugfs:
+        raise ValueError("missing real host tool: debugfs")
+    subprocess.run(
+        [
+            debugfs,
+            "-R",
+            f"dump /boot-witness.jsonl {target}",
+            f"{disk}?offset={data['offset_bytes']}",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    if not Path(target).is_file() or Path(target).stat().st_size == 0:
+        raise ValueError("no boot-witness ledger on the data partition")
 
 
 def host_stage_scenarios(args, out, result):
-    """Stage tool behaviour on real disk images (no guest needed)."""
-    stage_tool = module("generation_slot_stage", "generation-slot-stage-image.py")
-    verifier = module("generation_ab_verify_host", "verify-ab-slot-layout.py")
-    unstaged_manifest = json.loads(args.unstaged_manifest.read_text())
+    """Slot tool stage behaviour on real disk images (no guest needed)."""
+    unstaged = json.loads(args.unstaged_manifest.read_text())
     candidate_sha = sha_file(args.candidate_b)
     checks = result.setdefault("host_checks", {})
+    stage_args = (
+        "--slot",
+        "root-b",
+        "--candidate",
+        args.candidate_b,
+        "--sha256",
+        candidate_sha,
+    )
 
     # stage-complete: a full stage succeeds and is timed; an oversized
     # candidate ("full disk") is refused before any byte is written.
@@ -442,88 +515,80 @@ def host_stage_scenarios(args, out, result):
     shutil.copyfile(args.unstaged_disk, disk)
     shutil.copyfile(args.unstaged_manifest, manifest_file)
     started = time.monotonic()
-    staged = stage_tool.stage(
-        disk, manifest_file, args.candidate_b, candidate_sha, args.root_a, "root-b"
-    )
+    staged = slot_json(args, "stage", disk, manifest_file, *stage_args)
     result["measurements"]["stage_seconds"] = round(time.monotonic() - started, 3)
-    staged_manifest = json.loads(manifest_file.read_text())
-    verifier.verify(disk, staged_manifest)
+    status = slot_json(args, "status", disk, manifest_file, "--verify-slots")
     before = sha_file(disk)
     oversized = out / "oversized-candidate.bin"
+    root_b = next(p for p in unstaged["partitions"] if p["name"] == "root-b")
     with oversized.open("wb") as handle:
-        handle.truncate(
-            next(p for p in staged_manifest["partitions"] if p["name"] == "root-b")[
-                "size_bytes"
-            ]
-            + 1048576
-        )
-    refusal = refuses(
-        stage_tool.stage,
+        handle.truncate(root_b["size_bytes"] + 1048576)
+    refusal = slot_refused(
+        args,
+        "stage",
         disk,
         manifest_file,
-        oversized,
-        sha_file(oversized),
-        args.root_a,
+        "--slot",
         "root-b",
+        "--candidate",
+        oversized,
+        "--sha256",
+        sha_file(oversized),
     )
     oversized.unlink()
     checks["stage-complete"] = {
         "ok": staged["status"] == "STAGED_NOT_ARMED"
         and staged["candidate_sha256"] == candidate_sha
-        and refusal is not None
+        and status["slots"][1]["image_state"] == "MATCHES_MANIFEST"
+        and "exact root slot size" in refusal
         and sha_file(disk) == before,
         "staged_disk_sha256": staged["disk_sha256"],
         "oversized_refusal": refusal,
     }
     disk.unlink()
 
-    # stage-interrupted: power loss in the middle of the inactive-slot write.
+    # stage-interrupted: the tool is SIGKILLed in the middle of the slot write.
     disk = out / "stage-interrupted.img"
     manifest_file = out / "stage-interrupted.manifest.json"
     shutil.copyfile(args.unstaged_disk, disk)
     shutil.copyfile(args.unstaged_manifest, manifest_file)
     manifest_before = manifest_file.read_bytes()
-    hashes_before = slice_hashes(disk, unstaged_manifest)
-    interrupted = None
-    try:
-        stage_tool.stage(
-            disk,
-            manifest_file,
-            args.candidate_b,
-            candidate_sha,
-            args.root_a,
-            "root-b",
-            inject_after_chunks=300,
-        )
-    except RuntimeError as error:
-        interrupted = str(error)[:120]
-    hashes_after = slice_hashes(disk, unstaged_manifest)
+    hashes_before = slice_hashes(disk, unstaged)
+    slot_killed(args, "stage", disk, manifest_file, "stage:chunk:300", *stage_args)
+    hashes_after = slice_hashes(disk, unstaged)
     unchanged = all(
         hashes_after[name] == hashes_before[name] for name in ("esp", "root-a", "data")
     )
     partial = hashes_after["root-b"] != hashes_before["root-b"]
-    reverify = refuses(verifier.verify, disk, unstaged_manifest)
+    state = slot_json(args, "status", disk, manifest_file, "--verify-slots")
+    refusal = slot_refused(
+        args,
+        "arm",
+        disk,
+        manifest_file,
+        "--slot",
+        "root-b",
+        "--kernel",
+        args.kernel_b,
+        "--initramfs",
+        args.initramfs_b,
+    )
     checks["stage-interrupted"] = {
-        "ok": interrupted is not None
-        and unchanged
+        "ok": unchanged
         and partial
-        and reverify is not None
-        and manifest_file.read_bytes() == manifest_before,
-        "fault": interrupted,
-        "reverification_refusal": reverify,
+        and manifest_file.read_bytes() == manifest_before
+        and state["slots"][1]["image_state"] == "MODIFIED"
+        and "has not been staged" in refusal,
+        "killed_at": "stage:chunk:300",
+        "arm_refusal": refusal,
         "root_b_partially_written": partial,
     }
-    result["_stage_interrupted"] = (disk, unstaged_manifest, hashes_after)
+    result["_stage_interrupted"] = (disk, unstaged, hashes_after)
     return checks
 
 
 def host_tamper_scenario(args, out, manifest, result):
     """A tampered slot B must be refused everywhere and change nothing."""
-    verifier = module("generation_ab_verify_tamper", "verify-ab-slot-layout.py")
-    arm = module("generation_arm_efi_tamper", "generation-arm-esp-image.py")
-    stage_tool = module(
-        "generation_slot_stage_tamper", "generation-slot-stage-image.py"
-    )
     disk = out / "tampered-b.img"
     shutil.copyfile(args.disk, disk)
     root_b = next(p for p in manifest["partitions"] if p["name"] == "root-b")
@@ -532,32 +597,38 @@ def host_tamper_scenario(args, out, manifest, result):
         byte = handle.read(1)
         handle.seek(root_b["offset_bytes"] + 1048576)
         handle.write(bytes([(byte[0] ^ 0xFF) if byte else 0xFF]))
-    esp_before = slice_hashes(disk, manifest)["esp"]
-    verify_refusal = refuses(verifier.verify, disk, manifest)
-    outputs = (out / "tampered-armed.img", out / "tampered-armed.manifest.json")
-    arm_refusal = refuses(
-        arm.arm_image,
+    before = slice_hashes(disk, manifest)["esp"]
+    state = slot_json(args, "status", disk, args.manifest, "--verify-slots")
+    arm_refusal = slot_refused(
+        args,
+        "arm",
         disk,
         args.manifest,
-        args.kernel_b,
-        args.initramfs_b,
-        outputs[0],
-        outputs[1],
-    )
-    digest_refusal = refuses(
-        stage_tool.stage,
-        disk,
-        args.manifest,
-        args.candidate_b,
-        "0" * 63 + "1",
-        args.root_a,
+        "--slot",
         "root-b",
+        "--kernel",
+        args.kernel_b,
+        "--initramfs",
+        args.initramfs_b,
+    )
+    digest_refusal = slot_refused(
+        args,
+        "stage",
+        disk,
+        args.manifest,
+        "--slot",
+        "root-b",
+        "--candidate",
+        args.candidate_b,
+        "--sha256",
+        "0" * 63 + "1",
     )
     result.setdefault("host_checks", {})["tampered-b-refused"] = {
-        "ok": all((verify_refusal, arm_refusal, digest_refusal))
-        and not any(path.exists() for path in outputs)
-        and slice_hashes(disk, manifest)["esp"] == esp_before,
-        "layout_verifier": verify_refusal,
+        "ok": state["slots"][1]["image_state"] == "MODIFIED"
+        and "staged root" in arm_refusal
+        and "digest mismatch" in digest_refusal
+        and slice_hashes(disk, manifest)["esp"] == before,
+        "status": state["slots"][1]["image_state"],
         "arm": arm_refusal,
         "stage_digest": digest_refusal,
     }
@@ -575,11 +646,13 @@ def run(args):
         "scenarios": {name: "NOT_RUN" for name in SCENARIOS},
         "boots": [],
         "host_checks": {},
+        "status_checks": {},
+        "slot_tool_sha256": sha_file(args.slot_tool),
         "measurements": {
             "slot_bytes": {p["name"]: p["size_bytes"] for p in manifest["partitions"]},
             "clean_shutdown": "NOT_MEASURED",
         },
-        "s7_remaining": ["clean-shutdown-time", "production-slot-tool-power-loss"],
+        "s7_remaining": ["clean-shutdown-time"],
         "disk_sha256_initial": sha_file(args.disk),
         "ovmf_code_sha256": sha_file(args.ovmf_code),
         "ovmf_vars_template_sha256": sha_file(args.ovmf_vars),
@@ -613,24 +686,49 @@ def run(args):
         result["boots"].append(record)
         return record
 
-    def arm_from(source, name, **keywords):
+    def phase_disk(source, name):
+        """A fresh copy of `source` with the manifest the tool will bind to."""
         disk = out / f"{name}.img"
         manifest_file = out / f"{name}.manifest.json"
-        arm.arm_image(
-            source,
-            args.manifest,
-            args.kernel_b,
-            args.initramfs_b,
-            disk,
-            manifest_file,
-            tries=args.tries,
-            **keywords,
-        )
+        shutil.copyfile(source, disk)
+        shutil.copyfile(args.manifest, manifest_file)
+        return disk, manifest_file
+
+    def arm_phase(source, name, *, fail_health=False, fault=None):
+        disk, manifest_file = phase_disk(source, name)
+        extra = ["--tries", args.tries, "--slot", "root-b"]
+        extra += ["--kernel", args.kernel_b, "--initramfs", args.initramfs_b]
+        if fail_health:
+            extra += ["--extra-option", "flowerly.test.fail_health=1"]
+        if fault:
+            slot_killed(args, "arm", disk, manifest_file, fault, *extra)
+        else:
+            slot_json(args, "arm", disk, manifest_file, *extra)
         return disk, manifest_file
 
     def assert_data(record, reference, what):
         if record["marker_sha256"] != reference["marker_sha256"]:
             raise ValueError(f"persistent data marker changed: {what}")
+
+    def check_status(label, disk, manifest_file, verdict, witness_slot):
+        """The tool's own truthful verdict, from the boot entries plus the
+        guest's witness ledger copied off the data partition."""
+        witness = out / f"witness-{label}.jsonl"
+        extract_witness(disk, manifest, witness)
+        state = slot_json(args, "status", disk, manifest_file, "--witness", witness)
+        result["status_checks"][label] = {
+            "verdict": state["verdict"],
+            "witness_slot": state["witness_slot"],
+            "pending_slots": state["pending_slots"],
+            "bad_slots": state["bad_slots"],
+            "stray_temp_entries": state["stray_temp_entries"],
+        }
+        if state["verdict"] != verdict or state["witness_slot"] != witness_slot:
+            raise ValueError(
+                f"status after {label}: {state['verdict']}/{state['witness_slot']}, "
+                f"expected {verdict}/{witness_slot}"
+            )
+        return state
 
     try:
         qemu = shutil.which("qemu-system-x86_64")
@@ -655,8 +753,8 @@ def run(args):
         result["root_reconstruction"] = "TEST_ONLY_PRESERVE_VERIFIED_ROOT_SLICES"
 
         # --- unhealthy B: boot count runs out, loader falls back to A.
-        armed_disk, armed_manifest = arm_from(
-            reconstructed, "armed-b", failure_switch=True
+        armed_disk, armed_manifest = arm_phase(
+            reconstructed, "armed-b", fail_health=True
         )
         for index in range(args.tries):
             attempt = boot(
@@ -667,51 +765,84 @@ def run(args):
                 bless=False,
             )
             assert_data(attempt, a, "failed B boot")
-        last = boot(armed_disk, vars_file, "root-a", "auto-fallback-a", bless=True)
-        result["root_sha256_after_fallback"] = verify_immutable_roots(
-            armed_disk, json.loads(armed_manifest.read_text())
+        # Entry exhausted, but the last witnessed boot is still the failed B:
+        # the tool must not call this a fallback yet.
+        check_status(
+            "unhealthy-b-3", armed_disk, armed_manifest, "FAILED_UNRESOLVED", "root-b"
         )
+        last = boot(armed_disk, vars_file, "root-a", "auto-fallback-a", bless=True)
+        verify_immutable_roots(armed_disk, manifest)
         assert_data(last, a, "automatic fallback to A")
+        check_status(
+            "auto-fallback-a", armed_disk, armed_manifest, "FELL_BACK", "root-a"
+        )
         for name in ("boot-before-bless", "data-survives", "unhealthy-b-fallback"):
             result["scenarios"][name] = "PASS"
         armed_disk.unlink()
 
         # --- healthy B: activation sticks across a reboot, then rollback to A.
-        ok_disk, ok_manifest = arm_from(reconstructed, "armed-b-ok")
+        ok_disk, ok_manifest = arm_phase(reconstructed, "armed-b-ok")
         ok_vars = fresh_vars("healthy-b")
         b1 = boot(ok_disk, ok_vars, "root-b", "healthy-b-1", bless=True)
-        verify_immutable_roots(ok_disk, json.loads(ok_manifest.read_text()))
+        verify_immutable_roots(ok_disk, manifest)
         assert_data(b1, a, "first healthy B boot")
+        check_status("healthy-b-1", ok_disk, ok_manifest, "ACTIVE", "root-b")
         b2 = boot(ok_disk, ok_vars, "root-b", "healthy-b-2", bless=True)
         assert_data(b2, a, "second healthy B boot")
         result["scenarios"]["healthy-b-activation"] = "PASS"
-        rolled_disk = out / "rollback-a.img"
-        rolled_manifest = out / "rollback-a.manifest.json"
-        arm.rollback_image(ok_disk, ok_manifest, rolled_disk, rolled_manifest)
-        ok_disk.unlink()
-        rb = boot(
-            rolled_disk, fresh_vars("rollback"), "root-a", "rollback-a", bless=True
-        )
-        verify_immutable_roots(rolled_disk, json.loads(rolled_manifest.read_text()))
+        slot_json(args, "rollback", ok_disk, ok_manifest, "--to", "root-a")
+        rb = boot(ok_disk, fresh_vars("rollback"), "root-a", "rollback-a", bless=True)
+        verify_immutable_roots(ok_disk, manifest)
         assert_data(rb, a, "rollback to A")
+        check_status("rollback-a", ok_disk, ok_manifest, "NO_CANDIDATE", "root-a")
         result["scenarios"]["rollback-to-a"] = "PASS"
-        rolled_disk.unlink()
+        ok_disk.unlink()
 
-        # --- power loss during the arm sequence: loader stays on verified A.
-        for fault, label, scenario in (
-            ("tmp-entry", "arm-before-rename-a", "arm-before-rename"),
-            ("entry-no-default", "arm-after-rename-a", "arm-after-rename"),
+        # --- the tool is killed (SIGKILL) at each step of the arm sequence.
+        for fault, label in (
+            ("arm:after-payload", "arm-after-payload-a"),
+            ("arm:after-tmp-entry", "arm-before-rename-a"),
         ):
-            torn_disk, torn_manifest = arm_from(reconstructed, label, fault=fault)
+            torn_disk, torn_manifest = arm_phase(reconstructed, label, fault=fault)
             record = boot(torn_disk, fresh_vars(label), "root-a", label, bless=True)
-            verify_immutable_roots(torn_disk, json.loads(torn_manifest.read_text()))
-            assert_data(record, a, scenario)
-            result["scenarios"][scenario] = "PASS"
+            verify_immutable_roots(torn_disk, manifest)
+            assert_data(record, a, label)
+            check_status(label, torn_disk, torn_manifest, "NO_CANDIDATE", "root-a")
+            if fault == "arm:after-tmp-entry":
+                if not result["status_checks"][label]["stray_temp_entries"]:
+                    raise ValueError("expected a stray temp entry after the kill")
             torn_disk.unlink()
+        result["scenarios"]["arm-before-rename"] = "PASS"
+        # Killed right after the rename: the entry is published, so the loader
+        # boots B (healthy here) and the verdict follows the witness.
+        torn_disk, torn_manifest = arm_phase(
+            reconstructed, "arm-after-rename-b", fault="arm:after-rename"
+        )
+        record = boot(
+            torn_disk,
+            fresh_vars("arm-after-rename-b"),
+            "root-b",
+            "arm-after-rename-b",
+            bless=True,
+        )
+        verify_immutable_roots(torn_disk, manifest)
+        assert_data(record, a, "arm-after-rename")
+        check_status("arm-after-rename-b", torn_disk, torn_manifest, "ACTIVE", "root-b")
+        result["scenarios"]["arm-after-rename"] = "PASS"
+        torn_disk.unlink()
 
         # --- damaged (torn) B entry: tries burn down without a witness, then A.
-        damaged_disk, damaged_manifest = arm_from(
-            reconstructed, "damaged-entry", fault="torn-entry"
+        damaged_disk = out / "damaged-entry.img"
+        damaged_manifest = out / "damaged-entry.manifest.json"
+        arm.arm_image(
+            reconstructed,
+            args.manifest,
+            args.kernel_b,
+            args.initramfs_b,
+            damaged_disk,
+            damaged_manifest,
+            tries=args.tries,
+            fault="torn-entry",
         )
         damaged_vars = fresh_vars("damaged")
         for index in range(args.tries):
@@ -728,6 +859,9 @@ def run(args):
         )
         verify_immutable_roots(damaged_disk, json.loads(damaged_manifest.read_text()))
         assert_data(back, a, "damaged entry fallback")
+        check_status(
+            "damaged-fallback-a", damaged_disk, damaged_manifest, "FELL_BACK", "root-a"
+        )
         result["scenarios"]["damaged-entry-fallback"] = "PASS"
         damaged_disk.unlink()
 
@@ -762,7 +896,13 @@ def run(args):
                 result["scenarios"]["measure-stage-and-boot"] = "PASS"
         result["sequence_verified"] = True
         result["status"] = "SEQUENCE_OBSERVED_S7_INCOMPLETE"
-    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (
+        ValueError,
+        OSError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as error:
         result["status"] = "FAILED_OR_INCONCLUSIVE"
         result["error"] = str(error)[:350]
         raise
@@ -811,6 +951,7 @@ def main():
         parser.add_argument(
             "--" + name, dest=name.replace("-", "_"), type=Path, required=True
         )
+    parser.add_argument("--slot-tool", type=Path, required=True)
     for name in ("unstaged-disk", "unstaged-manifest", "candidate-b"):
         parser.add_argument("--" + name, dest=name.replace("-", "_"), type=Path)
     parser.add_argument("--root-a", required=True)
