@@ -40,7 +40,7 @@ pub struct AdminAuditRecord {
     pub created_at: i64,
 }
 
-fn validate_reason(reason: &str) -> Result<()> {
+pub(super) fn validate_reason(reason: &str) -> Result<()> {
     if reason.trim().is_empty() || reason.len() > MAX_AUDIT_REASON {
         return Err(StorageError::InvalidOperation(format!(
             "reason must be 1..{MAX_AUDIT_REASON} bytes and not blank"
@@ -49,7 +49,7 @@ fn validate_reason(reason: &str) -> Result<()> {
     Ok(())
 }
 
-fn record_audit(
+pub(super) fn record_audit(
     conn: &Connection,
     admin: Caller,
     command: &str,
@@ -290,7 +290,7 @@ fn require_owned(conn: &Connection, raw: &str) -> Result<(OwnedKind, Owner)> {
 const GENERATION_COLUMNS: &str = "id, parent, source_commit, system_manifest, reason_goal, \
      experiment, status, created_at, owner_class, owner_uid";
 
-fn load_generation(conn: &Connection, id: &GenerationId) -> Result<Option<Generation>> {
+pub(super) fn load_generation(conn: &Connection, id: &GenerationId) -> Result<Option<Generation>> {
     conn.query_row(
         &format!("SELECT {GENERATION_COLUMNS} FROM generations WHERE id = ?1"),
         params![id.as_str()],

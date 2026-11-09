@@ -545,8 +545,9 @@ def generation_scenario(alice, bob, admin, admin_uid):
     edges = {edge["to"] for edge in bob.ok("provenance.from", ref=candidate)["edges"]}
     assert goal not in edges and f"actor:uid:{admin_uid}" not in edges, edges
     bob.ok("generation.create", parent=candidate)
-    admin.ok("generation.activate", id=candidate)
-    assert bob.ok("generation.inspect", id=candidate)["status"] == "STABLE"
+    # Promotion does not activate: STABLE needs a witnessed boot (ADR-0023).
+    assert error_of(admin.call("generation.activate", id=candidate))[0] == "conflict"
+    assert bob.ok("generation.inspect", id=candidate)["status"] == "CANDIDATE"
     assert alice.status()["ownership_pending_commands"] == 0
 
 

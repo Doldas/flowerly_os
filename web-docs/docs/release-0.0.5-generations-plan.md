@@ -94,10 +94,18 @@ Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 
 ### Gate D — Generation lifecycle and durable activation (#9)
 
-**Design draft (2026-11-09):** [ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)
+**Design (accepted 2026-11-09):** [ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)
 records the verified gaps in today's code (no transition check, no activation
-history, `STABLE` set by request, rollback unsafe across a schema change) and
-proposes the work breakdown G1–G5. Proposed, pending owner decisions Q1–Q6.
+history, `STABLE` set by request, rollback unsafe across a schema change), the
+owner decisions Q1–Q6, the requirements R1–R5 and the work breakdown G1–G5.
+
+**G1 storage:** migration 0015, typed transitions and activation history. The
+database refuses every other route to `STABLE`, so `generation.activate` now
+always refuses (`conflict`) until G2–G5 replace it. Evidence for `TESTED` is an
+Experiment about that Generation; nothing in production creates Experiments
+yet, so G2 must settle how evidence is recorded. Crash injection in G1 covers
+transaction failure and restart; killing the process at every point of witness
+resolution belongs to G3 (R2).
 
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/

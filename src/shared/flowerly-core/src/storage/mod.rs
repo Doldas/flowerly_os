@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod lifecycle;
 pub mod memory_contract;
 pub mod remote;
 pub mod repository;
@@ -16,10 +17,10 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::types::{
-    AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId,
-    ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
-    SessionState, Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
+    AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId, Goal,
+    GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId, ProvenanceEdge,
+    ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState, SessionState,
+    Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -414,6 +415,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "remote_inference",
         sql: include_str!("../../migrations/0014_remote_inference.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "generation_lifecycle",
+        sql: include_str!("../../migrations/0015_generation_lifecycle.sql"),
     },
 ];
 
@@ -1669,70 +1675,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn set_generation_status(&self, id: &GenerationId, status: GenerationStatus) -> Result<()> {
-        retry_on_busy(RetryConfig::default(), || {
-            let changed = self.conn.execute(
-                "UPDATE generations SET status = ?2 WHERE id = ?1",
-                params![id.as_str(), status.to_string()],
-            )?;
-            if changed == 0 {
-                return Err(StorageError::NotFound(id.to_string()));
-            }
-            Ok(())
-        })
-    }
-
-    /// Promote one generation to STABLE and supersede any previous STABLE
-    /// generation in the same SQLite transaction.
-    pub fn activate_generation(&mut self, id: &GenerationId) -> Result<()> {
-        retry_on_busy(RetryConfig::default(), || {
-            let tx = self
-                .conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-            let exists = tx
-                .query_row(
-                    "SELECT id FROM generations WHERE id = ?1",
-                    params![id.as_str()],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .is_some();
-            if !exists {
-                return Err(StorageError::NotFound(id.to_string()));
-            }
-            // A private candidate never becomes the system STABLE (#225):
-            // it must be promoted, with an audit record, first.
-            let owner_class: String = tx.query_row(
-                "SELECT owner_class FROM generations WHERE id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )?;
-            if owner_class != "system" {
-                return Err(StorageError::OperationConflict(format!(
-                    "generation {id} is not a system Generation; promote it first"
-                )));
-            }
-
-            tx.execute(
-                "UPDATE generations
-                 SET status = ?1
-                 WHERE status = ?2 AND id <> ?3",
-                params![
-                    GenerationStatus::Superseded.to_string(),
-                    GenerationStatus::Stable.to_string(),
-                    id.as_str(),
-                ],
-            )?;
-            tx.execute(
-                "UPDATE generations SET status = ?2 WHERE id = ?1",
-                params![id.as_str(), GenerationStatus::Stable.to_string()],
-            )?;
-            tx.commit()?;
-            Ok(())
-        })
-    }
-
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
         insert_provenance_row(&self.conn, edge)
     }
@@ -2203,6 +2145,7 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::GenerationStatus;
     /// A Flow row as written before migration 0009 (no owner columns).
     fn insert_legacy_flow(conn: &Connection, name: &str, state: &str, created_by: &str) {
         conn.execute(
@@ -3652,101 +3595,6 @@ mod tests {
             .expect("incoming provenance");
         assert_eq!(outgoing, vec![edge.clone()]);
         assert_eq!(incoming, vec![edge]);
-    }
-
-    #[test]
-    fn generation_activation_keeps_exactly_one_stable_generation() {
-        let mut store = migrated_store();
-        let first = Generation {
-            owner: crate::types::Owner::System,
-            id: GenerationId::new(),
-            parent: None,
-            source_commit: Some("first".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Stable,
-            created_at: Timestamp::now(),
-        };
-        let second = Generation {
-            owner: crate::types::Owner::User(1000),
-            id: GenerationId::new(),
-            parent: Some(first.id.clone()),
-            source_commit: Some("second".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Candidate,
-            created_at: Timestamp::now(),
-        };
-        store.insert_generation(&first).expect("insert first");
-        store.insert_generation(&second).expect("insert second");
-
-        // A private candidate must be promoted (audited) before activation.
-        assert!(matches!(
-            store.activate_generation(&second.id),
-            Err(StorageError::OperationConflict(_))
-        ));
-        assert_eq!(
-            store.get_generation(&first.id).unwrap().unwrap().status,
-            GenerationStatus::Stable
-        );
-        store
-            .promote_generation(Caller::new(0), &second.id, "release candidate")
-            .expect("promote second");
-        store
-            .activate_generation(&second.id)
-            .expect("activate second");
-
-        let first = store
-            .get_generation(&first.id)
-            .expect("query first")
-            .expect("first exists");
-        let second = store
-            .get_generation(&second.id)
-            .expect("query second")
-            .expect("second exists");
-
-        assert_eq!(first.status, GenerationStatus::Superseded);
-        assert_eq!(second.status, GenerationStatus::Stable);
-        assert_eq!(
-            store
-                .list_generations()
-                .expect("list generations")
-                .iter()
-                .filter(|generation| generation.status == GenerationStatus::Stable)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn missing_generation_activation_does_not_supersede_current_stable() {
-        let mut store = migrated_store();
-        let stable = Generation {
-            owner: crate::types::Owner::User(1000),
-            id: GenerationId::new(),
-            parent: None,
-            source_commit: Some("stable".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Stable,
-            created_at: Timestamp::now(),
-        };
-        store.insert_generation(&stable).expect("insert stable");
-
-        let missing = GenerationId::new();
-        let error = store
-            .activate_generation(&missing)
-            .expect_err("missing generation must fail");
-        assert!(matches!(error, StorageError::NotFound(_)));
-
-        let stable = store
-            .get_generation(&stable.id)
-            .expect("query stable")
-            .expect("stable exists");
-        assert_eq!(stable.status, GenerationStatus::Stable);
     }
 
     #[test]

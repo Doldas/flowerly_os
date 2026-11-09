@@ -1404,7 +1404,7 @@ mod tests {
             "INSERT INTO generations (id, status, created_at, owner_class, owner_uid) VALUES
                ('gen-a', 'CANDIDATE', 1, 'user', 1001),
                ('gen-b', 'CANDIDATE', 1, 'user', 1002),
-               ('gen-s', 'STABLE', 1, 'system', NULL),
+               ('gen-s', 'CANDIDATE', 1, 'system', NULL),
                ('gen-u', 'CANDIDATE', 1, 'unresolved', NULL);
              INSERT INTO ai_profiles (id, name, created_by, created_at, owner_class, owner_uid)
              VALUES ('profile-a', 'a', 'uid:1001', 1, 'user', 1001),

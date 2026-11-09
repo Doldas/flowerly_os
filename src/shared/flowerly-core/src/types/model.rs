@@ -326,6 +326,9 @@ pub enum GenerationStatus {
     Rejected,
 
     Superseded,
+
+    /// Withdrawn after a defect or risk was found (terminal, ADR-0023).
+    Revoked,
 }
 
 impl fmt::Display for GenerationStatus {
@@ -336,6 +339,7 @@ impl fmt::Display for GenerationStatus {
             GenerationStatus::Stable => "STABLE",
             GenerationStatus::Rejected => "REJECTED",
             GenerationStatus::Superseded => "SUPERSEDED",
+            GenerationStatus::Revoked => "REVOKED",
         };
         f.write_str(value)
     }
@@ -351,6 +355,7 @@ impl FromStr for GenerationStatus {
             "STABLE" => Ok(GenerationStatus::Stable),
             "REJECTED" => Ok(GenerationStatus::Rejected),
             "SUPERSEDED" => Ok(GenerationStatus::Superseded),
+            "REVOKED" => Ok(GenerationStatus::Revoked),
             other => Err(StateParseError::Generation(other.to_owned())),
         }
     }
