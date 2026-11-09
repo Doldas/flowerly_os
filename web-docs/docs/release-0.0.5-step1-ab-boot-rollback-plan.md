@@ -158,6 +158,14 @@ offline tests (fake tools, no KVM) next to any new script, following
 
 ### S6 — Slot staging tool, two-phase (#48)
 
+**Status: DONE 2026-11-09 (image-level).** `distro-builder slot
+stage|arm|rollback|status` is implemented, unit- and CLI-tested with real
+SIGKILLs and exercised through the real OVMF/KVM matrix; see
+[the S6 review](reviews/0048-s6-slot-tool-2026-11-09.md). The pending record
+is the boot-counting entry itself rather than a ledger line (the ledger is on
+the data partition the tool must not write). Block devices, a mounted ESP and a
+privileged broker remain out of scope.
+
 - Prototype CLI `distro-builder slot stage|arm|status` (Rust, in the
   existing crate; no daemon, no IPC yet):
   - `stage <image> --slot b`: refuse the active slot, check free space,
