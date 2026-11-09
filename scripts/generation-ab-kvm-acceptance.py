@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -138,6 +139,7 @@ def validate_source(args, *, actual_execution=False):
             "mtype",
             "mdel",
             "debugfs",
+            "e2fsck",
         ):
             if not shutil.which(program, path=os.environ["PATH"] + ":/usr/sbin:/sbin"):
                 raise ValueError("missing real host tool: " + program)
@@ -475,21 +477,38 @@ def slot_refused(args, verb, disk, manifest, *extra):
 
 
 def extract_witness(disk, manifest, target):
-    """Copy the guest's boot-witness ledger out of the data partition."""
+    """Copy the guest's boot-witness ledger out of the data partition.
+
+    The guest was SIGKILLed, so the newest records may still be only in the
+    ext4 journal and debugfs ignores the journal: replay it on a throwaway
+    copy of the data partition (never on the evidence disk) and read from that.
+    """
     data = next(p for p in manifest["partitions"] if p["name"] == "data")
-    debugfs = shutil.which("debugfs", path=tool_env()["PATH"])
-    if not debugfs:
-        raise ValueError("missing real host tool: debugfs")
-    subprocess.run(
-        [
-            debugfs,
-            "-R",
-            f"dump /boot-witness.jsonl {target}",
-            f"{disk}?offset={data['offset_bytes']}",
-        ],
-        capture_output=True,
-        check=True,
-    )
+    path = tool_env()["PATH"]
+    debugfs = shutil.which("debugfs", path=path)
+    e2fsck = shutil.which("e2fsck", path=path)
+    if not debugfs or not e2fsck:
+        raise ValueError("missing real host tool: debugfs/e2fsck")
+    with tempfile.TemporaryDirectory(prefix="flowerly-witness-") as work:
+        copy = Path(work) / "data.ext4"
+        with Path(disk).open("rb") as source, copy.open("wb") as sink:
+            source.seek(data["offset_bytes"])
+            remaining = data["size_bytes"]
+            while remaining:
+                block = source.read(min(1048576, remaining))
+                if not block:
+                    raise ValueError("short data partition read")
+                sink.write(block)
+                remaining -= len(block)
+        # -p preens and replays the journal; exit 0/1 mean clean/fixed.
+        replay = subprocess.run([e2fsck, "-p", "-f", str(copy)], capture_output=True)
+        if replay.returncode not in (0, 1):
+            raise ValueError("data partition journal replay failed on the copy")
+        subprocess.run(
+            [debugfs, "-R", f"dump /boot-witness.jsonl {target}", str(copy)],
+            capture_output=True,
+            check=True,
+        )
     if not Path(target).is_file() or Path(target).stat().st_size == 0:
         raise ValueError("no boot-witness ledger on the data partition")
 
