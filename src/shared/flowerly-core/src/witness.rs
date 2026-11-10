@@ -797,6 +797,21 @@ mod tests {
         refused(&chain.bytes(), "too long");
     }
 
+    #[test]
+    fn the_guest_writers_golden_ledger_is_accepted() {
+        // Written by generation-ab-guest.py; its test reproduces these bytes.
+        let golden = include_bytes!("../../../../testbed/generation-ledger/v2-golden.jsonl");
+        let ledger = parse_ledger(golden).unwrap();
+        assert_eq!(ledger.last_sequence(), 3);
+        let boots = ledger.witnesses();
+        assert_eq!(boots.len(), 2);
+        assert!(boots[0].healthy && !boots[1].healthy);
+        assert_eq!(
+            (boots[1].slot.as_str(), boots[1].loader_entry.as_str()),
+            ("root-b", "flowerly-b+3.conf")
+        );
+    }
+
     // --- file checks --------------------------------------------------------
 
     fn own_policy() -> LedgerPolicy {

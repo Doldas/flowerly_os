@@ -891,12 +891,15 @@ fn read_witness(path: &Path) -> Result<Option<Value>> {
         Some(end) => &bytes[..end],
         None => return Ok(None),
     };
-    match complete.rsplit(|b| *b == b'\n').find(|l| !l.is_empty()) {
-        Some(line) => Ok(Some(
-            serde_json::from_slice(line).context("last witness record is not JSON")?,
-        )),
-        None => Ok(None),
+    // A v2 ledger interleaves health records; the slot is in the newest witness.
+    for line in complete.rsplit(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let record: Value =
+            serde_json::from_slice(line).context("witness ledger record is not JSON")?;
+        if record["kind"] != "health" {
+            return Ok(Some(record));
+        }
     }
+    Ok(None)
 }
 
 #[cfg(test)]

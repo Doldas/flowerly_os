@@ -23,3 +23,5 @@ fi
 # boundary. The existing script must succeed as the Flowerly service user.
 runuser -u flowerly -- /usr/bin/bash /usr/lib/flowerly/boot-ipc-health.sh
 echo "FLOWERLY_GENERATION_IPC_VERIFIED"
+# The chained health record for this boot (ADR-0023 R1), before blessing.
+/usr/bin/python3 -I /usr/lib/flowerly/generation-ab-guest.py health
