@@ -340,6 +340,12 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 pub struct Migration {
     pub version: i64,
 
+    /// The oldest binary, named by the newest migration it knows, that can
+    /// still use the database after this migration (ADR-0023 section 5).
+    /// Expand-only migrations keep it; a contracting one raises it to its own
+    /// version, which makes activating it irreversible.
+    pub min_reader: i64,
+
     pub name: &'static str,
 
     pub sql: &'static str,
@@ -348,80 +354,123 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
+        min_reader: 1,
         name: "init",
         sql: include_str!("../../migrations/0001_init.sql"),
     },
     Migration {
         version: 2,
+        min_reader: 2,
         name: "session_presentation_and_actor_refs",
         sql: include_str!("../../migrations/0002_session_presentation_and_actor_refs.sql"),
     },
     Migration {
         version: 3,
+        min_reader: 3,
         name: "single_foreground_flow",
         sql: include_str!("../../migrations/0003_single_foreground_flow.sql"),
     },
     Migration {
         version: 4,
+        min_reader: 4,
         name: "protect_general",
         sql: include_str!("../../migrations/0004_protect_general.sql"),
     },
     Migration {
         version: 5,
+        min_reader: 5,
         name: "idempotent_operations",
         sql: include_str!("../../migrations/0005_idempotent_operations.sql"),
     },
     Migration {
         version: 6,
+        min_reader: 6,
         name: "model_catalog",
         sql: include_str!("../../migrations/0006_model_catalog.sql"),
     },
     Migration {
         version: 7,
+        min_reader: 7,
         name: "profiles_providers",
         sql: include_str!("../../migrations/0007_profiles_providers.sql"),
     },
     Migration {
         version: 8,
+        min_reader: 8,
         name: "workloads_usage",
         sql: include_str!("../../migrations/0008_workloads_usage.sql"),
     },
     Migration {
         version: 9,
+        min_reader: 9,
         name: "object_ownership",
         sql: include_str!("../../migrations/0009_object_ownership.sql"),
     },
     Migration {
         version: 10,
+        min_reader: 10,
         name: "per_owner_foreground",
         sql: include_str!("../../migrations/0010_per_owner_foreground.sql"),
     },
     Migration {
         version: 11,
+        min_reader: 11,
         name: "generation_reason_goal_owner",
         sql: include_str!("../../migrations/0011_generation_reason_goal_owner.sql"),
     },
     Migration {
         version: 12,
+        min_reader: 12,
         name: "compute_ownership",
         sql: include_str!("../../migrations/0012_compute_ownership.sql"),
     },
     Migration {
         version: 13,
+        min_reader: 13,
         name: "generation_ownership_admin_audit",
         sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
     },
     Migration {
         version: 14,
+        min_reader: 14,
         name: "remote_inference",
         sql: include_str!("../../migrations/0014_remote_inference.sql"),
     },
     Migration {
         version: 15,
+        min_reader: 15,
         name: "generation_lifecycle",
         sql: include_str!("../../migrations/0015_generation_lifecycle.sql"),
     },
+    Migration {
+        version: 16,
+        min_reader: 16,
+        name: "schema_compat",
+        sql: include_str!("../../migrations/0016_schema_compat.sql"),
+    },
 ];
+
+/// The first migration that records the reader window.
+pub const SCHEMA_COMPAT_SINCE: i64 = 16;
+
+/// Whether migration SQL removes or renames something an older binary may
+/// still use. Line comments are ignored; triggers are not data a reader uses.
+#[must_use]
+pub fn is_contracting(sql: &str) -> bool {
+    let text: String = sql
+        .lines()
+        .map(|line| line.split("--").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(2).any(|pair| {
+        matches!(
+            pair,
+            ["drop", "table" | "index" | "view" | "column"] | ["rename", "to" | "column"]
+        )
+    }) || words.windows(3).any(|w| matches!(w, ["rename", _, "to"]))
+}
 
 /// Live domain counts reported by service Status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -497,16 +546,22 @@ impl Store {
              );",
         )?;
 
-        // Refuse a rollback onto a newer schema before touching anything (an
-        // older binary would otherwise run on tables it does not understand).
+        // Refuse a schema outside this binary's window before touching
+        // anything: an older binary would otherwise run on tables it does not
+        // understand. A database from before the window counts as needing its
+        // own version.
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
         let found: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
             |row| row.get(0),
         )?;
-        if found > supported {
-            return Err(StorageError::SchemaNewerThanBinary { found, supported });
+        let required = self.schema_min_reader()?.unwrap_or(found);
+        if required > supported {
+            return Err(StorageError::SchemaNewerThanBinary {
+                found: required,
+                supported,
+            });
         }
 
         let mut applied = Vec::new();
@@ -538,6 +593,12 @@ impl Store {
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
                 params![migration.version, migration.name, tx_record.as_millis()],
             )?;
+            if migration.version >= SCHEMA_COMPAT_SINCE {
+                tx.execute(
+                    "UPDATE schema_compat SET min_reader = MAX(min_reader, ?1)",
+                    params![migration.min_reader],
+                )?;
+            }
             tx.commit()?;
             tracing::info!(
                 migration.version,
@@ -551,6 +612,25 @@ impl Store {
             });
         }
         Ok(applied)
+    }
+
+    /// The oldest binary that can use this database, or `None` for a database
+    /// from before the window (migration 16).
+    pub fn schema_min_reader(&self) -> Result<Option<i64>> {
+        let has_table: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                            WHERE type = 'table' AND name = 'schema_compat')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(None);
+        }
+        Ok(Some(self.conn.query_row(
+            "SELECT min_reader FROM schema_compat WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?))
     }
 
     pub fn applied_migrations(&self) -> Result<Vec<AppliedMigration>> {
@@ -2741,10 +2821,12 @@ mod tests {
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
         store
             .conn
-            .execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', 0)",
-                params![supported + 1],
-            )
+            .execute_batch(&format!(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({next}, 'future', 0);
+                 UPDATE schema_compat SET min_reader = {next};",
+                next = supported + 1
+            ))
             .unwrap();
         let before = store.applied_migrations().unwrap().len();
         let error = store.migrate().expect_err("newer schema must be refused");
@@ -2756,6 +2838,121 @@ mod tests {
         assert!(error.to_string().contains("restore the pre-upgrade backup"));
         assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
         assert_eq!(store.applied_migrations().unwrap().len(), before);
+    }
+
+    #[test]
+    fn an_older_binary_runs_on_a_newer_schema_inside_its_window() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        // A future expand-only migration: a new table, min_reader unchanged.
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TABLE future_things (id INTEGER PRIMARY KEY);
+                 INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({}, 'future_expand', 0);",
+                supported + 1
+            ))
+            .unwrap();
+        assert!(store.migrate().expect("inside the window").is_empty());
+        assert_eq!(
+            store.schema_min_reader().unwrap(),
+            Some(SCHEMA_COMPAT_SINCE)
+        );
+        store.ensure_general_flow().expect("still usable");
+    }
+
+    #[test]
+    fn a_legacy_schema_without_a_window_is_refused_by_an_older_binary() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        store
+            .conn
+            .execute_batch(&format!(
+                "DROP TRIGGER schema_compat_no_delete;
+                 DROP TABLE schema_compat;
+                 INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({}, 'future', 0);",
+                supported + 1
+            ))
+            .unwrap();
+        assert!(matches!(
+            store.migrate(),
+            Err(StorageError::SchemaNewerThanBinary { .. })
+        ));
+    }
+
+    #[test]
+    fn upgrading_records_the_reader_window() {
+        let store = migrated_store();
+        assert_eq!(
+            store.schema_min_reader().unwrap(),
+            Some(SCHEMA_COMPAT_SINCE)
+        );
+    }
+
+    #[test]
+    fn the_reader_window_only_grows_and_cannot_be_removed() {
+        let store = migrated_store();
+        for sql in [
+            "UPDATE schema_compat SET min_reader = 1",
+            "DELETE FROM schema_compat",
+            "INSERT INTO schema_compat (id, min_reader) VALUES (2, 99)",
+        ] {
+            assert!(store.conn.execute(sql, []).is_err(), "{sql}");
+        }
+        store
+            .conn
+            .execute("UPDATE schema_compat SET min_reader = 99", [])
+            .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(99));
+    }
+
+    #[test]
+    fn every_migration_declares_its_reader_window() {
+        for migration in MIGRATIONS {
+            assert!(
+                (1..=migration.version).contains(&migration.min_reader),
+                "migration {} declares min_reader {}",
+                migration.version,
+                migration.min_reader
+            );
+            // Before the window every older binary refused any newer schema.
+            if migration.version < SCHEMA_COMPAT_SINCE {
+                assert_eq!(migration.min_reader, migration.version);
+            }
+            // Expand-only by default: a contracting migration raises the window.
+            if migration.version >= SCHEMA_COMPAT_SINCE && is_contracting(migration.sql) {
+                assert_eq!(
+                    migration.min_reader, migration.version,
+                    "contracting migration {} must raise min_reader",
+                    migration.version
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contracting_sql_is_recognised() {
+        for sql in [
+            "DROP TABLE flows;",
+            "drop   table if exists x;",
+            "ALTER TABLE flows DROP COLUMN name;",
+            "ALTER TABLE flows RENAME TO old_flows;",
+            "ALTER TABLE flows RENAME COLUMN a TO b;",
+            "DROP INDEX flows_name;",
+            "DROP VIEW v;",
+        ] {
+            assert!(is_contracting(sql), "{sql}");
+        }
+        for sql in [
+            "CREATE TABLE t (id INTEGER);",
+            "ALTER TABLE flows ADD COLUMN note TEXT;",
+            "-- DROP TABLE only in a comment\nCREATE INDEX i ON t(id);",
+            "CREATE TRIGGER t BEFORE DELETE ON x BEGIN SELECT 1; END;",
+        ] {
+            assert!(!is_contracting(sql), "{sql}");
+        }
     }
 
     /// A database as installed before ownership: migrations 1..=8 applied.
