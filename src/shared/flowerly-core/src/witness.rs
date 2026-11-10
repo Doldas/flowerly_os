@@ -522,8 +522,10 @@ pub fn decide(ledger: &Ledger, expectation: &Expectation, live_boot_id: &str) ->
         ("build_id", &newest.build_id, &expectation.build_id),
     ] {
         if booted != wanted {
+            // Name the field only: the values are in the ledger and the identity
+            // table, and an activation detail is not the place to repeat them.
             return Decision::Abandon(format!(
-                "the booted {field} {booted} is not the Generation's {wanted}"
+                "the booted {field} does not match the Generation's"
             ));
         }
     }
