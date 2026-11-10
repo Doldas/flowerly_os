@@ -104,7 +104,8 @@ cat > "$ROOTFS/usr/lib/flowerly/slot-broker.json" <<'EOF'
 {"disk":"/dev/vda","manifest":"/efi/flowerly/ab-disk.manifest.json","esp":"/efi","running_identity":"/usr/lib/flowerly/generation-root.json","test_profile_marker":"/usr/lib/flowerly/generation-ab-test-profile","passwd":"/etc/passwd","group":"/etc/group","cmdline":"/proc/cmdline","service_user":"flowerly","admin_group":"flowerly-admin"}
 EOF
 for name in flowerly-slot-broker.socket flowerly-slot-broker@.service; do
-    install -m 0644 "$ROOT/distro/overlay/usr/lib/systemd/system/$name" \
+    # Test-only units live outside the shipped overlay (no extra sockets there, #225).
+    install -m 0644 "$ROOT/testbed/generation-ab/systemd/$name" \
         "$ROOTFS/usr/lib/systemd/system/$name"
 done
 ln -s /usr/lib/systemd/system/flowerly-slot-broker.socket \
