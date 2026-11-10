@@ -13,10 +13,13 @@
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+use crate::storage::lifecycle::Resolution;
+use crate::storage::Store;
 
 pub const LEDGER_SCHEMA: &str = "flowerly-generation-boot/v2";
 /// The head of an empty ledger.
@@ -358,6 +361,57 @@ pub fn read_ledger(path: &Path, policy: &LedgerPolicy) -> Result<Ledger, LedgerE
     let mut bytes = Vec::new();
     file.take(MAX_LEDGER + 1).read_to_end(&mut bytes)?;
     parse_ledger(&bytes)
+}
+
+/// Where the production ledger is: root's file next to the state database,
+/// readable by the group that owns the state directory (the service
+/// account's), and where this kernel's boot id comes from.
+#[derive(Debug, Clone)]
+pub struct LedgerSource {
+    pub path: PathBuf,
+    pub policy: LedgerPolicy,
+    pub boot_id_path: PathBuf,
+}
+
+impl LedgerSource {
+    pub fn for_state_dir(state_dir: &Path) -> std::io::Result<Self> {
+        let meta = std::fs::metadata(state_dir)?;
+        Ok(Self {
+            path: state_dir.join("boot-witness.jsonl"),
+            policy: LedgerPolicy {
+                owner_uid: 0,
+                reader_gid: meta.gid(),
+            },
+            boot_id_path: PathBuf::from("/proc/sys/kernel/random/boot_id"),
+        })
+    }
+}
+
+/// Resolve the pending activation, if any, from the ledger. Nothing is read
+/// when nothing is pending, so a machine without A/B slots needs no ledger;
+/// an unreadable ledger or boot id leaves the request PENDING.
+pub fn resolve_from(
+    store: &mut Store,
+    source: &LedgerSource,
+) -> crate::storage::Result<Resolution> {
+    let Some(pending) = store.pending_activation()? else {
+        return Ok(Resolution::NoPending);
+    };
+    let unresolved = |reason: String| {
+        Ok(Resolution::Unresolved {
+            activation: pending.id,
+            reason,
+        })
+    };
+    let ledger = match read_ledger(&source.path, &source.policy) {
+        Ok(ledger) => ledger,
+        Err(error) => return unresolved(error.to_string()),
+    };
+    let live = match std::fs::read_to_string(&source.boot_id_path) {
+        Ok(text) => text,
+        Err(error) => return unresolved(format!("reading this boot's id: {error}")),
+    };
+    store.resolve_pending_activation(&ledger, live.trim())
 }
 
 /// What a pending activation expects to see witnessed.

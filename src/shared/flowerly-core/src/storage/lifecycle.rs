@@ -2747,6 +2747,97 @@ mod tests {
         assert_eq!(status(&store, &old), GenerationStatus::Stable);
     }
 
+    /// The ledger and boot id as files, as the daemon reads them.
+    fn ledger_files(
+        dir: &std::path::Path,
+        chain: &Chain,
+        boot: &str,
+    ) -> crate::witness::LedgerSource {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let path = dir.join("boot-witness.jsonl");
+        std::fs::write(&path, chain.bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let boot_id_path = dir.join("boot_id");
+        std::fs::write(&boot_id_path, format!("{boot}\n")).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        crate::witness::LedgerSource {
+            path,
+            policy: crate::witness::LedgerPolicy {
+                owner_uid: meta.uid(),
+                reader_gid: meta.gid(),
+            },
+            boot_id_path,
+        }
+    }
+
+    #[test]
+    fn nothing_pending_reads_no_ledger() {
+        let mut store = store();
+        let source = crate::witness::LedgerSource {
+            path: "/nonexistent/boot-witness.jsonl".into(),
+            policy: crate::witness::LedgerPolicy {
+                owner_uid: 0,
+                reader_gid: 0,
+            },
+            boot_id_path: "/nonexistent/boot_id".into(),
+        };
+        assert_eq!(
+            crate::witness::resolve_from(&mut store, &source).unwrap(),
+            Resolution::NoPending
+        );
+    }
+
+    #[test]
+    fn resolving_from_the_files_confirms_a_healthy_live_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, _) = pending_on(&mut store, &chain);
+        chain.witness(BOOT_2, "root-b").health(BOOT_2);
+        let source = ledger_files(dir.path(), &chain, BOOT_2);
+        assert!(matches!(
+            crate::witness::resolve_from(&mut store, &source).unwrap(),
+            Resolution::Resolved(ref a) if a.state == ActivationState::Confirmed
+        ));
+        assert_eq!(status(&store, &new), GenerationStatus::Stable);
+        assert_eq!(status(&store, &old), GenerationStatus::Superseded);
+    }
+
+    #[test]
+    fn unreadable_files_leave_the_request_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store();
+        let mut chain = booted_a();
+        let (_, new, pending) = pending_on(&mut store, &chain);
+        chain.witness(BOOT_2, "root-b").health(BOOT_2);
+        let good = ledger_files(dir.path(), &chain, BOOT_2);
+        let mut missing = good.clone();
+        missing.path = dir.path().join("absent.jsonl");
+        let mut no_boot_id = good.clone();
+        no_boot_id.boot_id_path = dir.path().join("absent");
+        let mut wrong_owner = good.clone();
+        wrong_owner.policy.owner_uid += 1;
+        for source in [missing, no_boot_id, wrong_owner] {
+            assert!(matches!(
+                crate::witness::resolve_from(&mut store, &source).unwrap(),
+                Resolution::Unresolved { activation, .. } if activation == pending.id
+            ));
+        }
+        // A tampered ledger on disk.
+        let mut tampered = chain.bytes();
+        let at = tampered.iter().position(|b| *b == b'1').unwrap();
+        tampered[at] = b'9';
+        std::fs::write(&good.path, tampered).unwrap();
+        match crate::witness::resolve_from(&mut store, &good).unwrap() {
+            Resolution::Unresolved { reason, .. } => {
+                assert!(reason.contains("refused"), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(status(&store, &new), GenerationStatus::Tested);
+        assert!(store.pending_activation().unwrap().is_some());
+    }
+
     const CRASH_DB: &str = "FLOWERLY_TEST_CRASH_DB";
     const CRASH_LEDGER: &str = "FLOWERLY_TEST_CRASH_LEDGER";
 
