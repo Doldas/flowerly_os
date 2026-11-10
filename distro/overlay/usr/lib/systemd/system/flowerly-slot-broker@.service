@@ -1,0 +1,23 @@
+[Unit]
+Description=Flowerly root slot broker, one intent (A/B test image only, ADR-0023 G4)
+RequiresMountsFor=/efi
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/lib/flowerly/flowerly-slot-broker slot-broker
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=120
+# Reads the disk, writes boot entries on the ESP; nothing else.
+ProtectSystem=strict
+ReadWritePaths=/efi
+ProtectHome=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+SystemCallArchitectures=native

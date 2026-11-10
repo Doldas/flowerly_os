@@ -4,18 +4,27 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fail() { echo "Generation A/B rootfs: $*" >&2; exit 1; }
-(( $# == 12 )) || fail "usage: ROOTFS --slot root-a|root-b --partuuid UUID --source-commit SHA40 --input-manifest-sha256 SHA64 --build-id ID --test-profile"
+(( $# == 18 )) || fail "usage: ROOTFS --slot root-a|root-b --partuuid UUID --source-commit SHA40 --input-manifest-sha256 SHA64 --build-id ID --schema-version N --min-reader N --slot-broker BINARY --test-profile"
 ROOTFS="$1"; shift
 [[ "$1" == --slot ]] || fail "missing --slot"; SLOT="$2"; shift 2
 [[ "$1" == --partuuid ]] || fail "missing --partuuid"; PARTUUID="$2"; shift 2
 [[ "$1" == --source-commit ]] || fail "missing --source-commit"; SOURCE="$2"; shift 2
 [[ "$1" == --input-manifest-sha256 ]] || fail "missing --input-manifest-sha256"; INPUT_SHA="$2"; shift 2
 [[ "$1" == --build-id ]] || fail "missing --build-id"; BUILD_ID="$2"; shift 2
+# The schema window of this image's flowerlyd (flowerlyd --schema-window).
+[[ "$1" == --schema-version ]] || fail "missing --schema-version"; SCHEMA_VERSION="$2"; shift 2
+[[ "$1" == --min-reader ]] || fail "missing --min-reader"; MIN_READER="$2"; shift 2
+[[ "$1" == --slot-broker ]] || fail "missing --slot-broker"; BROKER="$2"; shift 2
 [[ "$1" == --test-profile ]] || fail "Generation A/B boot profile is test-only"
 [[ "$SLOT" == root-a || "$SLOT" == root-b ]] || fail "invalid target slot"
 [[ "$PARTUUID" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || fail "invalid root PARTUUID"
 [[ "$SOURCE" =~ ^[0-9a-f]{40}$ && "$INPUT_SHA" =~ ^[0-9a-f]{64}$ ]] || fail "invalid source/input digest"
 [[ "$BUILD_ID" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || fail "invalid build ID"
+if [[ ! "$SCHEMA_VERSION" =~ ^[1-9][0-9]{0,5}$ || ! "$MIN_READER" =~ ^[1-9][0-9]{0,5}$ ]] ||
+   (( MIN_READER > SCHEMA_VERSION )); then
+    fail "invalid schema window"
+fi
+[[ -f "$BROKER" && ! -L "$BROKER" && -x "$BROKER" ]] || fail "missing slot broker binary"
 [[ -d "$ROOTFS" && ! -L "$ROOTFS" ]] || fail "missing/symlinked rootfs"
 [[ -f "$ROOTFS/usr/lib/os-release" ]] &&
     grep -qx ID=arch "$ROOTFS/usr/lib/os-release" || fail "not an Arch rootfs"
@@ -37,7 +46,8 @@ for file in usr/bin/python3 usr/bin/runuser usr/lib/systemd/systemd-bless-boot \
         [[ -f "$candidate" ]] || fail "missing A/B prerequisite: $file"
     fi
 done
-for path in etc etc/systemd etc/systemd/system etc/fstab usr/lib/flowerly \
+for path in etc etc/systemd etc/systemd/system etc/systemd/system/sockets.target.wants \
+            etc/fstab usr/lib/flowerly \
             usr/lib/systemd/system usr/lib/systemd/system/flowerlyd.service.d \
             etc/systemd/system/multi-user.target.wants var/lib/flowerly efi; do
     [[ ! -L "$ROOTFS/$path" ]] || fail "symlink in Generation rootfs destination: $path"
@@ -47,6 +57,10 @@ for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab
             usr/lib/flowerly/generation-bless.sh \
             usr/lib/systemd/system/flowerly-generation-witness.service \
             usr/lib/systemd/system/flowerly-generation-health.service \
+            usr/lib/flowerly/flowerly-slot-broker usr/lib/flowerly/slot-broker.json \
+            usr/lib/systemd/system/flowerly-slot-broker.socket \
+            usr/lib/systemd/system/flowerly-slot-broker@.service \
+            etc/systemd/system/sockets.target.wants/flowerly-slot-broker.socket \
             usr/lib/systemd/system/flowerlyd.service.d/10-generation-witness.conf \
             etc/systemd/system/systemd-bless-boot.service \
             etc/systemd/system/multi-user.target.wants/flowerly-generation-witness.service \
@@ -63,6 +77,7 @@ if [[ -f "$ROOTFS/etc/fstab" ]] &&
 fi
 install -d -m 0755 \
     "$ROOTFS/usr/lib/flowerly" "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d" \
+    "$ROOTFS/etc/systemd/system/sockets.target.wants" \
     "$ROOTFS/etc/systemd/system/multi-user.target.wants" "$ROOTFS/var/lib/flowerly" "$ROOTFS/efi"
 install -m 0755 "$ROOT/distro/overlay/usr/lib/flowerly/generation-ab-guest.py" \
     "$ROOTFS/usr/lib/flowerly/generation-ab-guest.py"
@@ -77,9 +92,23 @@ for name in flowerly-generation-witness flowerly-generation-health; do
         "$ROOTFS/etc/systemd/system/multi-user.target.wants/$name.service"
 done
 cat > "$ROOTFS/usr/lib/flowerly/generation-root.json" <<EOF
-{"schema":"flowerly-generation-root/v1","slot":"$SLOT","root_partuuid":"$PARTUUID","source_commit":"$SOURCE","input_manifest_sha256":"$INPUT_SHA","build_id":"$BUILD_ID"}
+{"schema":"flowerly-generation-root/v2","slot":"$SLOT","root_partuuid":"$PARTUUID","source_commit":"$SOURCE","input_manifest_sha256":"$INPUT_SHA","build_id":"$BUILD_ID","schema_version":$SCHEMA_VERSION,"min_reader":$MIN_READER}
 EOF
 chmod 0644 "$ROOTFS/usr/lib/flowerly/generation-root.json"
+# The root slot broker (ADR-0023 G4): test profile only until Gate D is
+# verified. It reads the whole disk (virtio /dev/vda in the KVM tests) and the
+# disk manifest the operator put on the ESP, and writes only boot entries.
+install -m 0755 "$BROKER" "$ROOTFS/usr/lib/flowerly/flowerly-slot-broker"
+install -m 0600 /dev/null "$ROOTFS/usr/lib/flowerly/slot-broker.json"
+cat > "$ROOTFS/usr/lib/flowerly/slot-broker.json" <<'EOF'
+{"disk":"/dev/vda","manifest":"/efi/flowerly/ab-disk.manifest.json","esp":"/efi","running_identity":"/usr/lib/flowerly/generation-root.json","test_profile_marker":"/usr/lib/flowerly/generation-ab-test-profile","passwd":"/etc/passwd","group":"/etc/group","cmdline":"/proc/cmdline","service_user":"flowerly","admin_group":"flowerly-admin"}
+EOF
+for name in flowerly-slot-broker.socket flowerly-slot-broker@.service; do
+    install -m 0644 "$ROOT/distro/overlay/usr/lib/systemd/system/$name" \
+        "$ROOTFS/usr/lib/systemd/system/$name"
+done
+ln -s /usr/lib/systemd/system/flowerly-slot-broker.socket \
+    "$ROOTFS/etc/systemd/system/sockets.target.wants/flowerly-slot-broker.socket"
 touch "$ROOTFS/usr/lib/flowerly/generation-ab-test-profile"
 chmod 0644 "$ROOTFS/usr/lib/flowerly/generation-ab-test-profile"
 cat > "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d/10-generation-witness.conf" <<'EOF'

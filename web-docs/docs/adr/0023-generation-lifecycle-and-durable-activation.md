@@ -316,6 +316,41 @@ the code it guards.
   migration must stay readable by it.
 - *Not yet verified on a real boot.* The guest changes run in G5's KVM matrix.
 
+**G4a (2026-11-10), owner decisions of the same day.** G4 is split: G4a is the
+broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
+
+- *Payload is staged, not passed.* The guest has no `debugfs` and the
+  initramfs is built on the host, so `slot stage --kernel --initramfs
+  --identity` (operator, outside Gate D) puts the slot's kernel and initramfs
+  on the ESP and records them, with the image's baked identity, in the
+  root-owned disk manifest. The broker accepts no path: it verifies the slot
+  bytes against the manifest and the claimed `rootfs_sha256`, the ESP files
+  against the claimed kernel and initramfs hashes, and the recorded identity
+  against the claimed commit, input manifest and build id. Binding to
+  `rootfs_sha256` covers the identity file inside the image as well.
+- *Intents.* `arm` (used for both activate and rollback; the claimed identity
+  says which image) and `disarm` (remove the other slot's pending entry). The
+  ADR's `rollback {to}` is `disarm`. Both act only on the inactive slot,
+  derived from the broker's own kernel command line.
+- *Authorization.* The `SO_PEERCRED` uid must be the service account in
+  `/etc/passwd`, and the `admin_uid` it speaks for must be in
+  `flowerly-admin` (supplementary or primary) in `/etc/group`. The service
+  account cannot name itself or anyone else into the group.
+- *Schema.* The baked identity is now `flowerly-generation-root/v2` with the
+  image `flowerlyd`'s `schema_version` and `min_reader` (`flowerlyd
+  --schema-window`). A target whose `min_reader` is newer than the running
+  root's `schema_version` is an irreversible activation and is refused in
+  G4a; G4b adds the safe path.
+- *Gate.* `RELEASE_ACTIVATION_ENABLED` is `false`. The broker answers only on
+  an image carrying the test-profile marker, which only the explicit
+  test-image script installs, together with the broker binary, its config and
+  its socket-activated units (`Accept=yes`, one root process per intent,
+  `ProtectSystem=strict`, writable `/efi` only, no network). The constant is
+  turned on only by the change that archives the G5 evidence.
+- *Writes.* The disk is opened read-only; the only writes are one boot entry
+  (temp file and rename) or its removal on the mounted ESP, through a
+  directory backend that refuses symlinks and paths outside the ESP.
+
 ## Non-goals
 
 Package pinning and signatures (ADR-0020/#49), image building, `stage` as an

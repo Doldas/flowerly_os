@@ -5,6 +5,15 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Root slot broker (ADR-0023 G4a, #9), test profile only. `distro-builder
+  slot stage --kernel --initramfs --identity` stages a slot's boot payload and
+  baked identity; the broker (`flowerly-slot-broker.socket`) arms or disarms
+  only the inactive slot for the service account acting for a current
+  `flowerly-admin` member, after checking the slot bytes, the ESP payload, the
+  identity and the schema window itself. It opens the disk read-only and
+  refuses irreversible activations. The baked identity gains the image's
+  schema window (`flowerlyd --schema-window`). The schema compatibility
+  baseline moved to the G3 merge.
 - Generation activation resolution and schema window (ADR-0023 G3, #9). The
   A/B test guest writes a hash-chained boot ledger (v2) with a health record
   per boot; `flowerlyd` verifies it and resolves a pending activation at
