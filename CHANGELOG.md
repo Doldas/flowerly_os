@@ -5,6 +5,13 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Generation activation resolution and schema window (ADR-0023 G3, #9). The
+  A/B test guest writes a hash-chained boot ledger (v2) with a health record
+  per boot; `flowerlyd` verifies it and resolves a pending activation at
+  start-up and through the service-account `generation.resolve`. Migration 16
+  records `min_reader`, so an older binary keeps working on an expand-only
+  newer schema; binaries from before it still refuse it. CI now runs a real
+  older `flowerlyd` against databases from this build. Activation stays off.
 - Generation lifecycle commands (ADR-0023 G2, #9): `generation.identity`,
   `evidence`, `test`, `reject`, `revoke` and `history`, Admin only, audited and
   in `agenticctl`. `TESTED` needs recorded passing evidence and a complete root

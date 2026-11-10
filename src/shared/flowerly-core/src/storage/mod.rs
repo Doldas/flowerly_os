@@ -453,6 +453,23 @@ pub const MIGRATIONS: &[Migration] = &[
 /// The first migration that records the reader window.
 pub const SCHEMA_COMPAT_SINCE: i64 = 16;
 
+/// Run one migration and record it, raising the reader window if it needs
+/// to, inside the caller's transaction.
+fn apply_migration(conn: &Connection, migration: &Migration, at: Timestamp) -> Result<()> {
+    conn.execute_batch(migration.sql)?;
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+        params![migration.version, migration.name, at.as_millis()],
+    )?;
+    if migration.version >= SCHEMA_COMPAT_SINCE {
+        conn.execute(
+            "UPDATE schema_compat SET min_reader = MAX(min_reader, ?1)",
+            params![migration.min_reader],
+        )?;
+    }
+    Ok(())
+}
+
 /// Whether migration SQL removes or renames something an older binary may
 /// still use. Line comments are ignored; triggers are not data a reader uses.
 #[must_use]
@@ -588,17 +605,7 @@ impl Store {
             }
 
             let tx_record = Timestamp::now();
-            tx.execute_batch(migration.sql)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                params![migration.version, migration.name, tx_record.as_millis()],
-            )?;
-            if migration.version >= SCHEMA_COMPAT_SINCE {
-                tx.execute(
-                    "UPDATE schema_compat SET min_reader = MAX(min_reader, ?1)",
-                    params![migration.min_reader],
-                )?;
-            }
+            apply_migration(&tx, migration, tx_record)?;
             tx.commit()?;
             tracing::info!(
                 migration.version,
@@ -2880,6 +2887,31 @@ mod tests {
             store.migrate(),
             Err(StorageError::SchemaNewerThanBinary { .. })
         ));
+    }
+
+    #[test]
+    fn a_migration_raises_the_window_but_never_lowers_it() {
+        let store = migrated_store();
+        let migration = |version, min_reader, sql| Migration {
+            version,
+            min_reader,
+            name: "synthetic",
+            sql,
+        };
+        apply_migration(
+            &store.conn,
+            &migration(98, 98, "CREATE TABLE t98 (id INTEGER);"),
+            Timestamp::now(),
+        )
+        .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(98));
+        apply_migration(
+            &store.conn,
+            &migration(99, 20, "CREATE TABLE t99 (id INTEGER);"),
+            Timestamp::now(),
+        )
+        .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(98));
     }
 
     #[test]

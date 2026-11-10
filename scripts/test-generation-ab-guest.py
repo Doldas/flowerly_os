@@ -210,7 +210,9 @@ class BootTests(unittest.TestCase):
                 first.replace(b"fixture-a", b"fixture-z") + b"\n" + rest,
                 good[:-1],
                 rest,
-                good.replace(b"flowerly-generation-boot/v2", b"flowerly-generation-boot/v1"),
+                good.replace(
+                    b"flowerly-generation-boot/v2", b"flowerly-generation-boot/v1"
+                ),
             ):
                 ledger.write_bytes(damaged)
                 with self.subTest(damaged=damaged[:40]):

@@ -1022,10 +1022,10 @@ mod tests {
         // Shorter than at request time.
         let mut short = Chain::default();
         short.witness(BOOT_1, "root-a");
-        assert!(matches!(
-            decide(&short.parse(), &exp, BOOT_1),
-            Decision::Unresolved(_)
-        ));
+        match decide(&short.parse(), &exp, BOOT_1) {
+            Decision::Unresolved(reason) => assert!(reason.contains("shorter"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
         // Same length, different history: the head no longer matches.
         let mut other = Chain::default();
         other

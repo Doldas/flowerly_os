@@ -239,7 +239,9 @@ def append_witness(
     partuuid = verify_boot_identity(identity, cmdline, slot)
 
     def build(records):
-        if any(r.get("boot_id") == boot_id for r in records if r.get("kind") == "witness"):
+        if any(
+            r.get("boot_id") == boot_id for r in records if r.get("kind") == "witness"
+        ):
             raise ValueError("duplicate kernel boot ID")
         first = not any(r.get("kind") == "witness" for r in records)
         marker_hash = (

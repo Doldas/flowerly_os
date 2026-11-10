@@ -132,6 +132,11 @@ jobs:
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
 
+      # Builds flowerlyd from the commit in testbed/schema-compat/baseline.json
+      # and runs it on databases written by this build, and the reverse.
+      - name: Schema reader window against the recorded older binary (ADR-0023 R4)
+        run: python3 ./scripts/test-schema-compat.py target/release
+
       - name: Black-box unified runtime, durable replay and separate hypervisor boundary
         run: python3 ./testbed/integration/test-unified-runtime.py target/release
 
@@ -343,6 +348,7 @@ jobs:
       - name: Generation A/B guest identity and opt-in health-gate installation
         run: |
           python3 ./scripts/test-generation-ab-guest.py
+          python3 ./scripts/test-schema-compat.py --self-test
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 
