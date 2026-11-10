@@ -1,10 +1,11 @@
+use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context;
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::lifecycle::{
-    validate_operation_id, Activation, EvidenceOutcome, RootIdentity,
+    validate_operation_id, Activation, EvidenceOutcome, Resolution, RootIdentity,
 };
 use flowerly_core::storage::{StorageError, Store, MAX_AUDIT_REASON};
 use flowerly_core::types::{Caller, Owner};
@@ -12,6 +13,7 @@ use flowerly_core::types::{
     ExperimentId, Generation, GenerationId, GenerationStatus, GoalId, ObjectRef, ProvenanceEdge,
     ProvenanceRelation, Timestamp,
 };
+use flowerly_core::witness::{resolve_from, LedgerSource};
 use flowerly_core::{coded_error_envelope, error_envelope, ok_envelope};
 use serde::Deserialize;
 use serde_json::Value;
@@ -110,6 +112,9 @@ struct GenerationActivationArgs {
     #[serde(default)]
     acknowledges: Option<i64>,
 }
+
+#[derive(Debug, Deserialize)]
+struct GenerationResolveArgs {}
 
 #[derive(Debug, Deserialize)]
 struct GenerationHistoryArgs {
@@ -266,6 +271,9 @@ fn validate_generation_command(
                 validate_generation_id(id)?;
             }
         }
+        "generation.resolve" => {
+            let _: GenerationResolveArgs = typed_generation_args(args)?;
+        }
         "generation.promote" => {
             let typed: GenerationPromoteArgs = typed_generation_args(args)?;
             validate_generation_id(&typed.id)?;
@@ -345,6 +353,61 @@ impl CommandFailure {
 impl PartialEq<String> for CommandFailure {
     fn eq(&self, other: &String) -> bool {
         &self.message == other
+    }
+}
+
+static LEDGER: OnceLock<LedgerSource> = OnceLock::new();
+
+/// The boot ledger next to the state database (ADR-0023 G3).
+pub(crate) fn configure_ledger(state_dir: &Path) -> anyhow::Result<()> {
+    let source = LedgerSource::for_state_dir(state_dir)
+        .with_context(|| format!("reading {}", state_dir.display()))?;
+    LEDGER
+        .set(source)
+        .map_err(|_| anyhow::anyhow!("boot ledger already configured"))
+}
+
+fn resolve_with(store: &mut Store, source: &LedgerSource) -> Result<Value, CommandFailure> {
+    let resolution = resolve_from(store, source).map_err(CommandFailure::storage)?;
+    Ok(resolution_json(resolution))
+}
+
+/// The IPC answer for a resolution; a request that stays unresolved is logged.
+fn resolution_json(resolution: Resolution) -> Value {
+    match resolution {
+        Resolution::NoPending => serde_json::json!({ "outcome": "none" }),
+        Resolution::Waiting { activation, reason } => serde_json::json!({
+            "outcome": "waiting", "activation": activation, "reason": reason,
+        }),
+        Resolution::Unresolved { activation, reason } => {
+            tracing::warn!(activation, %reason, "pending Generation activation stays unresolved");
+            serde_json::json!({ "outcome": "unresolved", "activation": activation, "reason": reason })
+        }
+        Resolution::Resolved(activation) => {
+            let outcome = match activation.state.as_str() {
+                "CONFIRMED" => "confirmed",
+                "FELL_BACK" => "fell_back",
+                _ => "abandoned",
+            };
+            tracing::info!(
+                activation = activation.id,
+                generation_id = %activation.generation,
+                outcome,
+                "Generation activation resolved from the boot ledger"
+            );
+            serde_json::json!({ "outcome": outcome, "activation": activation_json(&activation) })
+        }
+    }
+}
+
+/// Start-up resolution; never stops the daemon on the known-good root.
+pub(crate) fn resolve_at_startup(store: &mut Store) {
+    let Some(source) = LEDGER.get() else {
+        return;
+    };
+    match resolve_with(store, source) {
+        Ok(outcome) => tracing::info!(%outcome, "Generation activation check at start-up"),
+        Err(error) => tracing::warn!(%error, "Generation activation check failed at start-up"),
     }
 }
 
@@ -583,6 +646,15 @@ fn run_command(
             }
             .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": finished.id, "status": finished.status }))
+        }
+        // Service account only: reads the ledger itself and takes no input.
+        "generation.resolve" => {
+            let _: GenerationResolveArgs = parsed_args(args)?;
+            let source = LEDGER.get().ok_or_else(|| CommandFailure {
+                code: ErrorCode::Unavailable,
+                message: "no boot ledger is configured".to_owned(),
+            })?;
+            resolve_with(store, source)
         }
         "generation.history" => {
             let typed: GenerationHistoryArgs = parsed_args(args)?;
@@ -1121,6 +1193,118 @@ mod tests {
             let error = run_command(&mut store, name, &args, TEST_CALLER).expect_err(name);
             assert_eq!(error.code, expected, "{name} {args}");
         }
+    }
+
+    // --- witness resolution (ADR-0023 G3) ---------------------------------
+    // The ledger itself is read and decided in flowerly-core (witness.rs and
+    // the lifecycle tests); here only the IPC surface.
+
+    #[test]
+    fn resolve_without_a_pending_activation_does_not_read_the_ledger() {
+        let mut store = migrated_store();
+        let source = LedgerSource {
+            path: "/nonexistent/boot-witness.jsonl".into(),
+            policy: flowerly_core::witness::LedgerPolicy {
+                owner_uid: 0,
+                reader_gid: 0,
+            },
+            boot_id_path: "/nonexistent/boot_id".into(),
+        };
+        assert_eq!(
+            resolve_with(&mut store, &source).unwrap()["outcome"],
+            "none"
+        );
+    }
+
+    #[test]
+    fn every_resolution_has_a_distinct_outcome() {
+        use flowerly_core::storage::lifecycle::ActivationState;
+        let activation = |state| {
+            Box::new(Activation {
+                id: 7,
+                generation: GenerationId::new(),
+                previous_generation: None,
+                kind: ActivationKind::Activate,
+                actor_uid: 0,
+                reason: "go".to_owned(),
+                operation_id: None,
+                request_digest: hash('f'),
+                expected_slot: "root-b".to_owned(),
+                expected_root_partuuid: "11111111-2222-3333-4444-555555555555".to_owned(),
+                ledger_sequence: 2,
+                ledger_head: hash('e'),
+                irreversible: false,
+                backup_sha256: None,
+                acknowledges: None,
+                state,
+                requested_at: Timestamp::now(),
+                resolved_at: Some(Timestamp::now()),
+                witness_boot_id: None,
+                witness_sequence: None,
+                detail: None,
+            })
+        };
+        for (resolution, outcome) in [
+            (Resolution::NoPending, "none"),
+            (
+                Resolution::Waiting {
+                    activation: 7,
+                    reason: "no health".to_owned(),
+                },
+                "waiting",
+            ),
+            (
+                Resolution::Unresolved {
+                    activation: 7,
+                    reason: "copied ledger".to_owned(),
+                },
+                "unresolved",
+            ),
+            (
+                Resolution::Resolved(activation(ActivationState::Confirmed)),
+                "confirmed",
+            ),
+            (
+                Resolution::Resolved(activation(ActivationState::FellBack)),
+                "fell_back",
+            ),
+            (
+                Resolution::Resolved(activation(ActivationState::Abandoned)),
+                "abandoned",
+            ),
+        ] {
+            assert_eq!(resolution_json(resolution)["outcome"], outcome);
+        }
+    }
+
+    #[test]
+    fn resolve_takes_no_arguments_and_needs_a_configured_ledger() {
+        let mut store = migrated_store();
+        let code = |r: Result<(), (ErrorCode, String)>| r.unwrap_err().0;
+        assert_eq!(
+            code(validate_generation_command(
+                &store,
+                "generation.resolve",
+                &serde_json::json!([]),
+                ADMIN_CALLER
+            )),
+            ErrorCode::InvalidArgument
+        );
+        validate_generation_command(
+            &store,
+            "generation.resolve",
+            &serde_json::json!({}),
+            ADMIN_CALLER,
+        )
+        .unwrap();
+        let error = run_command(
+            &mut store,
+            "generation.resolve",
+            &serde_json::json!({}),
+            ADMIN_CALLER,
+        )
+        .unwrap_err();
+        assert_ne!(error.code, ErrorCode::Internal);
     }
 
     const ADMIN_CALLER: Caller = Caller::new(4242);

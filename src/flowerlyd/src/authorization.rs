@@ -15,6 +15,8 @@
 //! account and therefore hold full authority over its state database. Until
 //! shells can be launched as the requesting user they are limited to peers
 //! running as the service account itself, even for admin group members.
+//! `generation.resolve` is also one: the test-image health gate runs it after
+//! blessing, and it acts only on what the root-owned boot ledger proves.
 
 use flowerly_core::ipc::{AccessPolicy, ErrorCode, PeerIdentity};
 
@@ -327,6 +329,11 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
         "shows the actor and reason of every activation",
     ),
     (
+        "generation.resolve",
+        CommandClass::ServiceAccount,
+        "no input; acts only on what the root-owned boot ledger proves",
+    ),
+    (
         "generation.promote",
         CommandClass::Admin,
         "audited: makes a private candidate a shared system Generation",
@@ -532,14 +539,17 @@ mod tests {
 
     #[test]
     fn pty_commands_are_limited_to_the_service_account() {
-        let pty = with_class(CommandClass::ServiceAccount);
+        let service = with_class(CommandClass::ServiceAccount);
+        let (pty, other): (Vec<&str>, Vec<&str>) = service
+            .iter()
+            .partition(|name| name.starts_with("session."));
         assert_eq!(pty.len(), 10, "{pty:?}");
-        assert!(pty.iter().all(|name| name.starts_with("session.")));
+        assert_eq!(other, ["generation.resolve"]);
         let policy = AccessPolicy {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),
         };
-        for name in &pty {
+        for name in &service {
             assert_eq!(
                 authorize(name, &peer(SERVICE_UID, SERVICE_UID, &[]), &policy),
                 Ok(()),

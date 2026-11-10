@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline installation and kernel/EFI witness regression for opt-in A/B guest."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,6 +21,8 @@ UUID_B = "22222222-2222-2222-2222-222222222222"
 COMMIT = "a" * 40
 MANIFEST = "b" * 64
 BOOT = "33333333-3333-3333-3333-333333333333"
+BOOT_2 = "44444444-4444-4444-4444-444444444444"
+GOLDEN = ROOT / "testbed/generation-ledger/v2-golden.jsonl"
 
 
 def identity(slot="root-a", partuuid=UUID_A):
@@ -92,7 +95,10 @@ class BootTests(unittest.TestCase):
                 data_device=20,
             )
             self.assertEqual(witness["slot"], "root-a")
-            self.assertEqual(witness["health"], "NOT_YET_TESTED")
+            self.assertEqual(witness["kind"], "witness")
+            self.assertNotIn("health", witness)
+            self.assertEqual(witness["sequence"], 1)
+            self.assertEqual(witness["prev_sha256"], "0" * 64)
             self.assertEqual(len(ledger.read_text().splitlines()), 1)
             with self.assertRaises(ValueError):
                 guest.append_witness(
@@ -144,6 +150,104 @@ class BootTests(unittest.TestCase):
                     20,
                     marker_path=marker,
                 )
+
+    def witness_a(self, ledger, boot=BOOT, **kwargs):
+        return guest.append_witness(
+            ledger,
+            identity(),
+            "root=PARTUUID=" + UUID_A,
+            efi("a"),
+            boot,
+            10,
+            20,
+            **kwargs,
+        )
+
+    def test_records_are_chained_and_health_follows_its_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            self.witness_a(ledger)
+            health = guest.append_health(ledger, BOOT)
+            self.assertEqual(
+                (health["kind"], health["status"], health["boot_id"]),
+                ("health", "PASSED", BOOT),
+            )
+            self.witness_a(ledger, BOOT_2)
+            lines = ledger.read_bytes().splitlines()
+            head = "0" * 64
+            for number, line in enumerate(lines, start=1):
+                record = json.loads(line)
+                self.assertEqual(record["sequence"], number)
+                self.assertEqual(record["prev_sha256"], head)
+                self.assertEqual(record["schema"], "flowerly-generation-boot/v2")
+                head = hashlib.sha256(line).hexdigest()
+
+    def test_health_refusals_do_not_modify_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            with self.assertRaises(ValueError):
+                guest.append_health(ledger, BOOT)
+            self.witness_a(ledger)
+            before = ledger.read_bytes()
+            for boot in (BOOT_2, "not-a-boot-id"):
+                with self.subTest(boot=boot), self.assertRaises(ValueError):
+                    guest.append_health(ledger, boot)
+            self.assertEqual(ledger.read_bytes(), before)
+            guest.append_health(ledger, BOOT)
+            after = ledger.read_bytes()
+            with self.assertRaisesRegex(ValueError, "health"):
+                guest.append_health(ledger, BOOT)
+            self.assertEqual(ledger.read_bytes(), after)
+
+    def test_a_broken_or_torn_chain_is_never_extended(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            self.witness_a(ledger)
+            guest.append_health(ledger, BOOT)
+            good = ledger.read_bytes()
+            first, rest = good.split(b"\n", 1)
+            for damaged in (
+                first.replace(b"fixture-a", b"fixture-z") + b"\n" + rest,
+                good[:-1],
+                rest,
+                good.replace(
+                    b"flowerly-generation-boot/v2", b"flowerly-generation-boot/v1"
+                ),
+            ):
+                ledger.write_bytes(damaged)
+                with self.subTest(damaged=damaged[:40]):
+                    with self.assertRaises(ValueError):
+                        self.witness_a(ledger, BOOT_2)
+                    with self.assertRaises(ValueError):
+                        guest.append_health(ledger, BOOT)
+                    self.assertEqual(ledger.read_bytes(), damaged)
+
+    def test_owner_and_mode_let_only_the_service_group_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            owner = (os.getuid(), os.getgid())
+            self.witness_a(ledger, owner=owner)
+            self.assertEqual(ledger.stat().st_mode & 0o7777, 0o640)
+            self.assertEqual((ledger.stat().st_uid, ledger.stat().st_gid), owner)
+            os.chmod(ledger, 0o666)
+            guest.append_health(ledger, BOOT, owner=owner)
+            self.assertEqual(ledger.stat().st_mode & 0o7777, 0o640)
+
+    def test_writer_output_matches_the_golden_ledger_the_reader_parses(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "ledger.jsonl"
+            self.witness_a(ledger)
+            guest.append_health(ledger, BOOT)
+            guest.append_witness(
+                ledger,
+                identity("root-b", UUID_B),
+                "root=PARTUUID=" + UUID_B,
+                efi("b"),
+                BOOT_2,
+                10,
+                20,
+            )
+            self.assertEqual(ledger.read_bytes(), GOLDEN.read_bytes())
 
     def test_refusals_do_not_modify_ledger(self):
         with tempfile.TemporaryDirectory() as d:
@@ -211,6 +315,17 @@ class BootTests(unittest.TestCase):
                 (
                     unit_dir / "flowerlyd.service.d/10-generation-witness.conf"
                 ).read_text(),
+            )
+            health_unit = (unit_dir / "flowerly-generation-health.service").read_text()
+            self.assertIn("generation resolve", health_unit)
+            self.assertLess(
+                health_unit.index("FLOWERLY_GENERATION_BOOT_BLESSED"),
+                health_unit.index("generation resolve"),
+            )
+            gate = (root / "usr/lib/flowerly/generation-health-gate.sh").read_text()
+            self.assertLess(
+                gate.index("boot-ipc-health.sh"),
+                gate.index("generation-ab-guest.py health"),
             )
             self.assertNotEqual(
                 prepare(root).returncode, 0, "duplicate install accepted"

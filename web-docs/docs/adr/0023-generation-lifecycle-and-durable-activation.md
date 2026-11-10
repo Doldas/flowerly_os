@@ -286,6 +286,36 @@ the ledger have no working path yet: `generation.activate` and
 `generation.rollback` always refuse, and the release-gate switch arrives with
 the code it guards.
 
+**G3 (2026-11-10).**
+
+- *When resolution runs.* The witness is written before `flowerlyd` starts,
+  but the health record only after the IPC Ping, so a confirmation cannot
+  happen at start-up alone. `flowerlyd` resolves at start-up (this covers a
+  fall-back and a crash after an earlier health record) and again when the
+  test-image health service calls `generation.resolve` after blessing. That
+  command is service-account only, takes no input and acts only on what the
+  ledger proves.
+- *Ledger v2.* `boot-witness.jsonl` holds `witness` and `health` records with
+  `schema`, `sequence` (1, 2, ...) and `prev_sha256` (SHA-256 of the previous
+  line, zeros for the first). It is root's, mode 0640, group `flowerly`. The
+  writer chowns `/var/lib/flowerly` to the service account first, so systemd's
+  `StateDirectory=` does not recursively chown the ledger away from root on
+  the first boot. A v1 ledger is refused, not migrated: it only ever existed
+  on test images. `testbed/generation-ledger/v2-golden.jsonl` pins the writer
+  and the reader to the same bytes.
+- *Outcomes.* A healthy live target boot confirms. The previous slot after the
+  target, or a target that never reached its witness, is `FELL_BACK`. A target
+  boot of another image is `ABANDONED`. No boot since the request, or no
+  health record yet, waits. A shorter, replaced, copied or broken ledger
+  leaves the request PENDING.
+- *Schema window.* Migration 16 adds `schema_compat`. Binaries from before it
+  refuse any newer schema, so migration 16 is irreversible for them; the
+  recorded baseline (`testbed/schema-compat/baseline.json`) is that pre-window
+  commit and the real-binary test proves the refusal leaves the data unchanged.
+  The baseline moves to the G3 merge commit in G4; from then on an expand-only
+  migration must stay readable by it.
+- *Not yet verified on a real boot.* The guest changes run in G5's KVM matrix.
+
 ## Non-goals
 
 Package pinning and signatures (ADR-0020/#49), image building, `stage` as an

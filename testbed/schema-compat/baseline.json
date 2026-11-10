@@ -1,0 +1,6 @@
+{
+  "commit": "8ac8ecaf9e5b2f1589f680ab304d62dd9374f241",
+  "schema_version": 15,
+  "irreversible": [16],
+  "note": "The newest release/2 commit before the reader window (ADR-0023 G2 merge). Binaries before migration 16 refuse any newer schema, so 16 is irreversible for them. Move this to the commit that merges G3, then a later expand-only migration must stay readable by it."
+}

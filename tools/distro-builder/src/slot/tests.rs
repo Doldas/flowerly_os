@@ -718,6 +718,19 @@ fn status_never_reports_success_from_entries_alone() {
     assert_eq!(verdict(&f, None), "ACTIVE_UNCONFIRMED");
     assert_eq!(verdict(&f, Some(&w_b)), "ACTIVE");
     assert_eq!(f.status(Some(&w_b))["witness_slot"], "root-b");
+    // A health record after the witness does not hide the witnessed slot.
+    let healthy = f.dir.path().join("witness-healthy.jsonl");
+    std::fs::write(
+        &healthy,
+        format!(
+            "{}\n{}\n",
+            json!({"kind": "witness", "sequence": 1, "slot": "root-b", "boot_id": "boot-0"}),
+            json!({"kind": "health", "sequence": 2, "boot_id": "boot-0", "status": "PASSED"})
+        ),
+    )
+    .unwrap();
+    assert_eq!(f.status(Some(&healthy))["witness_slot"], "root-b");
+    assert_eq!(verdict(&f, Some(&healthy)), "ACTIVE");
     // A record cut off by power loss is ignored, not trusted.
     let torn = f.witness(&["root-a"], true);
     assert_eq!(f.status(Some(&torn))["witness_slot"], "root-a");

@@ -12,6 +12,8 @@ TimeoutStartSec=65
 ExecStartPre=/usr/bin/bash /usr/lib/flowerly/generation-health-gate.sh
 ExecStart=/usr/bin/bash /usr/lib/flowerly/generation-bless.sh
 ExecStartPost=/usr/bin/echo FLOWERLY_GENERATION_BOOT_BLESSED
+# Resolve a pending activation from the ledger now that this boot is healthy.
+ExecStartPost=/usr/bin/runuser -u flowerly -- /usr/bin/agenticctl --runtime-dir /run/flowerly generation resolve
 StandardOutput=journal+console
 StandardError=journal+console
 NoNewPrivileges=yes

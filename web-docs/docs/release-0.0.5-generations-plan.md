@@ -112,6 +112,12 @@ resolution belongs to G3 (R2).
 All are Admin only, attributed to the kernel-attested caller, and available in
 `agenticctl`. Next: G3 (witness resolution and the schema window).
 
+**G3 resolution and schema window:** the guest's chained ledger v2 with health
+records, the verifying reader, resolution at start-up and through
+`generation.resolve`, and migration 16 (`min_reader` / `schema_compat`), with
+a real-binary compatibility test against the recorded older commit in CI.
+Next: G4 (slot broker; first move the compatibility baseline to the G3 merge).
+
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/
   activate/rollback transitions. No public arbitrary status setter.

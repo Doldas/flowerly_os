@@ -34,6 +34,7 @@ Admin only and attributed to the kernel-attested caller. `reason` is
 | `generation.reject`, `generation.revoke` | `id`, `reason` | |
 | `generation.activate`, `generation.rollback` | `id` | `reason`, `operation_id`, `acknowledges` |
 | `generation.history` | | `id` |
+| `generation.resolve` (service account) | | |
 
 `generation.evidence` returns the Experiment to pass to `generation.test`.
 Recording the same `evidence_sha256` and `outcome` again returns the same
@@ -43,6 +44,11 @@ lifecycle step is `conflict`.
 
 `generation.activate` and `generation.rollback` validate their arguments
 and then refuse with `conflict`, writing nothing, until Gate D is verified.
+
+`generation.resolve` resolves the pending activation, if any, from the boot
+ledger and returns its `outcome`: `none`, `waiting`, `unresolved` (with a
+`reason`; the request stays pending), `confirmed`, `fell_back` or
+`abandoned`. With nothing pending it does not read the ledger.
 
 Inspect, activate and rollback require `id` to be a valid Generation ID. Unknown
 object keys continue to be ignored to preserve forwards compatibility

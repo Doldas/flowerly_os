@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Generation A/B boot witness in an opt-in Flowerly-built Arch test image.
 
-Read only kernel/EFI/root identity; append an fsynced record on a physically
-separate data mount. Never marks a generation active and never blesses a boot.
+`witness` reads only kernel/EFI/root identity and appends an fsynced record on
+a physically separate data mount, before flowerlyd starts. `health` appends
+the health record for this boot after the service-account IPC Ping and before
+blessing. Every record names the SHA-256 of the previous line (ADR-0023 R1,
+R2), and a broken, torn or older-format ledger is never extended. Neither
+command marks a Generation active or blesses a boot.
 """
 
 import fcntl
+import grp
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import stat
@@ -22,6 +28,9 @@ LOADER = re.compile(
 )
 EFI_LOADER_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 MAX_LEDGER = 2097152
+SCHEMA = "flowerly-generation-boot/v2"
+ZERO_HEAD = "0" * 64
+BOOT_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 IDENTITY = Path("/usr/lib/flowerly/generation-root.json")
 LEDGER = Path("/var/lib/flowerly/boot-witness.jsonl")
 
@@ -141,6 +150,66 @@ def user_data_marker(path, create_first):
     return hashlib.sha256(value).hexdigest()
 
 
+def verified_chain(previous):
+    """Records of an intact v2 chain; anything else is refused, not repaired."""
+    if previous and not previous.endswith(b"\n"):
+        raise ValueError("truncated previous witness record")
+    records = []
+    head = ZERO_HEAD
+    for number, line in enumerate(previous.splitlines(), start=1):
+        try:
+            record = json.loads(line)
+        except ValueError as error:
+            raise ValueError("unparseable witness record") from error
+        if (
+            not isinstance(record, dict)
+            or record.get("schema") != SCHEMA
+            or type(record.get("sequence")) is not int
+            or record["sequence"] != number
+            or record.get("prev_sha256") != head
+        ):
+            raise ValueError("broken witness chain")
+        records.append(record)
+        head = hashlib.sha256(line).hexdigest()
+    return records, head
+
+
+def append_record(ledger, build, owner=None):
+    """Lock the ledger, verify its chain and append the record `build` returns.
+
+    `owner` is (uid, gid): the file is then root's and readable by the service
+    group only (0640), which is what flowerlyd's reader requires."""
+    target = Path(ledger)
+    if target.is_symlink() or target.parent.is_symlink() or not target.parent.is_dir():
+        raise ValueError("unsafe boot-witness ledger path")
+    fd = os.open(
+        target,
+        os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > MAX_LEDGER:
+            raise ValueError("invalid boot-witness file")
+        with os.fdopen(os.dup(fd), "rb") as current:
+            previous = current.read(MAX_LEDGER + 1)
+        records, head = verified_chain(previous)
+        record = build(records)
+        record.update(schema=SCHEMA, sequence=len(records) + 1, prev_sha256=head)
+        output = (
+            json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n"
+        ).encode()
+        if len(output) > 2048 or os.write(fd, output) != len(output):
+            raise OSError("incomplete witness append")
+        if owner is not None:
+            os.fchown(fd, owner[0], owner[1])
+            os.fchmod(fd, 0o640)
+        os.fsync(fd)
+        return record
+    finally:
+        os.close(fd)
+
+
 def append_witness(
     ledger,
     identity,
@@ -150,12 +219,11 @@ def append_witness(
     root_device,
     data_device,
     marker_path=None,
+    owner=None,
 ):
     if root_device == data_device:
         raise ValueError("data ledger is not on a separate filesystem")
-    if not isinstance(boot_id, str) or not re.fullmatch(
-        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot_id
-    ):
+    if not isinstance(boot_id, str) or not BOOT_ID.fullmatch(boot_id):
         raise ValueError("invalid kernel boot ID")
     # EFI variable wire format is 4 bytes of attributes followed by UTF-16LE.
     if not isinstance(efi_bytes, bytes) or not 8 <= len(efi_bytes) <= 256:
@@ -169,65 +237,78 @@ def append_witness(
         raise ValueError("unexpected selected bootloader entry")
     slot = "root-" + match.group(1)
     partuuid = verify_boot_identity(identity, cmdline, slot)
-    target = Path(ledger)
-    if target.is_symlink() or target.parent.is_symlink() or not target.parent.is_dir():
-        raise ValueError("unsafe boot-witness ledger path")
-    fd = os.open(
-        target,
-        os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o600,
-    )
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > MAX_LEDGER:
-            raise ValueError("invalid boot-witness file")
-        # Refuse incomplete or malformed previous records rather than hiding
-        # a power-loss-corrupted ledger or inventing a new sequence.
-        with os.fdopen(os.dup(fd), "rb") as current:
-            previous = current.read(MAX_LEDGER + 1)
-        if previous and not previous.endswith(b"\n"):
-            raise ValueError("truncated previous witness record")
-        lines = previous.splitlines()
-        sequence = 1
-        if lines:
-            last = json.loads(lines[-1])
-            if type(last.get("sequence")) is not int or last["sequence"] < 1:
-                raise ValueError("invalid previous witness sequence")
-            if any(json.loads(row).get("boot_id") == boot_id for row in lines):
-                raise ValueError("duplicate kernel boot ID")
-            sequence = last["sequence"] + 1
+
+    def build(records):
+        if any(
+            r.get("boot_id") == boot_id for r in records if r.get("kind") == "witness"
+        ):
+            raise ValueError("duplicate kernel boot ID")
+        first = not any(r.get("kind") == "witness" for r in records)
         marker_hash = (
-            user_data_marker(marker_path, not lines and slot == "root-a")
+            user_data_marker(marker_path, first and slot == "root-a")
             if marker_path is not None
             else None
         )
-        evidence = {
-            "schema": "flowerly-generation-boot/v1",
+        return {
+            "kind": "witness",
             "boot_id": boot_id,
-            "sequence": sequence,
             "slot": slot,
             "root_partuuid": partuuid,
             "loader_entry": entry_name,
             "source_commit": identity["source_commit"],
             "input_manifest_sha256": identity["input_manifest_sha256"],
             "build_id": identity["build_id"],
-            "health": "NOT_YET_TESTED",
             "user_data_sha256": marker_hash,
         }
-        output = (
-            json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n"
-        ).encode()
-        if len(output) > 2048 or os.write(fd, output) != len(output):
-            raise OSError("incomplete witness append")
-        os.fsync(fd)
-        return evidence
-    finally:
-        os.close(fd)
+
+    return append_record(ledger, build, owner)
+
+
+def append_health(ledger, boot_id, owner=None):
+    """The health gate passed for this boot: only right after its witness."""
+    if not isinstance(boot_id, str) or not BOOT_ID.fullmatch(boot_id):
+        raise ValueError("invalid kernel boot ID")
+
+    def build(records):
+        last = records[-1] if records else {}
+        if last.get("kind") == "health" and last.get("boot_id") == boot_id:
+            raise ValueError("this boot already has a health record")
+        if last.get("kind") != "witness" or last.get("boot_id") != boot_id:
+            raise ValueError("no witness of this boot to attach health to")
+        return {"kind": "health", "boot_id": boot_id, "status": "PASSED"}
+
+    return append_record(ledger, build, owner)
+
+
+def service_owner(data):
+    """Root owns the ledger; the service group may read it. The data directory
+    itself is given to the service account first, so systemd's StateDirectory
+    does not recursively chown the ledger away from root on the first boot."""
+    account = pwd.getpwnam("flowerly")
+    group = grp.getgrnam("flowerly").gr_gid
+    state = os.stat(data, follow_symlinks=False)
+    if not stat.S_ISDIR(state.st_mode):
+        raise ValueError("unsafe Flowerly data directory")
+    if (state.st_uid, state.st_gid) != (account.pw_uid, group):
+        os.chown(data, account.pw_uid, group, follow_symlinks=False)
+    return (0, group)
+
+
+def main_health():
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    append_health(LEDGER, boot_id, service_owner(LEDGER.parent))
+    print("FLOWERLY_GENERATION_HEALTH_RECORDED")
 
 
 def main():
+    if sys.argv[1:] == ["health"]:
+        try:
+            main_health()
+        except (ValueError, OSError, KeyError) as error:
+            sys.exit(f"Flowerly Generation health record refused: {error}")
+        return
     if sys.argv != [sys.argv[0], "witness"]:
-        sys.exit("usage: generation-ab-guest.py witness")
+        sys.exit("usage: generation-ab-guest.py witness|health")
     try:
         identity = strict_json(IDENTITY)
         cmdline = Path("/proc/cmdline").read_text()
@@ -250,6 +331,7 @@ def main():
             os.stat("/").st_dev,
             data.stat().st_dev,
             data / "generation-user-marker.bin",
+            service_owner(data),
         )
     except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as error:
         sys.exit(f"Flowerly Generation witness refused: {error}")

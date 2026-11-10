@@ -20,6 +20,7 @@ use crate::types::{
     Caller, ExperimentId, Generation, GenerationId, GenerationStatus, ObjectRef, Owner,
     ProvenanceEdge, ProvenanceRelation, Timestamp,
 };
+use crate::witness::{decide, Decision, Expectation, Ledger};
 
 pub const MAX_OPERATION_ID: usize = 128;
 const MAX_DETAIL: usize = 1024;
@@ -334,6 +335,34 @@ impl ActivationRequest {
             .collect()
     }
 }
+
+/// What resolving the pending activation against the ledger did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    NoPending,
+    /// Not decidable yet (no boot since the request, or no health record).
+    Waiting {
+        activation: i64,
+        reason: String,
+    },
+    /// The ledger proves nothing about the request; it stays PENDING.
+    Unresolved {
+        activation: i64,
+        reason: String,
+    },
+    Resolved(Box<Activation>),
+}
+
+/// Test-only process death at a named point of resolution (R2).
+#[cfg(test)]
+fn crash_point(name: &str) {
+    if std::env::var("FLOWERLY_TEST_CRASH_AT").as_deref() == Ok(name) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(test))]
+fn crash_point(_: &str) {}
 
 /// The witnessed boot that resolves an activation.
 #[derive(Debug, Clone)]
@@ -853,6 +882,7 @@ impl Store {
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            crash_point("resolve:begin");
             let current = load_activation(&tx, id)?
                 .ok_or_else(|| StorageError::NotFound(format!("activation {id}")))?;
             if current.state == to {
@@ -901,6 +931,7 @@ impl Store {
                     },
                 ],
             ))?;
+            crash_point("resolve:activation");
             if to == ActivationState::Confirmed {
                 if let Some(previous) = &current.previous_generation {
                     guard(tx.execute(
@@ -909,15 +940,82 @@ impl Store {
                         params![previous.as_str()],
                     ))?;
                 }
+                crash_point("resolve:superseded");
                 guard(tx.execute(
                     "UPDATE generations SET status = 'STABLE' WHERE id = ?1",
                     params![current.generation.as_str()],
                 ))?;
+                crash_point("resolve:stable");
             }
             let resolved = load_activation(&tx, id)?
                 .ok_or_else(|| StorageError::NotFound(format!("activation {id}")))?;
             tx.commit()?;
+            crash_point("resolve:committed");
             Ok(resolved)
+        })
+    }
+
+    /// Resolve the pending activation, if any, from the verified ledger and
+    /// this kernel's boot id (ADR-0023 R1, R2). Waiting and unresolved leave it
+    /// PENDING; each outcome is written in one IMMEDIATE transaction and a
+    /// repeated call after it is a no-op.
+    pub fn resolve_pending_activation(
+        &mut self,
+        ledger: &Ledger,
+        live_boot_id: &str,
+    ) -> Result<Resolution> {
+        let Some(pending) = self.pending_activation()? else {
+            return Ok(Resolution::NoPending);
+        };
+        let generation = require_generation(&self.conn, &pending.generation)?;
+        let (Some(source_commit), Some(identity)) = (
+            generation.source_commit,
+            self.root_identity(&pending.generation)?,
+        ) else {
+            return Ok(Resolution::Unresolved {
+                activation: pending.id,
+                reason: "the Generation has no complete root identity".into(),
+            });
+        };
+        let expectation = Expectation {
+            slot: pending.expected_slot.clone(),
+            root_partuuid: pending.expected_root_partuuid.clone(),
+            source_commit,
+            input_manifest_sha256: identity.input_manifest_sha256,
+            build_id: identity.build_id,
+            ledger_sequence: pending.ledger_sequence,
+            ledger_head: pending.ledger_head.clone(),
+        };
+        Ok(match decide(ledger, &expectation, live_boot_id) {
+            Decision::Wait(reason) => Resolution::Waiting {
+                activation: pending.id,
+                reason,
+            },
+            Decision::Unresolved(reason) => Resolution::Unresolved {
+                activation: pending.id,
+                reason,
+            },
+            Decision::Confirm {
+                boot_id,
+                sequence,
+                detail,
+            } => Resolution::Resolved(Box::new(self.confirm_activation(
+                pending.id,
+                &Witness { boot_id, sequence },
+                &detail,
+            )?)),
+            Decision::FellBack {
+                boot_id,
+                sequence,
+                detail,
+            } => Resolution::Resolved(Box::new(self.record_fell_back(
+                pending.id,
+                Some(&Witness { boot_id, sequence }),
+                &detail,
+            )?)),
+            Decision::Abandon(detail) => {
+                Resolution::Resolved(Box::new(self.abandon_activation(pending.id, &detail)?))
+            }
         })
     }
 
@@ -2515,6 +2613,325 @@ mod tests {
         assert_eq!(status(&store, &new), GenerationStatus::Stable);
         assert_eq!(status(&store, &old), GenerationStatus::Superseded);
         assert_eq!(store.activation_history().unwrap().len(), 2);
+    }
+
+    // --- witness resolution (G3) ---------------------------------------------
+
+    use crate::witness::parse_ledger;
+    use crate::witness::testing::{witness_json, Chain, BOOT_1, BOOT_2, BOOT_3};
+
+    /// A STABLE Generation, a TESTED one to activate on root-b, and the PENDING
+    /// request recorded against the ledger as it was then.
+    fn pending_on(store: &mut Store, chain: &Chain) -> (GenerationId, GenerationId, Activation) {
+        let old = stable(store);
+        let new = tested(store);
+        let at = chain.parse();
+        let mut req = request(&new, ActivationKind::Activate);
+        req.ledger_sequence = at.last_sequence();
+        req.ledger_head = at.head().to_owned();
+        let pending = store.request_activation(ADMIN, &req).unwrap();
+        (old, new, pending)
+    }
+
+    fn booted_a() -> Chain {
+        let mut chain = Chain::default();
+        chain.witness(BOOT_1, "root-a").health(BOOT_1);
+        chain
+    }
+
+    #[test]
+    fn nothing_pending_resolves_to_nothing() {
+        let mut store = store();
+        assert_eq!(
+            store
+                .resolve_pending_activation(&booted_a().parse(), BOOT_1)
+                .unwrap(),
+            Resolution::NoPending
+        );
+    }
+
+    #[test]
+    fn a_healthy_witnessed_target_boot_makes_it_stable_once() {
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, pending) = pending_on(&mut store, &chain);
+        chain.witness(BOOT_2, "root-b").health(BOOT_2);
+        let ledger = chain.parse();
+        match store.resolve_pending_activation(&ledger, BOOT_2).unwrap() {
+            Resolution::Resolved(a) => {
+                assert_eq!((a.id, a.state), (pending.id, ActivationState::Confirmed));
+                assert_eq!(a.witness_boot_id.as_deref(), Some(BOOT_2));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(status(&store, &new), GenerationStatus::Stable);
+        assert_eq!(status(&store, &old), GenerationStatus::Superseded);
+        assert_eq!(
+            store.resolve_pending_activation(&ledger, BOOT_2).unwrap(),
+            Resolution::NoPending
+        );
+    }
+
+    #[test]
+    fn waiting_and_unresolved_leave_the_request_untouched() {
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, pending) = pending_on(&mut store, &chain);
+        assert!(matches!(
+            store
+                .resolve_pending_activation(&chain.parse(), BOOT_1)
+                .unwrap(),
+            Resolution::Waiting { .. }
+        ));
+        chain.witness(BOOT_2, "root-b");
+        assert!(matches!(
+            store
+                .resolve_pending_activation(&chain.parse(), BOOT_2)
+                .unwrap(),
+            Resolution::Waiting { .. }
+        ));
+        chain.health(BOOT_2);
+        // A copied ledger read under another kernel proves nothing.
+        assert!(matches!(
+            store
+                .resolve_pending_activation(&chain.parse(), BOOT_3)
+                .unwrap(),
+            Resolution::Unresolved { .. }
+        ));
+        assert_eq!(store.pending_activation().unwrap().unwrap(), pending);
+        assert_eq!(status(&store, &new), GenerationStatus::Tested);
+        assert_eq!(status(&store, &old), GenerationStatus::Stable);
+    }
+
+    #[test]
+    fn a_fall_back_keeps_tested_and_needs_a_new_decision() {
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, pending) = pending_on(&mut store, &chain);
+        chain
+            .witness(BOOT_2, "root-b")
+            .witness(BOOT_3, "root-a")
+            .health(BOOT_3);
+        match store
+            .resolve_pending_activation(&chain.parse(), BOOT_3)
+            .unwrap()
+        {
+            Resolution::Resolved(a) => assert_eq!(a.state, ActivationState::FellBack),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(status(&store, &new), GenerationStatus::Tested);
+        assert_eq!(status(&store, &old), GenerationStatus::Stable);
+        assert_conflict(store.request_activation(ADMIN, &with_ack(&new, None)));
+        store
+            .request_activation(ADMIN, &with_ack(&new, Some(pending.id)))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_target_boot_of_another_image_is_abandoned_without_stable() {
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, _) = pending_on(&mut store, &chain);
+        // A witness of root-b, but built from another input manifest.
+        let mut record = witness_json(BOOT_2, "root-b", "b", PARTUUID);
+        record["input_manifest_sha256"] = "f".repeat(64).into();
+        chain.push(record).health(BOOT_2);
+        match store
+            .resolve_pending_activation(&chain.parse(), BOOT_2)
+            .unwrap()
+        {
+            Resolution::Resolved(a) => assert_eq!(a.state, ActivationState::Abandoned),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(status(&store, &new), GenerationStatus::Tested);
+        assert_eq!(status(&store, &old), GenerationStatus::Stable);
+    }
+
+    /// The ledger and boot id as files, as the daemon reads them.
+    fn ledger_files(
+        dir: &std::path::Path,
+        chain: &Chain,
+        boot: &str,
+    ) -> crate::witness::LedgerSource {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let path = dir.join("boot-witness.jsonl");
+        std::fs::write(&path, chain.bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let boot_id_path = dir.join("boot_id");
+        std::fs::write(&boot_id_path, format!("{boot}\n")).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        crate::witness::LedgerSource {
+            path,
+            policy: crate::witness::LedgerPolicy {
+                owner_uid: meta.uid(),
+                reader_gid: meta.gid(),
+            },
+            boot_id_path,
+        }
+    }
+
+    #[test]
+    fn nothing_pending_reads_no_ledger() {
+        let mut store = store();
+        let source = crate::witness::LedgerSource {
+            path: "/nonexistent/boot-witness.jsonl".into(),
+            policy: crate::witness::LedgerPolicy {
+                owner_uid: 0,
+                reader_gid: 0,
+            },
+            boot_id_path: "/nonexistent/boot_id".into(),
+        };
+        assert_eq!(
+            crate::witness::resolve_from(&mut store, &source).unwrap(),
+            Resolution::NoPending
+        );
+    }
+
+    #[test]
+    fn resolving_from_the_files_confirms_a_healthy_live_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store();
+        let mut chain = booted_a();
+        let (old, new, _) = pending_on(&mut store, &chain);
+        chain.witness(BOOT_2, "root-b").health(BOOT_2);
+        let source = ledger_files(dir.path(), &chain, BOOT_2);
+        assert!(matches!(
+            crate::witness::resolve_from(&mut store, &source).unwrap(),
+            Resolution::Resolved(ref a) if a.state == ActivationState::Confirmed
+        ));
+        assert_eq!(status(&store, &new), GenerationStatus::Stable);
+        assert_eq!(status(&store, &old), GenerationStatus::Superseded);
+    }
+
+    #[test]
+    fn unreadable_files_leave_the_request_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store();
+        let mut chain = booted_a();
+        let (_, new, pending) = pending_on(&mut store, &chain);
+        chain.witness(BOOT_2, "root-b").health(BOOT_2);
+        let good = ledger_files(dir.path(), &chain, BOOT_2);
+        let mut missing = good.clone();
+        missing.path = dir.path().join("absent.jsonl");
+        let mut no_boot_id = good.clone();
+        no_boot_id.boot_id_path = dir.path().join("absent");
+        let mut wrong_owner = good.clone();
+        wrong_owner.policy.owner_uid += 1;
+        for source in [missing, no_boot_id, wrong_owner] {
+            assert!(matches!(
+                crate::witness::resolve_from(&mut store, &source).unwrap(),
+                Resolution::Unresolved { activation, .. } if activation == pending.id
+            ));
+        }
+        // A tampered ledger on disk.
+        let mut tampered = chain.bytes();
+        let at = tampered.iter().position(|b| *b == b'1').unwrap();
+        tampered[at] = b'9';
+        std::fs::write(&good.path, tampered).unwrap();
+        match crate::witness::resolve_from(&mut store, &good).unwrap() {
+            Resolution::Unresolved { reason, .. } => {
+                assert!(reason.contains("refused"), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(status(&store, &new), GenerationStatus::Tested);
+        assert!(store.pending_activation().unwrap().is_some());
+    }
+
+    const CRASH_DB: &str = "FLOWERLY_TEST_CRASH_DB";
+    const CRASH_LEDGER: &str = "FLOWERLY_TEST_CRASH_LEDGER";
+
+    /// Does nothing unless run as the child of the crash test below.
+    #[test]
+    fn crash_child() {
+        let (Ok(db), Ok(ledger)) = (std::env::var(CRASH_DB), std::env::var(CRASH_LEDGER)) else {
+            return;
+        };
+        let mut store = Store::open(std::path::Path::new(&db)).unwrap();
+        let ledger = parse_ledger(&std::fs::read(ledger).unwrap()).unwrap();
+        store.resolve_pending_activation(&ledger, BOOT_2).unwrap();
+        panic!("the crash point was not reached");
+    }
+
+    #[test]
+    fn killing_the_process_at_every_point_of_resolution_leaves_old_or_new_state() {
+        use std::os::unix::process::ExitStatusExt;
+        for (point, committed) in [
+            ("resolve:begin", false),
+            ("resolve:activation", false),
+            ("resolve:superseded", false),
+            ("resolve:stable", false),
+            ("resolve:committed", true),
+        ] {
+            let (dir, path, mut store) = file_store();
+            let mut chain = booted_a();
+            let (old, new, pending) = pending_on(&mut store, &chain);
+            chain.witness(BOOT_2, "root-b").health(BOOT_2);
+            let ledger_path = dir.path().join("boot-witness.jsonl");
+            std::fs::write(&ledger_path, chain.bytes()).unwrap();
+            drop(store);
+
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "storage::lifecycle::tests::crash_child",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CRASH_DB, &path)
+                .env(CRASH_LEDGER, &ledger_path)
+                .env("FLOWERLY_TEST_CRASH_AT", point)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.signal(),
+                Some(6),
+                "{point}: the child must die by SIGABRT: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let mut store = Store::open(&path).unwrap();
+            let (want_new, want_old) = if committed {
+                (GenerationStatus::Stable, GenerationStatus::Superseded)
+            } else {
+                (GenerationStatus::Tested, GenerationStatus::Stable)
+            };
+            assert_eq!(status(&store, &new), want_new, "{point}");
+            assert_eq!(status(&store, &old), want_old, "{point}");
+            assert_eq!(
+                store.pending_activation().unwrap().is_some(),
+                !committed,
+                "{point}"
+            );
+
+            let ledger = chain.parse();
+            let first = store.resolve_pending_activation(&ledger, BOOT_2).unwrap();
+            if committed {
+                assert_eq!(first, Resolution::NoPending, "{point}");
+            } else {
+                assert!(
+                    matches!(first, Resolution::Resolved(ref a) if a.id == pending.id),
+                    "{point}"
+                );
+            }
+            assert_eq!(
+                store.resolve_pending_activation(&ledger, BOOT_2).unwrap(),
+                Resolution::NoPending,
+                "{point}"
+            );
+            assert_eq!(status(&store, &new), GenerationStatus::Stable, "{point}");
+            assert_eq!(
+                status(&store, &old),
+                GenerationStatus::Superseded,
+                "{point}"
+            );
+            let history = store.activation_history().unwrap();
+            assert_eq!(
+                history.last().unwrap().state,
+                ActivationState::Confirmed,
+                "{point}"
+            );
+        }
     }
 
     // --- legacy databases ----------------------------------------------------

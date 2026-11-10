@@ -298,6 +298,8 @@ enum GenerationAction {
         #[arg(long, help = "Reason recorded in the admin audit log.")]
         reason: String,
     },
+    #[command(about = "Resolve a pending activation from the boot ledger (service account).")]
+    Resolve,
     #[command(about = "Show the activation history (Admin).")]
     History {
         #[arg(help = "Only this generation.")]
@@ -754,6 +756,10 @@ async fn dispatch_generation(
         GenerationAction::Revoke { id, reason } => Payload::Command {
             name: "generation.revoke".into(),
             args: serde_json::json!({ "id": id, "reason": reason }),
+        },
+        GenerationAction::Resolve => Payload::Command {
+            name: "generation.resolve".into(),
+            args: serde_json::json!({}),
         },
         GenerationAction::History { id } => Payload::Command {
             name: "generation.history".into(),

@@ -320,6 +320,10 @@ async fn main() -> Result<()> {
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
+    match generation::configure_ledger(&config.state_dir) {
+        Ok(()) => generation::resolve_at_startup(&mut db),
+        Err(error) => tracing::warn!(%error, "boot ledger unavailable"),
+    }
     compute::init_runtime_dir(config.runtime_dir.clone());
     // An unreadable /etc/group cannot match the provider socket group; the
     // access policy above already required it whenever groups are named.
@@ -443,6 +447,7 @@ mod malformed_arguments {
             "generation.reject",
             "generation.revoke",
             "generation.history",
+            "generation.resolve",
             "generation.promote",
             "ownership.inspect",
             "ownership.claim",

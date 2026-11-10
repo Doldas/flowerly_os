@@ -548,6 +548,7 @@ the test user's own gid.
 | `generation.reject` | Admin | audited: terminal lifecycle decision |
 | `generation.revoke` | Admin | audited: terminal lifecycle decision |
 | `generation.history` | Admin | shows the actor and reason of every activation |
+| `generation.resolve` | ServiceAccount | no input; acts only on what the root-owned boot ledger proves |
 | `generation.promote` | Admin | audited: makes a private candidate a shared system Generation |
 | `ownership.inspect` | Admin | audited: reads another owner's ownership metadata |
 | `ownership.claim` | Admin | audited: gives unresolved data to a user |
