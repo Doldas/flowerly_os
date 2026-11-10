@@ -746,3 +746,527 @@ fn status_never_reports_success_from_entries_alone() {
     let (image, disk) = f.open();
     assert!(status(&image, &disk, &f.esp, Some(&missing), false).is_err());
 }
+
+// ---- staged boot payload and baked identity (ADR-0023 G4) ---------------------
+
+const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn identity_value(slot: &str, partuuid: &str) -> Value {
+    json!({
+        "schema": IDENTITY_SCHEMA,
+        "slot": slot,
+        "root_partuuid": partuuid,
+        "source_commit": COMMIT,
+        "input_manifest_sha256": "d".repeat(64),
+        "build_id": "build-b",
+        "schema_version": 16,
+        "min_reader": 16,
+    })
+}
+
+impl Fixture {
+    fn identity_file(&self, value: &Value) -> std::path::PathBuf {
+        let path = self.dir.path().join("generation-root.json");
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        path
+    }
+
+    fn stage_boot(&mut self, identity: &Value) -> Result<Value> {
+        let identity = self.identity_file(identity);
+        let (image, mut disk) = self.open();
+        let request = BootPayload {
+            kernel: &self.kernel,
+            initramfs: &self.initramfs,
+            identity: &identity,
+        };
+        stage_boot(
+            &image,
+            &mut disk,
+            &self.manifest,
+            Slot::B,
+            &mut self.esp,
+            &request,
+        )
+    }
+
+    fn manifest_slot_b(&self) -> Part {
+        Disk::load(&self.manifest).unwrap().slot(Slot::B).clone()
+    }
+}
+
+#[test]
+fn stage_boot_records_the_payload_and_identity_of_the_staged_slot() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    f.stage_boot(&identity_value("root-b", B_UUID)).unwrap();
+    assert_eq!(f.esp.files["/flowerly/b/vmlinuz"], b"kernel-b");
+    assert_eq!(f.esp.files["/flowerly/b/initramfs.img"], b"initramfs-b");
+    let part = f.manifest_slot_b();
+    let boot = part.boot.expect("boot payload recorded");
+    assert_eq!(boot.kernel_sha256, sha(b"kernel-b"));
+    assert_eq!(boot.initramfs_sha256, sha(b"initramfs-b"));
+    let identity = part.identity.expect("identity recorded");
+    assert_eq!(
+        (identity.slot, identity.build_id.as_str()),
+        (Slot::B, "build-b")
+    );
+    assert_eq!((identity.schema_version, identity.min_reader), (16, 16));
+    // No boot entry: still only staged.
+    assert!(!f.esp.files.keys().any(|k| k.contains("flowerly-b")));
+}
+
+#[test]
+fn stage_boot_refuses_an_identity_that_is_not_this_slot() {
+    let mut cases = Vec::new();
+    cases.push(identity_value("root-a", B_UUID));
+    cases.push(identity_value("root-b", A_UUID));
+    let mut extra = identity_value("root-b", B_UUID);
+    extra["extra"] = json!(1);
+    cases.push(extra);
+    let mut old = identity_value("root-b", B_UUID);
+    old["schema"] = json!("flowerly-generation-root/v1");
+    cases.push(old);
+    let mut window = identity_value("root-b", B_UUID);
+    window["min_reader"] = json!(17);
+    cases.push(window);
+    let mut missing = identity_value("root-b", B_UUID);
+    missing.as_object_mut().unwrap().remove("min_reader");
+    cases.push(missing);
+    let mut commit = identity_value("root-b", B_UUID);
+    commit["source_commit"] = json!("abc");
+    cases.push(commit);
+    for identity in cases {
+        let mut f = fixture();
+        f.stage(&Faults::none()).unwrap();
+        let before = std::fs::read(&f.manifest).unwrap();
+        assert!(f.stage_boot(&identity).is_err(), "{identity}");
+        assert_eq!(std::fs::read(&f.manifest).unwrap(), before);
+        assert!(!f.esp.files.contains_key("/flowerly/b/vmlinuz"));
+    }
+}
+
+#[test]
+fn stage_boot_needs_an_intact_staged_slot_without_a_boot_entry() {
+    // Not staged at all.
+    let mut f = fixture();
+    assert!(err(f.stage_boot(&identity_value("root-b", B_UUID))).contains("staged"));
+    // Slot bytes changed after staging.
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    {
+        let (image, disk) = f.open();
+        let part = disk.slot(Slot::B).clone();
+        image.write_slot(&part, 4096, b"tampered").unwrap();
+    }
+    assert!(err(f.stage_boot(&identity_value("root-b", B_UUID))).contains("manifest hash"));
+    // Already armed.
+    let mut f = fixture();
+    f.stage_and_arm();
+    assert!(err(f.stage_boot(&identity_value("root-b", B_UUID))).contains("boot entry"));
+}
+
+#[test]
+fn restaging_drops_the_previous_payload_record() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    f.stage_boot(&identity_value("root-b", B_UUID)).unwrap();
+    f.stage(&Faults::none()).unwrap();
+    let part = f.manifest_slot_b();
+    assert!(part.boot.is_none() && part.identity.is_none());
+}
+
+// ---- the slot broker (ADR-0023 G4, R3) ----------------------------------------
+
+use super::broker::{handle, serve_stream, BrokerConfig};
+use std::os::unix::fs::PermissionsExt;
+
+struct Broker {
+    config: BrokerConfig,
+    claim: Value,
+    service_uid: u32,
+}
+
+impl Fixture {
+    /// Staged slot B with payload and identity; a test-profile system booted
+    /// from A whose flowerlyd knows schema 16; alice is an admin, bob is not.
+    fn broker(&mut self, target_identity: &Value) -> Broker {
+        self.stage(&Faults::none()).unwrap();
+        self.stage_boot(target_identity).unwrap();
+        let meta = std::fs::metadata(self.dir.path()).unwrap();
+        let (uid, gid) = (meta.uid(), meta.gid());
+        let write = |name: &str, text: String| {
+            let path = self.dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let config = BrokerConfig {
+            disk: self.disk.clone(),
+            manifest: self.manifest.clone(),
+            esp: self.dir.path().join("esp-unused"),
+            running_identity: write(
+                "running-identity.json",
+                identity_value("root-a", A_UUID).to_string(),
+            ),
+            test_profile_marker: write("test-profile", String::new()),
+            passwd: write(
+                "passwd",
+                format!(
+                    "flowerly:x:{uid}:{gid}::/:/bin/false\nalice:x:1001:1001::/:/bin/false\nbob:x:1002:1002::/:/bin/false\ncarol:x:1003:950::/:/bin/false\n"
+                ),
+            ),
+            group: write("group", "flowerly-admin:x:950:alice\nusers:x:100:bob\n".into()),
+            cmdline: write("cmdline", format!("console=ttyS0 root=PARTUUID={A_UUID} ro\n")),
+            service_user: "flowerly".into(),
+            admin_group: "flowerly-admin".into(),
+        };
+        Broker {
+            config,
+            claim: json!({
+                "rootfs_sha256": self.candidate_sha,
+                "kernel_sha256": sha(b"kernel-b"),
+                "initramfs_sha256": sha(b"initramfs-b"),
+                "source_commit": COMMIT,
+                "input_manifest_sha256": "d".repeat(64),
+                "build_id": "build-b",
+            }),
+            service_uid: uid,
+        }
+    }
+}
+
+fn arm_intent(b: &Broker) -> Vec<u8> {
+    json!({"version": 1, "intent": "arm", "slot": "root-b", "tries": 3,
+           "admin_uid": 1001, "generation": b.claim})
+    .to_string()
+    .into_bytes()
+}
+
+fn refused(f: &mut Fixture, b: &Broker, peer: u32, request: &[u8], needle: &str) {
+    let esp_before = f.esp.files.clone();
+    let disk_before = f.slices();
+    let error = format!(
+        "{:#}",
+        handle(&b.config, peer, request, &mut f.esp).expect_err(needle)
+    );
+    assert!(error.contains(needle), "{error} should contain {needle}");
+    assert_eq!(f.esp.files, esp_before, "{needle}: the ESP changed");
+    assert_eq!(f.slices(), disk_before, "{needle}: the disk changed");
+}
+
+#[test]
+fn the_broker_arms_a_verified_slot_and_writes_only_its_entry() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let before = f.esp.files.clone();
+    let disk_before = f.slices();
+    let report = handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    assert_eq!(report["status"], "ARMED_PENDING");
+    let added: Vec<&String> = f
+        .esp
+        .files
+        .keys()
+        .filter(|k| !before.contains_key(*k))
+        .collect();
+    assert_eq!(added, ["/loader/entries/flowerly-b+3.conf"]);
+    for (path, data) in &before {
+        assert_eq!(&f.esp.files[path], data, "{path} changed");
+    }
+    assert_eq!(f.slices(), disk_before, "the broker never writes the disk");
+}
+
+#[test]
+fn the_broker_refuses_everything_while_activation_is_disabled() {
+    let mut f = fixture();
+    let mut b = f.broker(&identity_value("root-b", B_UUID));
+    b.config.test_profile_marker = f.dir.path().join("no-marker");
+    let request = arm_intent(&b);
+    refused(&mut f, &b, b.service_uid, &request, "disabled until Gate D");
+    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":1001}"#;
+    refused(&mut f, &b, b.service_uid, disarm, "disabled until Gate D");
+}
+
+#[test]
+fn only_the_service_account_on_behalf_of_an_admin_is_heard() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let request = arm_intent(&b);
+    refused(
+        &mut f,
+        &b,
+        b.service_uid + 1,
+        &request,
+        "not the service account",
+    );
+    for (admin, needle) in [(1002, "not a member"), (4242, "unknown uid")] {
+        let mut intent: Value = serde_json::from_slice(&request).unwrap();
+        intent["admin_uid"] = json!(admin);
+        refused(
+            &mut f,
+            &b,
+            b.service_uid,
+            intent.to_string().as_bytes(),
+            needle,
+        );
+    }
+    // Membership by primary group counts.
+    let mut intent: Value = serde_json::from_slice(&request).unwrap();
+    intent["admin_uid"] = json!(1003);
+    handle(
+        &b.config,
+        b.service_uid,
+        intent.to_string().as_bytes(),
+        &mut f.esp,
+    )
+    .unwrap();
+}
+
+#[test]
+fn malformed_intents_are_refused() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let good: Value = serde_json::from_slice(&arm_intent(&b)).unwrap();
+    let mut cases: Vec<(Vec<u8>, &str)> = vec![
+        (b"not json".to_vec(), "intent"),
+        (vec![b' '; 9000], "too large"),
+    ];
+    for (key, value, needle) in [
+        ("version", json!(2), "version"),
+        ("intent", json!("stage"), "intent"),
+        ("extra", json!("x"), "unknown field"),
+        ("tries", json!(0), "tries"),
+        ("tries", json!(10), "tries"),
+        ("slot", json!("root-a"), "slot"),
+        ("slot", json!("/dev/vda2"), "slot"),
+    ] {
+        let mut intent = good.clone();
+        intent[key] = value;
+        cases.push((intent.to_string().into_bytes(), needle));
+    }
+    let mut no_claim = good.clone();
+    no_claim.as_object_mut().unwrap().remove("generation");
+    cases.push((no_claim.to_string().into_bytes(), "generation"));
+    let mut path = good.clone();
+    path["generation"]["kernel_path"] = json!("/tmp/evil");
+    cases.push((path.to_string().into_bytes(), "unknown field"));
+    for (request, needle) in cases {
+        refused(&mut f, &b, b.service_uid, &request, needle);
+    }
+}
+
+#[test]
+fn the_claim_must_match_what_is_staged() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let good: Value = serde_json::from_slice(&arm_intent(&b)).unwrap();
+    for field in [
+        "rootfs_sha256",
+        "kernel_sha256",
+        "initramfs_sha256",
+        "source_commit",
+        "input_manifest_sha256",
+    ] {
+        let mut intent = good.clone();
+        let len = intent["generation"][field].as_str().unwrap().len();
+        intent["generation"][field] = json!("f".repeat(len));
+        refused(
+            &mut f,
+            &b,
+            b.service_uid,
+            intent.to_string().as_bytes(),
+            field,
+        );
+    }
+    let mut intent = good.clone();
+    intent["generation"]["build_id"] = json!("build-x");
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        intent.to_string().as_bytes(),
+        "build_id",
+    );
+}
+
+#[test]
+fn the_broker_rechecks_the_disk_and_the_esp_itself() {
+    // ESP payload changed after staging.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    f.esp
+        .files
+        .insert("/flowerly/b/vmlinuz".into(), b"evil".to_vec());
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "vmlinuz");
+    // Staged slot changed after staging.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    {
+        let (image, disk) = f.open();
+        image
+            .write_slot(&disk.slot(Slot::B).clone(), 0, b"tampered")
+            .unwrap();
+    }
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "manifest hash");
+    // Active root changed.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    {
+        let (image, disk) = f.open();
+        image
+            .write_slot(&disk.slot(Slot::A).clone(), 0, b"tampered")
+            .unwrap();
+    }
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "active root");
+    // Already armed.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "boot entry");
+}
+
+#[test]
+fn a_slot_staged_without_payload_or_identity_is_not_armed() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    f.stage(&Faults::none()).unwrap(); // restaging drops the records
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "boot payload");
+}
+
+#[test]
+fn an_incompatible_fallback_makes_the_activation_irreversible_and_refused() {
+    let mut f = fixture();
+    let mut target = identity_value("root-b", B_UUID);
+    target["schema_version"] = json!(17);
+    target["min_reader"] = json!(17);
+    let b = f.broker(&target);
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "irreversible");
+    // A window that still includes the fallback is fine.
+    let mut f = fixture();
+    let mut target = identity_value("root-b", B_UUID);
+    target["schema_version"] = json!(17);
+    target["min_reader"] = json!(16);
+    let b = f.broker(&target);
+    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+}
+
+#[test]
+fn the_running_identity_must_be_the_active_slot() {
+    for running in [
+        identity_value("root-b", B_UUID),
+        identity_value("root-a", B_UUID),
+        json!({"schema": "flowerly-generation-root/v1"}),
+    ] {
+        let mut f = fixture();
+        let b = f.broker(&identity_value("root-b", B_UUID));
+        std::fs::write(&b.config.running_identity, running.to_string()).unwrap();
+        refused(&mut f, &b, b.service_uid, &arm_intent(&b), "running");
+    }
+}
+
+#[test]
+fn disarm_removes_the_pending_entry_and_nothing_else() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":1001}"#;
+    refused(&mut f, &b, b.service_uid, disarm, "nothing to roll back");
+    let before = f.esp.files.clone();
+    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    let report = handle(&b.config, b.service_uid, disarm, &mut f.esp).unwrap();
+    assert_eq!(report["status"], "ROLLED_BACK");
+    assert_eq!(f.esp.files, before);
+}
+
+#[test]
+fn the_config_must_be_private_to_its_owner() {
+    let f = fixture();
+    let path = f.dir.path().join("broker.json");
+    let config = json!({
+        "disk": "/dev/vda", "manifest": "/efi/m.json", "esp": "/efi",
+        "running_identity": "/usr/lib/flowerly/generation-root.json",
+        "test_profile_marker": "/usr/lib/flowerly/generation-ab-test-profile",
+        "passwd": "/etc/passwd", "group": "/etc/group", "cmdline": "/proc/cmdline",
+        "service_user": "flowerly", "admin_group": "flowerly-admin",
+    });
+    std::fs::write(&path, config.to_string()).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(BrokerConfig::load(&path).unwrap().service_user, "flowerly");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+    assert!(format!("{:#}", BrokerConfig::load(&path).unwrap_err()).contains("writable"));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut extra = config.clone();
+    extra["extra"] = json!(1);
+    std::fs::write(&path, extra.to_string()).unwrap();
+    assert!(BrokerConfig::load(&path).is_err());
+}
+
+#[test]
+fn the_broker_answers_over_a_real_socket_with_kernel_peer_credentials() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixStream;
+    let mut f = fixture();
+    let mut b = f.broker(&identity_value("root-b", B_UUID));
+    // A real ESP directory with the same files as the in-memory one.
+    let esp_dir = f.dir.path().join("esp");
+    for (path, data) in &f.esp.files {
+        let target = esp_dir.join(path.trim_start_matches('/'));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, data).unwrap();
+    }
+    b.config.esp = esp_dir.clone();
+    let config_path = f.dir.path().join("broker.json");
+    std::fs::write(&config_path, serde_json::to_string(&b.config).unwrap()).unwrap();
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (client, server) = UnixStream::pair().unwrap();
+    let path = config_path.clone();
+    let worker = std::thread::spawn(move || serve_stream(server, &path));
+    let mut request = arm_intent(&b);
+    request.push(b'\n');
+    std::io::Write::write_all(&mut &client, &request).unwrap();
+    let mut line = String::new();
+    BufReader::new(&client).read_line(&mut line).unwrap();
+    worker.join().unwrap().unwrap();
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(esp_dir.join("loader/entries/flowerly-b+3.conf").is_file());
+
+    // The same request from a socket the service account did not open is
+    // refused with a reason, and the answer still arrives.
+    let mut wrong = b.config.clone();
+    wrong.service_user = "alice".into();
+    std::fs::write(&config_path, serde_json::to_string(&wrong).unwrap()).unwrap();
+    let (client, server) = UnixStream::pair().unwrap();
+    let path = config_path.clone();
+    let worker = std::thread::spawn(move || serve_stream(server, &path));
+    std::io::Write::write_all(&mut &client, &request).unwrap();
+    let mut line = String::new();
+    BufReader::new(&client).read_line(&mut line).unwrap();
+    worker.join().unwrap().unwrap();
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["ok"], false);
+    assert!(
+        reply["reason"]
+            .as_str()
+            .unwrap()
+            .contains("service account"),
+        "{reply}"
+    );
+}
+
+#[test]
+fn the_broker_trusts_no_manifest_it_did_not_protect() {
+    // A manifest others may write is not the broker's.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    std::fs::set_permissions(&f.manifest, std::fs::Permissions::from_mode(0o664)).unwrap();
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "disk manifest");
+    // A recorded identity edited to name the other slot is refused even
+    // though stage_boot would never have written it.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let mut raw: Value = serde_json::from_slice(&std::fs::read(&f.manifest).unwrap()).unwrap();
+    raw["partitions"][2]["identity"]["slot"] = json!("root-a");
+    std::fs::write(&f.manifest, serde_json::to_vec(&raw).unwrap()).unwrap();
+    std::fs::set_permissions(&f.manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "another slot");
+}

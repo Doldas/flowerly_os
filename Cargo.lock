@@ -337,6 +337,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "flowerly-peercred",
  "libc",
  "serde",
  "serde_json",
