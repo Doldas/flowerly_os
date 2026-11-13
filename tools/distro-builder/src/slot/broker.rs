@@ -187,7 +187,7 @@ pub fn handle(
     let service = uid_of(&passwd, &config.service_user)
         .ok_or_else(|| anyhow!("service account {} does not exist", config.service_user))?;
     if peer_uid != service {
-        bail!("peer uid {peer_uid} is not the service account");
+        bail!("the peer is not the service account");
     }
     if request.len() > MAX_INTENT {
         bail!("intent is too large");
@@ -337,14 +337,11 @@ pub fn serve_stream(stream: UnixStream, config_path: &Path) -> Result<()> {
     let reply = match outcome {
         Ok(mut report) => {
             report["ok"] = json!(true);
-            eprintln!(
-                "slot broker: peer uid {} served: {}",
-                peer.uid, report["status"]
-            );
+            eprintln!("slot broker: served {}", report["status"]);
             report
         }
         Err(error) => {
-            eprintln!("slot broker: peer uid {} refused: {error:#}", peer.uid);
+            eprintln!("slot broker: refused: {error:#}");
             json!({ "ok": false, "reason": format!("{error:#}") })
         }
     };

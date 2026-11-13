@@ -889,6 +889,8 @@ struct Broker {
 impl Fixture {
     /// Staged slot B with payload and identity; a test-profile system booted
     /// from A whose flowerlyd knows schema 16; alice is an admin, bob is not.
+    /// Their uids are far from any real account, so the service account
+    /// (the uid running the tests) never shares one with them.
     fn broker(&mut self, target_identity: &Value) -> Broker {
         self.stage(&Faults::none()).unwrap();
         self.stage_boot(target_identity).unwrap();
@@ -912,7 +914,7 @@ impl Fixture {
             passwd: write(
                 "passwd",
                 format!(
-                    "flowerly:x:{uid}:{gid}::/:/bin/false\nalice:x:1001:1001::/:/bin/false\nbob:x:1002:1002::/:/bin/false\ncarol:x:1003:950::/:/bin/false\n"
+                    "flowerly:x:{uid}:{gid}::/:/bin/false\nalice:x:4000001:4000001::/:/bin/false\nbob:x:4000002:4000002::/:/bin/false\ncarol:x:4000003:950::/:/bin/false\n"
                 ),
             ),
             group: write("group", "flowerly-admin:x:950:alice\nusers:x:100:bob\n".into()),
@@ -937,7 +939,7 @@ impl Fixture {
 
 fn arm_intent(b: &Broker) -> Vec<u8> {
     json!({"version": 1, "intent": "arm", "slot": "root-b", "tries": 3,
-           "admin_uid": 1001, "generation": b.claim})
+           "admin_uid": 4000001, "generation": b.claim})
     .to_string()
     .into_bytes()
 }
@@ -982,7 +984,7 @@ fn the_broker_refuses_everything_while_activation_is_disabled() {
     b.config.test_profile_marker = f.dir.path().join("no-marker");
     let request = arm_intent(&b);
     refused(&mut f, &b, b.service_uid, &request, "disabled until Gate D");
-    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":1001}"#;
+    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":4000001}"#;
     refused(&mut f, &b, b.service_uid, disarm, "disabled until Gate D");
 }
 
@@ -998,7 +1000,7 @@ fn only_the_service_account_on_behalf_of_an_admin_is_heard() {
         &request,
         "not the service account",
     );
-    for (admin, needle) in [(1002, "not a member"), (4242, "unknown uid")] {
+    for (admin, needle) in [(4000002, "not a member"), (4000999, "unknown uid")] {
         let mut intent: Value = serde_json::from_slice(&request).unwrap();
         intent["admin_uid"] = json!(admin);
         refused(
@@ -1011,7 +1013,7 @@ fn only_the_service_account_on_behalf_of_an_admin_is_heard() {
     }
     // Membership by primary group counts.
     let mut intent: Value = serde_json::from_slice(&request).unwrap();
-    intent["admin_uid"] = json!(1003);
+    intent["admin_uid"] = json!(4000003);
     handle(
         &b.config,
         b.service_uid,
@@ -1167,7 +1169,7 @@ fn the_running_identity_must_be_the_active_slot() {
 fn disarm_removes_the_pending_entry_and_nothing_else() {
     let mut f = fixture();
     let b = f.broker(&identity_value("root-b", B_UUID));
-    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":1001}"#;
+    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":4000001}"#;
     refused(&mut f, &b, b.service_uid, disarm, "nothing to roll back");
     let before = f.esp.files.clone();
     handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
