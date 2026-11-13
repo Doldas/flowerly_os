@@ -786,6 +786,7 @@ impl Fixture {
             Slot::B,
             &mut self.esp,
             &request,
+            &Faults::none(),
         )
     }
 
@@ -949,7 +950,7 @@ fn refused(f: &mut Fixture, b: &Broker, peer: u32, request: &[u8], needle: &str)
     let disk_before = f.slices();
     let error = format!(
         "{:#}",
-        handle(&b.config, peer, request, &mut f.esp).expect_err(needle)
+        handle(&b.config, peer, request, &mut f.esp, &Faults::none()).expect_err(needle)
     );
     assert!(error.contains(needle), "{error} should contain {needle}");
     assert_eq!(f.esp.files, esp_before, "{needle}: the ESP changed");
@@ -962,7 +963,14 @@ fn the_broker_arms_a_verified_slot_and_writes_only_its_entry() {
     let b = f.broker(&identity_value("root-b", B_UUID));
     let before = f.esp.files.clone();
     let disk_before = f.slices();
-    let report = handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    let report = handle(
+        &b.config,
+        b.service_uid,
+        &arm_intent(&b),
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap();
     assert_eq!(report["status"], "ARMED_PENDING");
     let added: Vec<&String> = f
         .esp
@@ -1019,6 +1027,7 @@ fn only_the_service_account_on_behalf_of_an_admin_is_heard() {
         b.service_uid,
         intent.to_string().as_bytes(),
         &mut f.esp,
+        &Faults::none(),
     )
     .unwrap();
 }
@@ -1122,7 +1131,14 @@ fn the_broker_rechecks_the_disk_and_the_esp_itself() {
     // Already armed.
     let mut f = fixture();
     let b = f.broker(&identity_value("root-b", B_UUID));
-    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    handle(
+        &b.config,
+        b.service_uid,
+        &arm_intent(&b),
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap();
     refused(&mut f, &b, b.service_uid, &arm_intent(&b), "boot entry");
 }
 
@@ -1148,7 +1164,14 @@ fn an_incompatible_fallback_makes_the_activation_irreversible_and_refused() {
     target["schema_version"] = json!(17);
     target["min_reader"] = json!(16);
     let b = f.broker(&target);
-    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
+    handle(
+        &b.config,
+        b.service_uid,
+        &arm_intent(&b),
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1172,8 +1195,22 @@ fn disarm_removes_the_pending_entry_and_nothing_else() {
     let disarm = br#"{"version":1,"intent":"disarm","admin_uid":4000001}"#;
     refused(&mut f, &b, b.service_uid, disarm, "nothing to roll back");
     let before = f.esp.files.clone();
-    handle(&b.config, b.service_uid, &arm_intent(&b), &mut f.esp).unwrap();
-    let report = handle(&b.config, b.service_uid, disarm, &mut f.esp).unwrap();
+    handle(
+        &b.config,
+        b.service_uid,
+        &arm_intent(&b),
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap();
+    let report = handle(
+        &b.config,
+        b.service_uid,
+        disarm,
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap();
     assert_eq!(report["status"], "ROLLED_BACK");
     assert_eq!(f.esp.files, before);
 }

@@ -104,6 +104,19 @@ impl Faults {
         }
     }
 
+    /// This build's faults: none in an ordinary build, the point named in
+    /// `FLOWERLY_SLOT_FAULT` in a fault-injection build.
+    pub fn for_build() -> Self {
+        #[cfg(feature = "fault-injection")]
+        {
+            Self::from_env()
+        }
+        #[cfg(not(feature = "fault-injection"))]
+        {
+            Self::none()
+        }
+    }
+
     #[cfg(feature = "fault-injection")]
     pub fn from_env() -> Self {
         Self {
@@ -807,6 +820,7 @@ pub fn stage_boot(
     target: Slot,
     esp: &mut dyn Esp,
     payload: &BootPayload,
+    faults: &Faults,
 ) -> Result<Value> {
     let part = disk.slot(target).clone();
     if part.filesystem != "ext4" {
@@ -848,7 +862,7 @@ pub fn stage_boot(
         initramfs_sha256: hashes[1].clone(),
     };
     disk.set_boot(target, boot.clone(), raw, identity);
-    disk.save(manifest_path, &Faults::none())?;
+    disk.save(manifest_path, faults)?;
     Ok(json!({
         "status": "STAGED_WITH_BOOT_PAYLOAD",
         "target": target.name(),

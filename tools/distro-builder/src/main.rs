@@ -163,14 +163,8 @@ fn main() -> Result<()> {
     }
 }
 
-#[cfg(feature = "fault-injection")]
 fn slot_faults() -> slot::Faults {
-    slot::Faults::from_env()
-}
-
-#[cfg(not(feature = "fault-injection"))]
-fn slot_faults() -> slot::Faults {
-    slot::Faults::none()
+    slot::Faults::for_build()
 }
 
 fn active_slot(disk: &slot::Disk, claim: &SlotDisk) -> Result<slot::Slot> {
@@ -218,6 +212,7 @@ fn run_slot(action: SlotAction) -> Result<()> {
                         slot,
                         &mut esp,
                         &payload,
+                        &faults,
                     )?
                 }
                 _ => staged,

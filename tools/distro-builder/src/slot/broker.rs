@@ -178,6 +178,7 @@ pub fn handle(
     peer_uid: u32,
     request: &[u8],
     esp: &mut dyn Esp,
+    faults: &Faults,
 ) -> Result<Value> {
     if !config.enabled() {
         bail!("activation is disabled until Gate D is verified");
@@ -212,7 +213,7 @@ pub fn handle(
     verify_slot(&image, disk.slot(active), "active root")?;
 
     match intent.intent.as_str() {
-        "disarm" => rollback(&image, &disk, active, esp, &Faults::none()),
+        "disarm" => rollback(&image, &disk, active, esp, faults),
         "arm" => {
             let claimed = intent.slot.as_deref().unwrap_or_default();
             if claimed != target.name() {
@@ -229,7 +230,7 @@ pub fn handle(
                 .generation
                 .ok_or_else(|| anyhow!("arm needs the generation it arms"))?;
             verify_target(config, &image, &disk, active, target, esp, &claim)?;
-            publish_entry(&disk, active, target, esp, tries, &[], &Faults::none())
+            publish_entry(&disk, active, target, esp, tries, &[], faults)
         }
         other => bail!("unknown intent {other:?}"),
     }
@@ -332,7 +333,7 @@ pub fn serve_stream(stream: UnixStream, config_path: &Path) -> Result<()> {
     let request = read_line(&stream)?;
     let outcome = BrokerConfig::load(config_path).and_then(|config| {
         let mut esp = DirEsp::new(&config.esp);
-        handle(&config, peer.uid, &request, &mut esp)
+        handle(&config, peer.uid, &request, &mut esp, &Faults::for_build())
     });
     let reply = match outcome {
         Ok(mut report) => {
