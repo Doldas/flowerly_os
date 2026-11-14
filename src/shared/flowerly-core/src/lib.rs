@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 // One library crate for types, durable storage, framed IPC and daemon runtime.
+pub mod activation;
 mod config;
 mod daemon;
 pub mod ipc;

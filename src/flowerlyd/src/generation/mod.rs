@@ -3,9 +3,10 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context;
+use flowerly_core::activation::{self, ActivateCommand, ActivationHost, Failure, Outcome};
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::storage::lifecycle::{
-    validate_operation_id, Activation, EvidenceOutcome, Resolution, RootIdentity,
+    validate_operation_id, Activation, ActivationKind, EvidenceOutcome, Resolution, RootIdentity,
 };
 use flowerly_core::storage::{StorageError, Store, MAX_AUDIT_REASON};
 use flowerly_core::types::{Caller, Owner};
@@ -26,16 +27,116 @@ pub(crate) fn handle_command(
     let Payload::Command { name, args } = &request.payload else {
         return error_envelope(request.id.clone(), "unexpected request type");
     };
-    let mut store = match store.lock() {
-        Ok(store) => store,
-        Err(_) => return error_envelope(request.id.clone(), "storage lock poisoned"),
-    };
-    if let Err((code, message)) = validate_generation_command(&store, name, args, caller) {
-        return coded_error_envelope(request.id.clone(), code, message);
-    }
-    match run_command(&mut store, name, args, caller) {
+    match execute(store, ACTIVATION.get(), name, args, caller) {
         Ok(data) => ok_envelope(request.id.clone(), data),
+        Err(error) if error.message == POISONED => error_envelope(request.id.clone(), POISONED),
         Err(error) => coded_error_envelope(request.id.clone(), error.code, error.message),
+    }
+}
+
+const POISONED: &str = "storage lock poisoned";
+
+/// Validate under the store lock, then run. Activation and rollback release
+/// the lock while the slot broker works (it hashes both slots).
+fn execute(
+    store: &Mutex<Store>,
+    host: Option<&ActivationHost>,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
+    let mut guard = store.lock().map_err(|_| CommandFailure::from(POISONED))?;
+    validate_generation_command(&guard, name, args, caller)
+        .map_err(|(code, message)| CommandFailure { code, message })?;
+    match name {
+        "generation.activate" | "generation.rollback" => {
+            drop(guard);
+            run_activation(store, host, name, args, caller)
+        }
+        _ => run_command(&mut guard, name, args, caller),
+    }
+}
+
+static ACTIVATION: OnceLock<ActivationHost> = OnceLock::new();
+
+/// Admin activation or rollback (ADR-0023 section 2, G4b): `flowerly-core`
+/// orders the steps; this maps them to IPC. Without a configured host (no
+/// state directory), or while the release gate is off, it refuses before
+/// writing anything.
+pub(crate) fn run_activation(
+    store: &Mutex<Store>,
+    host: Option<&ActivationHost>,
+    name: &str,
+    args: &Value,
+    caller: Caller,
+) -> Result<Value, CommandFailure> {
+    let typed: GenerationActivationArgs = parsed_args(args)?;
+    let id = parsed_id(&typed.id)?;
+    let disabled = || {
+        CommandFailure::storage(StorageError::OperationConflict(format!(
+            "generation {id}: activation and rollback are disabled until Gate D is verified"
+        )))
+    };
+    let command = ActivateCommand {
+        generation: id.clone(),
+        kind: if name == "generation.rollback" {
+            ActivationKind::Rollback
+        } else {
+            ActivationKind::Activate
+        },
+        reason: typed.reason,
+        operation_id: typed.operation_id,
+        acknowledges: typed.acknowledges,
+        acknowledge_irreversible: typed.acknowledge_irreversible,
+    };
+    match activation::activate(store, host, caller, &command) {
+        Err(Failure::Storage(StorageError::NotFound(_))) => Err(CommandFailure::not_found(
+            format!("generation not found: {id}"),
+        )),
+        Ok(Outcome::Armed { activation, broker }) => {
+            tracing::info!(
+                activation = activation.id,
+                generation_id = %activation.generation,
+                irreversible = activation.irreversible,
+                "Generation activation armed; it is confirmed only by a witnessed healthy boot"
+            );
+            Ok(serde_json::json!({
+                "activation": activation_json(&activation),
+                "armed": broker,
+                "note": "PENDING until the next boot is witnessed healthy; reboot to proceed",
+            }))
+        }
+        Ok(Outcome::AlreadyRequested(activation)) => Ok(serde_json::json!({
+            "activation": activation_json(&activation),
+            "already_requested": true,
+        })),
+        Err(Failure::Disabled) => Err(disabled()),
+        Err(Failure::Invalid(message)) => Err(CommandFailure::invalid(message)),
+        Err(Failure::Unavailable(message)) => Err(CommandFailure {
+            code: ErrorCode::Unavailable,
+            message,
+        }),
+        Err(Failure::Storage(error)) => Err(CommandFailure::storage(error)),
+        Err(Failure::Refused { activation, reason }) => Err(CommandFailure {
+            code: ErrorCode::Conflict,
+            message: match activation {
+                Some(row) => format!(
+                    "the slot broker refused; activation {} is ABANDONED: {reason}",
+                    row.id
+                ),
+                None => format!("the slot broker refused; nothing was recorded: {reason}"),
+            },
+        }),
+        Err(Failure::Unknown { activation, reason }) => {
+            tracing::warn!(activation = activation.id, %reason, "Generation arm outcome unknown");
+            Err(CommandFailure {
+                code: ErrorCode::Unavailable,
+                message: format!(
+                    "the outcome is unknown: activation {} stays PENDING until the witness resolves it; read generation.history and do not retry blindly ({reason})",
+                    activation.id
+                ),
+            })
+        }
     }
 }
 
@@ -105,12 +206,14 @@ struct GenerationTestArgs {
 #[derive(Debug, Deserialize)]
 struct GenerationActivationArgs {
     id: String,
-    #[serde(default)]
-    reason: Option<String>,
+    reason: String,
     #[serde(default)]
     operation_id: Option<String>,
     #[serde(default)]
     acknowledges: Option<i64>,
+    /// The Admin accepts a manual-only fallback (ADR-0023 R4).
+    #[serde(default)]
+    acknowledge_irreversible: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,14 +335,11 @@ fn validate_generation_command(
         "generation.activate" | "generation.rollback" => {
             let typed: GenerationActivationArgs = typed_generation_args(args)?;
             validate_generation_id(&typed.id)?;
-            if let Some(reason) = &typed.reason {
-                validate_reason_arg(reason)?;
-            }
+            validate_reason_arg(&typed.reason)?;
             if let Some(key) = &typed.operation_id {
                 validate_operation_id(key)
                     .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
             }
-            let _ = typed.acknowledges;
         }
         "generation.identity" => {
             let typed: GenerationIdentityArgs = typed_generation_args(args)?;
@@ -294,9 +394,9 @@ fn storage_error_code(error: &StorageError) -> ErrorCode {
 }
 
 #[derive(Debug)]
-struct CommandFailure {
-    code: ErrorCode,
-    message: String,
+pub(crate) struct CommandFailure {
+    pub(crate) code: ErrorCode,
+    pub(crate) message: String,
 }
 
 impl CommandFailure {
@@ -343,13 +443,6 @@ impl std::fmt::Display for CommandFailure {
     }
 }
 
-#[cfg(test)]
-impl CommandFailure {
-    fn contains(&self, pattern: &str) -> bool {
-        self.message.contains(pattern)
-    }
-}
-
 impl PartialEq<String> for CommandFailure {
     fn eq(&self, other: &String) -> bool {
         &self.message == other
@@ -358,13 +451,17 @@ impl PartialEq<String> for CommandFailure {
 
 static LEDGER: OnceLock<LedgerSource> = OnceLock::new();
 
-/// The boot ledger next to the state database (ADR-0023 G3).
+/// The boot ledger next to the state database (ADR-0023 G3), and the rest of
+/// what activation reaches outside it (G4b).
 pub(crate) fn configure_ledger(state_dir: &Path) -> anyhow::Result<()> {
-    let source = LedgerSource::for_state_dir(state_dir)
+    let host = ActivationHost::for_state_dir(state_dir)
         .with_context(|| format!("reading {}", state_dir.display()))?;
     LEDGER
-        .set(source)
-        .map_err(|_| anyhow::anyhow!("boot ledger already configured"))
+        .set(host.ledger.clone())
+        .map_err(|_| anyhow::anyhow!("boot ledger already configured"))?;
+    ACTIVATION
+        .set(host)
+        .map_err(|_| anyhow::anyhow!("activation already configured"))
 }
 
 fn resolve_with(store: &mut Store, source: &LedgerSource) -> Result<Value, CommandFailure> {
@@ -585,20 +682,6 @@ fn run_command(
             }
             Ok(serde_json::to_value(&generation).map_err(err_str)?)
         }
-        "generation.activate" | "generation.rollback" => {
-            let typed: GenerationActivationArgs = parsed_args(args)?;
-            let id = typed.id.as_str();
-            let generation_id = parsed_id(id)?;
-            store
-                .get_generation(&generation_id)
-                .map_err(CommandFailure::storage)?
-                .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
-            // STABLE now follows a witnessed boot; no request can set it, and
-            // activation stays off until Gate D is verified (ADR-0023).
-            Err(CommandFailure::storage(StorageError::OperationConflict(
-                format!("generation {id}: activation and rollback are disabled until Gate D is verified"),
-            )))
-        }
         // Admin, audited (ADR-0023): every actor below is the kernel-attested
         // caller; nothing in the arguments can name one.
         "generation.identity" => {
@@ -661,7 +744,7 @@ fn run_command(
             let filter = typed.id.as_deref().map(parsed_id).transpose()?;
             if let Some(id) = &filter {
                 store
-                    .get_generation(id)
+                    .generation_for(caller, id)
                     .map_err(CommandFailure::storage)?
                     .ok_or_else(|| {
                         CommandFailure::not_found(format!("generation not found: {id}"))
@@ -788,17 +871,45 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    impl CommandFailure {
+        fn contains(&self, pattern: &str) -> bool {
+            self.message.contains(pattern)
+        }
+    }
+
     const TEST_CALLER: Caller = Caller::new(1000);
     use flowerly_core::storage::lifecycle::{ActivationKind, ActivationRequest};
     use flowerly_core::types::{Goal, ProvenanceRelation};
 
+    /// Runs a command the way the router does, activation included (with no
+    /// activation host configured, as in every unit test here).
+    fn run(
+        store: &mut Store,
+        name: &str,
+        args: &Value,
+        caller: Caller,
+    ) -> Result<Value, CommandFailure> {
+        let shared = Mutex::new(std::mem::replace(
+            store,
+            Store::open_in_memory().expect("placeholder store"),
+        ));
+        let result = match name {
+            "generation.activate" | "generation.rollback" => {
+                run_activation(&shared, None, name, args, caller)
+            }
+            _ => run_command(&mut shared.lock().unwrap(), name, args, caller),
+        };
+        *store = shared.into_inner().unwrap();
+        result
+    }
+
     #[test]
     fn activation_malformed_id_is_invalid_argument_not_internal() {
         let mut store = migrated_store();
-        let error = run_command(
+        let error = run(
             &mut store,
             "generation.activate",
-            &serde_json::json!({ "id": "malformed-generation-id" }),
+            &serde_json::json!({ "id": "malformed-generation-id", "reason": "ship" }),
             TEST_CALLER,
         )
         .expect_err("malformed activation ID must be rejected");
@@ -1171,7 +1282,7 @@ mod tests {
             ),
             (
                 "generation.activate",
-                serde_json::json!({"id": missing}),
+                serde_json::json!({"id": missing, "reason": "ship"}),
                 ErrorCode::NotFound,
             ),
             (
@@ -1190,7 +1301,7 @@ mod tests {
                 ErrorCode::InvalidArgument,
             ),
         ] {
-            let error = run_command(&mut store, name, &args, TEST_CALLER).expect_err(name);
+            let error = run(&mut store, name, &args, TEST_CALLER).expect_err(name);
             assert_eq!(error.code, expected, "{name} {args}");
         }
     }
@@ -1343,7 +1454,7 @@ mod tests {
     /// Validation and execution together, as the router runs them.
     fn call(store: &mut Store, name: &str, args: &Value) -> Result<Value, (ErrorCode, String)> {
         validate_generation_command(store, name, args, ADMIN_CALLER)?;
-        run_command(store, name, args, ADMIN_CALLER).map_err(|e| (e.code, e.message))
+        run(store, name, args, ADMIN_CALLER).map_err(|e| (e.code, e.message))
     }
 
     fn make_tested(store: &mut Store, id: &GenerationId) {
@@ -1470,7 +1581,14 @@ mod tests {
             ),
             (
                 "generation.activate",
-                serde_json::json!({"id": id, "acknowledges": "x"}),
+                serde_json::json!({"id": id, "reason": "r", "acknowledges": "x"}),
+            ),
+            // A reason is required on activation and rollback.
+            ("generation.activate", serde_json::json!({"id": id})),
+            ("generation.rollback", serde_json::json!({"id": id})),
+            (
+                "generation.activate",
+                serde_json::json!({"id": id, "reason": "r", "acknowledge_irreversible": "yes"}),
             ),
         ] {
             assert_eq!(
@@ -1543,7 +1661,7 @@ mod tests {
                 .len(),
             audit_before
         );
-        let missing = serde_json::json!({"id": GenerationId::new()});
+        let missing = serde_json::json!({"id": GenerationId::new(), "reason": "back"});
         assert_eq!(
             code_of(call(&mut store, "generation.rollback", &missing)),
             ErrorCode::NotFound
@@ -1642,19 +1760,19 @@ mod tests {
         store.insert_generation(&first).expect("insert first");
         store.insert_generation(&second).expect("insert second");
 
-        let missing = run_command(
+        let missing = run(
             &mut store,
             "generation.activate",
-            &serde_json::json!({ "id": "gen-missing" }),
+            &serde_json::json!({ "id": GenerationId::new(), "reason": "ship" }),
             TEST_CALLER,
         )
         .unwrap_err();
         assert_eq!(missing.code, ErrorCode::NotFound);
         for id in [&first.id, &second.id] {
-            let refused = run_command(
+            let refused = run(
                 &mut store,
                 "generation.activate",
-                &serde_json::json!({ "id": id }),
+                &serde_json::json!({ "id": id, "reason": "ship" }),
                 TEST_CALLER,
             )
             .unwrap_err();
@@ -1670,10 +1788,10 @@ mod tests {
         assert_eq!(promoted["owner"], "system");
 
         // Promotion does not open the path: nothing becomes STABLE.
-        let refused = run_command(
+        let refused = run(
             &mut store,
             "generation.activate",
-            &serde_json::json!({ "id": second.id }),
+            &serde_json::json!({ "id": second.id, "reason": "ship" }),
             TEST_CALLER,
         )
         .unwrap_err();

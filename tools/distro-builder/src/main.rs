@@ -247,7 +247,14 @@ fn run_slot(action: SlotAction) -> Result<()> {
         SlotAction::Rollback { target, to } => {
             let (image, disk) = slot::open_bound(&target.disk, &target.manifest, true)?;
             let mut esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
-            slot::rollback(&image, &disk, slot::Slot::parse(&to)?, &mut esp, &faults)?
+            slot::rollback(
+                &image,
+                &disk,
+                slot::Slot::parse(&to)?,
+                &mut esp,
+                false,
+                &faults,
+            )?
         }
         SlotAction::Status {
             target,

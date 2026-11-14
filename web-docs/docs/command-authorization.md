@@ -148,7 +148,9 @@ the command inventory. For the owner-scoped commands:
     provenance edge stays hidden from everyone else.
   - **`generation.activate`** and **`generation.rollback`** are `conflict`
     for every Generation until Gate D is verified
-    ([ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)).
+    ([ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)),
+    except on an A/B test image, where they need a `reason` and reach the
+    root slot broker on behalf of the kernel-attested Admin.
     `STABLE` can only follow a confirmed activation, never a request.
   - **`admin_audit`** (migration 0013) is append-only: triggers refuse
     UPDATE and DELETE for every writer. Refusals are journaled

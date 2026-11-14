@@ -639,6 +639,25 @@ pub fn parse_entry(name: &str) -> Option<Entry> {
     })
 }
 
+/// Prefix of a demoted entry. Its id no longer matches the loader default
+/// (`flowerly-*`), so the loader never picks it on its own, but it is still
+/// listed in the boot menu for an operator (ADR-0023 R4).
+const DEMOTED_PREFIX: &str = "manual-";
+
+/// `manual-flowerly-<a|b>.conf`: the running root's entry demoted to
+/// manual-only by an irreversible arm.
+pub fn parse_demoted(name: &str) -> Option<Slot> {
+    match name.strip_prefix(DEMOTED_PREFIX)? {
+        "flowerly-a.conf" => Some(Slot::A),
+        "flowerly-b.conf" => Some(Slot::B),
+        _ => None,
+    }
+}
+
+fn demoted_name(slot: Slot) -> String {
+    format!("{DEMOTED_PREFIX}flowerly-{}.conf", slot.letter())
+}
+
 fn is_stray_temp(name: &str, slot: Slot) -> bool {
     name.starts_with(&format!("flowerly-{}", slot.letter())) && name.ends_with(".conf.tmp")
 }
@@ -646,21 +665,54 @@ fn is_stray_temp(name: &str, slot: Slot) -> bool {
 struct Listing {
     entries: Vec<Entry>,
     strays: Vec<String>,
+    demoted: Vec<Slot>,
+}
+
+impl Listing {
+    /// Any entry for `slot`, regular or demoted.
+    fn has_entry(&self, slot: Slot) -> bool {
+        self.entries.iter().any(|e| e.slot == slot) || self.demoted.contains(&slot)
+    }
+
+    /// The entry an arm derives from and falls back to: the active slot's
+    /// regular entry, or, when `demoted_ok`, its demoted one (an irreversible
+    /// arm being re-run). Never both.
+    fn source_entry(&self, active: Slot, demoted_ok: bool) -> Result<String> {
+        let regular = self.entries.iter().find(|e| e.slot == active);
+        let demoted = self.demoted.contains(&active);
+        match (regular, demoted) {
+            (Some(_), true) => bail!(
+                "{} has both a regular and a demoted entry; remove one by hand",
+                active.name()
+            ),
+            (Some(entry), false) => Ok(entry.name.clone()),
+            (None, true) if demoted_ok => Ok(demoted_name(active)),
+            _ => bail!("no boot entry for the active slot; nothing to fall back to"),
+        }
+    }
 }
 
 fn list_entries(esp: &dyn Esp) -> Result<Listing> {
     let mut entries = Vec::new();
     let mut strays = Vec::new();
+    let mut demoted = Vec::new();
     for name in esp.list(ENTRIES)? {
         if let Some(entry) = parse_entry(&name) {
             entries.push(entry);
+        } else if let Some(slot) = parse_demoted(&name) {
+            demoted.push(slot);
         } else if is_stray_temp(&name, Slot::A) || is_stray_temp(&name, Slot::B) {
             strays.push(name);
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     strays.sort();
-    Ok(Listing { entries, strays })
+    demoted.sort_by_key(|slot| slot.letter());
+    Ok(Listing {
+        entries,
+        strays,
+        demoted,
+    })
 }
 
 fn check_loader_default(esp: &dyn Esp) -> Result<()> {
@@ -752,9 +804,7 @@ pub fn stage(
     }
     verify_slot(image, disk.slot(active), "active root")?;
     let listing = list_entries(esp)?;
-    if listing.entries.iter().any(|e| e.slot == target)
-        || listing.strays.iter().any(|s| is_stray_temp(s, target))
-    {
+    if listing.has_entry(target) || listing.strays.iter().any(|s| is_stray_temp(s, target)) {
         bail!(
             "{} has a boot entry; roll back before restaging it",
             target.name()
@@ -827,7 +877,7 @@ pub fn stage_boot(
         bail!("{} has not been staged", target.name());
     }
     let listing = list_entries(&*esp)?;
-    if listing.entries.iter().any(|e| e.slot == target) {
+    if listing.has_entry(target) {
         bail!("{} has a boot entry; roll back first", target.name());
     }
     verify_slot(image, &part, "staged root")?;
@@ -900,21 +950,17 @@ pub fn arm(
     }
     verify_slot(image, part, "staged root")?;
     let listing = list_entries(&*esp)?;
-    if listing.entries.iter().any(|e| e.slot == target) {
+    if listing.has_entry(target) {
         bail!(
             "{} already has a boot entry; roll back first",
             target.name()
         );
     }
-    let active_entry = listing
-        .entries
-        .iter()
-        .find(|e| e.slot == active)
-        .ok_or_else(|| anyhow!("no boot entry for the active slot; nothing to fall back to"))?;
+    let active_entry = listing.source_entry(active, false)?;
     check_loader_default(&*esp)?;
     // Validate the entry (extra options included) before any payload is written.
     derive_entry(
-        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{}", active_entry.name))?),
+        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{active_entry}"))?),
         &disk.slot(active).partuuid,
         target,
         &part.partuuid,
@@ -946,13 +992,80 @@ pub fn arm(
         esp,
         request.tries,
         request.extra_options,
+        Fallback::Automatic,
         faults,
     )
 }
 
+/// What a failed target boot may fall back to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fallback {
+    /// The running root keeps its entry; boot counting returns to it.
+    Automatic,
+    /// Irreversible activation (ADR-0023 R4): the running root's `flowerlyd`
+    /// could not read the database after the target's migrations, so its
+    /// entry is demoted to manual-only before the target is published.
+    ManualOnly,
+}
+
+struct Prepared {
+    listing: Listing,
+    active_entry: String,
+    entry_text: String,
+}
+
+/// Every check `publish_entry` makes before it writes, and the entry it would
+/// write.
+fn prepare_entry(
+    disk: &Disk,
+    active: Slot,
+    target: Slot,
+    esp: &dyn Esp,
+    extra_options: &[String],
+    fallback: Fallback,
+) -> Result<Prepared> {
+    let listing = list_entries(esp)?;
+    if listing.has_entry(target) {
+        bail!(
+            "{} already has a boot entry; roll back first",
+            target.name()
+        );
+    }
+    let active_entry = listing.source_entry(active, fallback == Fallback::ManualOnly)?;
+    check_loader_default(esp)?;
+    let entry_text = derive_entry(
+        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{active_entry}"))?),
+        &disk.slot(active).partuuid,
+        target,
+        &disk.slot(target).partuuid,
+        extra_options,
+    )?;
+    Ok(Prepared {
+        listing,
+        active_entry,
+        entry_text,
+    })
+}
+
+/// Whether `publish_entry` would publish, without writing anything.
+pub(crate) fn check_publishable(
+    disk: &Disk,
+    active: Slot,
+    target: Slot,
+    esp: &dyn Esp,
+    fallback: Fallback,
+) -> Result<()> {
+    prepare_entry(disk, active, target, esp, &[], fallback).map(|_| ())
+}
+
 /// The boot-entry half of arming, shared by `arm` and the slot broker:
 /// re-check the ESP, derive the entry from the active one, and publish it as
-/// a boot-counting (pending) entry with one rename.
+/// a boot-counting (pending) entry with one rename. With
+/// [`Fallback::ManualOnly`] the active entry is first renamed out of the
+/// loader default, so no moment exists in which the target is armed and the
+/// running root is still an automatic fallback; a re-run after an
+/// interruption picks up from the demoted entry.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_entry(
     disk: &Disk,
     active: Slot,
@@ -960,31 +1073,17 @@ pub(crate) fn publish_entry(
     esp: &mut dyn Esp,
     tries: u32,
     extra_options: &[String],
+    fallback: Fallback,
     faults: &Faults,
 ) -> Result<Value> {
     if !(1..=9).contains(&tries) {
         bail!("boot-count tries must be 1..=9");
     }
-    let listing = list_entries(&*esp)?;
-    if listing.entries.iter().any(|e| e.slot == target) {
-        bail!(
-            "{} already has a boot entry; roll back first",
-            target.name()
-        );
-    }
-    let active_entry = listing
-        .entries
-        .iter()
-        .find(|e| e.slot == active)
-        .ok_or_else(|| anyhow!("no boot entry for the active slot; nothing to fall back to"))?;
-    check_loader_default(&*esp)?;
-    let entry_text = derive_entry(
-        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{}", active_entry.name))?),
-        &disk.slot(active).partuuid,
-        target,
-        &disk.slot(target).partuuid,
-        extra_options,
-    )?;
+    let Prepared {
+        listing,
+        active_entry,
+        entry_text,
+    } = prepare_entry(disk, active, target, &*esp, extra_options, fallback)?;
     // An earlier interrupted arm may have left a temp entry; it is not a boot
     // entry, so it can be dropped and the arm re-run.
     for stray in listing.strays.iter().filter(|s| is_stray_temp(s, target)) {
@@ -995,15 +1094,32 @@ pub(crate) fn publish_entry(
     esp.write_new(&temp, entry_text.as_bytes())?;
     esp.sync()?;
     faults.at("arm:after-tmp-entry")?;
+    let demoted = demoted_name(active);
+    if fallback == Fallback::ManualOnly && active_entry != demoted {
+        esp.rename(
+            &format!("{ENTRIES}/{active_entry}"),
+            &format!("{ENTRIES}/{demoted}"),
+        )?;
+        esp.sync()?;
+    }
+    faults.at("arm:after-demote")?;
     esp.rename(&temp, &format!("{ENTRIES}/{entry}"))?;
     esp.sync()?;
     faults.at("arm:after-rename")?;
-    Ok(json!({
+    let mut report = json!({
         "status": "ARMED_PENDING",
         "target": target.name(),
         "boot_entry": entry,
         "note": "pending only: success needs a witnessed boot and the health gate",
-    }))
+    });
+    match fallback {
+        Fallback::Automatic => report["fallback"] = json!("AUTOMATIC"),
+        Fallback::ManualOnly => {
+            report["fallback"] = json!("MANUAL_ONLY");
+            report["demoted_entry"] = json!(demoted);
+        }
+    }
+    Ok(report)
 }
 
 fn read_regular(path: &Path) -> Result<Vec<u8>> {
@@ -1012,20 +1128,36 @@ fn read_regular(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Remove the other slot's entries so `to` boots next. A `to` whose entry an
+/// irreversible arm demoted is restored only with `restore_demoted` (the
+/// broker, for the running root, whose service reads the database by
+/// definition), and only after the other slot's entries are gone.
 pub fn rollback(
     image: &Image,
     disk: &Disk,
     to: Slot,
     esp: &mut dyn Esp,
+    restore_demoted: bool,
     faults: &Faults,
 ) -> Result<Value> {
     verify_slot(image, disk.slot(to), "rollback target root")?;
     let listing = list_entries(&*esp)?;
-    if !listing.entries.iter().any(|e| e.slot == to) {
-        bail!(
+    let regular = listing.entries.iter().any(|e| e.slot == to);
+    let demoted = listing.demoted.contains(&to);
+    match (regular, demoted) {
+        (true, true) => bail!(
+            "{} has both a regular and a demoted entry; remove one by hand",
+            to.name()
+        ),
+        (false, true) if !restore_demoted => bail!(
+            "{} was demoted to manual-only by an irreversible activation; restore its backup and choose it in the boot menu",
+            to.name()
+        ),
+        (false, false) => bail!(
             "no boot entry for {}; refusing to leave no bootable entry",
             to.name()
-        );
+        ),
+        _ => {}
     }
     let other = to.other();
     let doomed: Vec<String> = listing
@@ -1040,8 +1172,14 @@ pub fn rollback(
                 .filter(|s| is_stray_temp(s, other))
                 .cloned(),
         )
+        .chain(
+            listing
+                .demoted
+                .contains(&other)
+                .then(|| demoted_name(other)),
+        )
         .collect();
-    if doomed.is_empty() {
+    if doomed.is_empty() && !demoted {
         bail!("{} has no boot entry; nothing to roll back", other.name());
     }
     check_loader_default(&*esp)?;
@@ -1050,11 +1188,22 @@ pub fn rollback(
         esp.sync()?;
         faults.at(&format!("rollback:after-delete:{}", n + 1))?;
     }
-    Ok(json!({
+    let mut report = json!({
         "status": "ROLLED_BACK",
         "to": to.name(),
         "removed_entries": doomed,
-    }))
+    });
+    if demoted {
+        faults.at("rollback:before-restore")?;
+        let restored = format!("flowerly-{}.conf", to.letter());
+        esp.rename(
+            &format!("{ENTRIES}/{}", demoted_name(to)),
+            &format!("{ENTRIES}/{restored}"),
+        )?;
+        esp.sync()?;
+        report["restored_entry"] = json!(restored);
+    }
+    Ok(report)
 }
 
 pub fn status(
@@ -1137,6 +1286,7 @@ pub fn status(
             "tries_done": e.tries_done,
         })).collect::<Vec<_>>(),
         "stray_temp_entries": listing.strays,
+        "demoted_slots": listing.demoted.iter().map(|s| s.name()).collect::<Vec<_>>(),
         "slots": slots,
         "rule": "success is never inferred from boot entries alone; ACTIVE needs the witness ledger",
     }))

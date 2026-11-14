@@ -122,8 +122,16 @@ Next: G4 (slot broker; first move the compatibility baseline to the G3 merge).
 stage` can stage the boot payload and baked identity; the root broker
 re-verifies authorization, slot bytes, ESP payload, identity and schema window
 itself and writes only a boot entry; irreversible activations are refused;
-test profile only. Next: G4b (irreversible path, `flowerlyd` activation path,
-backup and Admin acknowledgement), then G5.
+test profile only.
+
+**G4b irreversible path and activation path:** the broker's read-only `plan`;
+an irreversible arm needs the Admin's acknowledgement and a verified backup,
+and demotes the running root's entry to manual-only before publishing the
+target; `flowerlyd` runs activate/rollback through the broker on the test
+image only (the release switch stays off), with a `VACUUM INTO` backup whose
+hash is on the activation row; `reason` is required. Next: G5 (real KVM
+acceptance on the exact SHA, including the restore drill), which also turns
+the release switch on.
 
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/

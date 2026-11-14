@@ -221,7 +221,7 @@ def main(bin_dir):
                 ),
                 (
                     "generation.activate",
-                    {"id": "gen-" + uuid.uuid4().hex},
+                    {"id": "gen-" + uuid.uuid4().hex, "reason": "ship"},
                     "not_found",
                     "generation.activate unknown",
                 ),
