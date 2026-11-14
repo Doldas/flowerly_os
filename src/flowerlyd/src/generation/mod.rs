@@ -72,19 +72,10 @@ pub(crate) fn run_activation(
 ) -> Result<Value, CommandFailure> {
     let typed: GenerationActivationArgs = parsed_args(args)?;
     let id = parsed_id(&typed.id)?;
-    store
-        .lock()
-        .map_err(|_| CommandFailure::from(POISONED))?
-        .generation_for(caller, &id)
-        .map_err(CommandFailure::storage)?
-        .ok_or_else(|| CommandFailure::not_found(format!("generation not found: {id}")))?;
     let disabled = || {
         CommandFailure::storage(StorageError::OperationConflict(format!(
             "generation {id}: activation and rollback are disabled until Gate D is verified"
         )))
-    };
-    let Some(host) = host else {
-        return Err(disabled());
     };
     let command = ActivateCommand {
         generation: id.clone(),
@@ -99,6 +90,9 @@ pub(crate) fn run_activation(
         acknowledge_irreversible: typed.acknowledge_irreversible,
     };
     match activation::activate(store, host, caller, &command) {
+        Err(Failure::Storage(StorageError::NotFound(_))) => Err(CommandFailure::not_found(
+            format!("generation not found: {id}"),
+        )),
         Ok(Outcome::Armed { activation, broker }) => {
             tracing::info!(
                 activation = activation.id,

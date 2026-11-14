@@ -2,6 +2,8 @@
 //! G4b): the release gate, the client of the root slot broker, and the order
 //! of the steps.
 //!
+//! 0. The Generation must exist (an Admin sees every Generation, as for
+//!    `promote`; the database refuses a non-system one later).
 //! 1. Activation must be enabled: [`RELEASE_ACTIVATION_ENABLED`] is off until
 //!    Gate D is verified, so only an image carrying the root-owned test-profile
 //!    marker gets past this point. Nothing is written before it.
@@ -184,15 +186,19 @@ fn lock(store: &Mutex<Store>) -> Result<MutexGuard<'_, Store>, Failure> {
 }
 
 /// Run one Admin activation or rollback request; see the module docs.
+/// Without a host (no state directory) activation is disabled.
 pub fn activate(
     store: &Mutex<Store>,
-    host: &ActivationHost,
+    host: Option<&ActivationHost>,
     admin: Caller,
     command: &ActivateCommand,
 ) -> Result<Outcome, Failure> {
-    if !host.enabled() {
+    lock(store)?
+        .get_generation(&command.generation)?
+        .ok_or_else(|| StorageError::NotFound(format!("generation {}", command.generation)))?;
+    let Some(host) = host.filter(|host| host.enabled()) else {
         return Err(Failure::Disabled);
-    }
+    };
     let claim = {
         let store = lock(store)?;
         if let Some(key) = &command.operation_id {

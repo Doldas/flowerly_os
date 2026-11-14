@@ -528,7 +528,10 @@ def generation_scenario(alice, bob, admin, admin_uid):
     code, _ = error_of(bob.call("generation.create", parent=candidate))
     assert code == "not_found", code
     # A private candidate can never become the system STABLE directly.
-    assert error_of(admin.call("generation.activate", id=candidate))[0] == "conflict"
+    assert (
+        error_of(admin.call("generation.activate", id=candidate, reason="ship"))[0]
+        == "conflict"
+    )
     assert error_of(admin.call("generation.promote", id=candidate, reason=" "))[0] == (
         "invalid_argument"
     )
@@ -546,7 +549,10 @@ def generation_scenario(alice, bob, admin, admin_uid):
     assert goal not in edges and f"actor:uid:{admin_uid}" not in edges, edges
     bob.ok("generation.create", parent=candidate)
     # Promotion does not activate: STABLE needs a witnessed boot (ADR-0023).
-    assert error_of(admin.call("generation.activate", id=candidate))[0] == "conflict"
+    assert (
+        error_of(admin.call("generation.activate", id=candidate, reason="ship"))[0]
+        == "conflict"
+    )
     assert bob.ok("generation.inspect", id=candidate)["status"] == "CANDIDATE"
     lifecycle_scenario(bob, admin, admin_uid, candidate)
     assert alice.status()["ownership_pending_commands"] == 0

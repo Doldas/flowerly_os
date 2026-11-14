@@ -149,7 +149,7 @@ impl Rig {
     }
 
     fn run(&self, command: &ActivateCommand) -> Result<Outcome, Failure> {
-        activate(&self.store, &self.host, ADMIN, command)
+        activate(&self.store, Some(&self.host), ADMIN, command)
     }
 
     fn history(&self) -> Vec<Activation> {
@@ -226,6 +226,19 @@ fn nothing_happens_while_activation_is_disabled() {
     let mut rig = rig();
     rig.host.test_profile_marker = rig.dir.path().join("no-marker");
     assert!(matches!(rig.run(&rig.command()), Err(Failure::Disabled)));
+    rig.nothing_written();
+    // No host at all (no state directory) is disabled too, but a missing
+    // Generation is still reported as missing.
+    let rig = super::tests::rig();
+    let none = activate(&rig.store, None, ADMIN, &rig.command());
+    assert!(matches!(none, Err(Failure::Disabled)));
+    let mut missing = rig.command();
+    missing.generation = GenerationId::new();
+    let error = activate(&rig.store, None, ADMIN, &missing).unwrap_err();
+    assert!(
+        matches!(error, Failure::Storage(StorageError::NotFound(_))),
+        "{error:?}"
+    );
     rig.nothing_written();
     // A marker the service account could have written does not count.
     let rig = {
