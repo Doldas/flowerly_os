@@ -14,26 +14,39 @@
 //! - both slots are hashed against the manifest; the staged slot, its boot
 //!   payload on the ESP and its baked identity must equal the Generation the
 //!   caller claims;
-//! - a target whose migrations leave a `min_reader` newer than the running
-//!   root's `flowerlyd` would make the fallback unusable: that activation is
-//!   irreversible and refused here (its safe path is G4b).
+//! - a target whose `flowerlyd` cannot read the database the running root
+//!   keeps is refused; a target whose migrations leave a `min_reader` newer
+//!   than the running root's `flowerlyd` would make the fallback unusable:
+//!   that activation is irreversible (G4b). It needs the Admin's explicit
+//!   acknowledgement and a private, SQLite, hash-matching pre-activation
+//!   backup the broker reads itself, and the running root's entry is demoted
+//!   to manual-only before the target is published, so a failed boot cannot
+//!   fall back into a root that cannot start its service.
 //!
-//! It writes nothing but one boot entry on the ESP (or removes one), never
-//! the block device, and accepts no path, command line or Generation id.
+//! `plan` runs every check of `arm` and writes nothing: `flowerlyd` records
+//! its answer in the PENDING activation row before it asks to `arm`.
+//!
+//! It writes nothing but boot entries on the ESP (publishing, demoting,
+//! restoring or removing one), never the block device or the backup, and
+//! accepts no path, command line or Generation id.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::esp::Esp;
 use super::live::{open_bound_read_only, DirEsp};
-use super::{hex, publish_entry, rollback, verify_slot, BakedIdentity, Faults, Slot};
+use super::{
+    check_publishable, hex, is_hex, publish_entry, rollback, verify_slot, BakedIdentity, Fallback,
+    Faults, Slot,
+};
 
 /// Off until the change that records the passing G5 evidence (ADR-0023).
 pub const RELEASE_ACTIVATION_ENABLED: bool = false;
@@ -57,7 +70,11 @@ pub struct BrokerConfig {
     pub cmdline: PathBuf,
     pub service_user: String,
     pub admin_group: String,
+    /// Where `flowerlyd` puts pre-activation backups as `<sha256>.sqlite`.
+    pub backup_dir: PathBuf,
 }
+
+const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
 fn effective_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
@@ -107,6 +124,23 @@ struct Intent {
     tries: Option<u32>,
     #[serde(default)]
     generation: Option<GenerationClaim>,
+    #[serde(default)]
+    irreversible: Option<IrreversibleAck>,
+}
+
+/// The Admin's acknowledgement that the fallback will be manual-only, with
+/// the backup taken for it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IrreversibleAck {
+    backup_sha256: String,
+}
+
+/// The schema window of a target against the running root.
+struct Window {
+    irreversible: bool,
+    target_min_reader: i64,
+    fallback_schema_version: i64,
 }
 
 /// The Generation the caller wants armed: a claim the broker checks against
@@ -213,14 +247,21 @@ pub fn handle(
     verify_slot(&image, disk.slot(active), "active root")?;
 
     match intent.intent.as_str() {
-        "disarm" => rollback(&image, &disk, active, esp, faults),
-        "arm" => {
-            let claimed = intent.slot.as_deref().unwrap_or_default();
+        "disarm" => rollback(&image, &disk, active, esp, true, faults),
+        kind @ ("plan" | "arm") => {
+            // A plan may leave the slot to the broker; an arm must name it.
+            let claimed = match (kind, intent.slot.as_deref()) {
+                ("plan", None) => target.name(),
+                (_, slot) => slot.unwrap_or_default(),
+            };
             if claimed != target.name() {
                 bail!(
                     "slot {claimed:?} is not the inactive slot {}",
                     target.name()
                 );
+            }
+            if kind == "plan" && (intent.tries.is_some() || intent.irreversible.is_some()) {
+                bail!("a plan takes no tries and no acknowledgement");
             }
             let tries = intent.tries.unwrap_or(3);
             if !(1..=9).contains(&tries) {
@@ -228,12 +269,89 @@ pub fn handle(
             }
             let claim = intent
                 .generation
-                .ok_or_else(|| anyhow!("arm needs the generation it arms"))?;
-            verify_target(config, &image, &disk, active, target, esp, &claim)?;
-            publish_entry(&disk, active, target, esp, tries, &[], faults)
+                .ok_or_else(|| anyhow!("{kind} needs the generation it arms"))?;
+            let window = verify_target(config, &image, &disk, active, target, esp, &claim)?;
+            let fallback = if window.irreversible {
+                Fallback::ManualOnly
+            } else {
+                Fallback::Automatic
+            };
+            if kind == "plan" {
+                check_publishable(&disk, active, target, esp, fallback)?;
+                return Ok(json!({
+                    "status": "PLANNED",
+                    "target": target.name(),
+                    "root_partuuid": disk.slot(target).partuuid,
+                    "irreversible": window.irreversible,
+                    "target_min_reader": window.target_min_reader,
+                    "fallback_schema_version": window.fallback_schema_version,
+                }));
+            }
+            let backup = match (window.irreversible, &intent.irreversible) {
+                (true, None) => bail!(
+                    "irreversible activation: the target needs min_reader {}, the fallback knows schema {}; it needs an explicit Admin acknowledgement and a verified backup",
+                    window.target_min_reader,
+                    window.fallback_schema_version
+                ),
+                (false, Some(_)) => bail!(
+                    "the activation is reversible; an irreversible acknowledgement is refused so the record stays true"
+                ),
+                (true, Some(ack)) => {
+                    verify_backup(config, peer_uid, &ack.backup_sha256)?;
+                    Some(ack.backup_sha256.clone())
+                }
+                (false, None) => None,
+            };
+            let mut report =
+                publish_entry(&disk, active, target, esp, tries, &[], fallback, faults)?;
+            if let Some(digest) = backup {
+                report["backup_sha256"] = json!(digest);
+            }
+            Ok(report)
         }
         other => bail!("unknown intent {other:?}"),
     }
+}
+
+/// The backup an irreversible activation names: the service account's
+/// private `<backup_dir>/<sha256>.sqlite`, a SQLite file whose bytes hash to
+/// that name. Read through no symlink; never written.
+fn verify_backup(config: &BrokerConfig, service_uid: u32, digest: &str) -> Result<()> {
+    if !is_hex(digest, 64) {
+        bail!("backup_sha256 must be 64 lowercase hex digits");
+    }
+    let path = config.backup_dir.join(format!("{digest}.sqlite"));
+    let meta = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("the backup {digest} cannot be read"))?;
+    if !meta.is_file() {
+        bail!("the backup {digest} is not a regular file");
+    }
+    if meta.uid() != service_uid || meta.mode() & 0o077 != 0 {
+        bail!("the backup {digest} must be the service account's and private");
+    }
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .with_context(|| format!("opening the backup {digest}"))?;
+    let mut magic = [0u8; 16];
+    if file.read_exact(&mut magic).is_err() || &magic != SQLITE_MAGIC {
+        bail!("the backup {digest} is not a SQLite database");
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(magic);
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).context("reading the backup")?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    if hex(&hasher.finalize()) != digest {
+        bail!("the backup {digest} does not match its backup_sha256");
+    }
+    Ok(())
 }
 
 fn verify_target(
@@ -244,7 +362,7 @@ fn verify_target(
     target: Slot,
     esp: &dyn Esp,
     claim: &GenerationClaim,
-) -> Result<()> {
+) -> Result<Window> {
     let part = disk.slot(target);
     if part.filesystem != "ext4" {
         bail!("{} has not been staged", target.name());
@@ -315,14 +433,19 @@ fn verify_target(
     if running.slot != active || running.root_partuuid != disk.slot(active).partuuid {
         bail!("the running identity is not the active slot");
     }
-    if identity.min_reader > running.schema_version {
+    // The target itself must read what the running root has migrated.
+    if identity.schema_version < running.min_reader {
         bail!(
-            "irreversible activation: the target needs min_reader {}, the fallback knows schema {}; refused until the irreversible path exists",
-            identity.min_reader,
-            running.schema_version
+            "the target's flowerlyd (schema {}) cannot read the database the running root keeps (min_reader {}); restore the matching backup first",
+            identity.schema_version,
+            running.min_reader
         );
     }
-    Ok(())
+    Ok(Window {
+        irreversible: identity.min_reader > running.schema_version,
+        target_min_reader: identity.min_reader,
+        fallback_schema_version: running.schema_version,
+    })
 }
 
 /// Serve one connection: read one intent line, answer one JSON line.

@@ -76,7 +76,11 @@ of pacman transactions. Rollback selects a known previous Flowerly generation.
 
 **Not available yet.** `agenticctl generation activate` and `rollback` refuse
 until Gate D is verified. `generation list|create|inspect|promote|identity|evidence|test|reject|revoke|history`
-work on the records only; none of them selects a root.
+work on the records only; none of them selects a root. On the A/B test image
+only, `activate` and `rollback` (with `--reason`) record a `PENDING` request
+and ask the root slot broker to arm the inactive slot; an activation the
+running root could not fall back from needs `--acknowledge-irreversible`,
+takes a database backup first and leaves the old root in the boot menu only.
 
 When Gate D is complete, an activation is a durable two-phase record: an Admin
 requests it, the slot is armed, and `STABLE` follows only from the witnessed

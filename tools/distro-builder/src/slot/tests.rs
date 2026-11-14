@@ -615,7 +615,7 @@ fn rollback_removes_the_other_slot_entries_and_keeps_a_bootable_one() {
     );
     let report = {
         let (image, disk) = f.open();
-        rollback(&image, &disk, Slot::A, &mut f.esp, &Faults::none()).unwrap()
+        rollback(&image, &disk, Slot::A, &mut f.esp, false, &Faults::none()).unwrap()
     };
     assert_eq!(report["status"], "ROLLED_BACK");
     assert_eq!(report["removed_entries"].as_array().unwrap().len(), 2);
@@ -630,6 +630,7 @@ fn rollback_removes_the_other_slot_entries_and_keeps_a_bootable_one() {
         &disk,
         Slot::A,
         &mut f.esp,
+        false,
         &Faults::none()
     ))
     .contains("nothing to roll back"));
@@ -639,6 +640,7 @@ fn rollback_removes_the_other_slot_entries_and_keeps_a_bootable_one() {
         &disk,
         Slot::A,
         &mut f.esp,
+        false,
         &Faults::none()
     ))
     .contains("no boot entry"));
@@ -657,6 +659,7 @@ fn rollback_refuses_a_damaged_target_and_survives_interruption() {
             &disk,
             Slot::A,
             &mut esp,
+            false,
             &Faults::error_at(point)
         ))
         .contains(point));
@@ -665,7 +668,7 @@ fn rollback_refuses_a_damaged_target_and_survives_interruption() {
             "A stays bootable"
         );
         assert!(
-            rollback(&image, &disk, Slot::A, &mut esp, &Faults::none()).is_err(),
+            rollback(&image, &disk, Slot::A, &mut esp, false, &Faults::none()).is_err(),
             "already complete"
         );
     }
@@ -677,6 +680,7 @@ fn rollback_refuses_a_damaged_target_and_survives_interruption() {
         &disk,
         Slot::A,
         &mut f.esp,
+        false,
         &Faults::none()
     ))
     .contains("rollback target"));
@@ -745,6 +749,185 @@ fn status_never_reports_success_from_entries_alone() {
     std::fs::write(&missing, b"not json\n").unwrap();
     let (image, disk) = f.open();
     assert!(status(&image, &disk, &f.esp, Some(&missing), false).is_err());
+}
+
+// ---- irreversible activation: the fallback is demoted (ADR-0023 R4, G4b) -------
+
+const A_ENTRY: &str = "/loader/entries/flowerly-a.conf";
+const A_MANUAL: &str = "/loader/entries/manual-flowerly-a.conf";
+const B_ARMED: &str = "/loader/entries/flowerly-b+3.conf";
+
+impl Fixture {
+    fn publish(&mut self, fallback: Fallback, faults: &Faults) -> Result<Value> {
+        let (_, disk) = self.open();
+        publish_entry(
+            &disk,
+            Slot::A,
+            Slot::B,
+            &mut self.esp,
+            3,
+            &[],
+            fallback,
+            faults,
+        )
+    }
+
+    fn roll_back(&mut self, to: Slot, restore: bool, faults: &Faults) -> Result<Value> {
+        let (image, disk) = self.open();
+        rollback(&image, &disk, to, &mut self.esp, restore, faults)
+    }
+
+    /// Whether the loader could pick the running root on its own while the
+    /// target is armed: both would then match `default flowerly-*`.
+    fn automatic_fallback_while_armed(&self) -> bool {
+        self.esp.files.contains_key(A_ENTRY) && self.esp.files.contains_key(B_ARMED)
+    }
+}
+
+#[test]
+fn demoted_entries_are_recognised_and_never_match_the_loader_default() {
+    assert_eq!(parse_demoted("manual-flowerly-a.conf"), Some(Slot::A));
+    assert_eq!(parse_demoted("manual-flowerly-b.conf"), Some(Slot::B));
+    for name in [
+        "manual-flowerly-c.conf",
+        "manual-flowerly-a+3.conf",
+        "manual-flowerly-a.conf.tmp",
+        "flowerly-a.conf",
+        "manual-flowerly-ab.conf",
+    ] {
+        assert_eq!(parse_demoted(name), None, "{name}");
+    }
+    // The loader default is a prefix glob on the entry id.
+    let glob = LOADER_DEFAULT.strip_prefix("default ").unwrap();
+    let prefix = glob.strip_suffix('*').unwrap();
+    assert!(!"manual-flowerly-a".starts_with(prefix));
+    assert!(parse_entry("manual-flowerly-a.conf").is_none());
+}
+
+#[test]
+fn an_irreversible_arm_demotes_the_fallback_and_then_publishes_the_target() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    let a_text = f.esp.files[A_ENTRY].clone();
+    let report = f.publish(Fallback::ManualOnly, &Faults::none()).unwrap();
+    assert_eq!(report["status"], "ARMED_PENDING");
+    assert_eq!(report["fallback"], "MANUAL_ONLY");
+    assert_eq!(report["demoted_entry"], "manual-flowerly-a.conf");
+    assert!(!f.esp.files.contains_key(A_ENTRY));
+    assert_eq!(
+        f.esp.files[A_MANUAL], a_text,
+        "the entry is kept for the menu"
+    );
+    assert!(f.esp.files.contains_key(B_ARMED));
+    let status = f.status(None);
+    assert_eq!(status["demoted_slots"], json!(["root-a"]));
+    assert_eq!(status["verdict"], "PENDING");
+    // A reversible arm keeps the automatic fallback.
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    let report = f.publish(Fallback::Automatic, &Faults::none()).unwrap();
+    assert_eq!(report["fallback"], "AUTOMATIC");
+    assert!(f.automatic_fallback_while_armed());
+}
+
+#[test]
+fn an_interrupted_irreversible_arm_never_leaves_an_automatic_fallback() {
+    for point in [
+        "arm:after-tmp-entry",
+        "arm:after-demote",
+        "arm:after-rename",
+    ] {
+        let mut f = fixture();
+        f.stage(&Faults::none()).unwrap();
+        let a_text = f.esp.files[A_ENTRY].clone();
+        assert!(err(f.publish(Fallback::ManualOnly, &Faults::error_at(point))).contains(point));
+        assert!(!f.automatic_fallback_while_armed(), "{point}");
+        // Re-running completes it (or finds it complete).
+        let rerun = f.publish(Fallback::ManualOnly, &Faults::none());
+        if point == "arm:after-rename" {
+            assert!(err(rerun).contains("already has a boot entry"));
+        } else {
+            rerun.unwrap();
+        }
+        assert!(!f.automatic_fallback_while_armed(), "{point}");
+        assert!(f.esp.files.contains_key(B_ARMED), "{point}");
+        assert_eq!(f.esp.files[A_MANUAL], a_text, "{point}");
+        assert!(!f.esp.files.keys().any(|k| k.ends_with(".tmp")), "{point}");
+    }
+}
+
+#[test]
+fn a_demoted_running_root_takes_no_reversible_arm() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    f.publish(Fallback::ManualOnly, &Faults::error_at("arm:after-demote"))
+        .unwrap_err();
+    let before = f.esp.files.clone();
+    assert!(err(f.publish(Fallback::Automatic, &Faults::none()))
+        .contains("no boot entry for the active slot"));
+    assert_eq!(f.esp.files, before);
+    // Both a regular and a demoted entry for one slot is not a state to guess in.
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    let a_text = f.esp.files[A_ENTRY].clone();
+    f.esp.files.insert(A_MANUAL.into(), a_text);
+    let before = f.esp.files.clone();
+    for fallback in [Fallback::Automatic, Fallback::ManualOnly] {
+        assert!(err(f.publish(fallback, &Faults::none())).contains("both"));
+        assert_eq!(f.esp.files, before);
+    }
+}
+
+#[test]
+fn disarming_an_irreversible_arm_removes_the_target_before_restoring_the_fallback() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    let before = f.esp.files.clone();
+    f.publish(Fallback::ManualOnly, &Faults::none()).unwrap();
+    // Without permission to restore, a demoted root is not rolled back to.
+    let armed = f.esp.files.clone();
+    assert!(err(f.roll_back(Slot::A, false, &Faults::none())).contains("demoted"));
+    assert_eq!(f.esp.files, armed);
+    // Interrupted between the two steps: no target, fallback still manual.
+    let point = "rollback:before-restore";
+    assert!(err(f.roll_back(Slot::A, true, &Faults::error_at(point))).contains(point));
+    assert!(!f.esp.files.contains_key(B_ARMED));
+    assert!(!f.esp.files.contains_key(A_ENTRY));
+    assert!(f.esp.files.contains_key(A_MANUAL));
+    // Re-running restores it.
+    let report = f.roll_back(Slot::A, true, &Faults::none()).unwrap();
+    assert_eq!(report["restored_entry"], "flowerly-a.conf");
+    assert_eq!(f.esp.files, before);
+    assert!(err(f.roll_back(Slot::A, true, &Faults::none())).contains("nothing to roll back"));
+}
+
+#[test]
+fn a_demoted_entry_blocks_restaging_until_it_is_removed() {
+    let mut f = fixture();
+    f.stage(&Faults::none()).unwrap();
+    f.publish(Fallback::ManualOnly, &Faults::none()).unwrap();
+    // Booted into B and blessed: B is now the running root, A is manual.
+    let b = f.esp.files.remove(B_ARMED).unwrap();
+    f.esp
+        .files
+        .insert("/loader/entries/flowerly-b.conf".into(), b);
+    {
+        let (image, mut disk) = f.open();
+        let request = StageRequest {
+            manifest_path: &f.manifest,
+            active: Slot::B,
+            target: Slot::A,
+            candidate: &f.candidate,
+            expected_sha: &f.candidate_sha,
+        };
+        assert!(
+            err(stage(&image, &mut disk, &f.esp, &request, &Faults::none())).contains("boot entry")
+        );
+    }
+    // Rolling back to the running B removes A's demoted entry.
+    let report = f.roll_back(Slot::B, false, &Faults::none()).unwrap();
+    assert_eq!(report["removed_entries"], json!(["manual-flowerly-a.conf"]));
+    assert!(!f.esp.files.contains_key(A_MANUAL));
 }
 
 // ---- staged boot payload and baked identity (ADR-0023 G4) ---------------------
@@ -922,6 +1105,12 @@ impl Fixture {
             cmdline: write("cmdline", format!("console=ttyS0 root=PARTUUID={A_UUID} ro\n")),
             service_user: "flowerly".into(),
             admin_group: "flowerly-admin".into(),
+            backup_dir: {
+                let dir = self.dir.path().join("backups");
+                std::fs::create_dir(&dir).unwrap();
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+                dir
+            },
         };
         Broker {
             config,
@@ -1225,6 +1414,7 @@ fn the_config_must_be_private_to_its_owner() {
         "test_profile_marker": "/usr/lib/flowerly/generation-ab-test-profile",
         "passwd": "/etc/passwd", "group": "/etc/group", "cmdline": "/proc/cmdline",
         "service_user": "flowerly", "admin_group": "flowerly-admin",
+        "backup_dir": "/var/lib/flowerly/activation-backups",
     });
     std::fs::write(&path, config.to_string()).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1308,4 +1498,289 @@ fn the_broker_trusts_no_manifest_it_did_not_protect() {
     std::fs::write(&f.manifest, serde_json::to_vec(&raw).unwrap()).unwrap();
     std::fs::set_permissions(&f.manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
     refused(&mut f, &b, b.service_uid, &arm_intent(&b), "another slot");
+}
+
+// ---- the irreversible path through the broker (ADR-0023 R4, G4b) -------------
+
+const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
+
+fn irreversible_target() -> Value {
+    let mut target = identity_value("root-b", B_UUID);
+    target["schema_version"] = json!(17);
+    target["min_reader"] = json!(17);
+    target
+}
+
+/// A backup the service account wrote: `<backup_dir>/<sha256>.sqlite`.
+fn write_backup(b: &Broker, body: &[u8]) -> String {
+    let data = [SQLITE_MAGIC, body].concat();
+    let digest = sha(&data);
+    let path = b.config.backup_dir.join(format!("{digest}.sqlite"));
+    std::fs::write(&path, &data).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    digest
+}
+
+fn with_backup(b: &Broker, backup_sha256: &str) -> Vec<u8> {
+    let mut intent: Value = serde_json::from_slice(&arm_intent(b)).unwrap();
+    intent["irreversible"] = json!({ "backup_sha256": backup_sha256 });
+    intent.to_string().into_bytes()
+}
+
+fn plan_intent(b: &Broker) -> Vec<u8> {
+    json!({"version": 1, "intent": "plan", "slot": "root-b",
+           "admin_uid": 4000001, "generation": b.claim})
+    .to_string()
+    .into_bytes()
+}
+
+fn answer(f: &mut Fixture, b: &Broker, request: &[u8]) -> Value {
+    handle(
+        &b.config,
+        b.service_uid,
+        request,
+        &mut f.esp,
+        &Faults::none(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn plan_verifies_everything_and_writes_nothing() {
+    for (target, irreversible) in [
+        (identity_value("root-b", B_UUID), false),
+        (irreversible_target(), true),
+    ] {
+        let mut f = fixture();
+        let b = f.broker(&target);
+        let esp_before = f.esp.files.clone();
+        let disk_before = f.slices();
+        let manifest_before = std::fs::read(&f.manifest).unwrap();
+        let plan = answer(&mut f, &b, &plan_intent(&b));
+        assert_eq!(plan["status"], "PLANNED");
+        assert_eq!(plan["target"], "root-b");
+        assert_eq!(plan["root_partuuid"], B_UUID);
+        assert_eq!(plan["irreversible"], irreversible);
+        assert_eq!(plan["fallback_schema_version"], 16);
+        assert_eq!(plan["target_min_reader"], target["min_reader"]);
+        assert_eq!(f.esp.files, esp_before);
+        assert_eq!(f.slices(), disk_before);
+        assert_eq!(std::fs::read(&f.manifest).unwrap(), manifest_before);
+    }
+    // The slot may be left to the broker; a wrong one is refused.
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let mut open: Value = serde_json::from_slice(&plan_intent(&b)).unwrap();
+    open.as_object_mut().unwrap().remove("slot");
+    assert_eq!(
+        answer(&mut f, &b, open.to_string().as_bytes())["target"],
+        "root-b"
+    );
+    let mut active: Value = serde_json::from_slice(&plan_intent(&b)).unwrap();
+    active["slot"] = json!("root-a");
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        active.to_string().as_bytes(),
+        "inactive slot",
+    );
+    // An arm must name it.
+    let mut unnamed: Value = serde_json::from_slice(&arm_intent(&b)).unwrap();
+    unnamed.as_object_mut().unwrap().remove("slot");
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        unnamed.to_string().as_bytes(),
+        "inactive slot",
+    );
+    // A plan is checked like an arm: a wrong claim, an armed slot or an
+    // acknowledgement are refused.
+    let mut wrong: Value = serde_json::from_slice(&plan_intent(&b)).unwrap();
+    wrong["generation"]["build_id"] = json!("build-x");
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        wrong.to_string().as_bytes(),
+        "build_id",
+    );
+    let mut ack: Value = serde_json::from_slice(&plan_intent(&b)).unwrap();
+    ack["irreversible"] = json!({ "backup_sha256": "a".repeat(64) });
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        ack.to_string().as_bytes(),
+        "plan",
+    );
+    let mut tries: Value = serde_json::from_slice(&plan_intent(&b)).unwrap();
+    tries["tries"] = json!(3);
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        tries.to_string().as_bytes(),
+        "plan",
+    );
+    answer(&mut f, &b, &arm_intent(&b));
+    refused(&mut f, &b, b.service_uid, &plan_intent(&b), "boot entry");
+}
+
+#[test]
+fn an_acknowledged_irreversible_activation_with_a_verified_backup_demotes_the_fallback() {
+    let mut f = fixture();
+    let b = f.broker(&irreversible_target());
+    let a_text = f.esp.files[A_ENTRY].clone();
+    let digest = write_backup(&b, b"state");
+    let report = answer(&mut f, &b, &with_backup(&b, &digest));
+    assert_eq!(report["status"], "ARMED_PENDING");
+    assert_eq!(report["fallback"], "MANUAL_ONLY");
+    assert_eq!(report["backup_sha256"], digest);
+    assert!(!f.esp.files.contains_key(A_ENTRY));
+    assert_eq!(f.esp.files[A_MANUAL], a_text);
+    assert!(f.esp.files.contains_key(B_ARMED));
+}
+
+#[test]
+fn an_irreversible_activation_without_a_sound_backup_is_refused() {
+    let mut f = fixture();
+    let b = f.broker(&irreversible_target());
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &arm_intent(&b),
+        "acknowledgement",
+    );
+    // No such backup.
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &"a".repeat(64)),
+        "backup",
+    );
+    // Malformed hash: never a path.
+    for bad in ["../../etc/shadow", "A".repeat(64).as_str(), "a"] {
+        refused(
+            &mut f,
+            &b,
+            b.service_uid,
+            &with_backup(&b, bad),
+            "backup_sha256",
+        );
+    }
+    // Content that is not the named hash.
+    let digest = write_backup(&b, b"state");
+    let path = b.config.backup_dir.join(format!("{digest}.sqlite"));
+    std::fs::write(&path, [SQLITE_MAGIC, b"other".as_slice()].concat()).unwrap();
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &digest),
+        "does not match",
+    );
+    // Not a SQLite database.
+    let digest = sha(b"plain text");
+    let path = b.config.backup_dir.join(format!("{digest}.sqlite"));
+    std::fs::write(&path, b"plain text").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &digest),
+        "SQLite",
+    );
+    // Readable by others.
+    let digest = write_backup(&b, b"shared");
+    let path = b.config.backup_dir.join(format!("{digest}.sqlite"));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &digest),
+        "private",
+    );
+    // A symlink to a real backup.
+    let digest = write_backup(&b, b"linked");
+    let real = b.config.backup_dir.join(format!("{digest}.sqlite"));
+    let moved = f.dir.path().join("elsewhere.sqlite");
+    std::fs::rename(&real, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &real).unwrap();
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &digest),
+        "regular file",
+    );
+}
+
+#[test]
+fn a_reversible_activation_takes_no_irreversible_acknowledgement() {
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let digest = write_backup(&b, b"state");
+    refused(
+        &mut f,
+        &b,
+        b.service_uid,
+        &with_backup(&b, &digest),
+        "reversible",
+    );
+}
+
+#[test]
+fn a_target_that_cannot_read_the_running_database_is_refused() {
+    // The running root already migrated to a window starting at 17; a target
+    // whose flowerlyd knows only 16 would not start (a rollback to it needs
+    // the backup restored first).
+    let mut f = fixture();
+    let b = f.broker(&identity_value("root-b", B_UUID));
+    let mut running = identity_value("root-a", A_UUID);
+    running["schema_version"] = json!(17);
+    running["min_reader"] = json!(17);
+    std::fs::write(&b.config.running_identity, running.to_string()).unwrap();
+    refused(&mut f, &b, b.service_uid, &arm_intent(&b), "cannot read");
+    refused(&mut f, &b, b.service_uid, &plan_intent(&b), "cannot read");
+}
+
+#[test]
+fn disarming_an_irreversible_arm_restores_the_running_root() {
+    let mut f = fixture();
+    let b = f.broker(&irreversible_target());
+    let before = f.esp.files.clone();
+    let digest = write_backup(&b, b"state");
+    answer(&mut f, &b, &with_backup(&b, &digest));
+    let disarm = br#"{"version":1,"intent":"disarm","admin_uid":4000001}"#;
+    let report = answer(&mut f, &b, disarm);
+    assert_eq!(report["restored_entry"], "flowerly-a.conf");
+    assert_eq!(f.esp.files, before);
+}
+
+#[test]
+fn the_test_image_config_is_one_the_broker_accepts() {
+    // The JSON the test-image script writes, parsed as the broker parses it
+    // (unknown or missing fields fail), pointing where flowerlyd looks.
+    let script = include_str!("../../../../scripts/prepare-generation-ab-rootfs.sh");
+    let json = script
+        .lines()
+        .skip_while(|l| !l.contains("slot-broker.json\" <<'EOF'"))
+        .nth(1)
+        .expect("the script writes the broker config");
+    let config: BrokerConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        config.backup_dir,
+        Path::new("/var/lib/flowerly/activation-backups")
+    );
+    assert_eq!(
+        config.test_profile_marker,
+        Path::new("/usr/lib/flowerly/generation-ab-test-profile")
+    );
+    assert_eq!(config.esp, Path::new("/efi"));
 }

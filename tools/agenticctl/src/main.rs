@@ -225,25 +225,39 @@ enum GenerationAction {
         #[arg(help = "Generation id.")]
         id: String,
     },
-    #[command(about = "Request activation (Admin; refused until Gate D is verified).")]
+    #[command(
+        about = "Request activation (Admin; refused until Gate D is verified, except on the A/B test image)."
+    )]
     Activate {
         #[arg(help = "Generation id.")]
         id: String,
-        #[arg(long, help = "Reason recorded with the activation.")]
-        reason: Option<String>,
+        #[arg(long, help = "Reason recorded with the activation (required).")]
+        reason: String,
         #[arg(long, help = "Idempotency key for a safe retry.")]
         operation_id: Option<String>,
         #[arg(long, help = "FELL_BACK activation id this decision acknowledges.")]
         acknowledges: Option<i64>,
+        #[arg(
+            long,
+            help = "Accept a manual-only fallback: the running root could not read the database after the target's migrations (a backup is taken first)."
+        )]
+        acknowledge_irreversible: bool,
     },
-    #[command(about = "Request rollback (Admin; refused until Gate D is verified).")]
+    #[command(
+        about = "Request rollback (Admin; refused until Gate D is verified, except on the A/B test image)."
+    )]
     Rollback {
         #[arg(help = "Generation id.")]
         id: String,
-        #[arg(long, help = "Reason recorded with the rollback.")]
-        reason: Option<String>,
+        #[arg(long, help = "Reason recorded with the rollback (required).")]
+        reason: String,
         #[arg(long, help = "Idempotency key for a safe retry.")]
         operation_id: Option<String>,
+        #[arg(
+            long,
+            help = "Accept a manual-only fallback (a backup is taken first)."
+        )]
+        acknowledge_irreversible: bool,
     },
     #[command(about = "Set a candidate's complete root identity (Admin, audited).")]
     Identity {
@@ -688,6 +702,7 @@ async fn dispatch_generation(
             reason,
             operation_id,
             acknowledges,
+            acknowledge_irreversible,
         } => Payload::Command {
             name: "generation.activate".into(),
             args: serde_json::json!({
@@ -695,15 +710,22 @@ async fn dispatch_generation(
                 "reason": reason,
                 "operation_id": operation_id,
                 "acknowledges": acknowledges,
+                "acknowledge_irreversible": acknowledge_irreversible,
             }),
         },
         GenerationAction::Rollback {
             id,
             reason,
             operation_id,
+            acknowledge_irreversible,
         } => Payload::Command {
             name: "generation.rollback".into(),
-            args: serde_json::json!({ "id": id, "reason": reason, "operation_id": operation_id }),
+            args: serde_json::json!({
+                "id": id,
+                "reason": reason,
+                "operation_id": operation_id,
+                "acknowledge_irreversible": acknowledge_irreversible,
+            }),
         },
         GenerationAction::Identity {
             id,

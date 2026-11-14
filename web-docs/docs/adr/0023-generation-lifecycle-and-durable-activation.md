@@ -340,7 +340,7 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   image `flowerlyd`'s `schema_version` and `min_reader` (`flowerlyd
   --schema-window`). A target whose `min_reader` is newer than the running
   root's `schema_version` is an irreversible activation and is refused in
-  G4a; G4b adds the safe path.
+  G4a; G4b adds the safe path (below).
 - *Gate.* `RELEASE_ACTIVATION_ENABLED` is `false`. The broker answers only on
   an image carrying the test-profile marker, which only the explicit
   test-image script installs, together with the broker binary, its config and
@@ -350,6 +350,46 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
 - *Writes.* The disk is opened read-only; the only writes are one boot entry
   (temp file and rename) or its removal on the mounted ESP, through a
   directory backend that refuses symlinks and paths outside the ESP.
+
+**G4b (2026-11-14).**
+
+- *Order in `flowerlyd`.* The release gate (the constant, or the root-owned
+  test-profile marker) comes first and nothing is written before it. A retry
+  with a known `operation_id` returns the row and asks no broker. Then the
+  broker's read-only `plan`, which runs every check of `arm` and names the
+  inactive slot, its PARTUUID and the irreversible verdict; every database
+  guard on an insert that is rolled back; the backup if irreversible; the
+  `PENDING` row with the ledger position read then; and only then `arm`. A
+  refusal abandons the row with the broker's reason, a lost answer leaves it
+  `PENDING` for the witness. The store lock is released while the broker
+  hashes the slots. `reason` is now required on activate and rollback.
+- *Acknowledgement.* `acknowledge_irreversible` must equal the broker's
+  verdict, so the row's `irreversible` flag is always true: it is refused for
+  a reversible activation, and both `flowerlyd` and the broker refuse an
+  irreversible one without it.
+- *Backup.* `VACUUM INTO` a temporary file in the private
+  `/var/lib/flowerly/activation-backups`, `PRAGMA integrity_check`, fsync,
+  rename to `<sha256>.sqlite` (mode 0600), and that hash on the row. The
+  broker reads it by that name only: a regular file (no symlink), the service
+  account's, private, starting with the SQLite header, and hashing to its
+  name. This proves the file the row names exists and is intact when the slot
+  is armed; it does not stop a compromised `flowerlyd`, which owns the file,
+  from deleting it later. The restore drill is G5's.
+- *Demotion.* The running root's entry is renamed to
+  `manual-flowerly-<slot>.conf`, whose id no longer matches `default
+  flowerly-*`, after the target's temporary entry is written and before it
+  is published. An interruption therefore never leaves the target armed next
+  to an automatic fallback, and a re-run continues from the demoted entry. A
+  reversible arm refuses a demoted running root, and `disarm` removes the
+  target's entry before it restores the demoted one. A slot with a demoted
+  entry cannot be restaged until `disarm` from the other slot removes it.
+  What systemd-boot does with an exhausted target when no other entry matches
+  its default (boot it again or wait in the menu) is verified in G5; either
+  way it never boots the incompatible root by itself.
+- *The other direction.* The broker also refuses a target whose
+  `schema_version` is below the running root's `min_reader`: that root has
+  migrated the database past what the target can read, so going back needs
+  the backup restored first.
 
 ## Non-goals
 

@@ -5,6 +5,17 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Irreversible activation path and `flowerlyd`'s activation path (ADR-0023
+  G4b, #9), test profile only. On the A/B test image `generation.activate`
+  and `generation.rollback` (now with a required `reason`) ask the slot
+  broker for a read-only plan, run every database guard first, record the
+  `PENDING` row and then arm. An activation whose migrations the running root
+  could not read needs `--acknowledge-irreversible`: `flowerlyd` takes an
+  integrity-checked `VACUUM INTO` backup named by its SHA-256 (also on the
+  row), the broker verifies it and demotes the running root's boot entry to
+  manual-only before publishing the target. The broker also refuses a target
+  that cannot read the running root's database. Everywhere else activation
+  still refuses.
 - Root slot broker (ADR-0023 G4a, #9), test profile only. `distro-builder
   slot stage --kernel --initramfs --identity` stages a slot's boot payload and
   baked identity; the broker (`flowerly-slot-broker.socket`) arms or disarms

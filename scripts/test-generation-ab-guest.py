@@ -394,6 +394,9 @@ class BootTests(unittest.TestCase):
             self.assertEqual(config["service_user"], "flowerly")
             self.assertEqual(config["admin_group"], "flowerly-admin")
             self.assertEqual(
+                config["backup_dir"], "/var/lib/flowerly/activation-backups"
+            )
+            self.assertEqual(
                 config["test_profile_marker"],
                 "/usr/lib/flowerly/generation-ab-test-profile",
             )

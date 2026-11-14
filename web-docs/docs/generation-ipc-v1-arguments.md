@@ -32,7 +32,7 @@ Admin only and attributed to the kernel-attested caller. `reason` is
 | `generation.evidence` | `id`, `outcome` (`passed`/`failed`), `evidence_sha256`, `reason` | |
 | `generation.test` | `id`, `experiment`, `reason` | |
 | `generation.reject`, `generation.revoke` | `id`, `reason` | |
-| `generation.activate`, `generation.rollback` | `id` | `reason`, `operation_id`, `acknowledges` |
+| `generation.activate`, `generation.rollback` | `id`, `reason` | `operation_id`, `acknowledges` (activate), `acknowledge_irreversible` (bool) |
 | `generation.history` | | `id` |
 | `generation.resolve` (service account) | | |
 
@@ -44,6 +44,17 @@ lifecycle step is `conflict`.
 
 `generation.activate` and `generation.rollback` validate their arguments
 and then refuse with `conflict`, writing nothing, until Gate D is verified.
+Only an A/B test image (root-owned test-profile marker) gets further
+(ADR-0023 G4b): the slot broker's read-only plan, every database guard on a
+rolled-back insert, the backup of an irreversible activation, the `PENDING`
+row and then the arm. The answer carries the `activation` row and the
+broker's `armed` report; it is never `STABLE` yet. A broker refusal is
+`conflict` (the row, if written, is `ABANDONED`); a lost arm answer is
+`unavailable` and the row stays `PENDING` for the witness. A retry with the
+same `operation_id` returns the recorded row (`already_requested`) and asks
+no broker. `acknowledge_irreversible` must equal the broker's verdict: it is
+required when the running root could not read the database after the
+target's migrations and refused otherwise.
 
 `generation.resolve` resolves the pending activation, if any, from the boot
 ledger and returns its `outcome`: `none`, `waiting`, `unresolved` (with a

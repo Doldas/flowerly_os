@@ -394,6 +394,60 @@ fn audit_owner(generation: &Generation) -> Owner {
     generation.owner
 }
 
+/// Insert a PENDING activation row: every guard of migration 0015 runs.
+fn insert_pending(
+    tx: &Connection,
+    admin: Caller,
+    request: &ActivationRequest,
+    digest: &str,
+) -> Result<(Generation, i64)> {
+    let generation = require_generation(tx, &request.generation)?;
+    let pending: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM generation_activations WHERE state = 'PENDING'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = pending {
+        return Err(StorageError::OperationConflict(format!(
+            "activation {id} is still PENDING"
+        )));
+    }
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT id FROM generations WHERE status = 'STABLE'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    guard(tx.execute(
+        "INSERT INTO generation_activations
+             (generation, previous_generation, kind, actor_uid, reason, operation_id,
+              request_digest, expected_slot, expected_root_partuuid, ledger_sequence,
+              ledger_head, irreversible, backup_sha256, acknowledges, requested_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        params![
+            request.generation.as_str(),
+            previous,
+            request.kind.as_str(),
+            admin.uid(),
+            request.reason,
+            request.operation_id,
+            digest,
+            request.expected_slot,
+            request.expected_root_partuuid,
+            request.ledger_sequence as i64,
+            request.ledger_head,
+            i64::from(request.irreversible),
+            request.backup_sha256,
+            request.acknowledges,
+            Timestamp::now().as_millis(),
+        ],
+    ))?;
+    Ok((generation, tx.last_insert_rowid()))
+}
+
 impl Store {
     /// The current STABLE system Generation, if any.
     pub fn current_stable(&self) -> Result<Option<GenerationId>> {
@@ -766,51 +820,7 @@ impl Store {
                     return Ok(found);
                 }
             }
-            let generation = require_generation(&tx, &request.generation)?;
-            let pending: Option<i64> = tx
-                .query_row(
-                    "SELECT id FROM generation_activations WHERE state = 'PENDING'",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(id) = pending {
-                return Err(StorageError::OperationConflict(format!(
-                    "activation {id} is still PENDING"
-                )));
-            }
-            let previous: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM generations WHERE status = 'STABLE'",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            guard(tx.execute(
-                "INSERT INTO generation_activations
-                     (generation, previous_generation, kind, actor_uid, reason, operation_id,
-                      request_digest, expected_slot, expected_root_partuuid, ledger_sequence,
-                      ledger_head, irreversible, backup_sha256, acknowledges, requested_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                params![
-                    request.generation.as_str(),
-                    previous,
-                    request.kind.as_str(),
-                    admin.uid(),
-                    request.reason,
-                    request.operation_id,
-                    digest,
-                    request.expected_slot,
-                    request.expected_root_partuuid,
-                    request.ledger_sequence as i64,
-                    request.ledger_head,
-                    i64::from(request.irreversible),
-                    request.backup_sha256,
-                    request.acknowledges,
-                    Timestamp::now().as_millis(),
-                ],
-            ))?;
-            let id = tx.last_insert_rowid();
+            let (generation, id) = insert_pending(&tx, admin, request, &digest)?;
             record_audit(
                 &tx,
                 admin,
@@ -828,6 +838,41 @@ impl Store {
             tx.commit()?;
             Ok(created)
         })
+    }
+
+    /// Run every check of [`Store::request_activation`] (validation, the one
+    /// PENDING rule and the database guards) in a transaction that is rolled
+    /// back: nothing is written or audited. For checking before a backup is
+    /// taken or the broker is asked.
+    pub fn check_activation_request(
+        &mut self,
+        admin: Caller,
+        request: &ActivationRequest,
+    ) -> Result<()> {
+        request.validate()?;
+        let digest = request.digest(admin.uid());
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            insert_pending(&tx, admin, request, &digest)?;
+            tx.rollback()?;
+            Ok(())
+        })
+    }
+
+    /// The activation recorded under an idempotency key, if any.
+    pub fn activation_for_operation(&self, operation_id: &str) -> Result<Option<Activation>> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT {ACTIVATION_COLUMNS} FROM generation_activations WHERE operation_id = ?1"
+                ),
+                params![operation_id],
+                map_activation,
+            )
+            .optional()
+            .map_err(StorageError::from)
     }
 
     /// `PENDING` -> `ABANDONED` (the slot could not be armed). Idempotent.
@@ -3077,5 +3122,68 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("confirmed STABLE before"), "{error}");
+    }
+
+    #[test]
+    fn checking_a_request_runs_every_guard_and_writes_nothing() {
+        let mut store = store();
+        let id = tested(&mut store);
+        let audited = |store: &Store| -> i64 {
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM admin_audit WHERE command = 'generation.activate.request'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        store
+            .check_activation_request(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        assert!(store.activation_history().unwrap().is_empty());
+        assert_eq!(audited(&store), 0);
+        // The guards of the real insert apply: a CANDIDATE, a ROLLBACK to a
+        // never-STABLE Generation, an invalid request, a second PENDING.
+        let fresh = candidate(&store);
+        for (generation, kind) in [
+            (&fresh, ActivationKind::Activate),
+            (&id, ActivationKind::Rollback),
+        ] {
+            assert!(store
+                .check_activation_request(ADMIN, &request(generation, kind))
+                .is_err());
+        }
+        let mut bad = request(&id, ActivationKind::Activate);
+        bad.irreversible = true;
+        assert!(store.check_activation_request(ADMIN, &bad).is_err());
+        store
+            .request_activation(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        let other = tested(&mut store);
+        let error = store
+            .check_activation_request(ADMIN, &request(&other, ActivationKind::Activate))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("PENDING"), "{error}");
+        assert_eq!(store.activation_history().unwrap().len(), 1);
+        assert_eq!(audited(&store), 1);
+    }
+
+    #[test]
+    fn an_activation_is_found_by_its_operation_id() {
+        let mut store = store();
+        let id = tested(&mut store);
+        let mut keyed = request(&id, ActivationKind::Activate);
+        keyed.operation_id = Some("op-1".to_owned());
+        let created = store.request_activation(ADMIN, &keyed).unwrap();
+        assert_eq!(
+            store
+                .activation_for_operation("op-1")
+                .unwrap()
+                .map(|a| a.id),
+            Some(created.id)
+        );
+        assert!(store.activation_for_operation("op-2").unwrap().is_none());
     }
 }
