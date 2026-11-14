@@ -48,6 +48,10 @@ struct Cli {
     runtime_dir: Option<PathBuf>,
     #[arg(long)]
     self_test: bool,
+    /// Print this binary's schema window as JSON and exit (baked into A/B
+    /// root images, ADR-0023 G4).
+    #[arg(long)]
+    schema_window: bool,
     /// Administrator policy enabling remote inference (ADR-0022). Remote
     /// inference stays disabled when this is absent, the file is missing,
     /// or it is not a root- or service-owned, non-writable regular file.
@@ -270,6 +274,14 @@ fn status_details(db: &Store, policy: &AccessPolicy, caller: Caller) -> serde_js
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.schema_window {
+        let (schema_version, min_reader) = flowerly_core::storage::schema_window();
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": schema_version, "min_reader": min_reader})
+        );
+        return Ok(());
+    }
     if cli.self_test {
         agentic::self_test().await?;
         compute::self_test().await?;
@@ -320,6 +332,10 @@ async fn main() -> Result<()> {
     db.migrate().context("migrating unified SQLite state")?;
     db.health_check().context("checking unified state")?;
     db.ensure_general_flow().context("ensuring General Flow")?;
+    match generation::configure_ledger(&config.state_dir) {
+        Ok(()) => generation::resolve_at_startup(&mut db),
+        Err(error) => tracing::warn!(%error, "boot ledger unavailable"),
+    }
     compute::init_runtime_dir(config.runtime_dir.clone());
     // An unreadable /etc/group cannot match the provider socket group; the
     // access policy above already required it whenever groups are named.
@@ -436,6 +452,14 @@ mod malformed_arguments {
             "generation.list",
             "generation.inspect",
             "generation.activate",
+            "generation.rollback",
+            "generation.identity",
+            "generation.evidence",
+            "generation.test",
+            "generation.reject",
+            "generation.revoke",
+            "generation.history",
+            "generation.resolve",
             "generation.promote",
             "ownership.inspect",
             "ownership.claim",
@@ -807,9 +831,11 @@ mod owner_scoped_storage {
         ".list_generations(",
     ];
 
-    /// Production code: everything before the offline self-test and tests.
+    /// Production code: everything before the offline self-test and the test
+    /// module. A test-only item earlier in the file does not end it, so it
+    /// cannot hide the handlers after it.
     fn production(source: &str) -> &str {
-        let end = ["pub(crate) async fn self_test", "#[cfg(test)]"]
+        let end = ["pub(crate) async fn self_test", "#[cfg(test)]\nmod "]
             .iter()
             .filter_map(|marker| source.find(marker))
             .min()
@@ -866,5 +892,200 @@ mod owner_scoped_storage {
             let allowed = if name == "session/pty" { 6 } else { 0 };
             assert_eq!(writes, allowed, "{name}");
         }
+    }
+}
+
+/// Activation over a configured host (ADR-0023 G4b), end to end from the
+/// IPC arguments to the broker socket; the step order and every refusal are
+/// tested in flowerly-core.
+#[cfg(test)]
+mod generation_activation {
+    use flowerly_core::activation::ActivationHost;
+    use flowerly_core::ipc::ErrorCode;
+    use flowerly_core::storage::lifecycle::{EvidenceOutcome, RootIdentity};
+    use flowerly_core::storage::Store;
+    use flowerly_core::types::{
+        Caller, Generation, GenerationId, GenerationStatus, ObjectRef, Owner, Timestamp,
+    };
+    use flowerly_core::witness::{LedgerPolicy, LedgerSource};
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+
+    const ADMIN: Caller = Caller::new(4_000_001);
+    const LEDGER: &str = include_str!("../../../testbed/generation-ledger/v2-golden.jsonl");
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn setup() -> (
+        tempfile::TempDir,
+        ActivationHost,
+        Mutex<Store>,
+        GenerationId,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("state.db")).unwrap();
+        store.migrate().unwrap();
+        let generation = Generation {
+            id: GenerationId::new(),
+            parent: None,
+            source_commit: None,
+            system_manifest: None,
+            reason_goal: None,
+            experiment: None,
+            status: GenerationStatus::Candidate,
+            created_at: Timestamp::now(),
+            owner: Owner::System,
+        };
+        store.insert_generation(&generation).unwrap();
+        let identity = RootIdentity {
+            rootfs_sha256: "a".repeat(64),
+            kernel_sha256: "b".repeat(64),
+            initramfs_sha256: "c".repeat(64),
+            input_manifest_sha256: "d".repeat(64),
+            build_id: "build-1".to_owned(),
+        };
+        store
+            .set_root_identity(ADMIN, &generation.id, COMMIT, &identity, "built")
+            .unwrap();
+        let experiment = store
+            .record_evidence(
+                ADMIN,
+                &generation.id,
+                EvidenceOutcome::Passed,
+                &"9".repeat(64),
+                "kvm",
+            )
+            .unwrap();
+        store
+            .declare_tested(ADMIN, &generation.id, &ObjectRef::from(&experiment), "ok")
+            .unwrap();
+        let meta = std::fs::metadata(dir.path()).unwrap();
+        let write = |name: &str, data: &[u8], mode: u32| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, data).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        };
+        let host = ActivationHost {
+            broker_socket: dir.path().join("broker.sock"),
+            test_profile_marker: write("test-profile", b"", 0o644),
+            marker_owner_uid: meta.uid(),
+            ledger: LedgerSource {
+                path: write("boot-witness.jsonl", LEDGER.as_bytes(), 0o640),
+                policy: LedgerPolicy {
+                    owner_uid: meta.uid(),
+                    reader_gid: meta.gid(),
+                },
+                boot_id_path: dir.path().join("boot_id"),
+            },
+            backup_dir: dir.path().join("activation-backups"),
+        };
+        (dir, host, Mutex::new(store), generation.id)
+    }
+
+    fn args(id: &GenerationId) -> Value {
+        json!({"id": id, "reason": "roll out", "operation_id": "op-1"})
+    }
+
+    #[test]
+    fn an_enabled_host_records_the_request_and_arms_through_the_broker() {
+        let (_dir, host, store, id) = setup();
+        let listener = UnixListener::bind(&host.broker_socket).unwrap();
+        let broker = std::thread::spawn(move || {
+            let mut intents = Vec::new();
+            for answer in [
+                json!({"ok": true, "status": "PLANNED", "target": "root-b",
+                       "root_partuuid": "22222222-2222-2222-2222-222222222222",
+                       "irreversible": false, "target_min_reader": 16,
+                       "fallback_schema_version": 16}),
+                json!({"ok": true, "status": "ARMED_PENDING", "target": "root-b",
+                       "boot_entry": "flowerly-b+3.conf", "fallback": "AUTOMATIC"}),
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                intents.push(serde_json::from_str::<Value>(&line).unwrap());
+                (&stream)
+                    .write_all(format!("{answer}\n").as_bytes())
+                    .unwrap();
+            }
+            intents
+        });
+        let answer = crate::generation::run_activation(
+            &store,
+            Some(&host),
+            "generation.activate",
+            &args(&id),
+            ADMIN,
+        )
+        .unwrap();
+        let intents = broker.join().unwrap();
+        assert_eq!(answer["activation"]["state"], "PENDING");
+        assert_eq!(answer["activation"]["actor_uid"], ADMIN.uid());
+        assert_eq!(answer["activation"]["expected_slot"], "root-b");
+        assert_eq!(answer["activation"]["ledger_sequence"], 3);
+        assert_eq!(answer["armed"]["status"], "ARMED_PENDING");
+        assert_eq!(intents[1]["admin_uid"], ADMIN.uid());
+        assert_eq!(intents[1]["generation"]["source_commit"], COMMIT);
+        // A retry with the same key reads the row back; the broker is gone.
+        let again = crate::generation::run_activation(
+            &store,
+            Some(&host),
+            "generation.activate",
+            &args(&id),
+            ADMIN,
+        )
+        .unwrap();
+        assert_eq!(again["already_requested"], true);
+        assert_eq!(again["activation"]["id"], answer["activation"]["id"]);
+    }
+
+    #[test]
+    fn an_unreachable_broker_is_a_conflict_and_records_nothing() {
+        let (_dir, host, store, id) = setup();
+        let error = crate::generation::run_activation(
+            &store,
+            Some(&host),
+            "generation.rollback",
+            &args(&id),
+            ADMIN,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(
+            error.message.contains("nothing was recorded"),
+            "{}",
+            error.message
+        );
+        assert!(store
+            .lock()
+            .unwrap()
+            .activation_history()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn without_the_marker_the_configured_host_still_refuses() {
+        let (dir, mut host, store, id) = setup();
+        host.test_profile_marker = dir.path().join("absent");
+        let error = crate::generation::run_activation(
+            &store,
+            Some(&host),
+            "generation.activate",
+            &args(&id),
+            ADMIN,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        assert!(error.message.contains("disabled until Gate D"));
+        assert!(store
+            .lock()
+            .unwrap()
+            .activation_history()
+            .unwrap()
+            .is_empty());
     }
 }

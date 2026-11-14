@@ -1,0 +1,6 @@
+{
+  "commit": "016175625656cd32747bcf6ca06cae73f6538073",
+  "schema_version": 16,
+  "irreversible": [],
+  "note": "The ADR-0023 G3 merge, the first commit with the reader window (migration 16). A later migration must stay readable by it (min_reader <= 16) or be listed here as irreversible."
+}

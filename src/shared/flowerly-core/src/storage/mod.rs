@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 pub mod admin;
+pub mod backup;
+pub mod lifecycle;
 pub mod memory_contract;
 pub mod remote;
 pub mod repository;
@@ -16,10 +18,10 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::types::{
-    AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId,
-    GenerationStatus, Goal, GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId,
-    ProvenanceEdge, ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState,
-    SessionState, Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
+    AgentId, Execution, ExecutionId, Flow, FlowId, FlowState, Generation, GenerationId, Goal,
+    GoalId, GoalStatus, ModelId, ModelRecord, ObjectRef, Owner, ProfileId, ProvenanceEdge,
+    ProviderId, ProviderRecord, Session, SessionId, SessionPresentationState, SessionState,
+    Timestamp, UsageRecord, WorkloadId, WorkloadRecord, WorkloadState,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -339,6 +341,12 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 pub struct Migration {
     pub version: i64,
 
+    /// The oldest binary, named by the newest migration it knows, that can
+    /// still use the database after this migration (ADR-0023 section 5).
+    /// Expand-only migrations keep it; a contracting one raises it to its own
+    /// version, which makes activating it irreversible.
+    pub min_reader: i64,
+
     pub name: &'static str,
 
     pub sql: &'static str,
@@ -347,75 +355,155 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
+        min_reader: 1,
         name: "init",
         sql: include_str!("../../migrations/0001_init.sql"),
     },
     Migration {
         version: 2,
+        min_reader: 2,
         name: "session_presentation_and_actor_refs",
         sql: include_str!("../../migrations/0002_session_presentation_and_actor_refs.sql"),
     },
     Migration {
         version: 3,
+        min_reader: 3,
         name: "single_foreground_flow",
         sql: include_str!("../../migrations/0003_single_foreground_flow.sql"),
     },
     Migration {
         version: 4,
+        min_reader: 4,
         name: "protect_general",
         sql: include_str!("../../migrations/0004_protect_general.sql"),
     },
     Migration {
         version: 5,
+        min_reader: 5,
         name: "idempotent_operations",
         sql: include_str!("../../migrations/0005_idempotent_operations.sql"),
     },
     Migration {
         version: 6,
+        min_reader: 6,
         name: "model_catalog",
         sql: include_str!("../../migrations/0006_model_catalog.sql"),
     },
     Migration {
         version: 7,
+        min_reader: 7,
         name: "profiles_providers",
         sql: include_str!("../../migrations/0007_profiles_providers.sql"),
     },
     Migration {
         version: 8,
+        min_reader: 8,
         name: "workloads_usage",
         sql: include_str!("../../migrations/0008_workloads_usage.sql"),
     },
     Migration {
         version: 9,
+        min_reader: 9,
         name: "object_ownership",
         sql: include_str!("../../migrations/0009_object_ownership.sql"),
     },
     Migration {
         version: 10,
+        min_reader: 10,
         name: "per_owner_foreground",
         sql: include_str!("../../migrations/0010_per_owner_foreground.sql"),
     },
     Migration {
         version: 11,
+        min_reader: 11,
         name: "generation_reason_goal_owner",
         sql: include_str!("../../migrations/0011_generation_reason_goal_owner.sql"),
     },
     Migration {
         version: 12,
+        min_reader: 12,
         name: "compute_ownership",
         sql: include_str!("../../migrations/0012_compute_ownership.sql"),
     },
     Migration {
         version: 13,
+        min_reader: 13,
         name: "generation_ownership_admin_audit",
         sql: include_str!("../../migrations/0013_generation_ownership_admin_audit.sql"),
     },
     Migration {
         version: 14,
+        min_reader: 14,
         name: "remote_inference",
         sql: include_str!("../../migrations/0014_remote_inference.sql"),
     },
+    Migration {
+        version: 15,
+        min_reader: 15,
+        name: "generation_lifecycle",
+        sql: include_str!("../../migrations/0015_generation_lifecycle.sql"),
+    },
+    Migration {
+        version: 16,
+        min_reader: 16,
+        name: "schema_compat",
+        sql: include_str!("../../migrations/0016_schema_compat.sql"),
+    },
 ];
+
+/// The first migration that records the reader window.
+pub const SCHEMA_COMPAT_SINCE: i64 = 16;
+
+/// This binary's schema window: the newest migration it knows and the
+/// `min_reader` a database it migrated holds (baked into each root image so
+/// the slot broker can tell whether the fallback still reads the database).
+#[must_use]
+pub fn schema_window() -> (i64, i64) {
+    let newest = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+    let min_reader = MIGRATIONS
+        .iter()
+        .filter(|m| m.version >= SCHEMA_COMPAT_SINCE)
+        .map(|m| m.min_reader)
+        .max()
+        .unwrap_or(newest);
+    (newest, min_reader)
+}
+
+/// Run one migration and record it, raising the reader window if it needs
+/// to, inside the caller's transaction.
+fn apply_migration(conn: &Connection, migration: &Migration, at: Timestamp) -> Result<()> {
+    conn.execute_batch(migration.sql)?;
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+        params![migration.version, migration.name, at.as_millis()],
+    )?;
+    if migration.version >= SCHEMA_COMPAT_SINCE {
+        conn.execute(
+            "UPDATE schema_compat SET min_reader = MAX(min_reader, ?1)",
+            params![migration.min_reader],
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether migration SQL removes or renames something an older binary may
+/// still use. Line comments are ignored; triggers are not data a reader uses.
+#[must_use]
+pub fn is_contracting(sql: &str) -> bool {
+    let text: String = sql
+        .lines()
+        .map(|line| line.split("--").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(2).any(|pair| {
+        matches!(
+            pair,
+            ["drop", "table" | "index" | "view" | "column"] | ["rename", "to" | "column"]
+        )
+    }) || words.windows(3).any(|w| matches!(w, ["rename", _, "to"]))
+}
 
 /// Live domain counts reported by service Status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -491,16 +579,22 @@ impl Store {
              );",
         )?;
 
-        // Refuse a rollback onto a newer schema before touching anything (an
-        // older binary would otherwise run on tables it does not understand).
+        // Refuse a schema outside this binary's window before touching
+        // anything: an older binary would otherwise run on tables it does not
+        // understand. A database from before the window counts as needing its
+        // own version.
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
         let found: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
             |row| row.get(0),
         )?;
-        if found > supported {
-            return Err(StorageError::SchemaNewerThanBinary { found, supported });
+        let required = self.schema_min_reader()?.unwrap_or(found);
+        if required > supported {
+            return Err(StorageError::SchemaNewerThanBinary {
+                found: required,
+                supported,
+            });
         }
 
         let mut applied = Vec::new();
@@ -527,11 +621,7 @@ impl Store {
             }
 
             let tx_record = Timestamp::now();
-            tx.execute_batch(migration.sql)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                params![migration.version, migration.name, tx_record.as_millis()],
-            )?;
+            apply_migration(&tx, migration, tx_record)?;
             tx.commit()?;
             tracing::info!(
                 migration.version,
@@ -545,6 +635,25 @@ impl Store {
             });
         }
         Ok(applied)
+    }
+
+    /// The oldest binary that can use this database, or `None` for a database
+    /// from before the window (migration 16).
+    pub fn schema_min_reader(&self) -> Result<Option<i64>> {
+        let has_table: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                            WHERE type = 'table' AND name = 'schema_compat')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(None);
+        }
+        Ok(Some(self.conn.query_row(
+            "SELECT min_reader FROM schema_compat WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?))
     }
 
     pub fn applied_migrations(&self) -> Result<Vec<AppliedMigration>> {
@@ -1669,70 +1778,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn set_generation_status(&self, id: &GenerationId, status: GenerationStatus) -> Result<()> {
-        retry_on_busy(RetryConfig::default(), || {
-            let changed = self.conn.execute(
-                "UPDATE generations SET status = ?2 WHERE id = ?1",
-                params![id.as_str(), status.to_string()],
-            )?;
-            if changed == 0 {
-                return Err(StorageError::NotFound(id.to_string()));
-            }
-            Ok(())
-        })
-    }
-
-    /// Promote one generation to STABLE and supersede any previous STABLE
-    /// generation in the same SQLite transaction.
-    pub fn activate_generation(&mut self, id: &GenerationId) -> Result<()> {
-        retry_on_busy(RetryConfig::default(), || {
-            let tx = self
-                .conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-            let exists = tx
-                .query_row(
-                    "SELECT id FROM generations WHERE id = ?1",
-                    params![id.as_str()],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .is_some();
-            if !exists {
-                return Err(StorageError::NotFound(id.to_string()));
-            }
-            // A private candidate never becomes the system STABLE (#225):
-            // it must be promoted, with an audit record, first.
-            let owner_class: String = tx.query_row(
-                "SELECT owner_class FROM generations WHERE id = ?1",
-                params![id.as_str()],
-                |row| row.get(0),
-            )?;
-            if owner_class != "system" {
-                return Err(StorageError::OperationConflict(format!(
-                    "generation {id} is not a system Generation; promote it first"
-                )));
-            }
-
-            tx.execute(
-                "UPDATE generations
-                 SET status = ?1
-                 WHERE status = ?2 AND id <> ?3",
-                params![
-                    GenerationStatus::Superseded.to_string(),
-                    GenerationStatus::Stable.to_string(),
-                    id.as_str(),
-                ],
-            )?;
-            tx.execute(
-                "UPDATE generations SET status = ?2 WHERE id = ?1",
-                params![id.as_str(), GenerationStatus::Stable.to_string()],
-            )?;
-            tx.commit()?;
-            Ok(())
-        })
-    }
-
     pub fn insert_provenance(&self, edge: &ProvenanceEdge) -> Result<()> {
         insert_provenance_row(&self.conn, edge)
     }
@@ -2203,6 +2248,7 @@ fn map_provenance(row: &Row<'_>) -> rusqlite::Result<ProvenanceEdge> {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::GenerationStatus;
     /// A Flow row as written before migration 0009 (no owner columns).
     fn insert_legacy_flow(conn: &Connection, name: &str, state: &str, created_by: &str) {
         conn.execute(
@@ -2798,10 +2844,12 @@ mod tests {
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
         store
             .conn
-            .execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', 0)",
-                params![supported + 1],
-            )
+            .execute_batch(&format!(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({next}, 'future', 0);
+                 UPDATE schema_compat SET min_reader = {next};",
+                next = supported + 1
+            ))
             .unwrap();
         let before = store.applied_migrations().unwrap().len();
         let error = store.migrate().expect_err("newer schema must be refused");
@@ -2813,6 +2861,157 @@ mod tests {
         assert!(error.to_string().contains("restore the pre-upgrade backup"));
         assert_eq!(error.ipc_error_code(), crate::ipc::ErrorCode::Internal);
         assert_eq!(store.applied_migrations().unwrap().len(), before);
+    }
+
+    #[test]
+    fn an_older_binary_runs_on_a_newer_schema_inside_its_window() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        // A future expand-only migration: a new table, min_reader unchanged.
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TABLE future_things (id INTEGER PRIMARY KEY);
+                 INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({}, 'future_expand', 0);",
+                supported + 1
+            ))
+            .unwrap();
+        assert!(store.migrate().expect("inside the window").is_empty());
+        assert_eq!(
+            store.schema_min_reader().unwrap(),
+            Some(SCHEMA_COMPAT_SINCE)
+        );
+        store.ensure_general_flow().expect("still usable");
+    }
+
+    #[test]
+    fn a_legacy_schema_without_a_window_is_refused_by_an_older_binary() {
+        let mut store = migrated_store();
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        store
+            .conn
+            .execute_batch(&format!(
+                "DROP TRIGGER schema_compat_no_delete;
+                 DROP TABLE schema_compat;
+                 INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES ({}, 'future', 0);",
+                supported + 1
+            ))
+            .unwrap();
+        assert!(matches!(
+            store.migrate(),
+            Err(StorageError::SchemaNewerThanBinary { .. })
+        ));
+    }
+
+    #[test]
+    fn a_migration_raises_the_window_but_never_lowers_it() {
+        let store = migrated_store();
+        let migration = |version, min_reader, sql| Migration {
+            version,
+            min_reader,
+            name: "synthetic",
+            sql,
+        };
+        apply_migration(
+            &store.conn,
+            &migration(98, 98, "CREATE TABLE t98 (id INTEGER);"),
+            Timestamp::now(),
+        )
+        .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(98));
+        apply_migration(
+            &store.conn,
+            &migration(99, 20, "CREATE TABLE t99 (id INTEGER);"),
+            Timestamp::now(),
+        )
+        .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(98));
+    }
+
+    #[test]
+    fn the_declared_window_is_what_a_fresh_database_records() {
+        let store = migrated_store();
+        let (schema_version, min_reader) = schema_window();
+        assert_eq!(
+            schema_version,
+            store.applied_migrations().unwrap().last().unwrap().version
+        );
+        assert_eq!(Some(min_reader), store.schema_min_reader().unwrap());
+    }
+
+    #[test]
+    fn upgrading_records_the_reader_window() {
+        let store = migrated_store();
+        assert_eq!(
+            store.schema_min_reader().unwrap(),
+            Some(SCHEMA_COMPAT_SINCE)
+        );
+    }
+
+    #[test]
+    fn the_reader_window_only_grows_and_cannot_be_removed() {
+        let store = migrated_store();
+        for sql in [
+            "UPDATE schema_compat SET min_reader = 1",
+            "DELETE FROM schema_compat",
+            "INSERT INTO schema_compat (id, min_reader) VALUES (2, 99)",
+        ] {
+            assert!(store.conn.execute(sql, []).is_err(), "{sql}");
+        }
+        store
+            .conn
+            .execute("UPDATE schema_compat SET min_reader = 99", [])
+            .unwrap();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(99));
+    }
+
+    #[test]
+    fn every_migration_declares_its_reader_window() {
+        for migration in MIGRATIONS {
+            assert!(
+                (1..=migration.version).contains(&migration.min_reader),
+                "migration {} declares min_reader {}",
+                migration.version,
+                migration.min_reader
+            );
+            // Before the window every older binary refused any newer schema.
+            if migration.version < SCHEMA_COMPAT_SINCE {
+                assert_eq!(migration.min_reader, migration.version);
+            }
+            // Expand-only by default: a contracting migration raises the window.
+            if migration.version >= SCHEMA_COMPAT_SINCE && is_contracting(migration.sql) {
+                assert_eq!(
+                    migration.min_reader, migration.version,
+                    "contracting migration {} must raise min_reader",
+                    migration.version
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contracting_sql_is_recognised() {
+        for sql in [
+            "DROP TABLE flows;",
+            "drop   table if exists x;",
+            "ALTER TABLE flows DROP COLUMN name;",
+            "ALTER TABLE flows RENAME TO old_flows;",
+            "ALTER TABLE flows RENAME COLUMN a TO b;",
+            "DROP INDEX flows_name;",
+            "DROP VIEW v;",
+        ] {
+            assert!(is_contracting(sql), "{sql}");
+        }
+        for sql in [
+            "CREATE TABLE t (id INTEGER);",
+            "ALTER TABLE flows ADD COLUMN note TEXT;",
+            "-- DROP TABLE only in a comment\nCREATE INDEX i ON t(id);",
+            "CREATE TRIGGER t BEFORE DELETE ON x BEGIN SELECT 1; END;",
+        ] {
+            assert!(!is_contracting(sql), "{sql}");
+        }
     }
 
     /// A database as installed before ownership: migrations 1..=8 applied.
@@ -3652,101 +3851,6 @@ mod tests {
             .expect("incoming provenance");
         assert_eq!(outgoing, vec![edge.clone()]);
         assert_eq!(incoming, vec![edge]);
-    }
-
-    #[test]
-    fn generation_activation_keeps_exactly_one_stable_generation() {
-        let mut store = migrated_store();
-        let first = Generation {
-            owner: crate::types::Owner::System,
-            id: GenerationId::new(),
-            parent: None,
-            source_commit: Some("first".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Stable,
-            created_at: Timestamp::now(),
-        };
-        let second = Generation {
-            owner: crate::types::Owner::User(1000),
-            id: GenerationId::new(),
-            parent: Some(first.id.clone()),
-            source_commit: Some("second".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Candidate,
-            created_at: Timestamp::now(),
-        };
-        store.insert_generation(&first).expect("insert first");
-        store.insert_generation(&second).expect("insert second");
-
-        // A private candidate must be promoted (audited) before activation.
-        assert!(matches!(
-            store.activate_generation(&second.id),
-            Err(StorageError::OperationConflict(_))
-        ));
-        assert_eq!(
-            store.get_generation(&first.id).unwrap().unwrap().status,
-            GenerationStatus::Stable
-        );
-        store
-            .promote_generation(Caller::new(0), &second.id, "release candidate")
-            .expect("promote second");
-        store
-            .activate_generation(&second.id)
-            .expect("activate second");
-
-        let first = store
-            .get_generation(&first.id)
-            .expect("query first")
-            .expect("first exists");
-        let second = store
-            .get_generation(&second.id)
-            .expect("query second")
-            .expect("second exists");
-
-        assert_eq!(first.status, GenerationStatus::Superseded);
-        assert_eq!(second.status, GenerationStatus::Stable);
-        assert_eq!(
-            store
-                .list_generations()
-                .expect("list generations")
-                .iter()
-                .filter(|generation| generation.status == GenerationStatus::Stable)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn missing_generation_activation_does_not_supersede_current_stable() {
-        let mut store = migrated_store();
-        let stable = Generation {
-            owner: crate::types::Owner::User(1000),
-            id: GenerationId::new(),
-            parent: None,
-            source_commit: Some("stable".to_owned()),
-            system_manifest: None,
-            reason_goal: None,
-            experiment: None,
-            status: GenerationStatus::Stable,
-            created_at: Timestamp::now(),
-        };
-        store.insert_generation(&stable).expect("insert stable");
-
-        let missing = GenerationId::new();
-        let error = store
-            .activate_generation(&missing)
-            .expect_err("missing generation must fail");
-        assert!(matches!(error, StorageError::NotFound(_)));
-
-        let stable = store
-            .get_generation(&stable.id)
-            .expect("query stable")
-            .expect("stable exists");
-        assert_eq!(stable.status, GenerationStatus::Stable);
     }
 
     #[test]

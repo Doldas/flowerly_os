@@ -146,9 +146,12 @@ the command inventory. For the owner-scoped commands:
     parent, source commit, manifest, experiment and creation time.
     `reason_goal` is kept but shown only to the Goal's owner, and its
     provenance edge stays hidden from everyone else.
-  - **`generation.activate`** activates only `system` Generations. A
-    private candidate is `conflict` ("promote it first"), so it can never
-    become the system STABLE directly.
+  - **`generation.activate`** and **`generation.rollback`** are `conflict`
+    for every Generation until Gate D is verified
+    ([ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)),
+    except on an A/B test image, where they need a `reason` and reach the
+    root slot broker on behalf of the kernel-attested Admin.
+    `STABLE` can only follow a confirmed activation, never a request.
   - **`admin_audit`** (migration 0013) is append-only: triggers refuse
     UPDATE and DELETE for every writer. Refusals are journaled
     (`flowerly::admin_audit`), not stored. PR 7 reuses the table.
@@ -539,7 +542,15 @@ the test user's own gid.
 | Command | Class | Reason |
 | --- | --- | --- |
 | `provenance.add` | Admin | arbitrary edges can forge the audit trail |
-| `generation.activate` | Admin | changes the active system Generation |
+| `generation.activate` | Admin | changes the active system Generation (disabled until Gate D) |
+| `generation.rollback` | Admin | changes the active system Generation (disabled until Gate D) |
+| `generation.identity` | Admin | audited: names the root a candidate is compared with at boot |
+| `generation.evidence` | Admin | audited: records the acceptance result a TESTED declaration rests on |
+| `generation.test` | Admin | audited: declares a candidate TESTED |
+| `generation.reject` | Admin | audited: terminal lifecycle decision |
+| `generation.revoke` | Admin | audited: terminal lifecycle decision |
+| `generation.history` | Admin | shows the actor and reason of every activation |
+| `generation.resolve` | ServiceAccount | no input; acts only on what the root-owned boot ledger proves |
 | `generation.promote` | Admin | audited: makes a private candidate a shared system Generation |
 | `ownership.inspect` | Admin | audited: reads another owner's ownership metadata |
 | `ownership.claim` | Admin | audited: gives unresolved data to a user |

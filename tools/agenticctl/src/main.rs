@@ -225,10 +225,99 @@ enum GenerationAction {
         #[arg(help = "Generation id.")]
         id: String,
     },
-    #[command(about = "Activate a generation.")]
+    #[command(
+        about = "Request activation (Admin; refused until Gate D is verified, except on the A/B test image)."
+    )]
     Activate {
         #[arg(help = "Generation id.")]
         id: String,
+        #[arg(long, help = "Reason recorded with the activation (required).")]
+        reason: String,
+        #[arg(long, help = "Idempotency key for a safe retry.")]
+        operation_id: Option<String>,
+        #[arg(long, help = "FELL_BACK activation id this decision acknowledges.")]
+        acknowledges: Option<i64>,
+        #[arg(
+            long,
+            help = "Accept a manual-only fallback: the running root could not read the database after the target's migrations (a backup is taken first)."
+        )]
+        acknowledge_irreversible: bool,
+    },
+    #[command(
+        about = "Request rollback (Admin; refused until Gate D is verified, except on the A/B test image)."
+    )]
+    Rollback {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Reason recorded with the rollback (required).")]
+        reason: String,
+        #[arg(long, help = "Idempotency key for a safe retry.")]
+        operation_id: Option<String>,
+        #[arg(
+            long,
+            help = "Accept a manual-only fallback (a backup is taken first)."
+        )]
+        acknowledge_irreversible: bool,
+    },
+    #[command(about = "Set a candidate's complete root identity (Admin, audited).")]
+    Identity {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Full 40-digit source commit.")]
+        source_commit: String,
+        #[arg(long, help = "SHA-256 of the root filesystem image.")]
+        rootfs_sha256: String,
+        #[arg(long, help = "SHA-256 of the kernel.")]
+        kernel_sha256: String,
+        #[arg(long, help = "SHA-256 of the initramfs.")]
+        initramfs_sha256: String,
+        #[arg(long, help = "SHA-256 of the input manifest.")]
+        input_manifest_sha256: String,
+        #[arg(long, help = "Build id.")]
+        build_id: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Record an acceptance result for a candidate (Admin, audited).")]
+    Evidence {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "passed or failed.")]
+        outcome: String,
+        #[arg(long, help = "SHA-256 of the evidence archive.")]
+        evidence_sha256: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Declare a candidate TESTED from recorded evidence (Admin, audited).")]
+    Test {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Experiment returned by `generation evidence`.")]
+        experiment: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Reject a candidate or TESTED generation (Admin, audited, terminal).")]
+    Reject {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Revoke a TESTED or SUPERSEDED generation (Admin, audited, terminal).")]
+    Revoke {
+        #[arg(help = "Generation id.")]
+        id: String,
+        #[arg(long, help = "Reason recorded in the admin audit log.")]
+        reason: String,
+    },
+    #[command(about = "Resolve a pending activation from the boot ledger (service account).")]
+    Resolve,
+    #[command(about = "Show the activation history (Admin).")]
+    History {
+        #[arg(help = "Only this generation.")]
+        id: Option<String>,
     },
     #[command(
         about = "Promote a private candidate to a shared system Generation (Admin, audited)."
@@ -608,8 +697,94 @@ async fn dispatch_generation(
             name: "generation.inspect".into(),
             args: serde_json::json!({ "id": id }),
         },
-        GenerationAction::Activate { id } => Payload::Command {
+        GenerationAction::Activate {
+            id,
+            reason,
+            operation_id,
+            acknowledges,
+            acknowledge_irreversible,
+        } => Payload::Command {
             name: "generation.activate".into(),
+            args: serde_json::json!({
+                "id": id,
+                "reason": reason,
+                "operation_id": operation_id,
+                "acknowledges": acknowledges,
+                "acknowledge_irreversible": acknowledge_irreversible,
+            }),
+        },
+        GenerationAction::Rollback {
+            id,
+            reason,
+            operation_id,
+            acknowledge_irreversible,
+        } => Payload::Command {
+            name: "generation.rollback".into(),
+            args: serde_json::json!({
+                "id": id,
+                "reason": reason,
+                "operation_id": operation_id,
+                "acknowledge_irreversible": acknowledge_irreversible,
+            }),
+        },
+        GenerationAction::Identity {
+            id,
+            source_commit,
+            rootfs_sha256,
+            kernel_sha256,
+            initramfs_sha256,
+            input_manifest_sha256,
+            build_id,
+            reason,
+        } => Payload::Command {
+            name: "generation.identity".into(),
+            args: serde_json::json!({
+                "id": id,
+                "source_commit": source_commit,
+                "rootfs_sha256": rootfs_sha256,
+                "kernel_sha256": kernel_sha256,
+                "initramfs_sha256": initramfs_sha256,
+                "input_manifest_sha256": input_manifest_sha256,
+                "build_id": build_id,
+                "reason": reason,
+            }),
+        },
+        GenerationAction::Evidence {
+            id,
+            outcome,
+            evidence_sha256,
+            reason,
+        } => Payload::Command {
+            name: "generation.evidence".into(),
+            args: serde_json::json!({
+                "id": id,
+                "outcome": outcome,
+                "evidence_sha256": evidence_sha256,
+                "reason": reason,
+            }),
+        },
+        GenerationAction::Test {
+            id,
+            experiment,
+            reason,
+        } => Payload::Command {
+            name: "generation.test".into(),
+            args: serde_json::json!({ "id": id, "experiment": experiment, "reason": reason }),
+        },
+        GenerationAction::Reject { id, reason } => Payload::Command {
+            name: "generation.reject".into(),
+            args: serde_json::json!({ "id": id, "reason": reason }),
+        },
+        GenerationAction::Revoke { id, reason } => Payload::Command {
+            name: "generation.revoke".into(),
+            args: serde_json::json!({ "id": id, "reason": reason }),
+        },
+        GenerationAction::Resolve => Payload::Command {
+            name: "generation.resolve".into(),
+            args: serde_json::json!({}),
+        },
+        GenerationAction::History { id } => Payload::Command {
+            name: "generation.history".into(),
             args: serde_json::json!({ "id": id }),
         },
         GenerationAction::Promote { id, reason } => Payload::Command {
