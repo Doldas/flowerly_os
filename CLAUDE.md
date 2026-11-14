@@ -9,7 +9,7 @@ Read `AGENTS.md` first and follow its release, safety, branch, CI, and human-app
 - Use `log-triage` for long existing compiler/CI logs, but verify critical failures against the source evidence.
 - Keep output small. Avoid printing full Cargo logs, lockfiles, generated artifacts, or entire Rust modules.
 - Favor `cargo test -p <package>` or targeted tests while iterating; never skip mandatory preflight or release CI gates. Before pushing a PR update, follow `AGENTS.md` and run `bash scripts/preflight-docs.sh`.
-- Before the next session, use `/context-handoff` and consult `docs/agent-context/active-handoff.md` only as a hint; revalidate branch/head and CI.
+- Before the next session, use `/context-handoff` and consult `web-docs/docs/agent-context/active-handoff.md` only as a hint; revalidate branch/head and CI.
 
 ## Safety
 - Preserve PTY/cgroup isolation, authenticated IPC, SQLite transaction and retry invariants.
