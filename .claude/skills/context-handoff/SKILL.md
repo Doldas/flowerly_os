@@ -3,7 +3,7 @@ name: context-handoff
 description: Create a compact, persistent task handoff for a new Claude Code conversation, using only verified facts.
 ---
 
-Produce or update docs/agent-context/active-handoff.md when the user asks for a handoff or a task has reached a natural stopping point.
+Produce or update web-docs/docs/agent-context/active-handoff.md when the user asks for a handoff or a task has reached a natural stopping point.
 
 Read the current branch, changed files and relevant existing handoff before writing. Do not infer unverified CI status. Never treat old handoff notes as more authoritative than Git, code or current CI.
 
