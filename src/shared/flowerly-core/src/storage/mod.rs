@@ -453,6 +453,21 @@ pub const MIGRATIONS: &[Migration] = &[
 /// The first migration that records the reader window.
 pub const SCHEMA_COMPAT_SINCE: i64 = 16;
 
+/// This binary's schema window: the newest migration it knows and the
+/// `min_reader` a database it migrated holds (baked into each root image so
+/// the slot broker can tell whether the fallback still reads the database).
+#[must_use]
+pub fn schema_window() -> (i64, i64) {
+    let newest = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+    let min_reader = MIGRATIONS
+        .iter()
+        .filter(|m| m.version >= SCHEMA_COMPAT_SINCE)
+        .map(|m| m.min_reader)
+        .max()
+        .unwrap_or(newest);
+    (newest, min_reader)
+}
+
 /// Run one migration and record it, raising the reader window if it needs
 /// to, inside the caller's transaction.
 fn apply_migration(conn: &Connection, migration: &Migration, at: Timestamp) -> Result<()> {
@@ -2912,6 +2927,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(store.schema_min_reader().unwrap(), Some(98));
+    }
+
+    #[test]
+    fn the_declared_window_is_what_a_fresh_database_records() {
+        let store = migrated_store();
+        let (schema_version, min_reader) = schema_window();
+        assert_eq!(
+            schema_version,
+            store.applied_migrations().unwrap().last().unwrap().version
+        );
+        assert_eq!(Some(min_reader), store.schema_min_reader().unwrap());
     }
 
     #[test]

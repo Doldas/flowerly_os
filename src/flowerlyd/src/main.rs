@@ -48,6 +48,10 @@ struct Cli {
     runtime_dir: Option<PathBuf>,
     #[arg(long)]
     self_test: bool,
+    /// Print this binary's schema window as JSON and exit (baked into A/B
+    /// root images, ADR-0023 G4).
+    #[arg(long)]
+    schema_window: bool,
     /// Administrator policy enabling remote inference (ADR-0022). Remote
     /// inference stays disabled when this is absent, the file is missing,
     /// or it is not a root- or service-owned, non-writable regular file.
@@ -270,6 +274,14 @@ fn status_details(db: &Store, policy: &AccessPolicy, caller: Caller) -> serde_js
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.schema_window {
+        let (schema_version, min_reader) = flowerly_core::storage::schema_window();
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": schema_version, "min_reader": min_reader})
+        );
+        return Ok(());
+    }
     if cli.self_test {
         agentic::self_test().await?;
         compute::self_test().await?;

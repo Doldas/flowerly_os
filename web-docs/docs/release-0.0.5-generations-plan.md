@@ -118,6 +118,13 @@ records, the verifying reader, resolution at start-up and through
 a real-binary compatibility test against the recorded older commit in CI.
 Next: G4 (slot broker; first move the compatibility baseline to the G3 merge).
 
+**G4a slot broker:** the compatibility baseline moved to the G3 merge; `slot
+stage` can stage the boot payload and baked identity; the root broker
+re-verifies authorization, slot bytes, ESP payload, identity and schema window
+itself and writes only a boot entry; irreversible activations are refused;
+test profile only. Next: G4b (irreversible path, `flowerlyd` activation path,
+backup and Admin acknowledgement), then G5.
+
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/
   activate/rollback transitions. No public arbitrary status setter.

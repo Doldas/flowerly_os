@@ -16,8 +16,10 @@
 //! Block devices and mounted ESPs are out of scope for now; a privileged
 //! broker owning them is a later step.
 
+pub mod broker;
 pub mod esp;
 pub mod gpt;
+pub mod live;
 
 use anyhow::{anyhow, bail, Context, Result};
 use esp::Esp;
@@ -30,6 +32,8 @@ use std::path::Path;
 
 pub const SCHEMA: &str = "flowerly-ab-disk/v1";
 pub const LOADER_DEFAULT: &str = "default flowerly-*";
+/// The identity baked into a root image (`/usr/lib/flowerly/generation-root.json`).
+pub const IDENTITY_SCHEMA: &str = "flowerly-generation-root/v2";
 const MIB: u64 = 1 << 20;
 const MAX_MANIFEST: u64 = MIB;
 const MAX_WITNESS: u64 = 2 * MIB;
@@ -100,6 +104,19 @@ impl Faults {
         }
     }
 
+    /// This build's faults: none in an ordinary build, the point named in
+    /// `FLOWERLY_SLOT_FAULT` in a fault-injection build.
+    pub fn for_build() -> Self {
+        #[cfg(feature = "fault-injection")]
+        {
+            Self::from_env()
+        }
+        #[cfg(not(feature = "fault-injection"))]
+        {
+            Self::none()
+        }
+    }
+
     #[cfg(feature = "fault-injection")]
     pub fn from_env() -> Self {
         Self {
@@ -140,6 +157,95 @@ pub struct Part {
     pub partuuid: String,
     pub sha256: String,
     pub filesystem: String,
+    /// Kernel and initramfs placed on the ESP for this staged slot.
+    pub boot: Option<StagedBoot>,
+    /// The identity baked into the staged image, recorded at staging.
+    pub identity: Option<BakedIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedBoot {
+    pub kernel_sha256: String,
+    pub initramfs_sha256: String,
+}
+
+/// What a root image says it is, including the schema window of its
+/// `flowerlyd`: the newest migration it knows and the `min_reader` its
+/// migrations leave behind (ADR-0023 section 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BakedIdentity {
+    pub slot: Slot,
+    pub root_partuuid: String,
+    pub source_commit: String,
+    pub input_manifest_sha256: String,
+    pub build_id: String,
+    pub schema_version: i64,
+    pub min_reader: i64,
+}
+
+impl BakedIdentity {
+    /// Strict: exactly the v2 fields, each validated.
+    pub fn parse(value: &Value) -> Result<Self> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| anyhow!("identity must be a JSON object"))?;
+        let keys: std::collections::BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "schema",
+            "slot",
+            "root_partuuid",
+            "source_commit",
+            "input_manifest_sha256",
+            "build_id",
+            "schema_version",
+            "min_reader",
+        ]
+        .into_iter()
+        .collect();
+        if keys != expected {
+            bail!("identity fields must be exactly {expected:?}");
+        }
+        if value["schema"] != IDENTITY_SCHEMA {
+            bail!("identity schema must be {IDENTITY_SCHEMA}");
+        }
+        let text = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
+        let root_partuuid = text("root_partuuid");
+        let source_commit = text("source_commit");
+        let input_manifest_sha256 = text("input_manifest_sha256");
+        let build_id = text("build_id");
+        if !is_uuid(&root_partuuid) {
+            bail!("identity root_partuuid is not a lowercase UUID");
+        }
+        if !is_hex(&source_commit, 40) || !is_hex(&input_manifest_sha256, 64) {
+            bail!("identity source_commit or input_manifest_sha256 is malformed");
+        }
+        if build_id.is_empty()
+            || build_id.len() > 64
+            || !build_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+        {
+            bail!("identity build_id is malformed");
+        }
+        let (Some(schema_version), Some(min_reader)) = (
+            value["schema_version"].as_i64(),
+            value["min_reader"].as_i64(),
+        ) else {
+            bail!("identity schema_version and min_reader must be integers");
+        };
+        if min_reader < 1 || min_reader > schema_version {
+            bail!("identity min_reader must be 1..=schema_version");
+        }
+        Ok(Self {
+            slot: Slot::parse(value["slot"].as_str().unwrap_or_default())?,
+            root_partuuid,
+            source_commit,
+            input_manifest_sha256,
+            build_id,
+            schema_version,
+            min_reader,
+        })
+    }
 }
 
 /// The disk manifest. Unknown fields survive a rewrite untouched.
@@ -204,6 +310,27 @@ impl Disk {
                     .as_u64()
                     .ok_or_else(|| anyhow!("manifest partition field {key} missing"))
             };
+            let boot = match item.get("boot") {
+                None => None,
+                Some(boot) => {
+                    let hash = |key: &str| {
+                        boot[key]
+                            .as_str()
+                            .filter(|h| is_hex(h, 64))
+                            .map(str::to_owned)
+                            .ok_or_else(|| anyhow!("manifest boot field {key} is malformed"))
+                    };
+                    Some(StagedBoot {
+                        kernel_sha256: hash("kernel_sha256")?,
+                        initramfs_sha256: hash("initramfs_sha256")?,
+                    })
+                }
+            };
+            let identity = item
+                .get("identity")
+                .map(BakedIdentity::parse)
+                .transpose()
+                .context("manifest identity")?;
             parts.push(Part {
                 name: text("name")?,
                 offset: number("offset_bytes")?,
@@ -211,6 +338,8 @@ impl Disk {
                 partuuid: text("partuuid")?,
                 sha256: text("sha256")?,
                 filesystem: text("filesystem")?,
+                boot,
+                identity,
             });
         }
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
@@ -282,13 +411,40 @@ impl Disk {
         Ok(())
     }
 
+    /// New slot content: whatever was recorded about the old one is dropped.
     fn set_slot(&mut self, slot: Slot, sha256: &str, filesystem: &str) {
         let index = if slot == Slot::A { 1 } else { 2 };
-        self.raw["partitions"][index]["sha256"] = json!(sha256);
-        self.raw["partitions"][index]["filesystem"] = json!(filesystem);
+        let entry = &mut self.raw["partitions"][index];
+        entry["sha256"] = json!(sha256);
+        entry["filesystem"] = json!(filesystem);
+        if let Some(object) = entry.as_object_mut() {
+            object.remove("boot");
+            object.remove("identity");
+        }
         let part = &mut self.parts[index];
         part.sha256 = sha256.to_owned();
         part.filesystem = filesystem.to_owned();
+        part.boot = None;
+        part.identity = None;
+    }
+
+    fn set_boot(
+        &mut self,
+        slot: Slot,
+        boot: StagedBoot,
+        identity_raw: Value,
+        identity: BakedIdentity,
+    ) {
+        let index = if slot == Slot::A { 1 } else { 2 };
+        let entry = &mut self.raw["partitions"][index];
+        entry["boot"] = json!({
+            "kernel_sha256": boot.kernel_sha256,
+            "initramfs_sha256": boot.initramfs_sha256,
+        });
+        entry["identity"] = identity_raw;
+        let part = &mut self.parts[index];
+        part.boot = Some(boot);
+        part.identity = Some(identity);
     }
 
     /// Atomic replace: temp file, fsync, rename, fsync of the directory.
@@ -419,7 +575,7 @@ pub fn cmdline_root_partuuid() -> Result<String> {
     }
 }
 
-fn verify_slot(image: &Image, part: &Part, what: &str) -> Result<()> {
+pub(crate) fn verify_slot(image: &Image, part: &Part, what: &str) -> Result<()> {
     if image.hash(part.offset, part.size)? != part.sha256 {
         bail!("{what} {} does not match the manifest hash", part.name);
     }
@@ -646,6 +802,75 @@ pub fn stage(
     }))
 }
 
+pub struct BootPayload<'a> {
+    pub kernel: &'a Path,
+    pub initramfs: &'a Path,
+    /// The image's own generation-root.json, extracted by the operator.
+    pub identity: &'a Path,
+}
+
+/// Operator step after `stage` (outside Gate D): put the staged slot's kernel
+/// and initramfs on the ESP and record them and the image's baked identity in
+/// the manifest, so the slot broker later only verifies (ADR-0023 G4).
+/// Changes no boot entry.
+pub fn stage_boot(
+    image: &Image,
+    disk: &mut Disk,
+    manifest_path: &Path,
+    target: Slot,
+    esp: &mut dyn Esp,
+    payload: &BootPayload,
+    faults: &Faults,
+) -> Result<Value> {
+    let part = disk.slot(target).clone();
+    if part.filesystem != "ext4" {
+        bail!("{} has not been staged", target.name());
+    }
+    let listing = list_entries(&*esp)?;
+    if listing.entries.iter().any(|e| e.slot == target) {
+        bail!("{} has a boot entry; roll back first", target.name());
+    }
+    verify_slot(image, &part, "staged root")?;
+    let raw: Value =
+        serde_json::from_slice(&read_regular(payload.identity)?).context("identity is not JSON")?;
+    let identity = BakedIdentity::parse(&raw)?;
+    if identity.slot != target || identity.root_partuuid != part.partuuid {
+        bail!("the identity names another slot than {}", target.name());
+    }
+    let dir = format!("/flowerly/{}", target.letter());
+    if !esp.exists(&dir)? {
+        esp.mkdir(&dir)?;
+    }
+    let mut hashes = Vec::new();
+    for (path, file) in [
+        (format!("{dir}/vmlinuz"), payload.kernel),
+        (format!("{dir}/initramfs.img"), payload.initramfs),
+    ] {
+        let data = read_regular(file)?;
+        if esp.exists(&path)? {
+            esp.delete(&path)?;
+        }
+        esp.write_new(&path, &data)?;
+        if esp.read(&path)? != data {
+            bail!("{path} read back differently from what was written");
+        }
+        hashes.push(hex(&Sha256::digest(&data)));
+    }
+    esp.sync()?;
+    let boot = StagedBoot {
+        kernel_sha256: hashes[0].clone(),
+        initramfs_sha256: hashes[1].clone(),
+    };
+    disk.set_boot(target, boot.clone(), raw, identity);
+    disk.save(manifest_path, faults)?;
+    Ok(json!({
+        "status": "STAGED_WITH_BOOT_PAYLOAD",
+        "target": target.name(),
+        "kernel_sha256": boot.kernel_sha256,
+        "initramfs_sha256": boot.initramfs_sha256,
+    }))
+}
+
 pub struct ArmRequest<'a> {
     pub kernel: &'a Path,
     pub initramfs: &'a Path,
@@ -687,18 +912,14 @@ pub fn arm(
         .find(|e| e.slot == active)
         .ok_or_else(|| anyhow!("no boot entry for the active slot; nothing to fall back to"))?;
     check_loader_default(&*esp)?;
-    let entry_text = derive_entry(
+    // Validate the entry (extra options included) before any payload is written.
+    derive_entry(
         &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{}", active_entry.name))?),
         &disk.slot(active).partuuid,
         target,
         &part.partuuid,
         request.extra_options,
     )?;
-    // An earlier interrupted arm may have left a temp entry; it is not a boot
-    // entry, so it can be dropped and the arm re-run.
-    for stray in listing.strays.iter().filter(|s| is_stray_temp(s, target)) {
-        esp.delete(&format!("{ENTRIES}/{stray}"))?;
-    }
     let dir = format!("/flowerly/{}", target.letter());
     if !esp.exists(&dir)? {
         esp.mkdir(&dir)?;
@@ -718,7 +939,58 @@ pub fn arm(
     }
     esp.sync()?;
     faults.at("arm:after-payload")?;
-    let entry = format!("flowerly-{}+{}.conf", target.letter(), request.tries);
+    publish_entry(
+        disk,
+        active,
+        target,
+        esp,
+        request.tries,
+        request.extra_options,
+        faults,
+    )
+}
+
+/// The boot-entry half of arming, shared by `arm` and the slot broker:
+/// re-check the ESP, derive the entry from the active one, and publish it as
+/// a boot-counting (pending) entry with one rename.
+pub(crate) fn publish_entry(
+    disk: &Disk,
+    active: Slot,
+    target: Slot,
+    esp: &mut dyn Esp,
+    tries: u32,
+    extra_options: &[String],
+    faults: &Faults,
+) -> Result<Value> {
+    if !(1..=9).contains(&tries) {
+        bail!("boot-count tries must be 1..=9");
+    }
+    let listing = list_entries(&*esp)?;
+    if listing.entries.iter().any(|e| e.slot == target) {
+        bail!(
+            "{} already has a boot entry; roll back first",
+            target.name()
+        );
+    }
+    let active_entry = listing
+        .entries
+        .iter()
+        .find(|e| e.slot == active)
+        .ok_or_else(|| anyhow!("no boot entry for the active slot; nothing to fall back to"))?;
+    check_loader_default(&*esp)?;
+    let entry_text = derive_entry(
+        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{}", active_entry.name))?),
+        &disk.slot(active).partuuid,
+        target,
+        &disk.slot(target).partuuid,
+        extra_options,
+    )?;
+    // An earlier interrupted arm may have left a temp entry; it is not a boot
+    // entry, so it can be dropped and the arm re-run.
+    for stray in listing.strays.iter().filter(|s| is_stray_temp(s, target)) {
+        esp.delete(&format!("{ENTRIES}/{stray}"))?;
+    }
+    let entry = format!("flowerly-{}+{}.conf", target.letter(), tries);
     let temp = format!("{ENTRIES}/{entry}.tmp");
     esp.write_new(&temp, entry_text.as_bytes())?;
     esp.sync()?;

@@ -29,6 +29,13 @@ enum Action {
     /// (#48, ADR-0019). Edits disk images only, never block devices.
     #[command(subcommand)]
     Slot(SlotAction),
+    /// The root slot broker (ADR-0023 G4): answer one intent on the socket
+    /// systemd passes as stdin. Test profile only until Gate D is verified.
+    #[command(hide = true)]
+    SlotBroker {
+        #[arg(long, default_value = slot::broker::DEFAULT_CONFIG)]
+        config: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -57,6 +64,15 @@ enum SlotAction {
         candidate: PathBuf,
         #[arg(long)]
         sha256: String,
+        /// Kernel for the staged slot, placed on the ESP (with --initramfs
+        /// and --identity; needed before the slot broker can arm it).
+        #[arg(long, requires_all = ["initramfs", "identity"])]
+        kernel: Option<PathBuf>,
+        #[arg(long, requires_all = ["kernel", "identity"])]
+        initramfs: Option<PathBuf>,
+        /// The candidate's own generation-root.json.
+        #[arg(long, requires_all = ["kernel", "initramfs"])]
+        identity: Option<PathBuf>,
     },
     /// Publish a boot-counting entry for a staged slot (pending, not success).
     Arm {
@@ -118,6 +134,7 @@ fn main() -> Result<()> {
             bail!("bootable Arch rootfs/ISO output is not implemented; run distro-builder validate")
         }
         Action::Slot(action) => run_slot(action),
+        Action::SlotBroker { config } => slot::broker::serve_stdin(&config),
         Action::Manifest(ManifestAction::Check { path }) => {
             let checked = check_manifest(&path)?;
             println!("manifest_sha256={}", checked.sha256);
@@ -146,14 +163,8 @@ fn main() -> Result<()> {
     }
 }
 
-#[cfg(feature = "fault-injection")]
 fn slot_faults() -> slot::Faults {
-    slot::Faults::from_env()
-}
-
-#[cfg(not(feature = "fault-injection"))]
-fn slot_faults() -> slot::Faults {
-    slot::Faults::none()
+    slot::Faults::for_build()
 }
 
 fn active_slot(disk: &slot::Disk, claim: &SlotDisk) -> Result<slot::Slot> {
@@ -172,17 +183,40 @@ fn run_slot(action: SlotAction) -> Result<()> {
             slot: name,
             candidate,
             sha256,
+            kernel,
+            initramfs,
+            identity,
         } => {
             let (image, mut disk) = slot::open_bound(&target.disk, &target.manifest, true)?;
-            let esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            let mut esp = slot::esp::MtoolsEsp::new(&target.disk, disk.part("esp").offset);
+            let slot = slot::Slot::parse(&name)?;
             let request = slot::StageRequest {
                 manifest_path: &target.manifest,
                 active: active_slot(&disk, &target)?,
-                target: slot::Slot::parse(&name)?,
+                target: slot,
                 candidate: &candidate,
                 expected_sha: &sha256,
             };
-            slot::stage(&image, &mut disk, &esp, &request, &faults)?
+            let staged = slot::stage(&image, &mut disk, &esp, &request, &faults)?;
+            match (kernel, initramfs, identity) {
+                (Some(kernel), Some(initramfs), Some(identity)) => {
+                    let payload = slot::BootPayload {
+                        kernel: &kernel,
+                        initramfs: &initramfs,
+                        identity: &identity,
+                    };
+                    slot::stage_boot(
+                        &image,
+                        &mut disk,
+                        &target.manifest,
+                        slot,
+                        &mut esp,
+                        &payload,
+                        &faults,
+                    )?
+                }
+                _ => staged,
+            }
         }
         SlotAction::Arm {
             target,

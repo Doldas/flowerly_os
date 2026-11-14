@@ -27,12 +27,14 @@ GOLDEN = ROOT / "testbed/generation-ledger/v2-golden.jsonl"
 
 def identity(slot="root-a", partuuid=UUID_A):
     return {
-        "schema": "flowerly-generation-root/v1",
+        "schema": "flowerly-generation-root/v2",
         "slot": slot,
         "root_partuuid": partuuid,
         "source_commit": COMMIT,
         "input_manifest_sha256": MANIFEST,
         "build_id": "fixture-a",
+        "schema_version": 16,
+        "min_reader": 16,
     }
 
 
@@ -55,7 +57,11 @@ def create_root(root):
         target.write_text("ID=arch\n" if file.endswith("os-release") else "fixture\n")
 
 
-def prepare(root, partuuid=UUID_A):
+def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
+    if broker is None:
+        broker = Path(root).parent / (Path(root).name + "-broker")
+        broker.write_text("#!/bin/sh\nexit 0\n")
+        broker.chmod(0o755)
     cmd = [
         "bash",
         str(INSTALLER),
@@ -70,6 +76,12 @@ def prepare(root, partuuid=UUID_A):
         MANIFEST,
         "--build-id",
         "fixture-a",
+        "--schema-version",
+        schema[0],
+        "--min-reader",
+        schema[1],
+        "--slot-broker",
+        str(broker),
         "--test-profile",
     ]
     fake = Path(root).parent / (Path(root).name + "-sysusers")
@@ -348,6 +360,83 @@ class BootTests(unittest.TestCase):
             python.unlink()
             python.symlink_to("/usr/bin/false")
             self.assertNotEqual(prepare(root).returncode, 0)
+
+    def test_baked_identity_carries_the_schema_window(self):
+        for bad in ({"schema_version": 16}, {"min_reader": "16"}, {"min_reader": 17}):
+            ident = identity()
+            ident.update(bad)
+            if "min_reader" not in bad and "schema_version" in bad:
+                del ident["min_reader"]
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                guest.verify_boot_identity(ident, "root=PARTUUID=" + UUID_A, "root-a")
+        old = identity()
+        old["schema"] = "flowerly-generation-root/v1"
+        del old["schema_version"], old["min_reader"]
+        with self.assertRaises(ValueError):
+            guest.verify_boot_identity(old, "root=PARTUUID=" + UUID_A, "root-a")
+
+    def test_the_slot_broker_is_installed_only_in_the_test_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            create_root(root)
+            result = prepare(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            baked = json.loads(
+                (root / "usr/lib/flowerly/generation-root.json").read_text()
+            )
+            self.assertEqual((baked["schema_version"], baked["min_reader"]), (16, 16))
+            broker = root / "usr/lib/flowerly/flowerly-slot-broker"
+            self.assertTrue(broker.is_file() and os.access(broker, os.X_OK))
+            config_path = root / "usr/lib/flowerly/slot-broker.json"
+            self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
+            config = json.loads(config_path.read_text())
+            self.assertEqual(config["esp"], "/efi")
+            self.assertEqual(config["service_user"], "flowerly")
+            self.assertEqual(config["admin_group"], "flowerly-admin")
+            self.assertEqual(
+                config["test_profile_marker"],
+                "/usr/lib/flowerly/generation-ab-test-profile",
+            )
+            units = root / "usr/lib/systemd/system"
+            socket_unit = (units / "flowerly-slot-broker.socket").read_text()
+            for line in (
+                "ListenStream=/run/flowerly-slot-broker.sock",
+                "SocketUser=root",
+                "SocketGroup=flowerly",
+                "SocketMode=0660",
+                "Accept=yes",
+            ):
+                self.assertIn(line, socket_unit)
+            service = (units / "flowerly-slot-broker@.service").read_text()
+            for line in (
+                "ExecStart=/usr/lib/flowerly/flowerly-slot-broker slot-broker",
+                "StandardInput=socket",
+                "User=root",
+                "PrivateNetwork=yes",
+                "ProtectSystem=strict",
+                "ReadWritePaths=/efi",
+            ):
+                self.assertIn(line, service)
+            self.assertTrue(
+                (
+                    root
+                    / "etc/systemd/system/sockets.target.wants/flowerly-slot-broker.socket"
+                ).is_symlink()
+            )
+
+    def test_installer_refuses_a_bad_schema_window_or_broker(self):
+        for schema in (("16", "17"), ("x", "1"), ("16", "0")):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d) / "root"
+                create_root(root)
+                with self.subTest(schema=schema):
+                    self.assertNotEqual(prepare(root, schema=schema).returncode, 0)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            create_root(root)
+            self.assertNotEqual(
+                prepare(root, broker=Path(d) / "missing-broker").returncode, 0
+            )
 
     def test_installer_refuses_untrusted_inputs(self):
         with tempfile.TemporaryDirectory() as d:

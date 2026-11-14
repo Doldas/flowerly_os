@@ -85,10 +85,15 @@ def verify_boot_identity(identity, cmdline, efi_entry):
             "source_commit",
             "input_manifest_sha256",
             "build_id",
+            "schema_version",
+            "min_reader",
         }
-        or identity["schema"] != "flowerly-generation-root/v1"
+        or identity["schema"] != "flowerly-generation-root/v2"
     ):
         raise ValueError("invalid baked identity schema")
+    window = (identity["schema_version"], identity["min_reader"])
+    if any(type(v) is not int for v in window) or not 1 <= window[1] <= window[0]:
+        raise ValueError("invalid baked schema window")
     if identity["slot"] not in ("root-a", "root-b"):
         raise ValueError("invalid baked root slot")
     if not isinstance(identity["root_partuuid"], str) or not UUID.fullmatch(
