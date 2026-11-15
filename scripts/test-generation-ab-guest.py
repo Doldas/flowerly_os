@@ -245,6 +245,53 @@ class BootTests(unittest.TestCase):
             guest.append_health(ledger, BOOT, owner=owner)
             self.assertEqual(ledger.stat().st_mode & 0o7777, 0o640)
 
+    def test_ledger_group_follows_the_group_flowerlyd_runs_as(self):
+        # flowerlyd reads the ledger only if its group is the state
+        # directory's, and systemd gives that directory flowerlyd's Group=
+        # (flowerly-users with the multi-user drop-in, G5 run 1).
+        me, mine = os.getuid(), os.getgid()
+        account = type("Account", (), {"pw_uid": me})()
+        groups = {"flowerly": mine + 1, "flowerly-users": mine}
+        asked = []
+
+        def unit_group():
+            asked.append(True)
+            return "flowerly-users"
+
+        with tempfile.TemporaryDirectory() as d:
+            owner = guest.service_owner(
+                Path(d),
+                unit_group=unit_group,
+                account=lambda name: account,
+                group=lambda name: groups[name],
+            )
+            self.assertEqual(owner, (0, mine))
+            self.assertEqual(asked, [True])
+            self.assertEqual(os.stat(d).st_gid, mine)
+
+    def test_ledger_group_defaults_to_the_service_group(self):
+        account = type("Account", (), {"pw_uid": os.getuid()})()
+        with tempfile.TemporaryDirectory() as d:
+            owner = guest.service_owner(
+                Path(d),
+                unit_group=lambda: "",
+                account=lambda name: account,
+                group=lambda name: {"flowerly": os.getgid()}[name],
+            )
+            self.assertEqual(owner, (0, os.getgid()))
+
+    def test_ledger_group_refuses_a_root_or_unknown_unit_group(self):
+        account = type("Account", (), {"pw_uid": os.getuid()})()
+        for name in ("root", "0", "no-such-group"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises((ValueError, KeyError)):
+                    guest.service_owner(
+                        Path(d),
+                        unit_group=lambda name=name: name,
+                        account=lambda _: account,
+                        group=lambda g: {"flowerly": 1, "root": 0}[g],
+                    )
+
     def test_writer_output_matches_the_golden_ledger_the_reader_parses(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = Path(d) / "ledger.jsonl"
