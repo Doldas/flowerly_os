@@ -42,12 +42,16 @@ def manifest():
             "size_bytes": 1,
             "filesystem": "erofs",
             "boot": {"kernel_sha256": "c" * 64, "initramfs_sha256": "d" * 64},
+            # The slot's baked generation-root.json, verbatim.
             "identity": {
+                "schema": "flowerly-generation-root/v2",
                 "source_commit": "a" * 40,
                 "input_manifest_sha256": "e" * 64,
                 "build_id": build,
                 "slot": name,
-                "partuuid": uuid,
+                "root_partuuid": uuid,
+                "schema_version": 16,
+                "min_reader": 16,
             },
         }
 
@@ -191,7 +195,7 @@ class InstructionTests(unittest.TestCase):
 
     def test_registration_refuses_identity_of_another_slot(self):
         doc = manifest()
-        doc["partitions"][2]["identity"]["partuuid"] = PA
+        doc["partitions"][2]["identity"]["root_partuuid"] = PA
         with self.assertRaisesRegex(ValueError, "another slot"):
             gate.registration(doc, "root-b", "B")
 

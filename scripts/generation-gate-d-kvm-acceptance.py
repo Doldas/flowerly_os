@@ -145,7 +145,7 @@ def registration(manifest, slot, label):
     boot, ident = part.get("boot"), part.get("identity")
     if not isinstance(boot, dict) or not isinstance(ident, dict):
         raise ValueError(f"{slot} has no staged boot payload and identity")
-    if ident.get("slot") != slot or ident.get("partuuid") != part["partuuid"]:
+    if ident.get("slot") != slot or ident.get("root_partuuid") != part["partuuid"]:
         raise ValueError(f"{slot} identity names another slot")
     identity = {
         "source_commit": ident["source_commit"],
@@ -384,7 +384,7 @@ def validate(args, *, actual_execution=False):
     registration(manifest, "root-a", "A")
     registration(manifest, "root-b", "B")
     ident = json.loads(args.identity_b2.read_text())
-    if ident.get("slot") != "root-b" or ident.get("partuuid") != args.root_b:
+    if ident.get("slot") != "root-b" or ident.get("root_partuuid") != args.root_b:
         raise ValueError("--identity-b2 must be slot B's identity")
     return manifest
 
