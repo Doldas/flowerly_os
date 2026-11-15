@@ -627,13 +627,18 @@ class Run:
                 while time.monotonic() - started <= OBSERVE_SECONDS:
                     if process.poll() is not None:
                         break
-                    if host is None:
+                    # Right after Popen the exec may not have completed and
+                    # /proc/<pid>/cmdline reads empty (run 4); once the
+                    # firmware writes, the process is QEMU.
+                    if host is None and log.stat().st_size > 0:
                         host = self.ab.verify_running_qemu(process.pid, command)
                     time.sleep(1)
             finally:
                 if process.poll() is None:
                     process.kill()
                 process.wait(timeout=15)
+        if host is None:
+            raise ValueError(f"{label}: the running QEMU was not verified")
         text = log.read_text(encoding="utf-8", errors="replace")
         booted, _ = boot_identity(text)
         initrd = sorted(set(re.findall(r"initrd=\\flowerly\\([ab])\\initramfs", text)))

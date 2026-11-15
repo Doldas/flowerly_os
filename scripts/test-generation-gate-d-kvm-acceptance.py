@@ -326,6 +326,58 @@ class BootIdentityTests(unittest.TestCase):
             gate.boot_identity(text)
 
 
+class ObserveTests(unittest.TestCase):
+    """Run 4: /proc/<pid>/cmdline read right after Popen can still be empty
+    while the exec completes, so the running QEMU is verified only once the
+    firmware has written to the console, and an unverified boot fails."""
+
+    def run_with(self, tmp, writes_after):
+        run = object.__new__(gate.Run)
+        run.out = Path(tmp)
+        run.args = mock.Mock(ovmf_code="/code.fd")
+        run.result = {"boots": []}
+        run.ab = mock.Mock()
+        log = run.out / "seen.serial.log"
+        naps = []
+
+        def verify(pid, command):
+            # The shared check reads the real process; here it records when.
+            self.assertGreater(log.stat().st_size, 0, "verified before output")
+            return {"kvm_fd_verified": True}
+
+        run.ab.verify_running_qemu.side_effect = verify
+
+        def nap(_):
+            naps.append(1)
+            if len(naps) == writes_after:
+                with log.open("a") as out:
+                    out.write("BdsDxe: loading Boot0001\n")
+
+        process = mock.Mock(pid=4242, returncode=0)
+        process.poll.side_effect = lambda: None if len(naps) < 5 else 0
+        with (
+            mock.patch.object(gate.subprocess, "Popen", return_value=process),
+            mock.patch.object(gate.time, "sleep", side_effect=nap),
+            mock.patch.object(gate.shutil, "which", return_value="/usr/bin/qemu"),
+        ):
+            return run, run.observe("seen", "/disk.img", "/vars.fd")
+
+    def test_the_process_is_verified_after_the_firmware_writes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run, record = self.run_with(tmp, writes_after=2)
+        run.ab.verify_running_qemu.assert_called_once()
+        self.assertTrue(record["kvm_fd_verified"])
+
+    def test_a_boot_that_was_never_verified_fails(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "not verified"):
+                self.run_with(tmp, writes_after=99)
+
+
 class ValidateTests(unittest.TestCase):
     def test_execution_requires_token_and_clean_head(self):
         args = mock.Mock(approved_sha="0" * 39)
