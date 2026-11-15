@@ -121,6 +121,13 @@ python3 -c 'import json,sys; g=json.loads(sys.argv[1]); assert g["parent_goal"] 
 generation_id="$("$CTL" --runtime-dir "$RUNTIME_DIR" generation create | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 for argv in \
     "generation promote $generation_id --reason cli-contract" \
+    "generation evidence $generation_id --outcome passed --evidence-sha256 $(printf '9%.0s' {1..64}) --reason cli-contract" \
+    "generation test $generation_id --experiment exp-x --reason cli-contract" \
+    "generation reject $generation_id --reason cli-contract" \
+    "generation revoke $generation_id --reason cli-contract" \
+    "generation activate $generation_id --reason cli-contract" \
+    "generation rollback $generation_id --reason cli-contract" \
+    "generation history" \
     "ownership inspect $parent_id --reason cli-contract" \
     "ownership claim $parent_id --to-uid 4242 --reason cli-contract --expect 2" \
     "ownership release $parent_id --reason cli-contract --expect 2"; do

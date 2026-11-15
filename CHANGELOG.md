@@ -5,6 +5,45 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Irreversible activation path and `flowerlyd`'s activation path (ADR-0023
+  G4b, #9), test profile only. On the A/B test image `generation.activate`
+  and `generation.rollback` (now with a required `reason`) ask the slot
+  broker for a read-only plan, run every database guard first, record the
+  `PENDING` row and then arm. An activation whose migrations the running root
+  could not read needs `--acknowledge-irreversible`: `flowerlyd` takes an
+  integrity-checked `VACUUM INTO` backup named by its SHA-256 (also on the
+  row), the broker verifies it and demotes the running root's boot entry to
+  manual-only before publishing the target. The broker also refuses a target
+  that cannot read the running root's database. Everywhere else activation
+  still refuses.
+- Root slot broker (ADR-0023 G4a, #9), test profile only. `distro-builder
+  slot stage --kernel --initramfs --identity` stages a slot's boot payload and
+  baked identity; the broker (`flowerly-slot-broker.socket`) arms or disarms
+  only the inactive slot for the service account acting for a current
+  `flowerly-admin` member, after checking the slot bytes, the ESP payload, the
+  identity and the schema window itself. It opens the disk read-only and
+  refuses irreversible activations. The baked identity gains the image's
+  schema window (`flowerlyd --schema-window`). The schema compatibility
+  baseline moved to the G3 merge.
+- Generation activation resolution and schema window (ADR-0023 G3, #9). The
+  A/B test guest writes a hash-chained boot ledger (v2) with a health record
+  per boot; `flowerlyd` verifies it and resolves a pending activation at
+  start-up and through the service-account `generation.resolve`. Migration 16
+  records `min_reader`, so an older binary keeps working on an expand-only
+  newer schema; binaries from before it still refuse it. CI now runs a real
+  older `flowerlyd` against databases from this build. Activation stays off.
+- Generation lifecycle commands (ADR-0023 G2, #9): `generation.identity`,
+  `evidence`, `test`, `reject`, `revoke` and `history`, Admin only, audited and
+  in `agenticctl`. `TESTED` needs recorded passing evidence and a complete root
+  identity. `generation.create` now rejects an empty, over-long or non-ASCII
+  `source_commit` or `system_manifest`. `generation.activate` and the new
+  `generation.rollback` still refuse until Gate D is verified.
+- Generation lifecycle storage (ADR-0023 G1, #9): migration 0015 enforces the
+  typed status transitions, at most one `STABLE`, a complete root identity
+  before `TESTED`, and an append-only activation history in the database for
+  every writer. `STABLE` can only come from a confirmed activation, so
+  `generation.activate` now refuses with `conflict` until Gate D is verified;
+  the public status setter is gone.
 - Docs: 0.0.5 step 1 plan (S1–S8) and the ADR-0019 prototype decision for A/B root slots with boot counting (#48, #51); the ADR stays Proposed until a real boot/rollback run is reviewed.
 - The Flowerly-built ext4 root volume now boots in KVM to `multi-user.target`
   with the IPC health witness (#51, evidence in

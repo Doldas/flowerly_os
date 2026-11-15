@@ -1,0 +1,13 @@
+[Unit]
+Description=Flowerly root slot broker socket (A/B test image only, ADR-0023 G4)
+
+[Socket]
+ListenStream=/run/flowerly-slot-broker.sock
+SocketUser=root
+SocketGroup=flowerly
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

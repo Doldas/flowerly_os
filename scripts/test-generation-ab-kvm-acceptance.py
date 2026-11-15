@@ -72,64 +72,87 @@ class KvmGateTests(unittest.TestCase):
         import copy
         import json
 
-        ids = [
-            "11111111-1111-1111-1111-111111111111",
-            "22222222-2222-2222-2222-222222222222",
-            "33333333-3333-3333-3333-333333333333",
-            "44444444-4444-4444-4444-444444444444",
-            "55555555-5555-5555-5555-555555555555",
-        ]
         root_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         root_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        names = [
-            "boot-a.serial.log",
-            "unhealthy-b-1.serial.log",
-            "unhealthy-b-2.serial.log",
-            "unhealthy-b-3.serial.log",
-            "auto-fallback-a.serial.log",
+        tries = 2
+        plan = [("boot-a", "root-a", "BLESSED", "main")]
+        plan += [(f"unhealthy-b-{i}", "root-b", "REJECTED", "main") for i in (1, 2)]
+        plan += [
+            ("auto-fallback-a", "root-a", "BLESSED", "main"),
+            ("healthy-b-1", "root-b", "BLESSED", "main"),
+            ("healthy-b-2", "root-b", "BLESSED", "main"),
+            ("rollback-a", "root-a", "BLESSED", "main"),
+            ("clean-shutdown-a", "root-a", "BLESSED", "main"),
+            ("arm-after-payload-a", "root-a", "BLESSED", "main"),
+            ("arm-before-rename-a", "root-a", "BLESSED", "main"),
+            ("arm-after-rename-b", "root-b", "BLESSED", "main"),
         ]
+        plan += [(f"damaged-b-{i}", "root-b", "NO_WITNESS", "main") for i in (1, 2)]
+        plan += [
+            ("damaged-fallback-a", "root-a", "BLESSED", "main"),
+            ("stage-interrupted-a", "root-a", "BLESSED", "stage-interrupted"),
+        ]
+        marker_of = {"main": H, "stage-interrupted": "d" * 64}
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d)
-            boots = []
-            checksums = {}
-            for i, name in enumerate(names):
-                slot = "root-a" if i in (0, 4) else "root-b"
+            boots, checksums = [], {}
+            for index, (label, slot, expect, lineage) in enumerate(plan):
                 root = root_a if slot == "root-a" else root_b
-                blessed = slot == "root-a"
                 lines = [
-                    "FLOWERLY_GENERATION_ROOT_VERIFIED",
-                    '{"boot_id": "'
-                    + ids[i]
-                    + '", "root_partuuid": "'
+                    "[    0.0] Kernel command line: initrd=\\flowerly\\"
+                    + slot[-1]
+                    + "\\initramfs.img root=PARTUUID="
                     + root
-                    + '", "slot": "'
-                    + slot
-                    + '"}',
-                    "FLOWERLY_GENERATION_USER_MARKER_SHA256=" + H,
                 ]
-                lines += (
-                    [
-                        "FLOWERLY_GENERATION_IPC_VERIFIED",
-                        "FLOWERLY_GENERATION_BOOT_BLESSED",
+                if expect != "NO_WITNESS":
+                    lines += [
+                        "FLOWERLY_GENERATION_ROOT_VERIFIED",
+                        '{"boot_id": "'
+                        + f"{index:08d}-1111-1111-1111-111111111111"
+                        + '", "root_partuuid": "'
+                        + root
+                        + '", "slot": "'
+                        + slot
+                        + '"}',
+                        "FLOWERLY_GENERATION_USER_MARKER_SHA256=" + marker_of[lineage],
                     ]
-                    if blessed
-                    else ["injected unhealthy Generation boot"]
-                )
-                log = folder / name
-                log.write_text("\n".join(lines) + "\n")
-                checksums[name] = kvm.sha_file(log)
+                    lines += (
+                        [
+                            "FLOWERLY_GENERATION_IPC_VERIFIED",
+                            "FLOWERLY_GENERATION_BOOT_BLESSED",
+                        ]
+                        if expect == "BLESSED"
+                        else ["injected unhealthy Generation boot"]
+                    )
+                name = label + ".serial.log"
+                (folder / name).write_text("\n".join(lines) + "\n")
+                checksums[name] = kvm.sha_file(folder / name)
                 boots.append(
                     {
+                        "label": label,
                         "slot": slot,
+                        "expect": expect,
+                        "lineage": lineage,
                         "serial": name,
-                        "marker_sha256": H,
-                        "observed_health": "BLESSED" if blessed else "REJECTED",
-                        "power_loss": "QEMU_SIGKILL",
+                        "marker_sha256": None
+                        if expect == "NO_WITNESS"
+                        else marker_of[lineage],
+                        "observed_health": expect,
+                        "seconds_to_observed": None if expect == "NO_WITNESS" else 9.5,
+                        "power_loss": "ACPI_POWERDOWN"
+                        if label == "clean-shutdown-a"
+                        else "QEMU_SIGKILL",
+                        **(
+                            {"clean_shutdown_seconds": 7.5}
+                            if label == "clean-shutdown-a"
+                            else {}
+                        ),
                         "kvm_fd_verified": True,
                         "qemu_cmdline_sha256": "c" * 64,
                     }
                 )
             (folder / "serial-sha256.json").write_text(json.dumps(checksums))
+            passing = set(kvm.SCENARIOS)
             evidence = {
                 "schema": "flowerly-generation-kvm-sequence/v1",
                 "source_sha": "a" * 40,
@@ -142,23 +165,64 @@ class KvmGateTests(unittest.TestCase):
                 "release_acceptance": False,
                 "sequence_verified": True,
                 "status": "SEQUENCE_OBSERVED_S7_INCOMPLETE",
-                "boot_tries": 3,
-                "scenarios": {
-                    name: (
-                        "PASS"
-                        if name
-                        in {
-                            "boot-before-bless",
-                            "unhealthy-b-fallback",
-                            "data-survives",
-                        }
-                        else "NOT_RUN"
+                "boot_tries": tries,
+                "scenarios": {name: "PASS" for name in passing},
+                "host_checks": {
+                    name: {"ok": True}
+                    for name in (
+                        "stage-complete",
+                        "stage-interrupted",
+                        "tampered-b-refused",
                     )
-                    for name in kvm.SCENARIOS
+                },
+                "slot_tool_sha256": H,
+                "status_checks": {
+                    "unhealthy-b-2": {
+                        "verdict": "FAILED_UNRESOLVED",
+                        "witness_slot": "root-b",
+                    },
+                    "auto-fallback-a": {
+                        "verdict": "FELL_BACK",
+                        "witness_slot": "root-a",
+                    },
+                    "healthy-b-1": {"verdict": "ACTIVE", "witness_slot": "root-b"},
+                    "rollback-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                    },
+                    "arm-after-payload-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                        "stray_temp_entries": [],
+                    },
+                    "arm-before-rename-a": {
+                        "verdict": "NO_CANDIDATE",
+                        "witness_slot": "root-a",
+                        "stray_temp_entries": ["flowerly-b+2.conf.tmp"],
+                    },
+                    "arm-after-rename-b": {
+                        "verdict": "ACTIVE",
+                        "witness_slot": "root-b",
+                    },
+                    "damaged-fallback-a": {
+                        "verdict": "FELL_BACK",
+                        "witness_slot": "root-a",
+                    },
+                },
+                "measurements": {
+                    "stage_seconds": 12.0,
+                    "clean_shutdown_seconds": 7.5,
+                    "data_fs_after_clean_shutdown": {
+                        "state": "clean",
+                        "needs_recovery": False,
+                    },
+                    "slot_bytes": {"root-a": 1, "root-b": 1},
                 },
                 "boots": boots,
             }
-            self.assertEqual(audit.audit(evidence, folder)["boots"], 5)
+            report = audit.audit(evidence, folder)
+            self.assertEqual(report["boots"], len(plan))
+            self.assertEqual(set(report["scenarios_pass"]), passing)
 
             def refuses(mutator):
                 changed = copy.deepcopy(evidence)
@@ -166,28 +230,84 @@ class KvmGateTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     audit.audit(changed, folder)
 
-            refuses(lambda r: r["boots"][2].update(marker_sha256="b" * 64))
-            refuses(lambda r: r["boots"][1].update(slot="root-a"))
-            refuses(lambda r: r["boots"][0].update(serial="unhealthy-b-1.serial.log"))
-            refuses(lambda r: r.update(boot_tries=2))
+            def boot(report, label):
+                return next(b for b in report["boots"] if b["label"] == label)
+
+            refuses(lambda r: boot(r, "healthy-b-2").update(marker_sha256="b" * 64))
+            refuses(lambda r: boot(r, "unhealthy-b-1").update(slot="root-a"))
+            refuses(lambda r: boot(r, "boot-a").update(serial="healthy-b-1.serial.log"))
             refuses(lambda r: r.update(release_acceptance=True))
-            refuses(lambda r: r["boots"][0].update(kvm_fd_verified=False))
-            refuses(lambda r: r["boots"][1].update(qemu_cmdline_sha256="invalid"))
-            refuses(lambda r: r["scenarios"].update({"stage-interrupted": "PASS"}))
+            refuses(lambda r: boot(r, "boot-a").update(kvm_fd_verified=False))
+            refuses(lambda r: boot(r, "rollback-a").update(qemu_cmdline_sha256="x"))
             refuses(lambda r: r["scenarios"].pop("data-survives"))
             refuses(lambda r: r["boots"].pop(2))
-            refuses(lambda r: r["boots"][2].update(observed_health="BLESSED"))
-            log = folder / names[2]
-            log.write_text(log.read_text().replace(ids[2], ids[1]))
-            with self.assertRaises(ValueError):
-                audit.audit(evidence, folder)
-            log.write_text(log.read_text().replace(ids[1], ids[2]))
-            log.write_text(log.read_text() + "FLOWERLY_GENERATION_BOOT_BLESSED\n")
-            with self.assertRaises(ValueError):
-                audit.audit(evidence, folder)
-            log.write_text(
-                log.read_text().replace("FLOWERLY_GENERATION_BOOT_BLESSED\n", "")
+            refuses(lambda r: r["boots"].reverse())
+            refuses(lambda r: boot(r, "stage-interrupted-a").update(lineage="main"))
+            # A scenario may only be PASS with its evidence, and observed
+            # evidence may not be left as NOT_RUN either.
+            refuses(lambda r: r["host_checks"]["stage-complete"].update(ok=False))
+            refuses(lambda r: r["measurements"].pop("stage_seconds"))
+            refuses(lambda r: r.pop("slot_tool_sha256"))
+            refuses(lambda r: boot(r, "clean-shutdown-a").pop("clean_shutdown_seconds"))
+            refuses(
+                lambda r: boot(r, "clean-shutdown-a").update(clean_shutdown_seconds=0)
             )
+            refuses(
+                lambda r: boot(r, "clean-shutdown-a").update(power_loss="QEMU_SIGKILL")
+            )
+            refuses(lambda r: boot(r, "boot-a").update(clean_shutdown_seconds=3.0))
+            refuses(lambda r: r["measurements"].update(clean_shutdown_seconds=9.9))
+            refuses(
+                lambda r: r["measurements"]["data_fs_after_clean_shutdown"].update(
+                    needs_recovery=True
+                )
+            )
+            refuses(
+                lambda r: r["status_checks"]["auto-fallback-a"].update(verdict="ACTIVE")
+            )
+            refuses(
+                lambda r: r["status_checks"]["healthy-b-1"].update(
+                    witness_slot="root-a"
+                )
+            )
+            refuses(lambda r: r["status_checks"].pop("rollback-a"))
+            refuses(
+                lambda r: r["status_checks"]["arm-before-rename-a"].update(
+                    stray_temp_entries=[]
+                )
+            )
+            refuses(lambda r: r["status_checks"].update(ghost={"verdict": "ACTIVE"}))
+            refuses(lambda r: r["scenarios"].update({"rollback-to-a": "NOT_RUN"}))
+            refuses(lambda r: r.update(boot_tries=3))
+            refuses(lambda r: r["host_checks"].update(bogus={"ok": True}))
+            for label, text, replacement in (
+                ("healthy-b-1", "FLOWERLY_GENERATION_BOOT_BLESSED\n", ""),
+                ("unhealthy-b-2", "injected unhealthy Generation boot\n", ""),
+                ("damaged-b-1", "initrd=\\flowerly\\b", "initrd=\\flowerly\\a"),
+                ("rollback-a", "initrd=\\flowerly\\a", "initrd=\\flowerly\\b"),
+            ):
+                log = folder / (label + ".serial.log")
+                original = log.read_text()
+                self.assertIn(text, original)
+                log.write_text(original.replace(text, replacement))
+                with self.assertRaises(ValueError, msg=label):
+                    audit.audit(evidence, folder)
+                log.write_text(original)
+            damaged = folder / "damaged-b-2.serial.log"
+            original = damaged.read_text()
+            damaged.write_text(original + "FLOWERLY_GENERATION_ROOT_VERIFIED\n")
+            with self.assertRaises(ValueError):
+                audit.audit(evidence, folder)
+            damaged.write_text(original)
+            log = folder / "healthy-b-1.serial.log"
+            text = log.read_text()
+            own = "00000004-1111-1111-1111-111111111111"
+            self.assertIn(own, text)
+            # Same kernel boot ID as the first boot: a replayed log.
+            log.write_text(text.replace(own, "00000000-1111-1111-1111-111111111111"))
+            with self.assertRaises(ValueError):
+                audit.audit(evidence, folder)
+            log.write_text(text)
             # A symlinked serial file is never accepted even when its
             # content and digest would otherwise match.
             log.rename(folder / "real-boot-serial.log")
@@ -239,6 +359,45 @@ class KvmGateTests(unittest.TestCase):
             self.assertEqual(
                 hashes["data"], hashlib.sha256(b[5 * MIB : 6 * MIB]).hexdigest()
             )
+
+    def test_qmp_powerdown_sends_the_acpi_button_and_refuses_errors(self):
+        import json
+        import socket
+        import threading
+
+        def serve(path, replies, seen):
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+                server.listen(1)
+                conn, _ = server.accept()
+                stream = conn.makefile("rw")
+                stream.write(json.dumps({"QMP": {"version": {}}}) + "\n")
+                stream.flush()
+                for reply in replies:
+                    seen.append(json.loads(stream.readline())["execute"])
+                    stream.write(json.dumps(reply) + "\n")
+                    stream.flush()
+                conn.close()
+
+        for replies, ok in (
+            ([{"return": {}}, {"return": {}}], True),
+            ([{"return": {}}, {"error": {"desc": "no"}}], False),
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "qmp.sock"
+                seen = []
+                thread = threading.Thread(target=serve, args=(path, replies, seen))
+                thread.start()
+                if ok:
+                    kvm.qmp_powerdown(path, 5)
+                else:
+                    with self.assertRaises(ValueError):
+                        kvm.qmp_powerdown(path, 5)
+                thread.join(5)
+                self.assertEqual(seen, ["qmp_capabilities", "system_powerdown"])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                kvm.qmp_powerdown(Path(directory) / "missing.sock", 1)
 
     def test_process_argv_never_fakes_kvm_evidence(self):
         import os

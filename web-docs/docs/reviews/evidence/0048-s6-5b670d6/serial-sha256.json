@@ -1,0 +1,18 @@
+{
+  "arm-after-payload-a.serial.log": "164bd1936a2bc4b31b977d730c11af9a5c3a2ad38ae0256dad449073e5a7cf47",
+  "arm-after-rename-b.serial.log": "55cf27c7ed010a7aa6ac634a30267880984176baf56f2e31c0336840cbca52b0",
+  "arm-before-rename-a.serial.log": "f3ee267e151d8b5c0dc77ed8219a6ada2cb4487c137ff25b5db98d5f4a565a55",
+  "auto-fallback-a.serial.log": "fe2766dc82cf4adfe78eb88fe7b58ea1c56cec0bfcf4985fdd9fe63e104a0fb4",
+  "boot-a.serial.log": "ab2c11a9a6bd378557b6adb52616b94d2189b291d9884525a0acba1c0e6fc5a2",
+  "damaged-b-1.serial.log": "c2a62ac6c97858a97470c341130e68f73dc3727af7adedf5548136dc6792feca",
+  "damaged-b-2.serial.log": "b45ec970bb44ffe677a25e5fe8efed11ac85ab4e254a98f1e672e5d114b93650",
+  "damaged-b-3.serial.log": "d3804476aae0f3b165e289815406240c4dff6acd8d9d2eaa96fbc62763f3529c",
+  "damaged-fallback-a.serial.log": "79118378f2d49a906f37f43b3db18eff30b631cff6d6f62e8f2ad92d6ac73893",
+  "healthy-b-1.serial.log": "e2d13dd7fb40961464ee055a4ff85ed67d00ae4c0fff1fa0f8aaab31be6137a4",
+  "healthy-b-2.serial.log": "bc3e845dc22a2fcf5a031d49073d8d853664c5d90942f2829829b96bf6f27ea3",
+  "rollback-a.serial.log": "2ac28a2de26575d79c5d474b0ea7f3d2e6b44997508758ff04f943ceffbd5a8f",
+  "stage-interrupted-a.serial.log": "68fabb331cde36c566fccbedebe514c255ed41cb06dd4bfdc9049a8f6efa8a79",
+  "unhealthy-b-1.serial.log": "8f28fab56d8b8a70de3a1d6b01df6d8681fc7ee3296ead50a04fbf5c7d47ef25",
+  "unhealthy-b-2.serial.log": "05d5ba357c03388849c642b84ee0447e2529257f8bff548f4cb37a7e5be501ff",
+  "unhealthy-b-3.serial.log": "914bf2149f2c5fd162006bcc0f0d9381e35b7c6c19c6e4e17d3d034db7a5cf6a"
+}

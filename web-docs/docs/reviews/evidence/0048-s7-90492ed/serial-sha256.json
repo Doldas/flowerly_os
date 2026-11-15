@@ -1,0 +1,17 @@
+{
+  "arm-after-rename-a.serial.log": "c816e7ad3f8a376bf5468f218e42bf3ac994e3652e6214032043c99d579e9958",
+  "arm-before-rename-a.serial.log": "a5d2635273e671cf203aab1eed1d17525d3d7113e2a7fbf5ec594eb24aada3c9",
+  "auto-fallback-a.serial.log": "21d0e5e946b2a8a0665e5910350feca1be21428527753da2c180c91c5b17fa94",
+  "boot-a.serial.log": "915c55cd23b7feb0d34cb45a4c4955c7e9dd81f453871f02468f5bd40ed1461e",
+  "damaged-b-1.serial.log": "6d94c20671a9847f16de815a97126a987fa3240b791f341ccc4ce09a433aace4",
+  "damaged-b-2.serial.log": "7435ab5a4261e2e545deb53fce63bc8321eddd54d1d879e3c94449d3d86d5984",
+  "damaged-b-3.serial.log": "979498f01f1e93066f6b0afb0aeb8c6abee3758edc3bbe22033174c5c28a284a",
+  "damaged-fallback-a.serial.log": "4bed2bedf863db9a78b2d741a75ab9024147fda108c131f6255ed1def11cbabb",
+  "healthy-b-1.serial.log": "d3468b8af312bd5a7882c1904808d949d15959aaea3a2ae071b3fa82248af475",
+  "healthy-b-2.serial.log": "74bf0c065887335116cc581092d1fb3c7bc2544693a84211c16e3e094dc1a168",
+  "rollback-a.serial.log": "5123dfaaed0e50c37dd89bafafdf88b4d70c7edc2d3a5b62f606fd25ab43140c",
+  "stage-interrupted-a.serial.log": "739a0e2ca17a9056ac5c64672a40da15c9bdaedf2db4113396ef5d2582ba165d",
+  "unhealthy-b-1.serial.log": "e5c20fdfe3a0a1095e6f586dc28a8f33b5f35bac554da7b227f8708d45788c35",
+  "unhealthy-b-2.serial.log": "9e3342dd3f7e9f3c5685904cc41deb2fe45ae97f76b8a158e514f70eacc439ae",
+  "unhealthy-b-3.serial.log": "fc3de3aa8f6ba3491a716bed874d08976e71e69b3eb0c81b575bc510d80b47e5"
+}

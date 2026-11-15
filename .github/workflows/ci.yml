@@ -78,7 +78,7 @@ jobs:
         run: python3 scripts/test-arch-vm-resource-monitor.py
 
       - name: Install just
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
         with:
           tool: just
 
@@ -108,8 +108,20 @@ jobs:
       - name: Compile check
         run: just check
 
+      # The slot tool's CLI tests drive the real builder, GPT, FAT and ext4
+      # tools; they must run, not skip (FLOWERLY_REQUIRE_AB_TOOLS=1).
+      - name: Provision real A/B disk tools for slot tool tests
+        run: bash ./scripts/prepare-ab-disk-ci-tools.sh
+
       - name: Test
+        env:
+          FLOWERLY_REQUIRE_AB_TOOLS: "1"
         run: just test
+
+      - name: Slot tool power-loss tests (real SIGKILL, fault-injection feature)
+        env:
+          FLOWERLY_REQUIRE_AB_TOOLS: "1"
+        run: cargo test -p distro-builder --features fault-injection --locked
 
       - name: Release build
         run: just build
@@ -119,6 +131,11 @@ jobs:
 
       - name: Check CLI-to-daemon contracts
         run: bash ./scripts/check-cli-contracts.sh target/release
+
+      # Builds flowerlyd from the commit in testbed/schema-compat/baseline.json
+      # and runs it on databases written by this build, and the reverse.
+      - name: Schema reader window against the recorded older binary (ADR-0023 R4)
+        run: python3 ./scripts/test-schema-compat.py target/release
 
       - name: Black-box unified runtime, durable replay and separate hypervisor boundary
         run: python3 ./testbed/integration/test-unified-runtime.py target/release
@@ -253,7 +270,7 @@ jobs:
           cache-dependency-path: web-docs/requirements-docs.txt
 
       - name: Install just
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
         with:
           tool: just
 
@@ -331,6 +348,7 @@ jobs:
       - name: Generation A/B guest identity and opt-in health-gate installation
         run: |
           python3 ./scripts/test-generation-ab-guest.py
+          python3 ./scripts/test-schema-compat.py --self-test
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 // One library crate for types, durable storage, framed IPC and daemon runtime.
+pub mod activation;
 mod config;
 mod daemon;
 pub mod ipc;
@@ -9,6 +10,7 @@ pub mod remote_policy;
 pub mod storage;
 pub mod storage_mode;
 pub mod types;
+pub mod witness;
 pub use config::{default_runtime_dir, ConfigError, LogFormat, ServiceConfig};
 pub use daemon::{
     coded_error_envelope, error_envelope, ok_envelope, run_authorized_service, run_service,

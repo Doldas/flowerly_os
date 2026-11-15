@@ -90,7 +90,14 @@ PTY_FAIL_CLOSED = "PTY delegation unavailable; spawning disabled"
 PTY_DEVELOPMENT = "PTY isolation is development"
 ADMIN_COMMANDS = [
     "generation.activate",
+    "generation.evidence",
+    "generation.history",
+    "generation.identity",
     "generation.promote",
+    "generation.reject",
+    "generation.revoke",
+    "generation.rollback",
+    "generation.test",
     "model.register",
     "ownership.inspect",
     "ownership.claim",

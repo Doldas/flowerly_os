@@ -94,6 +94,45 @@ Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 
 ### Gate D — Generation lifecycle and durable activation (#9)
 
+**Design (accepted 2026-11-09):** [ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md)
+records the verified gaps in today's code (no transition check, no activation
+history, `STABLE` set by request, rollback unsafe across a schema change), the
+owner decisions Q1–Q6, the requirements R1–R5 and the work breakdown G1–G5.
+
+**G1 storage:** migration 0015, typed transitions and activation history. The
+database refuses every other route to `STABLE`, so `generation.activate` now
+always refuses (`conflict`) until G2–G5 replace it. Evidence for `TESTED` is an
+Experiment about that Generation; nothing in production creates Experiments
+yet, so G2 had to settle how evidence is recorded. Crash injection in G1 covers
+transaction failure and restart; killing the process at every point of witness
+resolution belongs to G3 (R2).
+
+**G2 IPC:** `generation.identity|evidence|test|reject|revoke|history`, plus
+`activate` and `rollback`, which validate and refuse until Gate D is verified.
+All are Admin only, attributed to the kernel-attested caller, and available in
+`agenticctl`. Next: G3 (witness resolution and the schema window).
+
+**G3 resolution and schema window:** the guest's chained ledger v2 with health
+records, the verifying reader, resolution at start-up and through
+`generation.resolve`, and migration 16 (`min_reader` / `schema_compat`), with
+a real-binary compatibility test against the recorded older commit in CI.
+Next: G4 (slot broker; first move the compatibility baseline to the G3 merge).
+
+**G4a slot broker:** the compatibility baseline moved to the G3 merge; `slot
+stage` can stage the boot payload and baked identity; the root broker
+re-verifies authorization, slot bytes, ESP payload, identity and schema window
+itself and writes only a boot entry; irreversible activations are refused;
+test profile only.
+
+**G4b irreversible path and activation path:** the broker's read-only `plan`;
+an irreversible arm needs the Admin's acknowledgement and a verified backup,
+and demotes the running root's entry to manual-only before publishing the
+target; `flowerlyd` runs activate/rollback through the broker on the test
+image only (the release switch stays off), with a `VACUUM INTO` backup whose
+hash is on the activation row; `reason` is required. Next: G5 (real KVM
+acceptance on the exact SHA, including the restore drill), which also turns
+the release switch on.
+
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/
   activate/rollback transitions. No public arbitrary status setter.

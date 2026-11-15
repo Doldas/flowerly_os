@@ -94,7 +94,7 @@ mcopy -i "$ESP" "$BOOTEFI" ::/EFI/systemd/systemd-bootx64.efi
 mcopy -i "$ESP" "$BOOTEFI" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESP" "$KERNEL" ::/flowerly/a/vmlinuz
 mcopy -i "$ESP" "$INITRAMFS" ::/flowerly/a/initramfs.img
-printf 'default flowerly-a*\ntimeout 0\nconsole-mode keep\n' > "$WORK/loader.conf"
+printf 'default flowerly-*\ntimeout 0\nconsole-mode keep\n' > "$WORK/loader.conf"
 ENTRY="flowerly-a+${TRIES}.conf"
 cat > "$WORK/$ENTRY" <<ENTRY_EOF
 title Flowerly OS slot A

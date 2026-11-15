@@ -15,10 +15,53 @@ or malformed known fields fail as `invalid_argument`.
 `generation.promote` (Admin, #225 PR 6) requires `id` and a string
 `reason` of 1..512 bytes that is not blank; anything else is
 `invalid_argument`. Promoting a Generation that is already `system`, or
-is not `CANDIDATE`/`TESTED`, is `conflict`, and so is activating a
-Generation that is not `system`.
+is not `CANDIDATE`/`TESTED`, is `conflict`.
 
-Inspect/activate require `id` to be a valid Generation ID. Unknown
+On `generation.create`, a present `source_commit` or `system_manifest`
+must be 1..256 visible ASCII characters. They are validated, not trusted:
+`TESTED` needs the complete identity below.
+
+The lifecycle commands of
+[ADR-0023](adr/0023-generation-lifecycle-and-durable-activation.md) are
+Admin only and attributed to the kernel-attested caller. `reason` is
+1..512 bytes and not blank wherever it appears.
+
+| Command | Required | Optional |
+| --- | --- | --- |
+| `generation.identity` | `id`, `source_commit` (40 hex), `rootfs_sha256`, `kernel_sha256`, `initramfs_sha256`, `input_manifest_sha256`, `build_id`, `reason` | |
+| `generation.evidence` | `id`, `outcome` (`passed`/`failed`), `evidence_sha256`, `reason` | |
+| `generation.test` | `id`, `experiment`, `reason` | |
+| `generation.reject`, `generation.revoke` | `id`, `reason` | |
+| `generation.activate`, `generation.rollback` | `id`, `reason` | `operation_id`, `acknowledges` (activate), `acknowledge_irreversible` (bool) |
+| `generation.history` | | `id` |
+| `generation.resolve` (service account) | | |
+
+`generation.evidence` returns the Experiment to pass to `generation.test`.
+Recording the same `evidence_sha256` and `outcome` again returns the same
+Experiment; the same hash with another outcome is `conflict`. Only a
+`passed` Experiment of that Generation can back `TESTED`. An illegal
+lifecycle step is `conflict`.
+
+`generation.activate` and `generation.rollback` validate their arguments
+and then refuse with `conflict`, writing nothing, until Gate D is verified.
+Only an A/B test image (root-owned test-profile marker) gets further
+(ADR-0023 G4b): the slot broker's read-only plan, every database guard on a
+rolled-back insert, the backup of an irreversible activation, the `PENDING`
+row and then the arm. The answer carries the `activation` row and the
+broker's `armed` report; it is never `STABLE` yet. A broker refusal is
+`conflict` (the row, if written, is `ABANDONED`); a lost arm answer is
+`unavailable` and the row stays `PENDING` for the witness. A retry with the
+same `operation_id` returns the recorded row (`already_requested`) and asks
+no broker. `acknowledge_irreversible` must equal the broker's verdict: it is
+required when the running root could not read the database after the
+target's migrations and refused otherwise.
+
+`generation.resolve` resolves the pending activation, if any, from the boot
+ledger and returns its `outcome`: `none`, `waiting`, `unresolved` (with a
+`reason`; the request stays pending), `confirmed`, `fell_back` or
+`abandoned`. With nothing pending it does not read the ledger.
+
+Inspect, activate and rollback require `id` to be a valid Generation ID. Unknown
 object keys continue to be ignored to preserve forwards compatibility
 with existing IPC v1 clients. Unknown command names still return
 `invalid_argument`; missing referenced objects return `not_found`.
