@@ -244,25 +244,27 @@ fn derive_entry_swaps_only_the_root_and_validates_extras() {
         Slot::B,
         B_UUID,
         &["flowerly.test.fail_health=1".into()],
+        1,
     )
     .unwrap();
     assert!(text.contains(&format!(
         "options console=ttyS0 root=PARTUUID={B_UUID} ro flowerly.test.fail_health=1\n"
     )));
     assert!(text.contains("linux /flowerly/b/vmlinuz\ninitrd /flowerly/b/initramfs.img\n"));
-    assert!(derive_entry(&active, B_UUID, Slot::B, B_UUID, &[]).is_err());
-    assert!(derive_entry("title x\n", A_UUID, Slot::B, B_UUID, &[]).is_err());
+    assert!(derive_entry(&active, B_UUID, Slot::B, B_UUID, &[], 1).is_err());
+    assert!(derive_entry("title x\n", A_UUID, Slot::B, B_UUID, &[], 1).is_err());
     assert!(derive_entry(
         &format!("options root=PARTUUID={A_UUID} root=/dev/x\n"),
         A_UUID,
         Slot::B,
         B_UUID,
-        &[]
+        &[],
+        1
     )
     .is_err());
     for bad in ["", "a b", "x;y", "$(id)", "a\nb"] {
         assert!(
-            derive_entry(&active, A_UUID, Slot::B, B_UUID, &[bad.into()]).is_err(),
+            derive_entry(&active, A_UUID, Slot::B, B_UUID, &[bad.into()], 1).is_err(),
             "{bad:?}"
         );
     }
@@ -854,6 +856,187 @@ fn an_interrupted_irreversible_arm_never_leaves_an_automatic_fallback() {
         assert_eq!(f.esp.files[A_MANUAL], a_text, "{point}");
         assert!(!f.esp.files.keys().any(|k| k.ends_with(".tmp")), "{point}");
     }
+}
+
+/// systemd-boot's default choice among `/loader/entries` (boot.c
+/// `boot_entry_compare` and the `default` pattern): entries with no tries
+/// left go last; entries with a sort-key come before entries without; then
+/// sort-key, then the highest version, then the highest id; the first entry
+/// whose id (the name without the counter) matches `flowerly-*` boots.
+struct LoaderEntry {
+    name: String,
+    id: String,
+    tries_left: Option<u32>,
+    sort_key: Option<String>,
+    version: Option<u64>,
+}
+
+fn loader_pick(esp: &MemEsp) -> Option<String> {
+    let mut entries: Vec<LoaderEntry> = esp
+        .files
+        .iter()
+        .filter_map(|(path, text)| {
+            let name = path.strip_prefix("/loader/entries/")?;
+            let stem = name.strip_suffix(".conf")?;
+            let (id, tries_left) = match stem.split_once('+') {
+                Some((id, counter)) => (id, counter.split('-').next()?.parse().ok()),
+                None => (stem, None),
+            };
+            let text = String::from_utf8_lossy(text).into_owned();
+            let field = |key: &str| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(key).map(|v| v.trim().to_owned()))
+            };
+            Some(LoaderEntry {
+                name: name.to_owned(),
+                id: format!("{id}.conf"),
+                tries_left,
+                sort_key: field("sort-key "),
+                version: field("version ").and_then(|v| v.parse().ok()),
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        let exhausted = |e: &LoaderEntry| e.tries_left == Some(0);
+        exhausted(a)
+            .cmp(&exhausted(b))
+            .then(a.sort_key.is_none().cmp(&b.sort_key.is_none()))
+            .then_with(|| match (&a.sort_key, &b.sort_key) {
+                (Some(x), Some(y)) => x.cmp(y).then(b.version.cmp(&a.version)),
+                _ => std::cmp::Ordering::Equal,
+            })
+            .then(b.id.cmp(&a.id))
+    });
+    entries
+        .into_iter()
+        .find(|e| e.id.starts_with("flowerly-"))
+        .map(|e| e.name)
+}
+
+fn rename_entry(esp: &mut MemEsp, from: &str, to: &str) {
+    let text = esp
+        .files
+        .remove(&format!("/loader/entries/{from}"))
+        .unwrap();
+    esp.files.insert(format!("/loader/entries/{to}"), text);
+}
+
+#[test]
+fn derived_entries_carry_the_flowerly_sort_key_and_their_version() {
+    let active = format!("title x\noptions root=PARTUUID={A_UUID} ro\n");
+    let text = derive_entry(&active, A_UUID, Slot::B, B_UUID, &[], 7).unwrap();
+    assert!(text.contains("\nsort-key flowerly\nversion 7\n"), "{text}");
+}
+
+#[test]
+fn every_newly_armed_slot_boots_next_and_falls_back_to_the_running_one() {
+    let mut f = fixture();
+    f.stage_and_arm();
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-b+3.conf"));
+    // Exhausted: the running root boots again.
+    rename_entry(&mut f.esp, "flowerly-b+3.conf", "flowerly-b+0-3.conf");
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-a.conf"));
+    rename_entry(&mut f.esp, "flowerly-b+0-3.conf", "flowerly-b.conf");
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-b.conf"));
+
+    // B is blessed and running; A's old entry is superseded. Arming A from
+    // B replaces it, and A wins although "a" sorts below "b".
+    let (_, disk) = f.open();
+    let report = publish_entry(
+        &disk,
+        Slot::B,
+        Slot::A,
+        &mut f.esp,
+        3,
+        &[],
+        Fallback::Automatic,
+        &Faults::none(),
+    )
+    .unwrap();
+    assert_eq!(report["replaced_entries"], json!(["flowerly-a.conf"]));
+    assert!(!f.esp.files.contains_key(A_ENTRY));
+    let armed =
+        String::from_utf8_lossy(&f.esp.files["/loader/entries/flowerly-a+3.conf"]).into_owned();
+    assert!(
+        armed.contains(&format!("root=PARTUUID={A_UUID}")),
+        "{armed}"
+    );
+    assert!(armed.contains("version 2\n"), "{armed}");
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-a+3.conf"));
+    rename_entry(&mut f.esp, "flowerly-a+3.conf", "flowerly-a+0-3.conf");
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-b.conf"));
+
+    // A fell back; a new decision re-arms it over the BAD entry.
+    let report = publish_entry(
+        &disk,
+        Slot::B,
+        Slot::A,
+        &mut f.esp,
+        3,
+        &[],
+        Fallback::Automatic,
+        &Faults::none(),
+    )
+    .unwrap();
+    assert_eq!(report["replaced_entries"], json!(["flowerly-a+0-3.conf"]));
+    let armed =
+        String::from_utf8_lossy(&f.esp.files["/loader/entries/flowerly-a+3.conf"]).into_owned();
+    assert!(armed.contains("version 3\n"), "{armed}");
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-a+3.conf"));
+}
+
+#[test]
+fn a_pending_target_entry_is_never_replaced() {
+    let mut f = fixture();
+    f.stage_and_arm();
+    let before = f.esp.files.clone();
+    let (_, disk) = f.open();
+    let refused = publish_entry(
+        &disk,
+        Slot::A,
+        Slot::B,
+        &mut f.esp,
+        3,
+        &[],
+        Fallback::Automatic,
+        &Faults::none(),
+    );
+    assert!(err(refused).contains("already has a boot entry"));
+    assert_eq!(f.esp.files, before);
+}
+
+#[test]
+fn an_interrupted_replacing_arm_leaves_the_running_root_bootable() {
+    let mut f = fixture();
+    f.stage_and_arm();
+    rename_entry(&mut f.esp, "flowerly-b+3.conf", "flowerly-b.conf");
+    let (_, disk) = f.open();
+    let killed = publish_entry(
+        &disk,
+        Slot::B,
+        Slot::A,
+        &mut f.esp,
+        3,
+        &[],
+        Fallback::Automatic,
+        &Faults::error_at("arm:after-replace"),
+    );
+    assert!(err(killed).contains("arm:after-replace"));
+    assert!(!f.esp.files.contains_key(A_ENTRY));
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-b.conf"));
+    publish_entry(
+        &disk,
+        Slot::B,
+        Slot::A,
+        &mut f.esp,
+        3,
+        &[],
+        Fallback::Automatic,
+        &Faults::none(),
+    )
+    .unwrap();
+    assert_eq!(loader_pick(&f.esp).as_deref(), Some("flowerly-a+3.conf"));
+    assert!(!f.esp.files.keys().any(|k| k.ends_with(".tmp")));
 }
 
 #[test]
