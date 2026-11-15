@@ -5,9 +5,11 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -493,6 +495,94 @@ class BootTests(unittest.TestCase):
         self.assertGreater(len(lines), 3)
         self.assertTrue(all(len(line) < 600 for line in lines))
         self.assertEqual(decode(lines)[0], report)
+
+
+class ConsoleTests(unittest.TestCase):
+    """The report reaches the serial console before the drill reboots.
+
+    KVM run 5 lost parts 12-15: journald forwarded them after the drill had
+    exited and the reboot had begun. The drill now writes each line to the
+    console itself and waits until the TTY has sent it.
+    """
+
+    def test_each_line_is_written_then_drained(self):
+        events = []
+        emit = drill.console_emitter(
+            "/dev/fake",
+            opener=lambda path, flags: events.append(("open", path)) or 7,
+            write=lambda fd, data: events.append(("write", fd, data)) or len(data),
+            drain=lambda fd: events.append(("drain", fd)),
+            echo=lambda line: events.append(("echo", line)),
+        )
+        emit("one")
+        emit("two")
+        self.assertEqual(
+            events,
+            [
+                ("open", "/dev/fake"),
+                ("echo", "one"),
+                ("write", 7, b"one\n"),
+                ("drain", 7),
+                ("echo", "two"),
+                ("write", 7, b"two\n"),
+                ("drain", 7),
+            ],
+        )
+
+    def test_a_short_write_is_completed(self):
+        written = []
+
+        def write(fd, data):
+            written.append(bytes(data[:2]))
+            return min(2, len(data))
+
+        emit = drill.console_emitter(
+            "/dev/fake",
+            opener=lambda path, flags: 3,
+            write=write,
+            drain=lambda fd: None,
+            echo=lambda line: None,
+        )
+        emit("abcde")
+        self.assertEqual(b"".join(written), b"abcde\n")
+
+    def test_lines_arrive_on_a_real_terminal(self):
+        # tcdrain on a pty waits for the reader, as a serial line waits for
+        # the UART, so the master is read while the drill writes.
+        master, slave = os.openpty()
+        received = []
+
+        def read():
+            while True:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                received.append(chunk)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        lines = drill.report_lines(3, {"step": 3, "ok": True, "entries": []})
+        opened = []
+
+        def opener(path, flags):
+            opened.append(os.open(path, flags))
+            return opened[-1]
+
+        try:
+            emit = drill.console_emitter(
+                os.ttyname(slave), opener=opener, echo=lambda line: None
+            )
+            for line in lines:
+                emit(line)
+        finally:
+            for fd in opened + [slave]:
+                os.close(fd)
+            reader.join(10)
+            os.close(master)
+        self.assertEqual(b"".join(received).decode().splitlines(), lines)
 
 
 if __name__ == "__main__":

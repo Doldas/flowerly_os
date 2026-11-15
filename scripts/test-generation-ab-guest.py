@@ -493,9 +493,12 @@ class BootTests(unittest.TestCase):
                 "After=flowerly-generation-health.service",
                 "RequiresMountsFor=/var/lib/flowerly /efi",
                 "ExecStart=/usr/bin/python3 /usr/lib/flowerly/g5-drill.py",
-                "StandardOutput=journal+console",
+                "StandardOutput=journal\n",
             ):
                 self.assertIn(line, unit)
+            # The drill writes its report to the console itself; a second,
+            # journald-forwarded copy could arrive cut short by the reboot.
+            self.assertNotIn("StandardOutput=journal+console", unit)
             self.assertNotIn("Requires=flowerly-generation-health", unit)
             self.assertTrue(
                 (

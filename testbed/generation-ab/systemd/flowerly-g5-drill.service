@@ -10,7 +10,7 @@ User=root
 Group=root
 # Runs every Admin step as flowerly-drill through agenticctl (runuser).
 ExecStart=/usr/bin/python3 /usr/lib/flowerly/g5-drill.py
-StandardOutput=journal+console
+StandardOutput=journal
 StandardError=journal+console
 TimeoutStartSec=900
 PrivateNetwork=yes

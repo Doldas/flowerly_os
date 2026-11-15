@@ -34,9 +34,11 @@ import re
 import pwd
 import subprocess
 import sys
+import termios
 import time
 
 INSTRUCTION = Path("/efi/flowerly/g5-drill.json")
+CONSOLE = "/dev/console"
 RUNNING_IDENTITY = Path("/usr/lib/flowerly/generation-root.json")
 STATE_DIR = Path("/var/lib/flowerly")
 SERVICE_USER = "flowerly"
@@ -368,6 +370,31 @@ def report_lines(step, report):
     return lines
 
 
+def console_emitter(
+    path,
+    opener=os.open,
+    write=os.write,
+    drain=termios.tcdrain,
+    echo=lambda line: print(line, flush=True),
+):
+    """An emit that returns only once the console has sent the line.
+
+    journald forwards stdout to the console asynchronously, so lines still
+    queued when the drill reboots are lost (KVM run 5 lost four parts). Each
+    line still goes to the journal through ``echo``.
+    """
+    fd = opener(path, os.O_WRONLY | os.O_NOCTTY | os.O_CLOEXEC)
+
+    def emit(line):
+        echo(line)
+        data = memoryview((line + "\n").encode())
+        while data:
+            data = data[write(fd, data) :]
+        drain(fd)
+
+    return emit
+
+
 def agenticctl(argv):
     result = subprocess.run(
         ["runuser", "-u", ADMIN, "--"] + AGENTICCTL + argv,
@@ -466,8 +493,7 @@ def drill(instruction, running_identity, ctl, emit, restore=None):
 
 
 def main():
-    def emit(line):
-        print(line, flush=True)
+    emit = console_emitter(CONSOLE)
 
     def restore(digest):
         account = pwd.getpwnam(SERVICE_USER)
