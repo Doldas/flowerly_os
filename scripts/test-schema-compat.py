@@ -40,6 +40,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "testbed/schema-compat/baseline.json"
 MIGRATIONS_RS = ROOT / "src/shared/flowerly-core/src/storage/mod.rs"
 REFUSAL = "is newer than this binary supports"
+DRILL_GATE = '#[cfg(feature = "g5-schema-drill")]\nmod schema_drill;'
+DRILL_EMPTY = (
+    '#[cfg(not(feature = "g5-schema-drill"))]\nconst SCHEMA_DRILL: &[Migration] = &[];'
+)
+CARGO_TOMLS = (
+    ROOT / "src/shared/flowerly-core/Cargo.toml",
+    ROOT / "src/flowerlyd/Cargo.toml",
+)
 
 
 def declared_migrations(source):
@@ -79,7 +87,30 @@ def compat_problems(migrations, baseline):
     return problems
 
 
+def drill_problems(source, cargo_tomls):
+    """The G5 schema drill migration may exist only behind its test feature."""
+    problems = []
+    if source.count("mod schema_drill;") != 1 or DRILL_GATE not in source:
+        problems.append("the schema drill module is not behind g5-schema-drill")
+    if DRILL_EMPTY not in source:
+        problems.append("a build without g5-schema-drill must apply no drill migration")
+    for text in cargo_tomls:
+        for line in text.splitlines():
+            if line.replace(" ", "").startswith("default=") and "g5-schema-drill" in line:
+                problems.append("g5-schema-drill must never be a default feature")
+    return problems
+
+
 def self_test():
+    gated = f"{DRILL_GATE}\n{DRILL_EMPTY}\n"
+    assert drill_problems(gated, ["[features]\ng5-schema-drill = []\n"]) == []
+    assert drill_problems("mod schema_drill;\n" + DRILL_EMPTY, []), "ungated drill"
+    assert drill_problems(DRILL_GATE, []), "drill applied without the feature"
+    assert drill_problems(gated, ['default = ["g5-schema-drill"]']), "default drill"
+    current = drill_problems(
+        MIGRATIONS_RS.read_text(), [path.read_text() for path in CARGO_TOMLS]
+    )
+    assert current == [], current
     baseline = {"schema_version": 15, "irreversible": [16]}
     assert compat_problems([(15, 15), (16, 16)], baseline) == []
     assert compat_problems([(15, 15), (16, 16), (17, 15)], baseline) == []
@@ -252,7 +283,9 @@ def expect_refusal(binary, root, before, what):
 def run(bin_dir):
     baseline = json.loads(BASELINE.read_text())
     migrations = declared_migrations(MIGRATIONS_RS.read_text())
-    problems = compat_problems(migrations, baseline)
+    problems = compat_problems(migrations, baseline) + drill_problems(
+        MIGRATIONS_RS.read_text(), [path.read_text() for path in CARGO_TOMLS]
+    )
     if problems:
         raise SystemExit("\n".join(problems))
     newest = max(version for version, _ in migrations)

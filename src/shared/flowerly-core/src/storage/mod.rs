@@ -6,6 +6,8 @@ pub mod lifecycle;
 pub mod memory_contract;
 pub mod remote;
 pub mod repository;
+#[cfg(feature = "g5-schema-drill")]
+mod schema_drill;
 pub mod scoped;
 
 pub use admin::{
@@ -451,6 +453,17 @@ pub const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+#[cfg(not(feature = "g5-schema-drill"))]
+const SCHEMA_DRILL: &[Migration] = &[];
+#[cfg(feature = "g5-schema-drill")]
+const SCHEMA_DRILL: &[Migration] = schema_drill::MIGRATIONS;
+
+/// Every migration this binary applies: [`MIGRATIONS`], and only in a test
+/// image built with `g5-schema-drill`, the drill migration after them.
+pub fn migrations() -> impl Iterator<Item = &'static Migration> {
+    MIGRATIONS.iter().chain(SCHEMA_DRILL)
+}
+
 /// The first migration that records the reader window.
 pub const SCHEMA_COMPAT_SINCE: i64 = 16;
 
@@ -459,9 +472,8 @@ pub const SCHEMA_COMPAT_SINCE: i64 = 16;
 /// the slot broker can tell whether the fallback still reads the database).
 #[must_use]
 pub fn schema_window() -> (i64, i64) {
-    let newest = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
-    let min_reader = MIGRATIONS
-        .iter()
+    let newest = migrations().map(|m| m.version).max().unwrap_or(0);
+    let min_reader = migrations()
         .filter(|m| m.version >= SCHEMA_COMPAT_SINCE)
         .map(|m| m.min_reader)
         .max()
@@ -583,7 +595,7 @@ impl Store {
         // anything: an older binary would otherwise run on tables it does not
         // understand. A database from before the window counts as needing its
         // own version.
-        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+        let supported = migrations().map(|m| m.version).max().unwrap_or(0);
         let found: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
@@ -598,7 +610,7 @@ impl Store {
         }
 
         let mut applied = Vec::new();
-        for migration in MIGRATIONS {
+        for migration in migrations() {
             // A shared state.db means several daemons may start at the same time.
             // IMMEDIATE serializes migration writers; the applied-version check
             // happens inside the transaction so a daemon that waited for another
@@ -2939,6 +2951,28 @@ mod tests {
             store.applied_migrations().unwrap().last().unwrap().version
         );
         assert_eq!(Some(min_reader), store.schema_min_reader().unwrap());
+    }
+
+    #[cfg(not(feature = "g5-schema-drill"))]
+    #[test]
+    fn a_release_build_applies_exactly_the_declared_migrations() {
+        assert_eq!(migrations().count(), MIGRATIONS.len());
+        assert_eq!(
+            Some(schema_window().0),
+            MIGRATIONS.last().map(|m| m.version)
+        );
+    }
+
+    #[cfg(feature = "g5-schema-drill")]
+    #[test]
+    fn the_schema_drill_raises_the_window_past_every_release_binary() {
+        assert_eq!(schema_window(), (17, 17));
+        let store = migrated_store();
+        assert_eq!(store.schema_min_reader().unwrap(), Some(17));
+        assert_eq!(
+            store.applied_migrations().unwrap().last().unwrap().name,
+            "g5_schema_drill"
+        );
     }
 
     #[test]
