@@ -14,6 +14,10 @@ The report is a base64 JSON document split into console lines:
     FLOWERLY_G5_DRILL_DONE step=N parts=n sha256=<hex of the JSON> ok=true|false
 
 A failed expectation stops the remaining actions and the requested reboot.
+
+The one root action is ``restore``, the operator's restore drill after an
+irreversible activation (ADR-0023 R4): the backup flowerlyd took before it
+armed replaces the database while the service is stopped.
 """
 
 import base64
@@ -22,11 +26,15 @@ import json
 import os
 from pathlib import Path
 import re
+import pwd
 import subprocess
 import sys
+import time
 
 INSTRUCTION = Path("/efi/flowerly/g5-drill.json")
 RUNNING_IDENTITY = Path("/usr/lib/flowerly/generation-root.json")
+STATE_DIR = Path("/var/lib/flowerly")
+SERVICE_USER = "flowerly"
 SCHEMA = "flowerly-g5-drill/v1"
 ADMIN = "flowerly-drill"
 AGENTICCTL = ["/usr/bin/agenticctl", "--runtime-dir", "/run/flowerly", "generation"]
@@ -56,6 +64,7 @@ ACTION_KEYS = {
     },
     "rollback": {"op", "generation", "acknowledge_irreversible", "expect"},
     "inspect": {"op", "generation"},
+    "restore": {"op", "backup_sha256"},
 }
 EXPECT = ("armed", "refused")
 
@@ -88,6 +97,7 @@ def validate_action(action, index):
         "activate": {"generation", "expect"},
         "rollback": {"generation", "expect"},
         "inspect": {"generation"},
+        "restore": {"backup_sha256"},
     }[op]
     _keys(action, ACTION_KEYS[op], required, what)
     if op == "register":
@@ -117,6 +127,12 @@ def validate_action(action, index):
             action["evidence_sha256"]
         ):
             raise ValueError(what + " needs an evidence SHA-256")
+        return
+    if op == "restore":
+        if not isinstance(action["backup_sha256"], str) or not HEX64.fullmatch(
+            action["backup_sha256"]
+        ):
+            raise ValueError(what + " needs a backup SHA-256")
         return
     _generation(action["generation"], what)
     if op == "inspect":
@@ -175,15 +191,32 @@ def _record(entries, name, argv, result):
     return code, value
 
 
-def run_actions(doc, ctl):
-    """Run the actions with ``ctl(argv) -> (code, stdout, stderr)``.
+def run_actions(doc, ctl, restore=None):
+    """Run the actions with ``ctl(argv) -> (code, stdout, stderr)`` and
+    ``restore(sha256) -> (ok, detail)``.
 
     Returns (ok, entries). The first unmet expectation stops the rest.
     """
     entries = []
     for action in doc["actions"]:
         op = action["op"]
-        if op == "register":
+        if op == "restore":
+            ok, detail = (
+                restore(action["backup_sha256"])
+                if restore
+                else (False, "no restorer")
+            )
+            entries.append(
+                {
+                    "call": "restore",
+                    "backup_sha256": action["backup_sha256"],
+                    "ok": ok,
+                    "text": detail,
+                }
+            )
+            if not ok:
+                return False, entries
+        elif op == "register":
             ident = action["identity"]
             label = action["label"]
             argv = ["create", "--source-commit", ident["source_commit"]]
@@ -304,7 +337,52 @@ def agenticctl(argv):
     return result.returncode, result.stdout, result.stderr
 
 
-def drill(instruction, running_identity, ctl, emit):
+def restore_backup(digest, state_dir, *, run, ctl, owner, sleep=time.sleep):
+    """Replace ``state_dir/state.db`` with ``activation-backups/<digest>.sqlite``.
+
+    The backup must be a regular file whose bytes hash to ``digest``; nothing
+    is stopped or written otherwise. The copy is made beside the database and
+    renamed over it, so the database is either the old or the restored one.
+    """
+    backup = state_dir / "activation-backups" / (digest + ".sqlite")
+    try:
+        meta = os.lstat(backup)
+    except FileNotFoundError:
+        return False, "no backup " + backup.name
+    if not os.path.isfile(backup) or os.path.islink(backup):
+        return False, "backup is not a regular file"
+    data = backup.read_bytes()
+    if len(data) != meta.st_size or hashlib.sha256(data).hexdigest() != digest:
+        return False, "backup does not hash to its name"
+    run(["systemctl", "stop", "flowerlyd.service"])
+    run(["systemctl", "reset-failed", "flowerlyd.service"])
+    temp = state_dir / "state.db.restore"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, data)
+        os.fchown(fd, *owner)
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    for suffix in ("-wal", "-shm"):
+        (state_dir / ("state.db" + suffix)).unlink(missing_ok=True)
+    os.replace(temp, state_dir / "state.db")
+    dir_fd = os.open(state_dir, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    run(["systemctl", "start", "flowerlyd.service"])
+    for _ in range(60):
+        code, _, _ = ctl(["list"])
+        if code == 0:
+            return True, "restored " + backup.name
+        sleep(1)
+    return False, "flowerlyd did not answer after the restore"
+
+
+def drill(instruction, running_identity, ctl, emit, restore=None):
     """One boot. Returns True when the host asked for a reboot and it is due."""
     if not instruction.exists():
         emit("FLOWERLY_G5_DRILL_IDLE")
@@ -329,7 +407,7 @@ def drill(instruction, running_identity, ctl, emit):
             % (doc["step"], slot, doc["slot"])
         )
         return False
-    ok, entries = run_actions(doc, ctl)
+    ok, entries = run_actions(doc, ctl, restore)
     # History must stay readable after every step, also after a failure.
     for name, argv in (("list", ["list"]), ("history", ["history"])):
         _record(entries, name, argv, ctl(argv))
@@ -349,7 +427,17 @@ def main():
     def emit(line):
         print(line, flush=True)
 
-    if drill(INSTRUCTION, RUNNING_IDENTITY, agenticctl, emit):
+    def restore(digest):
+        account = pwd.getpwnam(SERVICE_USER)
+        return restore_backup(
+            digest,
+            STATE_DIR,
+            run=lambda argv: subprocess.run(argv, check=False).returncode,
+            ctl=agenticctl,
+            owner=(account.pw_uid, account.pw_gid),
+        )
+
+    if drill(INSTRUCTION, RUNNING_IDENTITY, agenticctl, emit, restore):
         emit("FLOWERLY_G5_DRILL_REBOOT")
         subprocess.run(["systemctl", "reboot"], check=False)
     return 0

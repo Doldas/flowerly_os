@@ -159,6 +159,14 @@ class InstructionTests(unittest.TestCase):
             "generation": json.dumps(
                 instruction([{"op": "inspect", "generation": "../x"}])
             ),
+            "restore hex": json.dumps(
+                instruction([{"op": "restore", "backup_sha256": "x" * 64}])
+            ),
+            "restore key": json.dumps(
+                instruction(
+                    [{"op": "restore", "backup_sha256": "a" * 64, "path": "/x"}]
+                )
+            ),
             "too many": json.dumps(
                 instruction([{"op": "inspect", "generation": GEN}] * 17)
             ),
@@ -254,6 +262,105 @@ class ActionTests(unittest.TestCase):
         no_experiment = FakeCtl(evidence=(0, {"id": GEN}))
         self.assertFalse(drill.run_actions(instruction([register()]), no_experiment)[0])
         self.assertNotIn("test", [c[0] for c in no_experiment.calls])
+
+
+class RestoreTests(unittest.TestCase):
+    """The operator's restore drill: the backup flowerlyd took replaces the
+    database while the service is stopped, then the service starts again."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.state = Path(self.dir.name)
+        (self.state / "activation-backups").mkdir()
+        self.body = b"SQLite format 3\x00" + b"old" * 100
+        self.digest = hashlib.sha256(self.body).hexdigest()
+        (self.state / "activation-backups" / (self.digest + ".sqlite")).write_bytes(
+            self.body
+        )
+        (self.state / "state.db").write_bytes(b"SQLite format 3\x00new")
+        (self.state / "state.db-wal").write_bytes(b"wal")
+        (self.state / "state.db-shm").write_bytes(b"shm")
+        self.calls = []
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def restore(self, digest, ctl=None):
+        import os
+
+        return drill.restore_backup(
+            digest,
+            self.state,
+            run=lambda argv: self.calls.append(argv) or 0,
+            ctl=ctl or FakeCtl(),
+            owner=(os.getuid(), os.getgid()),
+            sleep=lambda _: None,
+        )
+
+    def test_the_backup_replaces_the_database_while_flowerlyd_is_stopped(self):
+        ok, detail = self.restore(self.digest)
+        self.assertTrue(ok, detail)
+        self.assertEqual((self.state / "state.db").read_bytes(), self.body)
+        self.assertFalse((self.state / "state.db-wal").exists())
+        self.assertFalse((self.state / "state.db-shm").exists())
+        self.assertEqual(
+            self.calls,
+            [
+                ["systemctl", "stop", "flowerlyd.service"],
+                ["systemctl", "reset-failed", "flowerlyd.service"],
+                ["systemctl", "start", "flowerlyd.service"],
+            ],
+        )
+        self.assertEqual((self.state / "state.db").stat().st_mode & 0o777, 0o600)
+
+    def test_a_missing_or_altered_backup_touches_nothing(self):
+        other = "0" * 64
+        ok, detail = self.restore(other)
+        self.assertFalse(ok)
+        self.assertIn("no backup", detail)
+        backup = self.state / "activation-backups" / (self.digest + ".sqlite")
+        backup.write_bytes(self.body + b"x")
+        ok, detail = self.restore(self.digest)
+        self.assertFalse(ok)
+        self.assertIn("does not hash", detail)
+        backup.unlink()
+        backup.symlink_to(self.state / "state.db")
+        ok, _ = self.restore(self.digest)
+        self.assertFalse(ok)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(
+            (self.state / "state.db").read_bytes(), b"SQLite format 3\x00new"
+        )
+
+    def test_restore_waits_for_flowerlyd_to_answer(self):
+        class Slow(FakeCtl):
+            def __call__(self, argv):
+                self.calls.append(argv)
+                if len(self.calls) < 3:
+                    return 1, "", "connection refused"
+                return 0, json.dumps({"generations": [], "count": 0}), ""
+
+        slow = Slow()
+        ok, _ = self.restore(self.digest, ctl=slow)
+        self.assertTrue(ok)
+        self.assertEqual(len(slow.calls), 3)
+
+    def test_a_restore_action_runs_through_the_injected_restorer(self):
+        seen = []
+        ok, entries = drill.run_actions(
+            instruction([{"op": "restore", "backup_sha256": "a" * 64}]),
+            FakeCtl(),
+            restore=lambda digest: seen.append(digest) or (True, "restored"),
+        )
+        self.assertTrue(ok)
+        self.assertEqual(seen, ["a" * 64])
+        self.assertEqual(entries[0]["call"], "restore")
+        ok, _ = drill.run_actions(
+            instruction([{"op": "restore", "backup_sha256": "a" * 64}]),
+            FakeCtl(),
+            restore=lambda digest: (False, "no backup"),
+        )
+        self.assertFalse(ok)
 
 
 class BootTests(unittest.TestCase):
