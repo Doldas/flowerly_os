@@ -381,7 +381,8 @@ def console_emitter(
 
     journald forwards stdout to the console asynchronously, so lines still
     queued when the drill reboots are lost (KVM run 5 lost four parts). Each
-    line still goes to the journal through ``echo``.
+    line still goes to the journal through ``echo``. The unit runs before the
+    serial getty, whose start flushes the TTY (run 7 lost half a line).
     """
     fd = opener(path, os.O_WRONLY | os.O_NOCTTY | os.O_CLOEXEC)
 

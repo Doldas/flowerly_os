@@ -3,6 +3,9 @@ Description=Flowerly Gate D Admin drill (A/B test image only, ADR-0023 G5)
 # Ordering only: an unhealthy boot must still report (the drill then skips).
 After=flowerly-generation-health.service flowerlyd.service flowerly-slot-broker.socket
 RequiresMountsFor=/var/lib/flowerly /efi
+# The report goes to the console: agetty flushes and reconfigures ttyS0 when
+# it opens it, so the serial login waits until the drill has finished.
+Before=getty.target serial-getty@ttyS0.service
 
 [Service]
 Type=oneshot

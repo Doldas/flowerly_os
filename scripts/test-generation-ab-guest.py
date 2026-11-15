@@ -545,6 +545,9 @@ class BootTests(unittest.TestCase):
                 "RequiresMountsFor=/var/lib/flowerly /efi",
                 "ExecStart=/usr/bin/python3 /usr/lib/flowerly/g5-drill.py",
                 "StandardOutput=journal\n",
+                # agetty flushes and reconfigures ttyS0 when it opens it, which
+                # cut a report line short in KVM run 7.
+                "Before=getty.target serial-getty@ttyS0.service\n",
             ):
                 self.assertIn(line, unit)
             # The drill writes its report to the console itself; a second,
