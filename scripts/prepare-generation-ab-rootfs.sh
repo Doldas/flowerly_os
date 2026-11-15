@@ -49,7 +49,8 @@ done
 for path in etc etc/systemd etc/systemd/system etc/systemd/system/sockets.target.wants \
             etc/fstab usr/lib/flowerly \
             usr/lib/systemd/system usr/lib/systemd/system/flowerlyd.service.d \
-            etc/systemd/system/multi-user.target.wants var/lib/flowerly efi; do
+            etc/systemd/system/multi-user.target.wants etc/systemd/system/flowerlyd.service.d \
+            usr/lib/sysusers.d var/lib/flowerly efi; do
     [[ ! -L "$ROOTFS/$path" ]] || fail "symlink in Generation rootfs destination: $path"
 done
 for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab-test-profile \
@@ -64,7 +65,12 @@ for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab
             usr/lib/systemd/system/flowerlyd.service.d/10-generation-witness.conf \
             etc/systemd/system/systemd-bless-boot.service \
             etc/systemd/system/multi-user.target.wants/flowerly-generation-witness.service \
-            etc/systemd/system/multi-user.target.wants/flowerly-generation-health.service; do
+            etc/systemd/system/multi-user.target.wants/flowerly-generation-health.service \
+            usr/lib/flowerly/g5-drill.py usr/lib/systemd/system/flowerly-g5-drill.service \
+            etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service \
+            usr/lib/sysusers.d/flowerly-g5-drill.conf \
+            etc/systemd/system/flowerlyd.service.d/50-multi-user.conf \
+            etc/systemd/system/flowerlyd.service.d/60-g5-slot-broker.conf; do
     [[ ! -e "$ROOTFS/$path" && ! -L "$ROOTFS/$path" ]] ||
         fail "refusing existing A/B installation path: $path"
 done
@@ -121,6 +127,21 @@ chmod 0644 "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d/10-generation-wit
 # The stock systemd-bless-boot.service can otherwise bless before Flowerly's
 # health gate. Mask its unit but call the actual binary ONLY after IPC passes.
 ln -s /dev/null "$ROOTFS/etc/systemd/system/systemd-bless-boot.service"
+# The Gate D Admin drill (ADR-0023 G5), test profile only: it runs the Admin
+# steps a host instruction on the ESP names, as the flowerly-drill Admin, and
+# reports them on the console. Admin access needs the opt-in multi-user
+# drop-in exactly as shipped, plus the broker socket's group (see the file).
+install -m 0755 "$ROOT/testbed/generation-ab/g5-drill.py" "$ROOTFS/usr/lib/flowerly/g5-drill.py"
+install -m 0644 "$ROOT/testbed/generation-ab/systemd/flowerly-g5-drill.service" \
+    "$ROOTFS/usr/lib/systemd/system/flowerly-g5-drill.service"
+ln -s /usr/lib/systemd/system/flowerly-g5-drill.service \
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service"
+install -D -m 0644 "$ROOT/testbed/generation-ab/sysusers/flowerly-g5-drill.conf" \
+    "$ROOTFS/usr/lib/sysusers.d/flowerly-g5-drill.conf"
+install -D -m 0644 "$ROOT/distro/overlay/usr/share/flowerly/systemd/flowerlyd-multi-user.conf" \
+    "$ROOTFS/etc/systemd/system/flowerlyd.service.d/50-multi-user.conf"
+install -m 0644 "$ROOT/testbed/generation-ab/systemd/flowerlyd-g5-slot-broker.conf" \
+    "$ROOTFS/etc/systemd/system/flowerlyd.service.d/60-g5-slot-broker.conf"
 # The slot boots with a read-only root, so systemd-sysusers cannot create the
 # service accounts at first boot (found by the third real KVM run: "user
 # flowerly does not exist"). Bake them into the image instead.

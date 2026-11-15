@@ -427,6 +427,63 @@ class BootTests(unittest.TestCase):
                 ).is_symlink()
             )
 
+    def test_the_gate_d_drill_is_installed_only_in_the_test_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            create_root(root)
+            result = prepare(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            drill = root / "usr/lib/flowerly/g5-drill.py"
+            self.assertTrue(drill.is_file() and os.access(drill, os.X_OK))
+            self.assertEqual(
+                drill.read_bytes(),
+                (ROOT / "testbed/generation-ab/g5-drill.py").read_bytes(),
+            )
+            unit = (
+                root / "usr/lib/systemd/system/flowerly-g5-drill.service"
+            ).read_text()
+            for line in (
+                "After=flowerly-generation-health.service",
+                "RequiresMountsFor=/var/lib/flowerly /efi",
+                "ExecStart=/usr/bin/python3 /usr/lib/flowerly/g5-drill.py",
+                "StandardOutput=journal+console",
+            ):
+                self.assertIn(line, unit)
+            self.assertNotIn("Requires=flowerly-generation-health", unit)
+            self.assertTrue(
+                (
+                    root
+                    / "etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service"
+                ).is_symlink()
+            )
+            # The drill is an Admin and a flowerly-users member, never root's
+            # stand-in and never the service account.
+            users = (root / "usr/lib/sysusers.d/flowerly-g5-drill.conf").read_text()
+            for line in (
+                "m flowerly-drill flowerly-admin",
+                "m flowerly-drill flowerly-users",
+            ):
+                self.assertIn(line, users)
+            self.assertRegex(users, r"(?m)^u flowerly-drill ")
+            self.assertNotRegex(users, r"(?m)^m flowerly ")
+            dropins = root / "etc/systemd/system/flowerlyd.service.d"
+            self.assertEqual(
+                (dropins / "50-multi-user.conf").read_bytes(),
+                (
+                    ROOT
+                    / "distro/overlay/usr/share/flowerly/systemd/flowerlyd-multi-user.conf"
+                ).read_bytes(),
+            )
+            # The opt-in drop-in replaces the primary group, so the broker
+            # socket (group flowerly) needs the group back explicitly.
+            self.assertIn(
+                "SupplementaryGroups=flowerly",
+                (dropins / "60-g5-slot-broker.conf").read_text(),
+            )
+            self.assertNotEqual(
+                prepare(root).returncode, 0, "duplicate install accepted"
+            )
+
     def test_installer_refuses_a_bad_schema_window_or_broker(self):
         for schema in (("16", "17"), ("x", "1"), ("16", "0")):
             with tempfile.TemporaryDirectory() as d:

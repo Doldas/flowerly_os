@@ -96,7 +96,10 @@ def drill_problems(source, cargo_tomls):
         problems.append("a build without g5-schema-drill must apply no drill migration")
     for text in cargo_tomls:
         for line in text.splitlines():
-            if line.replace(" ", "").startswith("default=") and "g5-schema-drill" in line:
+            if (
+                line.replace(" ", "").startswith("default=")
+                and "g5-schema-drill" in line
+            ):
                 problems.append("g5-schema-drill must never be a default feature")
     return problems
 
