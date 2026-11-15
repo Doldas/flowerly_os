@@ -53,6 +53,15 @@ Examples: `feature(flow): add persistent Flow metadata store`,
 `bugfix(generation): return previous state on rollback`. A commit should represent
 one coherent change.
 
+## AI-assisted commits
+
+For substantive AI-assisted changes, follow the attribution rules in
+[AGENTS.md](AGENTS.md). Record the actual assistant as a Git co-author in the
+commit message (Codex: `Co-authored-by: Codex <codex@openai.com>`; Claude:
+`Co-authored-by: Claude <noreply@anthropic.com>`). Preserve human authorship,
+existing co-authors, and applicable trailers when squashing. Do not attribute
+unassisted work to an AI and do not use co-author metadata to bypass review.
+
 ## Development loop
 
 1. Install [`just`](https://github.com/casey/just) and `rustup`. The repository
