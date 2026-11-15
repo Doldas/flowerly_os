@@ -326,6 +326,33 @@ class BootIdentityTests(unittest.TestCase):
             gate.boot_identity(text)
 
 
+class SupervisorFailedTests(unittest.TestCase):
+    """Run 8: systemd colours its status lines, so the plain phrase never
+    matched and a failed supervisor read as started (and vice versa)."""
+
+    COLOURED = (
+        "[\x1b[0;1;31mFAILED\x1b[0m] Failed to start "
+        "\x1b[0;1;39mFlowerly OS Unified Supervisor\x1b[0m.\r\n"
+    )
+
+    def test_a_coloured_status_line_is_seen(self):
+        self.assertTrue(gate.supervisor_failed(self.COLOURED))
+
+    def test_a_plain_status_line_is_seen(self):
+        self.assertTrue(
+            gate.supervisor_failed("Failed to start Flowerly OS Unified Supervisor.")
+        )
+
+    def test_a_started_supervisor_is_not_a_failure(self):
+        self.assertFalse(
+            gate.supervisor_failed(
+                "[\x1b[0;32m  OK  \x1b[0m] Started "
+                "\x1b[0;1;39mFlowerly OS Unified Supervisor\x1b[0m.\r\n"
+                "Failed to start \x1b[0;1;39mSomething Else\x1b[0m.\r\n"
+            )
+        )
+
+
 class ObserveTests(unittest.TestCase):
     """Run 4: /proc/<pid>/cmdline read right after Popen can still be empty
     while the exec completes, so the running QEMU is verified only once the

@@ -66,6 +66,7 @@ DONE = re.compile(
 )
 MARKER = re.compile(r"FLOWERLY_GENERATION_USER_MARKER_SHA256=([0-9a-f]{64})")
 SUPERVISOR_FAILED = "Failed to start Flowerly OS Unified Supervisor"
+SGR = re.compile(r"\x1b\[[0-9;:]*m")
 INSTRUCTION = "/flowerly/g5-drill.json"
 ESP_MANIFEST = "/flowerly/ab-disk.manifest.json"
 FAIL_HEALTH = "flowerly.test.fail_health=1"
@@ -128,6 +129,11 @@ def parse_drill(text, step):
     if report.get("step") != step or report.get("ok") != (ok == "true"):
         raise ValueError(f"drill step {step} report disagrees with its DONE line")
     return report
+
+
+def supervisor_failed(text):
+    """systemd reported that flowerlyd failed; its status lines are coloured."""
+    return SUPERVISOR_FAILED in SGR.sub("", text)
 
 
 def instruction(step, slot, actions, reboot):
@@ -568,9 +574,9 @@ class Run:
         if booted != slot:
             raise ValueError(f"{label}: booted {booted}, expected {slot}")
         blessed = "FLOWERLY_GENERATION_BOOT_BLESSED" in text
-        if health == "blessed" and (not blessed or SUPERVISOR_FAILED in text):
+        if health == "blessed" and (not blessed or supervisor_failed(text)):
             raise ValueError(f"{label}: health gate did not pass")
-        if health == "failed" and SUPERVISOR_FAILED not in text:
+        if health == "failed" and not supervisor_failed(text):
             raise ValueError(f"{label}: flowerlyd unexpectedly started")
         self.check_marker(marker, label)
         if reboot and report["ok"] and "FLOWERLY_G5_DRILL_REBOOT" not in text:
