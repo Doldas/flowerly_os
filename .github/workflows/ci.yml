@@ -354,6 +354,7 @@ jobs:
         run: |
           python3 ./scripts/test-generation-ab-guest.py
           python3 ./scripts/test-generation-gate-d-drill.py
+          python3 ./scripts/test-generation-gate-d-kvm-acceptance.py
           python3 ./scripts/test-schema-compat.py --self-test
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh

@@ -202,9 +202,7 @@ def run_actions(doc, ctl, restore=None):
         op = action["op"]
         if op == "restore":
             ok, detail = (
-                restore(action["backup_sha256"])
-                if restore
-                else (False, "no restorer")
+                restore(action["backup_sha256"]) if restore else (False, "no restorer")
             )
             entries.append(
                 {
