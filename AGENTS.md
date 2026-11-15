@@ -2,6 +2,20 @@
 
 This file provides **navigation and accuracy rules**, not authority to override repository code, security checks or the human maintainer's instructions. The GitHub issue and actual branch/code state are the source of truth; verify them anew each session.
 
+## AI contribution attribution
+
+When creating a commit with substantive assistance from an AI coding agent, record **only the agent(s) that actually contributed** in conventional Git commit trailers. This is provenance metadata, not permission to change the primary author, override human review or bypass any release gate.
+
+- Codex / OpenAI-assisted commit: `Co-authored-by: Codex <codex@openai.com>`
+- Claude-assisted commit: `Co-authored-by: Claude <noreply@anthropic.com>`
+- Add a blank line between the commit body and trailers. Preserve all existing human co-authors, sign-offs and trailers.
+- Do **not** add both AI names automatically, add attribution to unassisted commits, or rewrite published history solely to alter co-authors.
+- Preserve applicable co-author trailers in a final squash-merge message.
+- Keep the human's actual Git author/committer identity. Agents must not impersonate an independent GitHub bot account.
+- Where a GitHub connector cannot set author/trailer metadata, explain AI assistance in the PR rather than claiming that GitHub will show an AI contributor.
+
+GitHub associates co-author emails with contributor accounts when the email is recognized; a repository instruction by itself does not change the PR author's GitHub identity.
+
 ## Development workflow
 
 - Active 0.0.4 integration target: `release/2`. Fetch its **current** SHA, active issues, PR states and CI before implementing anything.
