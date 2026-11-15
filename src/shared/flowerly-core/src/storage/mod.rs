@@ -451,6 +451,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "schema_compat",
         sql: include_str!("../../migrations/0016_schema_compat.sql"),
     },
+    Migration {
+        version: 17,
+        min_reader: 16,
+        name: "activation_armed",
+        sql: include_str!("../../migrations/0017_activation_armed.sql"),
+    },
 ];
 
 #[cfg(not(feature = "g5-schema-drill"))]
@@ -2966,9 +2972,9 @@ mod tests {
     #[cfg(feature = "g5-schema-drill")]
     #[test]
     fn the_schema_drill_raises_the_window_past_every_release_binary() {
-        assert_eq!(schema_window(), (17, 17));
+        assert_eq!(schema_window(), (18, 18));
         let store = migrated_store();
-        assert_eq!(store.schema_min_reader().unwrap(), Some(17));
+        assert_eq!(store.schema_min_reader().unwrap(), Some(18));
         assert_eq!(
             store.applied_migrations().unwrap().last().unwrap().name,
             "g5_schema_drill"

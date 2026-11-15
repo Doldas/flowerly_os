@@ -48,6 +48,19 @@ def instruction(actions, slot="root-a", reboot=False, step=1):
     }
 
 
+def row(id_, state="PENDING", armed_at=None, detail=None):
+    return {"id": id_, "state": state, "armed_at": armed_at, "detail": detail}
+
+
+def pending(id_):
+    """flowerlyd's activate/rollback answer: the PENDING row, arming after."""
+    return {"activation": row(id_), "arming": True}
+
+
+def history(*rows):
+    return {"activations": list(rows), "count": len(rows)}
+
+
 class FakeCtl:
     """flowerlyd's answers by subcommand; records every argv."""
 
@@ -59,17 +72,21 @@ class FakeCtl:
             "identity": (0, {"id": GEN}),
             "evidence": (0, {"id": GEN, "experiment": "exp-1"}),
             "test": (0, {"id": GEN, "status": "TESTED"}),
-            "activate": (0, {"activation": {"id": 7}, "armed": {}}),
-            "rollback": (0, {"activation": {"id": 8}, "armed": {}}),
+            "activate": (0, pending(7)),
+            "rollback": (0, pending(8)),
             "inspect": (0, {"id": GEN}),
             "list": (0, {"generations": [], "count": 0}),
-            "history": (0, {"activations": [], "count": 0}),
+            "history": (0, history(row(7, armed_at=100), row(8, armed_at=100))),
         }
         self.answers.update(answers)
 
     def __call__(self, argv):
         self.calls.append(argv)
-        code, value = self.answers[argv[0]]
+        answer = self.answers[argv[0]]
+        # A list is a sequence of answers; its last one repeats.
+        if isinstance(answer, list):
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        code, value = answer
         if code == 0:
             return 0, json.dumps(value), ""
         return code, "", "Error: service error (Conflict): " + value
@@ -249,6 +266,54 @@ class ActionTests(unittest.TestCase):
         )
         self.assertTrue(ok)
         self.assertEqual([c[0] for c in refused_ok.calls], ["rollback", "inspect"])
+
+    def test_an_armed_expectation_waits_until_the_row_is_armed(self):
+        ctl = FakeCtl(
+            history=[
+                (0, history(row(7))),
+                (0, history(row(7))),
+                (0, history(row(7, armed_at=123))),
+            ]
+        )
+        naps = []
+        ok, entries = drill.run_actions(
+            instruction([{"op": "activate", "generation": GEN, "expect": "armed"}]),
+            ctl,
+            sleep=naps.append,
+        )
+        self.assertTrue(ok)
+        self.assertEqual([c[0] for c in ctl.calls], ["activate"] + ["history"] * 3)
+        self.assertEqual(len(naps), 2)
+        self.assertEqual(entries[-1]["call"], "armed")
+        self.assertEqual(entries[-1]["activation"]["armed_at"], 123)
+
+    def test_an_abandoned_arm_fails_the_expectation_with_its_reason(self):
+        later = {"op": "inspect", "generation": GEN}
+        reason = "the slot broker refused: manifest hash"
+        ctl = FakeCtl(history=(0, history(row(7, "ABANDONED", detail=reason))))
+        ok, entries = drill.run_actions(
+            instruction(
+                [{"op": "activate", "generation": GEN, "expect": "armed"}, later]
+            ),
+            ctl,
+            sleep=lambda _: None,
+        )
+        self.assertFalse(ok)
+        self.assertNotIn(["inspect", GEN], ctl.calls)
+        self.assertEqual(entries[-1]["call"], "armed")
+        self.assertEqual(entries[-1]["activation"]["detail"], reason)
+
+    def test_an_arm_that_never_settles_fails_after_the_wait(self):
+        ctl = FakeCtl(history=(0, history(row(7))))
+        naps = []
+        ok, entries = drill.run_actions(
+            instruction([{"op": "activate", "generation": GEN, "expect": "armed"}]),
+            ctl,
+            sleep=naps.append,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(sum(naps), drill.ARM_WAIT_SECONDS)
+        self.assertIn("not armed", entries[-1]["text"])
 
     def test_a_failed_registration_step_stops_registration(self):
         for step in ("create", "promote", "identity", "evidence", "test"):

@@ -912,7 +912,8 @@ mod generation_activation {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::net::UnixListener;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     const ADMIN: Caller = Caller::new(4_000_001);
     const LEDGER: &str = include_str!("../../../testbed/generation-ledger/v2-golden.jsonl");
@@ -921,7 +922,7 @@ mod generation_activation {
     fn setup() -> (
         tempfile::TempDir,
         ActivationHost,
-        Mutex<Store>,
+        Arc<Mutex<Store>>,
         GenerationId,
     ) {
         let dir = tempfile::tempdir().unwrap();
@@ -982,7 +983,53 @@ mod generation_activation {
             },
             backup_dir: dir.path().join("activation-backups"),
         };
-        (dir, host, Mutex::new(store), generation.id)
+        (dir, host, Arc::new(Mutex::new(store)), generation.id)
+    }
+
+    /// A broker answering one connection per answer, in order, each only
+    /// once `release` lets it; it returns the intents it received.
+    fn broker(
+        host: &ActivationHost,
+        answers: Vec<Value>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> std::thread::JoinHandle<Vec<Value>> {
+        let listener = UnixListener::bind(&host.broker_socket).unwrap();
+        std::thread::spawn(move || {
+            let mut intents = Vec::new();
+            for answer in answers {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                intents.push(serde_json::from_str::<Value>(&line).unwrap());
+                if answer["status"] != "PLANNED" {
+                    release.recv().unwrap();
+                }
+                (&stream)
+                    .write_all(format!("{answer}\n").as_bytes())
+                    .unwrap();
+            }
+            intents
+        })
+    }
+
+    fn planned() -> Value {
+        json!({"ok": true, "status": "PLANNED", "target": "root-b",
+               "root_partuuid": "22222222-2222-2222-2222-222222222222",
+               "irreversible": false, "target_min_reader": 16,
+               "fallback_schema_version": 16})
+    }
+
+    /// The worker's outcome, read back the way a client reads it.
+    fn settled(store: &Mutex<Store>, id: i64) -> flowerly_core::storage::lifecycle::Activation {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let row = store.lock().unwrap().activation(id).unwrap().unwrap();
+            if row.armed_at.is_some() || row.resolved_at.is_some() {
+                return row;
+            }
+            assert!(Instant::now() < deadline, "the arm never settled");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn args(id: &GenerationId) -> Value {
@@ -990,29 +1037,19 @@ mod generation_activation {
     }
 
     #[test]
-    fn an_enabled_host_records_the_request_and_arms_through_the_broker() {
+    fn an_enabled_host_answers_with_the_pending_row_and_arms_afterwards() {
         let (_dir, host, store, id) = setup();
-        let listener = UnixListener::bind(&host.broker_socket).unwrap();
-        let broker = std::thread::spawn(move || {
-            let mut intents = Vec::new();
-            for answer in [
-                json!({"ok": true, "status": "PLANNED", "target": "root-b",
-                       "root_partuuid": "22222222-2222-2222-2222-222222222222",
-                       "irreversible": false, "target_min_reader": 16,
-                       "fallback_schema_version": 16}),
+        let (release, gate) = std::sync::mpsc::channel();
+        let broker = broker(
+            &host,
+            vec![
+                planned(),
                 json!({"ok": true, "status": "ARMED_PENDING", "target": "root-b",
                        "boot_entry": "flowerly-b+3.conf", "fallback": "AUTOMATIC"}),
-            ] {
-                let (stream, _) = listener.accept().unwrap();
-                let mut line = String::new();
-                BufReader::new(&stream).read_line(&mut line).unwrap();
-                intents.push(serde_json::from_str::<Value>(&line).unwrap());
-                (&stream)
-                    .write_all(format!("{answer}\n").as_bytes())
-                    .unwrap();
-            }
-            intents
-        });
+            ],
+            gate,
+        );
+        // Answered while the broker is still holding the arm back.
         let answer = crate::generation::run_activation(
             &store,
             Some(&host),
@@ -1021,12 +1058,18 @@ mod generation_activation {
             ADMIN,
         )
         .unwrap();
-        let intents = broker.join().unwrap();
         assert_eq!(answer["activation"]["state"], "PENDING");
+        assert_eq!(answer["activation"]["armed_at"], Value::Null);
+        assert_eq!(answer["arming"], true);
         assert_eq!(answer["activation"]["actor_uid"], ADMIN.uid());
         assert_eq!(answer["activation"]["expected_slot"], "root-b");
         assert_eq!(answer["activation"]["ledger_sequence"], 3);
-        assert_eq!(answer["armed"]["status"], "ARMED_PENDING");
+        let row = answer["activation"]["id"].as_i64().unwrap();
+        release.send(()).unwrap();
+        let armed = settled(&store, row);
+        assert!(armed.armed_at.is_some());
+        let intents = broker.join().unwrap();
+        assert_eq!(intents[1]["intent"], "arm");
         assert_eq!(intents[1]["admin_uid"], ADMIN.uid());
         assert_eq!(intents[1]["generation"]["source_commit"], COMMIT);
         // A retry with the same key reads the row back; the broker is gone.
@@ -1039,7 +1082,36 @@ mod generation_activation {
         )
         .unwrap();
         assert_eq!(again["already_requested"], true);
-        assert_eq!(again["activation"]["id"], answer["activation"]["id"]);
+        assert_eq!(again["activation"]["id"], row);
+        assert!(again["activation"]["armed_at"].is_i64());
+    }
+
+    #[test]
+    fn a_refused_arm_abandons_the_row_after_the_answer() {
+        let (_dir, host, store, id) = setup();
+        let (release, gate) = std::sync::mpsc::channel();
+        let broker = broker(
+            &host,
+            vec![
+                planned(),
+                json!({"ok": false, "reason": "staged root root-b does not match the manifest hash"}),
+            ],
+            gate,
+        );
+        let answer = crate::generation::run_activation(
+            &store,
+            Some(&host),
+            "generation.activate",
+            &args(&id),
+            ADMIN,
+        )
+        .unwrap();
+        release.send(()).unwrap();
+        let row = settled(&store, answer["activation"]["id"].as_i64().unwrap());
+        broker.join().unwrap();
+        assert_eq!(row.state.as_str(), "ABANDONED");
+        assert_eq!(row.armed_at, None);
+        assert!(row.detail.unwrap().contains("manifest hash"));
     }
 
     #[test]

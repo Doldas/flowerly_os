@@ -9,18 +9,23 @@
 //!    marker gets past this point. Nothing is written before it.
 //! 2. A retry with a known `operation_id` returns the recorded row and asks no
 //!    broker (an unknown outcome is read back, never re-sent).
-//! 3. The broker's read-only `plan` verifies the staged slot against the
-//!    Generation's recorded identity and says which slot and PARTUUID it would
-//!    arm and whether the activation is irreversible. The Admin's
-//!    acknowledgement must match that answer exactly.
+//! 3. The broker's read-only `plan` checks the staged slot's recorded
+//!    identity, payload and schema window against the Generation and says
+//!    which slot and PARTUUID it would arm and whether the activation is
+//!    irreversible. It leaves hashing the slots to the arm, so it answers
+//!    within one IPC request. The Admin's acknowledgement must match that
+//!    answer exactly.
 //! 4. Every database guard runs on a rolled-back insert, so a refused request
 //!    takes no backup and arms nothing.
 //! 5. An irreversible activation takes its coherent backup.
 //! 6. The PENDING row is written, with the ledger position read now.
-//! 7. Only then the broker is asked to `arm`. A refusal abandons the row with
-//!    the broker's reason; a lost answer leaves it PENDING for the witness.
+//! 7. The request is answered with the PENDING row. Only then is the broker
+//!    asked to `arm` ([`arm`], run by the caller's worker): it hashes both
+//!    slots first, which takes seconds per GiB (G5). An ARMED answer is
+//!    recorded as `armed_at`; a refusal abandons the row with the broker's
+//!    reason; a lost answer leaves it PENDING and unarmed for the witness.
 //!
-//! The store lock is not held while the broker hashes the slots.
+//! The store lock is not held while the broker works.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -98,13 +103,28 @@ pub struct ActivateCommand {
 
 #[derive(Debug)]
 pub enum Outcome {
-    /// Recorded PENDING and armed; success still needs the witnessed boot.
-    Armed {
+    /// Recorded PENDING; the caller now runs [`arm`] with `arm`.
+    Requested {
         activation: Box<Activation>,
-        broker: Value,
+        arm: ArmRequest,
     },
     /// The `operation_id` was already used for this request.
     AlreadyRequested(Box<Activation>),
+}
+
+/// The `arm` intent for a recorded PENDING activation.
+#[derive(Debug)]
+pub struct ArmRequest {
+    activation: i64,
+    broker_socket: PathBuf,
+    intent: Value,
+}
+
+/// The broker armed the slot; success still needs the witnessed boot.
+#[derive(Debug)]
+pub struct Armed {
+    pub activation: Box<Activation>,
+    pub broker: Value,
 }
 
 #[derive(Debug)]
@@ -314,21 +334,39 @@ pub fn activate(
     if let Some(digest) = &request.backup_sha256 {
         arm["irreversible"] = json!({ "backup_sha256": digest });
     }
-    match call_broker(&host.broker_socket, &arm) {
-        Ok(broker) => Ok(Outcome::Armed {
-            activation: Box::new(pending),
+    Ok(Outcome::Requested {
+        arm: ArmRequest {
+            activation: pending.id,
+            broker_socket: host.broker_socket.clone(),
+            intent: arm,
+        },
+        activation: Box::new(pending),
+    })
+}
+
+/// Ask the broker to arm a recorded activation (step 7) and record its
+/// answer: ARMED sets `armed_at`, a refusal abandons the row, a lost answer
+/// leaves it PENDING and unarmed.
+pub fn arm(store: &Mutex<Store>, request: ArmRequest) -> Result<Armed, Failure> {
+    match call_broker(&request.broker_socket, &request.intent) {
+        Ok(broker) => Ok(Armed {
+            activation: Box::new(lock(store)?.record_armed(request.activation)?),
             broker,
         }),
         Err(BrokerError::Refused(reason) | BrokerError::Unavailable(reason)) => {
-            let abandoned = lock(store)?
-                .abandon_activation(pending.id, &format!("the slot broker refused: {reason}"))?;
+            let abandoned = lock(store)?.abandon_activation(
+                request.activation,
+                &format!("the slot broker refused: {reason}"),
+            )?;
             Err(Failure::Refused {
                 activation: Some(Box::new(abandoned)),
                 reason,
             })
         }
         Err(BrokerError::Unknown(reason)) => Err(Failure::Unknown {
-            activation: Box::new(pending),
+            activation: Box::new(lock(store)?.activation(request.activation)?.ok_or_else(
+                || StorageError::NotFound(format!("activation {}", request.activation)),
+            )?),
             reason,
         }),
     }

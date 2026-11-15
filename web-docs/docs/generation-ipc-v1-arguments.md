@@ -46,11 +46,14 @@ lifecycle step is `conflict`.
 and then refuse with `conflict`, writing nothing, until Gate D is verified.
 Only an A/B test image (root-owned test-profile marker) gets further
 (ADR-0023 G4b): the slot broker's read-only plan, every database guard on a
-rolled-back insert, the backup of an irreversible activation, the `PENDING`
-row and then the arm. The answer carries the `activation` row and the
-broker's `armed` report; it is never `STABLE` yet. A broker refusal is
-`conflict` (the row, if written, is `ABANDONED`); a lost arm answer is
-`unavailable` and the row stays `PENDING` for the witness. A retry with the
+rolled-back insert, the backup of an irreversible activation and the
+`PENDING` row. The answer carries that row and `arming: true`; it is never
+`STABLE` yet. The arm runs after the answer, because the broker hashes both
+root slots before it writes the ESP, longer than a request may wait (G5):
+read `generation.history` until the row has `armed_at` (then reboot) or is
+`ABANDONED` with the broker's reason. A refused plan is `conflict` and
+writes nothing; a lost arm answer leaves the row `PENDING` without
+`armed_at` for the witness. A retry with the
 same `operation_id` returns the recorded row (`already_requested`) and asks
 no broker. `acknowledge_irreversible` must equal the broker's verdict: it is
 required when the running root could not read the database after the

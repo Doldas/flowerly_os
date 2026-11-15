@@ -8,8 +8,8 @@
 use super::Migration;
 
 pub(super) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 17,
-    min_reader: 17,
+    version: 18,
+    min_reader: 18,
     name: "g5_schema_drill",
-    sql: include_str!("../../testdata/0017_g5_schema_drill.sql"),
+    sql: include_str!("../../testdata/0018_g5_schema_drill.sql"),
 }];

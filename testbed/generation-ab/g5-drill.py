@@ -15,6 +15,11 @@ The report is a base64 JSON document split into console lines:
 
 A failed expectation stops the remaining actions and the requested reboot.
 
+flowerlyd answers an activation with its PENDING row and arms afterwards (the
+broker hashes both slots first), so an ``armed`` expectation is met only once
+generation.history shows the row's ``armed_at``; ABANDONED or no arm within
+ARM_WAIT_SECONDS fails it.
+
 The one root action is ``restore``, the operator's restore drill after an
 irreversible activation (ADR-0023 R4): the backup flowerlyd took before it
 armed replaces the database while the service is stopped.
@@ -191,7 +196,42 @@ def _record(entries, name, argv, result):
     return code, value
 
 
-def run_actions(doc, ctl, restore=None):
+ARM_WAIT_SECONDS = 180
+
+
+def wait_armed(entries, ctl, activation, sleep):
+    """Poll history until ``activation`` is armed (True) or abandoned (False)."""
+    waited = 0
+    while True:
+        code, value, text = _reply(ctl(["history"]))
+        rows = value.get("activations") if isinstance(value, dict) else None
+        found = [
+            r for r in rows or [] if isinstance(r, dict) and r.get("id") == activation
+        ]
+        if code == 0 and len(found) == 1:
+            current = found[0]
+            if current.get("armed_at") is not None:
+                entries.append({"call": "armed", "activation": current, "text": ""})
+                return True
+            if current.get("state") != "PENDING":
+                entries.append(
+                    {"call": "armed", "activation": current, "text": "not armed"}
+                )
+                return False
+        if waited >= ARM_WAIT_SECONDS:
+            entries.append(
+                {
+                    "call": "armed",
+                    "activation": found[0] if len(found) == 1 else None,
+                    "text": "not armed after %d s: %s" % (waited, text),
+                }
+            )
+            return False
+        sleep(1)
+        waited += 1
+
+
+def run_actions(doc, ctl, restore=None, sleep=time.sleep):
     """Run the actions with ``ctl(argv) -> (code, stdout, stderr)`` and
     ``restore(sha256) -> (ok, detail)``.
 
@@ -298,6 +338,10 @@ def run_actions(doc, ctl, restore=None):
             armed = code == 0 and isinstance(value, dict) and "activation" in value
             if (action["expect"] == "armed") != armed or (
                 action["expect"] == "refused" and code == 0
+            ):
+                return False, entries
+            if armed and not wait_armed(
+                entries, ctl, value["activation"].get("id"), sleep
             ):
                 return False, entries
     return True, entries
