@@ -94,6 +94,57 @@ def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
 
 
 class BootTests(unittest.TestCase):
+    def test_the_demoted_manual_entry_is_its_slot(self):
+        # An irreversible arm renames the running root's entry to
+        # manual-flowerly-<slot>.conf; the operator boots it to restore the
+        # backup (ADR-0023 R4, KVM run 6). Same slot, same identity check.
+        with tempfile.TemporaryDirectory() as d:
+            witness = guest.append_witness(
+                Path(d) / "ledger.jsonl",
+                identity(),
+                "root=PARTUUID=" + UUID_A,
+                b"\x07\x00\x00\x00" + "manual-flowerly-a.conf".encode("utf-16-le"),
+                BOOT,
+                root_device=10,
+                data_device=20,
+            )
+            self.assertEqual(witness["slot"], "root-a")
+            self.assertEqual(witness["loader_entry"], "manual-flowerly-a.conf")
+
+    def test_a_demoted_entry_still_needs_its_own_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                guest.append_witness(
+                    Path(d) / "ledger.jsonl",
+                    identity(),
+                    "root=PARTUUID=" + UUID_A,
+                    b"\x07\x00\x00\x00" + "manual-flowerly-b.conf".encode("utf-16-le"),
+                    BOOT,
+                    root_device=10,
+                    data_device=20,
+                )
+
+    def test_only_the_exact_demoted_name_is_accepted(self):
+        for name in (
+            "manual-flowerly-a+3.conf",
+            "manual-flowerly-a+0-3.conf",
+            "manual-flowerly-c.conf",
+            "manual-flowerly-a.conf.tmp",
+            "xmanual-flowerly-a.conf",
+            "manual-manual-flowerly-a.conf",
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                with self.assertRaisesRegex(ValueError, "unexpected selected"):
+                    guest.append_witness(
+                        Path(d) / "ledger.jsonl",
+                        identity(),
+                        "root=PARTUUID=" + UUID_A,
+                        b"\x07\x00\x00\x00" + name.encode("utf-16-le"),
+                        BOOT,
+                        root_device=10,
+                        data_device=20,
+                    )
+
     def test_verified_efi_kernel_and_baked_identity(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = Path(d) / "ledger.jsonl"

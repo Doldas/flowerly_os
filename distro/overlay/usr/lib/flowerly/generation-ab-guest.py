@@ -27,6 +27,9 @@ COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 LOADER = re.compile(
     r"flowerly-([ab])(?:\+(?:0|[1-9][0-9]?)(?:-(?:0|[1-9][0-9]?))?)?(?:\.conf)?\Z"
 )
+# The running root's entry after an irreversible arm (ADR-0023 R4): booted
+# only from the menu, never counted, and still the same slot's root.
+DEMOTED = re.compile(r"manual-flowerly-([ab])(?:\.conf)?\Z")
 EFI_LOADER_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 MAX_LEDGER = 2097152
 SCHEMA = "flowerly-generation-boot/v2"
@@ -238,7 +241,7 @@ def append_witness(
         entry_name = efi_bytes[4:].decode("utf-16-le").rstrip("\x00")
     except UnicodeError as error:
         raise ValueError("invalid EFI selection encoding") from error
-    match = LOADER.fullmatch(entry_name)
+    match = LOADER.fullmatch(entry_name) or DEMOTED.fullmatch(entry_name)
     if not match:
         raise ValueError("unexpected selected bootloader entry")
     slot = "root-" + match.group(1)
