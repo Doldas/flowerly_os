@@ -264,6 +264,28 @@ class ReportReadingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not refused"):
             gate.refused(doc, "activate")
 
+    def test_a_refusal_for_another_reason_does_not_count(self):
+        # Run 3: a SUPERSEDED Generation's refusal passed for the missing
+        # acknowledgement's. The expected reason must be named.
+        doc = report(
+            entries=[
+                {
+                    "call": "activate",
+                    "code": 1,
+                    "reply": None,
+                    "text": "activation needs a TESTED Generation",
+                },
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "not for FELL_BACK"):
+            gate.refused(doc, "activate", because="FELL_BACK")
+        doc["entries"][0]["text"] = "a FELL_BACK activation must be acknowledged"
+        self.assertIn("FELL_BACK", gate.refused(doc, "activate", because="FELL_BACK"))
+
+    def test_scenarios_cover_both_fall_backs(self):
+        self.assertIn("unhealthy-activation-fell-back", gate.SCENARIOS)
+        self.assertIn("unhealthy-rollback-fell-back", gate.SCENARIOS)
+
     def test_registered_generation(self):
         doc = report(entries=[{"call": "registered", "label": "B", "generation": "gb"}])
         self.assertEqual(gate.registered(doc, "B"), "gb")

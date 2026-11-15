@@ -8,10 +8,13 @@ an operator or a fault would edit (an injected unhealthy option, the boot menu
 choice), stages the schema-bump image, and reads the drill's report and the
 boot identity from the serial console.
 
-Main chain: A registers A and B and activates B; B confirms and activates A;
-A confirms and rolls back to B; B confirms and rolls back to A with an injected
-unhealthy option; A fails its boot count and the loader falls back to B, which
-records FELL_BACK; re-activating A needs the Admin's acknowledgement (Q4).
+Main chain: A registers A and B and activates B with an injected unhealthy
+option; B fails its boot count and the loader falls back to A, which records
+FELL_BACK and refuses to re-activate B without the Admin's acknowledgement
+(Q4); the acknowledged activation of B is confirmed; B activates A, A confirms
+and rolls back to B; B confirms and rolls back to A unhealthy again; that
+rollback falls back to B, which retries it (a rollback needs no
+acknowledgement) and A confirms. Every expected refusal must name its reason.
 Schema chain: B2 (flowerlyd with the test-only g5-schema-drill migration) is
 staged in slot B; its activation is irreversible and needs the explicit
 acknowledgement and a backup; the older A then refuses to read the database
@@ -41,6 +44,7 @@ SCENARIOS = (
     "activate-b-confirmed",
     "activate-a-confirmed",
     "rollback-b-confirmed",
+    "unhealthy-activation-fell-back",
     "unhealthy-rollback-fell-back",
     "fell-back-needs-acknowledgement",
     "acknowledged-reactivation-confirmed",
@@ -229,11 +233,18 @@ def history_readable(report):
     )
 
 
-def refused(report, call, index=-1):
-    """The text of an expected refusal (non-zero exit with a reason)."""
+def refused(report, call, index=-1, because=None):
+    """The text of an expected refusal (non-zero exit with a reason), which
+    must name ``because`` when given: a refusal for another reason proves
+    nothing about the guard under test."""
     item = entry(report, call, index)
     if item["code"] == 0 or not item["text"]:
         raise ValueError(f"step {report['step']}: {call} was not refused")
+    if because is not None and because not in item["text"]:
+        raise ValueError(
+            f"step {report['step']}: {call} was refused, but not for {because}: "
+            + item["text"]
+        )
     return item["text"]
 
 
@@ -661,72 +672,41 @@ class Run:
         scen["register-tested"] = "PASS"
         self.result["generations"] = {"A": ga, "B": gb}
 
+        # The forced-unhealthy activation comes first, while B is still
+        # TESTED: the acknowledgement rule (ADR-0023 Q4) guards activations.
         self.instruct(
             instruction(
                 2, a, [{"op": "activate", "generation": gb, "expect": "armed"}], True
             )
         )
         self.drill_boot("step-2-a-activate-b", 2, a, reboot=True)
-
+        self.make_unhealthy("b")
         self.instruct(
             instruction(
-                3, b, [{"op": "activate", "generation": ga, "expect": "armed"}], True
-            )
-        )
-        r3 = self.drill_boot("step-3-b-confirmed", 3, b, reboot=True)
-        if not is_confirmed(r3, gb, "ACTIVATE"):
-            raise ValueError("B's activation was not CONFIRMED")
-        scen["activate-b-confirmed"] = "PASS"
-
-        self.instruct(
-            instruction(
-                4, a, [{"op": "rollback", "generation": gb, "expect": "armed"}], True
-            )
-        )
-        r4 = self.drill_boot("step-4-a-confirmed", 4, a, reboot=True)
-        if not is_confirmed(r4, ga, "ACTIVATE"):
-            raise ValueError("A's activation was not CONFIRMED")
-        scen["activate-a-confirmed"] = "PASS"
-
-        self.instruct(
-            instruction(
-                5, b, [{"op": "rollback", "generation": ga, "expect": "armed"}], True
-            )
-        )
-        r5 = self.drill_boot("step-5-b-rollback-confirmed", 5, b, reboot=True)
-        if not is_confirmed(r5, gb, "ROLLBACK"):
-            raise ValueError("the rollback to B was not CONFIRMED")
-        scen["rollback-b-confirmed"] = "PASS"
-
-        # The rollback to A is armed; make its boot fail the health gate.
-        armed = f"flowerly-a+{tries}.conf"
-        with esp_of(self.disk, self.manifest) as esp:
-            if armed not in esp.list("/loader/entries"):
-                raise ValueError("the broker did not arm A")
-            path = "/loader/entries/" + armed
-            esp.write(path, with_option(esp.read(path).decode(), FAIL_HEALTH).encode())
-        self.instruct(
-            instruction(
-                6, b, [{"op": "activate", "generation": ga, "expect": "refused"}], False
+                3,
+                a,
+                [{"op": "activate", "generation": gb, "expect": "refused"}],
+                False,
             )
         )
         for index in range(tries):
-            self.unhealthy_boot(f"step-5-a-unhealthy-{index + 1}", a)
-        r6 = self.drill_boot("step-6-b-fell-back", 6, b, reboot=False)
-        fell = last_activation(r6, ga)
+            self.unhealthy_boot(f"step-2-b-unhealthy-{index + 1}", b)
+        r3 = self.drill_boot("step-3-a-fell-back", 3, a, reboot=False)
+        fell = last_activation(r3, gb)
         if fell["state"] != "FELL_BACK":
-            raise ValueError(f"A's rollback is {fell['state']}, not FELL_BACK")
-        scen["unhealthy-rollback-fell-back"] = "PASS"
-        checks["fell_back_refusal"] = refused(r6, "activate")
+            raise ValueError(f"B's activation is {fell['state']}, not FELL_BACK")
+        scen["unhealthy-activation-fell-back"] = "PASS"
+        checks["fell_back_refusal"] = refused(r3, "activate", because="FELL_BACK")
+        scen["fell-back-needs-acknowledgement"] = "PASS"
 
         self.instruct(
             instruction(
-                7,
-                b,
+                4,
+                a,
                 [
                     {
                         "op": "activate",
-                        "generation": ga,
+                        "generation": gb,
                         "acknowledges": fell["id"],
                         "expect": "armed",
                     }
@@ -734,15 +714,71 @@ class Run:
                 True,
             )
         )
-        self.drill_boot("step-7-b-acknowledged", 7, b, reboot=True)
-        scen["fell-back-needs-acknowledgement"] = "PASS"
-        self.instruct(instruction(8, a, [{"op": "inspect", "generation": ga}], False))
-        r8 = self.drill_boot("step-8-a-confirmed", 8, a, reboot=False)
-        again = last_activation(r8, ga)
-        if not is_confirmed(r8, ga, "ACTIVATE") or again["acknowledges"] != fell["id"]:
-            raise ValueError("the acknowledged activation of A was not CONFIRMED")
+        self.drill_boot("step-4-a-acknowledged", 4, a, reboot=True)
+        self.instruct(
+            instruction(
+                5, b, [{"op": "activate", "generation": ga, "expect": "armed"}], True
+            )
+        )
+        r5 = self.drill_boot("step-5-b-confirmed", 5, b, reboot=True)
+        again = last_activation(r5, gb)
+        if not is_confirmed(r5, gb, "ACTIVATE") or again["acknowledges"] != fell["id"]:
+            raise ValueError("the acknowledged activation of B was not CONFIRMED")
+        scen["activate-b-confirmed"] = "PASS"
         scen["acknowledged-reactivation-confirmed"] = "PASS"
+
+        self.instruct(
+            instruction(
+                6, a, [{"op": "rollback", "generation": gb, "expect": "armed"}], True
+            )
+        )
+        r6 = self.drill_boot("step-6-a-confirmed", 6, a, reboot=True)
+        if not is_confirmed(r6, ga, "ACTIVATE"):
+            raise ValueError("A's activation was not CONFIRMED")
+        scen["activate-a-confirmed"] = "PASS"
+
+        self.instruct(
+            instruction(
+                7, b, [{"op": "rollback", "generation": ga, "expect": "armed"}], True
+            )
+        )
+        r7 = self.drill_boot("step-7-b-rollback-confirmed", 7, b, reboot=True)
+        if not is_confirmed(r7, gb, "ROLLBACK"):
+            raise ValueError("the rollback to B was not CONFIRMED")
+        scen["rollback-b-confirmed"] = "PASS"
+
+        # The rollback to A is armed; make its boot fail the health gate. A
+        # rollback that fell back needs no acknowledgement to be retried.
+        self.make_unhealthy("a")
+        self.instruct(
+            instruction(
+                8, b, [{"op": "rollback", "generation": ga, "expect": "armed"}], True
+            )
+        )
+        for index in range(tries):
+            self.unhealthy_boot(f"step-7-a-unhealthy-{index + 1}", a)
+        r8 = self.drill_boot("step-8-b-fell-back", 8, b, reboot=True)
+        rows = [row for row in activations(r8) if row["generation"] == ga]
+        rollbacks = [row for row in rows if row["kind"] == "ROLLBACK"]
+        if len(rollbacks) < 2 or rollbacks[-2]["state"] != "FELL_BACK":
+            raise ValueError("A's rollback did not fall back before the retry")
+        scen["unhealthy-rollback-fell-back"] = "PASS"
+        checks["rollback_retry_without_acknowledgement"] = rollbacks[-1]["id"]
+
+        self.instruct(instruction(9, a, [{"op": "inspect", "generation": ga}], False))
+        r9 = self.drill_boot("step-9-a-confirmed", 9, a, reboot=False)
+        if not is_confirmed(r9, ga, "ROLLBACK"):
+            raise ValueError("the retried rollback to A was not CONFIRMED")
         return ga
+
+    def make_unhealthy(self, letter):
+        """Make the broker-armed entry of slot ``letter`` fail the health gate."""
+        armed = f"flowerly-{letter}+{self.args.tries}.conf"
+        with esp_of(self.disk, self.manifest) as esp:
+            if armed not in esp.list("/loader/entries"):
+                raise ValueError(f"the broker did not arm {letter.upper()}")
+            path = "/loader/entries/" + armed
+            esp.write(path, with_option(esp.read(path).decode(), FAIL_HEALTH).encode())
 
     def schema_chain(self, ga):
         a, b = "root-a", "root-b"
@@ -770,18 +806,18 @@ class Run:
         self.publish_manifest()
         self.instruct(
             instruction(
-                9,
+                10,
                 a,
                 [registration(self.manifest, b, "B2")],
                 False,
             )
         )
-        r9 = self.drill_boot("step-9-a-register-b2", 9, a, reboot=False)
-        gb2 = registered(r9, "B2")
+        r10 = self.drill_boot("step-10-a-register-b2", 10, a, reboot=False)
+        gb2 = registered(r10, "B2")
         self.result["generations"]["B2"] = gb2
         self.instruct(
             instruction(
-                10,
+                11,
                 a,
                 [
                     {"op": "activate", "generation": gb2, "expect": "refused"},
@@ -795,9 +831,11 @@ class Run:
                 True,
             )
         )
-        r10 = self.drill_boot("step-10-a-irreversible", 10, a, reboot=True)
-        checks["irreversible_refusal"] = refused(r10, "activate", 0)
-        armed = last_activation(r10, gb2)
+        r11 = self.drill_boot("step-11-a-irreversible", 11, a, reboot=True)
+        checks["irreversible_refusal"] = refused(
+            r11, "activate", 0, because="irreversible"
+        )
+        armed = last_activation(r11, gb2)
         if not armed["irreversible"] or not armed["backup_sha256"]:
             raise ValueError("the irreversible activation recorded no backup")
         scen["irreversible-needs-acknowledgement"] = "PASS"
@@ -806,17 +844,19 @@ class Run:
 
         self.instruct(
             instruction(
-                11,
+                12,
                 b,
                 [{"op": "rollback", "generation": ga, "expect": "refused"}],
                 False,
             )
         )
-        r11 = self.drill_boot("step-11-b2-confirmed", 11, b, reboot=False)
-        if not is_confirmed(r11, gb2, "ACTIVATE"):
+        r12 = self.drill_boot("step-12-b2-confirmed", 12, b, reboot=False)
+        if not is_confirmed(r12, gb2, "ACTIVATE"):
             raise ValueError("B2's irreversible activation was not CONFIRMED")
         scen["irreversible-activation-confirmed"] = "PASS"
-        checks["downgrade_refusal"] = refused(r11, "rollback")
+        checks["downgrade_refusal"] = refused(
+            r12, "rollback", because="cannot read the database"
+        )
         if "cannot read" not in checks["downgrade_refusal"]:
             raise ValueError("the rollback was refused for another reason")
         scen["downgrade-refused-across-schema"] = "PASS"
@@ -852,7 +892,7 @@ class Run:
             )
         self.instruct(
             instruction(
-                12,
+                13,
                 a,
                 [
                     {"op": "restore", "backup_sha256": armed["backup_sha256"]},
@@ -861,12 +901,12 @@ class Run:
                 False,
             )
         )
-        r12 = self.drill_boot("step-12-a-restore", 12, a, reboot=False, health="failed")
+        r13 = self.drill_boot("step-13-a-restore", 13, a, reboot=False, health="failed")
         scen["older-root-cannot-read-the-database"] = "PASS"
-        rows = activations(r12)
+        rows = activations(r13)
         if any(row["generation"] == gb2 for row in rows):
             raise ValueError("the restored database still holds B2's activation")
-        if last_activation(r12, ga)["state"] != "CONFIRMED":
+        if last_activation(r13, ga)["state"] != "CONFIRMED":
             raise ValueError("the restored history lost A's activation")
         scen["restore-drill"] = "PASS"
 
