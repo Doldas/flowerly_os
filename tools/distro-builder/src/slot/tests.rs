@@ -1812,6 +1812,32 @@ fn plan_verifies_everything_and_writes_nothing() {
 }
 
 #[test]
+fn plan_leaves_the_slot_hashes_to_the_arm() {
+    // Hashing two root slots takes seconds per GiB, longer than an IPC
+    // request may run; flowerlyd records the plan and arms asynchronously.
+    // The plan trusts the root-owned manifest for the slots' contents; the
+    // arm, the only intent that writes, hashes both before it does.
+    for slot in [Slot::A, Slot::B] {
+        let mut f = fixture();
+        let b = f.broker(&identity_value("root-b", B_UUID));
+        {
+            let (image, disk) = f.open();
+            image
+                .write_slot(&disk.slot(slot).clone(), 0, b"tampered")
+                .unwrap();
+        }
+        let esp_before = f.esp.files.clone();
+        assert_eq!(answer(&mut f, &b, &plan_intent(&b))["status"], "PLANNED");
+        let reason = match slot {
+            Slot::A => "active root",
+            Slot::B => "manifest hash",
+        };
+        refused(&mut f, &b, b.service_uid, &arm_intent(&b), reason);
+        assert_eq!(f.esp.files, esp_before);
+    }
+}
+
+#[test]
 fn an_acknowledged_irreversible_activation_with_a_verified_backup_demotes_the_fallback() {
     let mut f = fixture();
     let b = f.broker(&irreversible_target());

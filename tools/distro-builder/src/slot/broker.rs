@@ -11,9 +11,9 @@
 //!   it speaks for must still be in the admin group per the system databases;
 //! - the disk is opened read-only and bound to the manifest through the real
 //!   GPT; the running root comes from the broker's own kernel command line;
-//! - both slots are hashed against the manifest; the staged slot, its boot
-//!   payload on the ESP and its baked identity must equal the Generation the
-//!   caller claims;
+//! - before it writes, both slots are hashed against the manifest; the staged
+//!   slot, its boot payload on the ESP and its baked identity must equal the
+//!   Generation the caller claims;
 //! - a target whose `flowerlyd` cannot read the database the running root
 //!   keeps is refused; a target whose migrations leave a `min_reader` newer
 //!   than the running root's `flowerlyd` would make the fallback unusable:
@@ -23,8 +23,11 @@
 //!   to manual-only before the target is published, so a failed boot cannot
 //!   fall back into a root that cannot start its service.
 //!
-//! `plan` runs every check of `arm` and writes nothing: `flowerlyd` records
-//! its answer in the PENDING activation row before it asks to `arm`.
+//! `plan` runs every check of `arm` except hashing the two slots, and writes
+//! nothing: `flowerlyd` records its answer in the PENDING activation row
+//! within one IPC request, then asks to `arm` from a worker (G5: hashing two
+//! root slots takes seconds per GiB). Its answer rests on the root-owned
+//! manifest; `arm` and `disarm` hash the slots again before they write.
 //!
 //! It writes nothing but boot entries on the ESP (publishing, demoting,
 //! restoring or removing one), never the block device or the backup, and
@@ -244,7 +247,10 @@ pub fn handle(
     let cmdline = std::fs::read_to_string(&config.cmdline).context("reading the command line")?;
     let active = disk.active_slot(&running_slot(&cmdline)?)?;
     let target = active.other();
-    verify_slot(&image, disk.slot(active), "active root")?;
+    let hashes = intent.intent != "plan";
+    if hashes {
+        verify_slot(&image, disk.slot(active), "active root")?;
+    }
 
     match intent.intent.as_str() {
         "disarm" => rollback(&image, &disk, active, esp, true, faults),
@@ -270,7 +276,8 @@ pub fn handle(
             let claim = intent
                 .generation
                 .ok_or_else(|| anyhow!("{kind} needs the generation it arms"))?;
-            let window = verify_target(config, &image, &disk, active, target, esp, &claim)?;
+            let hash_against = hashes.then_some(&image);
+            let window = verify_target(config, hash_against, &disk, active, target, esp, &claim)?;
             let fallback = if window.irreversible {
                 Fallback::ManualOnly
             } else {
@@ -354,9 +361,10 @@ fn verify_backup(config: &BrokerConfig, service_uid: u32, digest: &str) -> Resul
     Ok(())
 }
 
+/// With an image, the staged slot is hashed against the manifest too.
 fn verify_target(
     config: &BrokerConfig,
-    image: &super::Image,
+    image: Option<&super::Image>,
     disk: &super::Disk,
     active: Slot,
     target: Slot,
@@ -367,7 +375,9 @@ fn verify_target(
     if part.filesystem != "ext4" {
         bail!("{} has not been staged", target.name());
     }
-    verify_slot(image, part, "staged root")?;
+    if let Some(image) = image {
+        verify_slot(image, part, "staged root")?;
+    }
     if part.sha256 != claim.rootfs_sha256 {
         bail!("the staged slot is not the claimed rootfs_sha256");
     }
