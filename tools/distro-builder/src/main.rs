@@ -1,4 +1,5 @@
 mod manifest;
+mod rootfs;
 mod signature;
 mod slot;
 
@@ -125,6 +126,14 @@ enum ManifestAction {
         #[arg(long)]
         keyring: Option<PathBuf>,
     },
+    /// Compare the packages installed in a built rootfs with the manifest
+    /// (pacman's local database). Prints a JSON report; exits non-zero unless
+    /// the installed set is exactly the manifest's.
+    VerifyRootfs {
+        path: PathBuf,
+        #[arg(long)]
+        rootfs: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -140,6 +149,22 @@ fn main() -> Result<()> {
             println!("manifest_sha256={}", checked.sha256);
             println!("packages={}", checked.manifest.packages.len());
             println!("signature_trust={}", manifest::SIGNATURE_TRUST);
+            Ok(())
+        }
+        Action::Manifest(ManifestAction::VerifyRootfs { path, rootfs }) => {
+            let checked = check_manifest(&path)?;
+            let report = rootfs::verify_installed(&checked, &rootfs);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.matches() {
+                bail!(
+                    "rootfs does not match the manifest: {} missing, {} unexpected, {} version, {} architecture, {} unreadable",
+                    report.missing.len(),
+                    report.unexpected.len(),
+                    report.version_mismatch.len(),
+                    report.architecture_mismatch.len(),
+                    report.unreadable.len()
+                );
+            }
             Ok(())
         }
         Action::Manifest(ManifestAction::VerifyCache {

@@ -14,6 +14,7 @@ This document is a specification, **not** an implemented package fetcher.
 | Trust policy: which keyring is acceptable, key expiry on historic replay | Decided for the first frozen set, see *Trust policy (Gate B)* below; without `--keyring` the report says `signature_trust: not_verified` |
 | Transitive resolution and fetch from a dated snapshot | Implemented: `scripts/freeze-arch-snapshot.py` (`freeze`), network only to `archive.archlinux.org/repos/`, only with the approval string |
 | Real frozen package set, mirror-change demo, tamper and offline-removal drill | Done 2026-11-16: `distro/base-image/arch/inputs.manifest.json` (157 packages, snapshot 2026/11/09), evidence in [the Gate B review](../reviews/0049-gate-b-frozen-package-set-2026-11-16.md) |
+| Installed set equals the manifest (`manifest verify-rootfs`) | Implemented, reads pacman's local database of a built rootfs; checked against the 2026-11-09-era live-mirror rootfs, which it correctly rejects (27 versions differ, `openssl-3` is extra). A rootfs built *from* the snapshot is not yet produced |
 | Repository database signature | Not available: the Archive serves no `.db.sig` for dated snapshots (404). Database fields are bound by the per-package signatures instead |
 | Kernel, toolchain and output identity fields | Not in v1; a later schema version |
 
