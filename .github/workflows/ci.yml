@@ -123,6 +123,9 @@ jobs:
           FLOWERLY_REQUIRE_AB_TOOLS: "1"
         run: cargo test -p distro-builder --features fault-injection --locked
 
+      - name: Frozen Arch package manifest is canonical and matches packages.base (#49)
+        run: cargo run -q -p distro-builder --locked -- manifest check distro/base-image/arch/inputs.manifest.json
+
       # Test images only (ADR-0023 G5): the drill migration that makes the
       # real downgrade drill possible must keep working behind its feature.
       - name: G5 schema drill feature (test images only)
@@ -394,6 +397,9 @@ jobs:
 
       - name: Arch image signature verification with real GnuPG on synthetic keys, offline (#263)
         run: python3 ./scripts/test-arch-image-verify.py
+
+      - name: Frozen Arch snapshot acquisition, trust policy and refusals with synthetic keys, offline (#49)
+        run: python3 ./scripts/test-freeze-arch-snapshot.py
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0

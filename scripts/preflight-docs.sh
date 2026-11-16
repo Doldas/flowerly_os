@@ -57,6 +57,7 @@ python3 scripts/test-remote-provider-kvm-harness.py
 python3 scripts/test-remote-provider-egress-ownership.py
 python3 scripts/test-cluster-peer-admission.py
 python3 scripts/test-arch-image-verify.py
+python3 scripts/test-freeze-arch-snapshot.py
 python3 scripts/test-host-process-authority.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."

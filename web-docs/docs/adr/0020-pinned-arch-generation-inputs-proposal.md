@@ -11,14 +11,36 @@ This document is a specification, **not** an implemented package fetcher.
 | Manifest schema `flowerly.generation-inputs.v1`, canonical form and digest | Implemented: `distro-builder manifest check` |
 | Content-addressed cache verification, missing/tampered artifacts fail closed | Implemented: `distro-builder manifest verify-cache` |
 | Detached signature check against a supplied keyring | Implemented: `verify-cache --keyring <file>` (gpgv) |
-| Trust policy: which keyring is acceptable, key expiry on historic replay | **Not decided**; without `--keyring` the report says `signature_trust: not_verified` |
-| Repository database verification and transitive resolution | Not implemented |
-| Fetch from a dated snapshot, real frozen package set, mirror-change demo | Not done; needs approval for network acquisition |
+| Trust policy: which keyring is acceptable, key expiry on historic replay | Decided for the first frozen set, see *Trust policy (Gate B)* below; without `--keyring` the report says `signature_trust: not_verified` |
+| Transitive resolution and fetch from a dated snapshot | Implemented: `scripts/freeze-arch-snapshot.py` (`freeze`), network only to `archive.archlinux.org/repos/`, only with the approval string |
+| Real frozen package set, mirror-change demo, tamper and offline-removal drill | Done 2026-11-16: `distro/base-image/arch/inputs.manifest.json` (157 packages, snapshot 2026/11/09), evidence in [the Gate B review](../reviews/0049-gate-b-frozen-package-set-2026-11-16.md) |
+| Repository database signature | Not available: the Archive serves no `.db.sig` for dated snapshots (404). Database fields are bound by the per-package signatures instead |
 | Kernel, toolchain and output identity fields | Not in v1; a later schema version |
 
 A passing `verify-cache` proves only that the cached bytes are the bytes the
 manifest names. It does not establish who published them. #49 stays open
 until the acceptance evidence below exists.
+
+### Trust policy (Gate B)
+
+- **Anchor.** `distro/base-image/arch/trust-policy.json` pins the SHA-256 of
+  the snapshot's `archlinux-keyring` package. The freeze refuses any other
+  bytes. The pin was produced from the snapshot's own database and is a human
+  review decision (trust on first review), not an out-of-band root of trust.
+- **Signers.** Every package must be signed by a key of that keyring and not
+  by one on the keyring's `archlinux-revoked` list. The certification chain
+  from Arch's master keys is **not** evaluated.
+- **Binding.** The detached signature fetched from the snapshot must equal
+  the `%PGPSIG%` in the repository database, and the archive must match the
+  database's size and SHA-256 and the signature; this ties the unsigned
+  database fields to signed bytes.
+- **Expiry on replay.** `gpgv` evaluates expiry now; a replay after a signer
+  expired fails closed (`EXPKEYSIG`). Accepting historic replay needs a new
+  pinned keyring and a recorded decision, not a flag.
+- **Virtual dependencies** with several providers are never guessed:
+  `distro/base-image/arch/provider-choices.txt` is reviewed like code
+  (`-` means the image builder provides the name itself, as mkosi does for
+  `initramfs`).
 
 ### v1 format
 

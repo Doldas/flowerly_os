@@ -1,0 +1,10 @@
+{
+  "keyring": {
+    "filename": "archlinux-keyring-20260909-1-any.pkg.tar.zst",
+    "name": "archlinux-keyring",
+    "sha256": "6a8ea16f51d3b305c18322d5884ca959f12c32a3f186873090fdc18465605293",
+    "version": "20260909-1"
+  },
+  "schema": "flowerly.arch-trust-policy.v1",
+  "snapshot_date": "2026/11/09"
+}

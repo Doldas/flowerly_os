@@ -173,6 +173,16 @@ separately).
 - Default PTY enablement without verified systemd cgroup delegation.
 - Claiming fully reproducible binaries solely from pinned inputs.
 
+- **Progress (2026-11-16):** a real frozen set exists: 157 packages,
+  738,921,801 bytes, snapshot 2026/11/09, every archive and signature
+  verified by the independent Rust verifier against the pinned keyring. The
+  mirror moved on (26 packages changed by 2026/11/15) and the cache still
+  verified; seven tamperings and an offline removal failed closed for the
+  specific reason. Review:
+  [0049-gate-b-frozen-package-set-2026-11-16](reviews/0049-gate-b-frozen-package-set-2026-11-16.md).
+  Still open: kernel config/toolchain/output identity in a v2 schema, binding
+  the manifest digest to a built Generation, and CI retention of the cache.
+
 ## Immediate next engineering action
 
 Start with #48: author the substrate ADR and an isolated bootable-VM
