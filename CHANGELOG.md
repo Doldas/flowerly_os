@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Gate D re-run on the pinned rootfs (#49, #9): `scripts/build-g5-test-image.sh`
+  builds the KVM test inputs (slots A, B, B2, identities, disk) from the
+  rootfs built from the frozen snapshot, each slot refused unless it is
+  exactly the frozen set. The exact-SHA OVMF/KVM matrix passes 16 of 16
+  scenarios; evidence under `web-docs/docs/reviews/evidence/0049-g5-pinned-rootfs-b05e3be`.
 - Frozen inputs as a precondition for baking a Generation (#49):
   `FLOWERLY_FROZEN_INPUTS=<distro-builder>` makes
   `scripts/prepare-generation-ab-rootfs.sh` refuse unless the identity's

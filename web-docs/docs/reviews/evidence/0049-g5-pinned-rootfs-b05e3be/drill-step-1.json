@@ -1,0 +1,247 @@
+{
+  "entries": [
+    {
+      "argv": [
+        "create",
+        "--source-commit",
+        "b05e3be5199704c1050b4a88a8e132fb2eb765f5"
+      ],
+      "call": "create",
+      "code": 0,
+      "reply": {
+        "experiment": null,
+        "id": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "parent": null,
+        "reason_goal": null,
+        "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"experiment\": null,\n  \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n  \"parent\": null,\n  \"reason_goal\": null,\n  \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "promote",
+        "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "--reason",
+        "G5 drill: share A"
+      ],
+      "call": "promote",
+      "code": 0,
+      "reply": {
+        "id": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "owner": "system",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n  \"owner\": \"system\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "identity",
+        "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "--source-commit",
+        "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+        "--rootfs-sha256",
+        "70c92f4d50ad2b18d1363ec6d3907e5bb7df09b0dc7167c63c030b3006ab8209",
+        "--kernel-sha256",
+        "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+        "--initramfs-sha256",
+        "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "--input-manifest-sha256",
+        "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+        "--build-id",
+        "g5-a",
+        "--reason",
+        "G5 drill: identity of A"
+      ],
+      "call": "identity",
+      "code": 0,
+      "reply": {
+        "id": "gen-4f070e2db1e64b2080ab4af850e5f49c"
+      },
+      "text": "{\n  \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\"\n}"
+    },
+    {
+      "argv": [
+        "evidence",
+        "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "--outcome",
+        "passed",
+        "--evidence-sha256",
+        "443be1e731bd9941163dc527a3cea41242023648c7eb27ba88e35fe4ead84a45",
+        "--reason",
+        "G5 drill: acceptance of A"
+      ],
+      "call": "evidence",
+      "code": 0,
+      "reply": {
+        "experiment": "exp-112bb638c97e4de09236218499185aab",
+        "id": "gen-4f070e2db1e64b2080ab4af850e5f49c"
+      },
+      "text": "{\n  \"experiment\": \"exp-112bb638c97e4de09236218499185aab\",\n  \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\"\n}"
+    },
+    {
+      "argv": [
+        "test",
+        "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "--experiment",
+        "exp-112bb638c97e4de09236218499185aab",
+        "--reason",
+        "G5 drill: TESTED A"
+      ],
+      "call": "test",
+      "code": 0,
+      "reply": {
+        "id": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "status": "TESTED"
+      },
+      "text": "{\n  \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n  \"status\": \"TESTED\"\n}"
+    },
+    {
+      "call": "registered",
+      "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+      "label": "A"
+    },
+    {
+      "argv": [
+        "create",
+        "--source-commit",
+        "b05e3be5199704c1050b4a88a8e132fb2eb765f5"
+      ],
+      "call": "create",
+      "code": 0,
+      "reply": {
+        "experiment": null,
+        "id": "gen-6d46fee820284321998ba695d6b27ae6",
+        "parent": null,
+        "reason_goal": null,
+        "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"experiment\": null,\n  \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n  \"parent\": null,\n  \"reason_goal\": null,\n  \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "promote",
+        "gen-6d46fee820284321998ba695d6b27ae6",
+        "--reason",
+        "G5 drill: share B"
+      ],
+      "call": "promote",
+      "code": 0,
+      "reply": {
+        "id": "gen-6d46fee820284321998ba695d6b27ae6",
+        "owner": "system",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n  \"owner\": \"system\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "identity",
+        "gen-6d46fee820284321998ba695d6b27ae6",
+        "--source-commit",
+        "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+        "--rootfs-sha256",
+        "720d9ec91a8f6ff603fc683ad55a07ba49a5ad749aab038aeb264849be396053",
+        "--kernel-sha256",
+        "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+        "--initramfs-sha256",
+        "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "--input-manifest-sha256",
+        "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+        "--build-id",
+        "g5-b",
+        "--reason",
+        "G5 drill: identity of B"
+      ],
+      "call": "identity",
+      "code": 0,
+      "reply": {
+        "id": "gen-6d46fee820284321998ba695d6b27ae6"
+      },
+      "text": "{\n  \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\"\n}"
+    },
+    {
+      "argv": [
+        "evidence",
+        "gen-6d46fee820284321998ba695d6b27ae6",
+        "--outcome",
+        "passed",
+        "--evidence-sha256",
+        "f73aeac0a182dddc9fc6ddce1ec2849d239286f2f256f25c18eac93651beb6d9",
+        "--reason",
+        "G5 drill: acceptance of B"
+      ],
+      "call": "evidence",
+      "code": 0,
+      "reply": {
+        "experiment": "exp-fbef9bd7785748a3993bdc34c51d2b46",
+        "id": "gen-6d46fee820284321998ba695d6b27ae6"
+      },
+      "text": "{\n  \"experiment\": \"exp-fbef9bd7785748a3993bdc34c51d2b46\",\n  \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\"\n}"
+    },
+    {
+      "argv": [
+        "test",
+        "gen-6d46fee820284321998ba695d6b27ae6",
+        "--experiment",
+        "exp-fbef9bd7785748a3993bdc34c51d2b46",
+        "--reason",
+        "G5 drill: TESTED B"
+      ],
+      "call": "test",
+      "code": 0,
+      "reply": {
+        "id": "gen-6d46fee820284321998ba695d6b27ae6",
+        "status": "TESTED"
+      },
+      "text": "{\n  \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n  \"status\": \"TESTED\"\n}"
+    },
+    {
+      "call": "registered",
+      "generation": "gen-6d46fee820284321998ba695d6b27ae6",
+      "label": "B"
+    },
+    {
+      "argv": [
+        "list"
+      ],
+      "call": "list",
+      "code": 0,
+      "reply": {
+        "count": 2,
+        "generations": [
+          {
+            "id": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+            "parent": null,
+            "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+            "status": "TESTED"
+          },
+          {
+            "id": "gen-6d46fee820284321998ba695d6b27ae6",
+            "parent": null,
+            "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+            "status": "TESTED"
+          }
+        ]
+      },
+      "text": "{\n  \"count\": 2,\n  \"generations\": [\n    {\n      \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n      \"parent\": null,\n      \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n      \"status\": \"TESTED\"\n    },\n    {\n      \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n      \"parent\": null,\n      \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n      \"status\": \"TESTED\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "history"
+      ],
+      "call": "history",
+      "code": 0,
+      "reply": {
+        "activations": [],
+        "count": 0
+      },
+      "text": "{\n  \"activations\": [],\n  \"count\": 0\n}"
+    }
+  ],
+  "ok": true,
+  "schema": "flowerly-g5-drill/v1-report",
+  "slot": "root-a",
+  "step": 1
+}

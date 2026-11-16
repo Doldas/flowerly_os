@@ -94,6 +94,24 @@ drill file; a Generation baked by `distro-builder slot stage` with this
 rootfs is the next integration, not claimed here. The rootfs bytes are not
 claimed reproducible; this is input identity.
 
+## Gate D re-run on the pinned rootfs (same day)
+
+`scripts/build-g5-test-image.sh` (new; the pipeline previously lived only in a
+scratch directory) turns the pinned rootfs into the Gate D inputs: slots A, B
+and B2 (test-only schema-drill `flowerlyd`), identities that carry the
+committed manifest digest `8689cd41…4d62`, the two-slot disk with B staged,
+and the kernel and `systemd-bootx64.efi` taken from the frozen packages. Each
+slot is prepared with `FLOWERLY_FROZEN_INPUTS`, so none of them would have
+been baked from a rootfs that is not exactly the frozen set. `verify-binding`
+confirmed the staged kernel is the frozen `vmlinuz`.
+
+The exact-SHA KVM matrix (`b05e3be`, real OVMF/KVM, harness unchanged) then
+gave **16 of 16 scenarios PASS**, including the restore drill and the
+exhausted-target observation (the loader again started only the target slot).
+Evidence: [evidence/0049-g5-pinned-rootfs-b05e3be](evidence/0049-g5-pinned-rootfs-b05e3be/).
+The initramfs is the generic mkosi initrd from the earlier run (not part of
+the frozen set).
+
 ## Not done
 
 - Kernel config, toolchain and output identity fields (a v2 schema).

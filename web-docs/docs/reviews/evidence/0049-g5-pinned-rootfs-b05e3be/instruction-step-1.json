@@ -1,0 +1,34 @@
+{
+  "actions": [
+    {
+      "evidence_sha256": "443be1e731bd9941163dc527a3cea41242023648c7eb27ba88e35fe4ead84a45",
+      "identity": {
+        "build_id": "g5-a",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+        "kernel_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+        "rootfs_sha256": "70c92f4d50ad2b18d1363ec6d3907e5bb7df09b0dc7167c63c030b3006ab8209",
+        "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5"
+      },
+      "label": "A",
+      "op": "register"
+    },
+    {
+      "evidence_sha256": "f73aeac0a182dddc9fc6ddce1ec2849d239286f2f256f25c18eac93651beb6d9",
+      "identity": {
+        "build_id": "g5-b",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+        "kernel_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+        "rootfs_sha256": "720d9ec91a8f6ff603fc683ad55a07ba49a5ad749aab038aeb264849be396053",
+        "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5"
+      },
+      "label": "B",
+      "op": "register"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 1
+}

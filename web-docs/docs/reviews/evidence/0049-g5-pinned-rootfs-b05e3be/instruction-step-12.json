@@ -1,0 +1,13 @@
+{
+  "actions": [
+    {
+      "expect": "refused",
+      "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+      "op": "rollback"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-b",
+  "step": 12
+}

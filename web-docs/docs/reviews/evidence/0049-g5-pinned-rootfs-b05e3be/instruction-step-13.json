@@ -1,0 +1,16 @@
+{
+  "actions": [
+    {
+      "backup_sha256": "0f03e7c4b7893b5a55a669a8c4299e261df5921edbd43371ab47b0b8e1cceeef",
+      "op": "restore"
+    },
+    {
+      "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+      "op": "inspect"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 13
+}

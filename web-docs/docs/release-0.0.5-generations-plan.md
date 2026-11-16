@@ -187,7 +187,8 @@ separately).
   (`FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh`) matches the manifest
   exactly and boots the frozen kernel image (evidence
   `reviews/evidence/0049-gate-b-pinned-build-8689cd4`). `prepare-generation-ab-rootfs.sh` can now require the frozen set
-  (`FLOWERLY_FROZEN_INPUTS`). Still open: kernel config/toolchain/output
+  (`FLOWERLY_FROZEN_INPUTS`), and `scripts/build-g5-test-image.sh` uses it: the
+  Gate D KVM matrix passes 16/16 on a rootfs built from the snapshot (`b05e3be`). Still open: kernel config/toolchain/output
   identity in a v2 schema (the kernel config is not in the `linux` package), a
   real built Generation carrying the manifest digest, and CI retention of the
   cache.
