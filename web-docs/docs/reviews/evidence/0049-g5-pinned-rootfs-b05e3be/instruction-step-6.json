@@ -1,0 +1,13 @@
+{
+  "actions": [
+    {
+      "expect": "armed",
+      "generation": "gen-6d46fee820284321998ba695d6b27ae6",
+      "op": "rollback"
+    }
+  ],
+  "reboot": true,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 6
+}

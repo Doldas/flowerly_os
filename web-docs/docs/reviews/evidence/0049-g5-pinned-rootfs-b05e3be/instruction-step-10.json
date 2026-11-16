@@ -1,0 +1,21 @@
+{
+  "actions": [
+    {
+      "evidence_sha256": "3150c352c3e014a7e1bccb984ab06b03960155cf4344412622bc8f55f7706ef5",
+      "identity": {
+        "build_id": "g5-b2",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+        "kernel_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+        "rootfs_sha256": "9844da8f3e2841d1b228ceea5b1a154a9053213216d9ad2c8f0888cd8ba34e5b",
+        "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5"
+      },
+      "label": "B2",
+      "op": "register"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 10
+}

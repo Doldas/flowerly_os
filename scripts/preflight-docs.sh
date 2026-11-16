@@ -31,6 +31,7 @@ python3 scripts/test-generation-gate-d-drill.py
 python3 scripts/test-generation-gate-d-kvm-acceptance.py
 python3 scripts/test-schema-compat.py --self-test
 bash -n scripts/prepare-generation-ab-rootfs.sh
+bash -n scripts/build-g5-test-image.sh
 bash -n distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 python3 scripts/test-boot-ipc-health.py
 python3 scripts/test-build-arch-root-volume.py

@@ -1,0 +1,19 @@
+{
+  "actions": [
+    {
+      "expect": "refused",
+      "generation": "gen-5af18e483e03415db6c8f772c09d00f7",
+      "op": "activate"
+    },
+    {
+      "acknowledge_irreversible": true,
+      "expect": "armed",
+      "generation": "gen-5af18e483e03415db6c8f772c09d00f7",
+      "op": "activate"
+    }
+  ],
+  "reboot": true,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 11
+}
