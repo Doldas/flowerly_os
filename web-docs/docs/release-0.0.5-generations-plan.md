@@ -181,11 +181,14 @@ separately).
   specific reason. Review:
   [0049-gate-b-frozen-package-set-2026-11-16](reviews/0049-gate-b-frozen-package-set-2026-11-16.md).
   `distro-builder manifest verify-rootfs` now compares a built rootfs's
-  installed packages with the manifest. Still open: a rootfs built **from the
+  installed packages with the manifest, and `manifest verify-binding` checks
+  that a baked identity names the manifest and that the staged kernel is the
+  frozen `linux` archive's `vmlinuz`. Still open: a rootfs built **from the
   snapshot** (mkosi pointed at the dated archive mirror, needs network
   approval for the build tools and the image), kernel config/toolchain/output
-  identity in a v2 schema, binding the manifest digest to a built Generation,
-  and CI retention of the cache.
+  identity in a v2 schema (the kernel config is not in the `linux` package), a
+  real built Generation carrying the manifest digest, and CI retention of the
+  cache.
 
 ## Immediate next engineering action
 

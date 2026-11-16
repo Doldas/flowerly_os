@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- `distro-builder manifest verify-binding` (#49, ADR-0020 step 7): checks that
+  a Generation's baked identity names the frozen manifest by digest and that
+  the kernel staged for boot is byte-identical to the `vmlinuz` in the frozen
+  `linux` archive (read from the verified cache, symlinks refused). Exits
+  non-zero unless both hold.
 - `distro-builder manifest verify-rootfs` (#49, ADR-0020 step 7): compares the
   packages installed in a built rootfs (pacman's local database, nothing
   followed through a symlink) with the frozen manifest by name, version and

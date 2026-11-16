@@ -1,3 +1,4 @@
+mod binding;
 mod manifest;
 mod rootfs;
 mod signature;
@@ -126,6 +127,20 @@ enum ManifestAction {
         #[arg(long)]
         keyring: Option<PathBuf>,
     },
+    /// Check that a baked identity names this manifest and that the staged
+    /// kernel is the `vmlinuz` of the frozen `linux` archive in the cache.
+    /// Prints a JSON report; exits non-zero unless both hold.
+    VerifyBinding {
+        path: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
+        /// The baked `flowerly-generation-root/v2` identity JSON.
+        #[arg(long)]
+        identity: PathBuf,
+        /// The kernel image staged for boot.
+        #[arg(long)]
+        kernel: PathBuf,
+    },
     /// Compare the packages installed in a built rootfs with the manifest
     /// (pacman's local database). Prints a JSON report; exits non-zero unless
     /// the installed set is exactly the manifest's.
@@ -149,6 +164,20 @@ fn main() -> Result<()> {
             println!("manifest_sha256={}", checked.sha256);
             println!("packages={}", checked.manifest.packages.len());
             println!("signature_trust={}", manifest::SIGNATURE_TRUST);
+            Ok(())
+        }
+        Action::Manifest(ManifestAction::VerifyBinding {
+            path,
+            cache,
+            identity,
+            kernel,
+        }) => {
+            let checked = check_manifest(&path)?;
+            let binding = binding::verify_binding(&checked, &cache, &identity, &kernel)?;
+            println!("{}", serde_json::to_string_pretty(&binding)?);
+            if !binding.holds() {
+                bail!("the identity and kernel are not bound to this manifest");
+            }
             Ok(())
         }
         Action::Manifest(ManifestAction::VerifyRootfs { path, rootfs }) => {
