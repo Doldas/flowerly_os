@@ -1,0 +1,81 @@
+{
+  "all_tampering_rejected": true,
+  "archive_bytes": 738921801,
+  "baseline": {
+    "artifacts_verified": 314,
+    "exit": 0,
+    "seconds": 18.8,
+    "signature_trust": "verified_against_supplied_keyring"
+  },
+  "cache_bytes": 740294228,
+  "manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+  "mirror_moved": {
+    "examples": [
+      "coreutils 9.12-2 -> 9.12-3",
+      "cryptsetup 2.8.8-1 -> 2.8.8-2",
+      "curl 8.23.0-1 -> 8.23.0-2",
+      "dbus 1.16.2-2 -> 1.16.4-1",
+      "kmod 34.3-1 -> 34.3-2",
+      "krb5 1.22.2-1 -> 1.22.2-2",
+      "libarchive 3.8.11-1 -> 3.8.11-2",
+      "libbpf 1.7.0-1 -> 1.8.0-1"
+    ],
+    "later_snapshot": "2026/11/15",
+    "packages_gone": [],
+    "packages_with_a_different_version": 26,
+    "replay_exit": 0,
+    "replay_signature_trust": "verified_against_supplied_keyring"
+  },
+  "ok": true,
+  "tampering": {
+    "archive_bytes": {
+      "exit": 1,
+      "mismatched": 1,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 0
+    },
+    "archive_removed_offline": {
+      "exit": 1,
+      "mismatched": 0,
+      "missing": 1,
+      "rejected": true,
+      "signature_problems": 0
+    },
+    "empty_keyring": {
+      "exit": 1,
+      "mismatched": 0,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 157
+    },
+    "manifest_not_canonical": {
+      "exit": 1,
+      "mismatched": 0,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 0
+    },
+    "rehashed_forged_archive": {
+      "exit": 1,
+      "mismatched": 0,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 1
+    },
+    "signature_bytes": {
+      "exit": 1,
+      "mismatched": 1,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 0
+    },
+    "signer_swapped": {
+      "exit": 1,
+      "mismatched": 0,
+      "missing": 0,
+      "rejected": true,
+      "signature_problems": 1
+    }
+  }
+}

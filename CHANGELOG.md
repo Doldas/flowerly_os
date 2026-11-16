@@ -5,6 +5,16 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Frozen Arch package set (Gate B, #49): `scripts/freeze-arch-snapshot.py`
+  resolves `packages.base` from a dated Arch Linux Archive snapshot, downloads
+  every archive and detached signature by exact snapshot URL (no redirects, no
+  other host, explicit approval string), checks size, SHA-256 and signature
+  against a keyring pinned in `distro/base-image/arch/trust-policy.json` and
+  writes the canonical manifest. `distro/base-image/arch/inputs.manifest.json`
+  freezes 157 packages from 2026/11/09; the independent `distro-builder
+  manifest verify-cache --keyring` verifies all 314 artifacts. A drill shows
+  the cache replays after the mirror moved and that tampering, a swapped
+  signer, an empty keyring and a removed archive fail closed.
 - **Activation is enabled** (`RELEASE_ACTIVATION_ENABLED = true` in the slot
   broker and `flowerly-core`), in its own commit after the passing G5 evidence;
   the test-profile marker is no longer needed.

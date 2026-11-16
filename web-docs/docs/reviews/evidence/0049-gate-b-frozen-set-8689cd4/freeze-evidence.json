@@ -1,0 +1,11 @@
+{
+  "databases": {
+    "core": "aec62efbfb59d300204f936a633a59d3c89d6a7e7f94852b8f621b61a253afae",
+    "extra": "1b4caf18e4a57ba10f201c7b19892bb55a37283c2b0369b39cc6c4f6b654151d"
+  },
+  "keyring_sha256": "f7af717a90821803e5c366032f3135c236c4100962716b3c1ed352f8b9330f51",
+  "manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+  "packages": 157,
+  "revoked_fingerprints": 38,
+  "snapshot": "2026/11/09"
+}
