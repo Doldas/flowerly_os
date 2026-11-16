@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "scripts/prepare-generation-ab-rootfs.sh"
@@ -308,37 +309,42 @@ class BootTests(unittest.TestCase):
     def test_ledger_group_follows_the_group_flowerlyd_runs_as(self):
         # flowerlyd reads the ledger only if its group is the state
         # directory's, and systemd gives that directory flowerlyd's Group=
-        # (flowerly-users with the multi-user drop-in, G5 run 1).
-        me, mine = os.getuid(), os.getgid()
+        # (flowerly-users with the multi-user drop-in, G5 run 1). The gids are
+        # fixed and non-zero, so the test means the same as root (push CI) and
+        # as a normal user, and chown is recorded instead of performed.
+        me = os.getuid()
         account = type("Account", (), {"pw_uid": me})()
-        groups = {"flowerly": mine + 1, "flowerly-users": mine}
+        groups = {"flowerly": 4001, "flowerly-users": 4002}
         asked = []
 
         def unit_group():
             asked.append(True)
             return "flowerly-users"
 
-        with tempfile.TemporaryDirectory() as d:
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(guest.os, "chown") as chown,
+        ):
             owner = guest.service_owner(
                 Path(d),
                 unit_group=unit_group,
                 account=lambda name: account,
                 group=lambda name: groups[name],
             )
-            self.assertEqual(owner, (0, mine))
+            self.assertEqual(owner, (0, 4002))
             self.assertEqual(asked, [True])
-            self.assertEqual(os.stat(d).st_gid, mine)
+            chown.assert_called_once_with(Path(d), me, 4002, follow_symlinks=False)
 
     def test_ledger_group_defaults_to_the_service_group(self):
         account = type("Account", (), {"pw_uid": os.getuid()})()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(guest.os, "chown"):
             owner = guest.service_owner(
                 Path(d),
                 unit_group=lambda: "",
                 account=lambda name: account,
-                group=lambda name: {"flowerly": os.getgid()}[name],
+                group=lambda name: {"flowerly": 4001}[name],
             )
-            self.assertEqual(owner, (0, os.getgid()))
+            self.assertEqual(owner, (0, 4001))
 
     def test_ledger_group_refuses_a_root_or_unknown_unit_group(self):
         account = type("Account", (), {"pw_uid": os.getuid()})()
