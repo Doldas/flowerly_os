@@ -5,6 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Pinned rootfs build (#49): `FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh`
+  points mkosi at the frozen manifest's dated Arch Archive snapshot. A real
+  build from it installs exactly the 157 manifest packages at the manifest
+  versions (`manifest verify-rootfs`: 0 missing, 0 extra, 0 differing) and its
+  kernel image equals the frozen `linux` archive's `vmlinuz`
+  (`manifest verify-binding`).
 - `distro-builder manifest verify-binding` (#49, ADR-0020 step 7): checks that
   a Generation's baked identity names the frozen manifest by digest and that
   the kernel staged for boot is byte-identical to the `vmlinuz` in the frozen
