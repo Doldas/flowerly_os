@@ -554,9 +554,12 @@ def generation_scenario(alice, bob, admin, admin_uid):
     assert goal not in edges and f"actor:uid:{admin_uid}" not in edges, edges
     bob.ok("generation.create", parent=candidate)
     # Promotion does not activate: STABLE needs a witnessed boot (ADR-0023).
-    assert (
-        error_of(admin.call("generation.activate", id=candidate, reason="ship"))[0]
-        == "conflict"
+    code, message = error_of(
+        admin.call("generation.activate", id=candidate, reason="ship")
+    )
+    assert code == "invalid_argument" and "no complete root identity" in message, (
+        code,
+        message,
     )
     assert bob.ok("generation.inspect", id=candidate)["status"] == "CANDIDATE"
     lifecycle_scenario(bob, admin, admin_uid, candidate)
