@@ -1294,6 +1294,7 @@ impl Fixture {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
                 dir
             },
+            release_enabled: false,
         };
         Broker {
             config,

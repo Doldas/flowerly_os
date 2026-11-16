@@ -972,6 +972,7 @@ mod generation_activation {
         let host = ActivationHost {
             broker_socket: dir.path().join("broker.sock"),
             test_profile_marker: write("test-profile", b"", 0o644),
+            release_enabled: false,
             marker_owner_uid: meta.uid(),
             ledger: LedgerSource {
                 path: write("boot-witness.jsonl", LEDGER.as_bytes(), 0o640),

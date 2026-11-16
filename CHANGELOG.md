@@ -5,6 +5,9 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- **Activation is enabled** (`RELEASE_ACTIVATION_ENABLED = true` in the slot
+  broker and `flowerly-core`), in its own commit after the passing G5 evidence;
+  the test-profile marker is no longer needed.
 - Gate D real KVM acceptance (ADR-0023 G5, #9): all 16 scenarios pass on an
   exact SHA with OVMF and systemd-boot (activate, FELL_BACK, rollback, schema
   bump, irreversible activation, restore drill, user data and history intact,

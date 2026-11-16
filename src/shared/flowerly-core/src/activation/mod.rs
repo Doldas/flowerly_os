@@ -4,9 +4,10 @@
 //!
 //! 0. The Generation must exist (an Admin sees every Generation, as for
 //!    `promote`; the database refuses a non-system one later).
-//! 1. Activation must be enabled: [`RELEASE_ACTIVATION_ENABLED`] is off until
-//!    Gate D is verified, so only an image carrying the root-owned test-profile
-//!    marker gets past this point. Nothing is written before it.
+//! 1. Activation must be enabled: [`RELEASE_ACTIVATION_ENABLED`] is on since
+//!    the G5 evidence; with it off (a pre-release build) only an image carrying
+//!    the root-owned test-profile marker gets past this point. Nothing is
+//!    written before it.
 //! 2. A retry with a known `operation_id` returns the recorded row and asks no
 //!    broker (an unknown outcome is read back, never re-sent).
 //! 3. The broker's read-only `plan` checks the staged slot's recorded
@@ -41,9 +42,10 @@ use crate::storage::{StorageError, Store};
 use crate::types::{Caller, GenerationId};
 use crate::witness::{read_ledger, LedgerSource};
 
-/// Off until the change that records the passing G5 evidence (ADR-0023); the
-/// broker has its own copy and decides for itself.
-pub const RELEASE_ACTIVATION_ENABLED: bool = false;
+/// On by the change that archives the passing G5 evidence (ADR-0023, review
+/// 0048-g5-gate-d-kvm-acceptance); the broker has its own copy and decides for
+/// itself.
+pub const RELEASE_ACTIVATION_ENABLED: bool = true;
 pub const BROKER_SOCKET: &str = "/run/flowerly-slot-broker.sock";
 /// Installed only by the explicit Generation A/B test-image script.
 pub const TEST_PROFILE_MARKER: &str = "/usr/lib/flowerly/generation-ab-test-profile";
@@ -60,6 +62,9 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ActivationHost {
     pub broker_socket: PathBuf,
     pub test_profile_marker: PathBuf,
+    /// The release switch as this host sees it; tests turn it off to exercise
+    /// the pre-release marker rules.
+    pub release_enabled: bool,
     /// Root in production: a marker the service account could create does
     /// not enable anything.
     pub marker_owner_uid: u32,
@@ -72,6 +77,7 @@ impl ActivationHost {
         Ok(Self {
             broker_socket: PathBuf::from(BROKER_SOCKET),
             test_profile_marker: PathBuf::from(TEST_PROFILE_MARKER),
+            release_enabled: RELEASE_ACTIVATION_ENABLED,
             marker_owner_uid: 0,
             ledger: LedgerSource::for_state_dir(state_dir)?,
             backup_dir: state_dir.join(BACKUP_DIR),
@@ -81,7 +87,7 @@ impl ActivationHost {
     /// The release switch, or a test-profile marker that is a regular file
     /// (not a symlink) of the required owner and not writable by others.
     pub fn enabled(&self) -> bool {
-        RELEASE_ACTIVATION_ENABLED
+        self.release_enabled
             || std::fs::symlink_metadata(&self.test_profile_marker).is_ok_and(|meta| {
                 meta.is_file() && meta.uid() == self.marker_owner_uid && meta.mode() & 0o022 == 0
             })

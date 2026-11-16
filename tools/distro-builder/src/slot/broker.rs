@@ -4,9 +4,9 @@
 //! systemd hands it one accepted connection on stdin (`Accept=yes`). It
 //! answers one typed intent, `arm` or `disarm`, and decides everything from
 //! its own state, never from the caller:
-//! - activation must be enabled: the release switch below is off until Gate D
-//!   is verified, so only an image carrying the explicit test-profile marker
-//!   answers at all;
+//! - activation must be enabled: the release switch below is on since the G5
+//!   evidence; with it off (a pre-release build) only an image carrying the
+//!   explicit test-profile marker answers at all;
 //! - the kernel-attested peer must be the service account, and the admin uid
 //!   it speaks for must still be in the admin group per the system databases;
 //! - the disk is opened read-only and bound to the manifest through the real
@@ -51,8 +51,8 @@ use super::{
     Faults, Slot,
 };
 
-/// Off until the change that records the passing G5 evidence (ADR-0023).
-pub const RELEASE_ACTIVATION_ENABLED: bool = false;
+/// On by the change that archives the passing G5 evidence (ADR-0023).
+pub const RELEASE_ACTIVATION_ENABLED: bool = true;
 
 pub const DEFAULT_CONFIG: &str = "/usr/lib/flowerly/slot-broker.json";
 const MAX_INTENT: usize = 8 * 1024;
@@ -75,6 +75,14 @@ pub struct BrokerConfig {
     pub admin_group: String,
     /// Where `flowerlyd` puts pre-activation backups as `<sha256>.sqlite`.
     pub backup_dir: PathBuf,
+    /// Not read from the file: tests turn the release switch off to exercise
+    /// the pre-release marker rules.
+    #[serde(skip, default = "release_switch")]
+    pub release_enabled: bool,
+}
+
+fn release_switch() -> bool {
+    RELEASE_ACTIVATION_ENABLED
 }
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -110,7 +118,7 @@ impl BrokerConfig {
     }
 
     fn enabled(&self) -> bool {
-        RELEASE_ACTIVATION_ENABLED
+        self.release_enabled
             || read_private(&self.test_profile_marker, 4096, "test-profile marker").is_ok()
     }
 }

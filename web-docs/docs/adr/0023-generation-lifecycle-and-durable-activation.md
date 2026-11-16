@@ -341,7 +341,8 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   --schema-window`). A target whose `min_reader` is newer than the running
   root's `schema_version` is an irreversible activation and is refused in
   G4a; G4b adds the safe path (below).
-- *Gate.* `RELEASE_ACTIVATION_ENABLED` is `false`. The broker answers only on
+- *Gate.* `RELEASE_ACTIVATION_ENABLED` was `false` in G4a and is `true` since
+  the G5 evidence (below). While it is off, the broker answers only on
   an image carrying the test-profile marker, which only the explicit
   test-image script installs, together with the broker binary, its config and
   its socket-activated units (`Accept=yes`, one root process per intent,

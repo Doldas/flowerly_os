@@ -95,6 +95,7 @@ fn rig() -> Rig {
     let host = ActivationHost {
         broker_socket: dir.path().join("broker.sock"),
         test_profile_marker: marker,
+        release_enabled: false,
         marker_owner_uid: meta.uid(),
         ledger: LedgerSource {
             path: ledger_path,
@@ -281,7 +282,7 @@ fn nothing_happens_while_activation_is_disabled() {
 #[test]
 fn the_marker_must_be_a_regular_file_owned_as_required_and_not_writable_by_others() {
     let rig = rig();
-    assert!(rig.host.enabled() || RELEASE_ACTIVATION_ENABLED);
+    assert!(rig.host.enabled());
     let mut host = rig.host.clone();
     host.marker_owner_uid = host.marker_owner_uid.wrapping_add(1);
     assert!(!host.enabled());
