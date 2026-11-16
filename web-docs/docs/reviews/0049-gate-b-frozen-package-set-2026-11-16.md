@@ -13,7 +13,7 @@ mirror, no other host).
    closure of `distro/base-image/arch/packages.base`, downloaded every archive
    and detached signature from that snapshot tree, and wrote
    `distro/base-image/arch/inputs.manifest.json`
-   (`flowerly.generation-inputs.v1`, 157 packages, 16 distinct signers,
+   (`flowerly.generation-inputs.v1`, 157 packages, 15 distinct signers,
    manifest SHA-256 `8689cd41…4d62`).
 2. The independent Rust verifier, not the script, judged the result:
    `distro-builder manifest check` and `manifest verify-cache --keyring`
