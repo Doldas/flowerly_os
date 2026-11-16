@@ -57,7 +57,14 @@ def create_root(root):
         target.write_text("ID=arch\n" if file.endswith("os-release") else "fixture\n")
 
 
-def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
+def prepare(
+    root,
+    partuuid=UUID_A,
+    schema=("16", "16"),
+    broker=None,
+    manifest=MANIFEST,
+    frozen=None,
+):
     if broker is None:
         broker = Path(root).parent / (Path(root).name + "-broker")
         broker.write_text("#!/bin/sh\nexit 0\n")
@@ -73,7 +80,7 @@ def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
         "--source-commit",
         COMMIT,
         "--input-manifest-sha256",
-        MANIFEST,
+        manifest,
         "--build-id",
         "fixture-a",
         "--schema-version",
@@ -90,6 +97,8 @@ def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
     )
     fake.chmod(0o755)
     env = dict(os.environ, FLOWERLY_SYSUSERS=str(fake))
+    if frozen is not None:
+        env["FLOWERLY_FROZEN_INPUTS"] = str(frozen)
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 
@@ -601,6 +610,41 @@ class BootTests(unittest.TestCase):
             self.assertNotEqual(
                 prepare(root, broker=Path(d) / "missing-broker").returncode, 0
             )
+
+    def test_frozen_inputs_are_a_precondition_when_requested(self):
+        import hashlib
+
+        frozen = hashlib.sha256(
+            (ROOT / "distro/base-image/arch/inputs.manifest.json").read_bytes()
+        ).hexdigest()
+
+        def verifier(directory, exit_code):
+            path = Path(directory) / f"distro-builder-{exit_code}"
+            path.write_text(f'#!/bin/sh\necho "$@" >> "$0.args"\nexit {exit_code}\n')
+            path.chmod(0o755)
+            return path
+
+        with tempfile.TemporaryDirectory() as d:
+            ok, bad = verifier(d, 0), verifier(d, 1)
+            for name, manifest, tool, accepted in (
+                ("matching manifest and rootfs", frozen, ok, True),
+                ("identity names another manifest", MANIFEST, ok, False),
+                ("rootfs differs from the manifest", frozen, bad, False),
+            ):
+                root = Path(d) / name.replace(" ", "-")
+                create_root(root)
+                with self.subTest(name):
+                    result = prepare(root, manifest=manifest, frozen=tool)
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    wrote = (root / "usr/lib/flowerly/generation-root.json").exists()
+                    self.assertEqual(wrote, accepted, "nothing is written on refusal")
+            args = Path(f"{ok}.args").read_text()
+            self.assertIn("manifest verify-rootfs", args)
+            self.assertIn("inputs.manifest.json", args)
+            # Not requested: the verifier is never run and any digest is fine.
+            root = Path(d) / "plain"
+            create_root(root)
+            self.assertEqual(prepare(root).returncode, 0)
 
     def test_installer_refuses_untrusted_inputs(self):
         with tempfile.TemporaryDirectory() as d:
