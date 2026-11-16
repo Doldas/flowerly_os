@@ -71,6 +71,29 @@ fixed with hard links.)
   next largest, so a nightly cache needs about 0.75 GB plus the builder's
   scratch. Download time was not measured separately.
 
+## Pinned build (same day)
+
+`FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh` passes
+`--mirror=<manifest snapshot_url>` to mkosi. The proof build ran in an Arch
+container (mkosi, arch-install-scripts, cpio from the live mirrors; tooling is
+not part of the frozen inputs) with the same arguments. pacman resolved 155
+packages plus the requested ones from
+`https://archive.archlinux.org/repos/2026/11/09`, including kernel
+7.2.14-arch1-1.
+
+| Check | Result |
+| --- | --- |
+| `manifest verify-rootfs` on the built rootfs | 157 installed, 0 missing, 0 unexpected, 0 version, 0 architecture, 0 unreadable |
+| `manifest verify-binding` with the built `vmlinuz` | identity names the manifest; staged kernel `b1e9eaf5…325b` is the frozen one |
+
+The earlier live-mirror rootfs failed the first check with 27 version
+differences. Evidence:
+[evidence/0049-gate-b-pinned-build-8689cd4](evidence/0049-gate-b-pinned-build-8689cd4/).
+The identity used for the binding check carried the manifest digest from a
+drill file; a Generation baked by `distro-builder slot stage` with this
+rootfs is the next integration, not claimed here. The rootfs bytes are not
+claimed reproducible; this is input identity.
+
 ## Not done
 
 - Kernel config, toolchain and output identity fields (a v2 schema).
