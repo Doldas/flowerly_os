@@ -1,0 +1,12 @@
+{
+  "actions": [
+    {
+      "generation": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+      "op": "inspect"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 9
+}

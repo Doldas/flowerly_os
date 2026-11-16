@@ -1,0 +1,14 @@
+{
+  "actions": [
+    {
+      "acknowledges": 1,
+      "expect": "armed",
+      "generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+      "op": "activate"
+    }
+  ],
+  "reboot": true,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 4
+}

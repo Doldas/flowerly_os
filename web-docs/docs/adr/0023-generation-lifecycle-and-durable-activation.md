@@ -385,11 +385,21 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   entry cannot be restaged until `disarm` from the other slot removes it.
   What systemd-boot does with an exhausted target when no other entry matches
   its default (boot it again or wait in the menu) is verified in G5; either
-  way it never boots the incompatible root by itself.
+  way it never boots the incompatible root by itself. *Observed in G5:* it
+  keeps booting the exhausted target (no loop, no menu), never the demoted root.
 - *The other direction.* The broker also refuses a target whose
   `schema_version` is below the running root's `min_reader`: that root has
   migrated the database past what the target can read, so going back needs
   the backup restored first.
+
+**G5 (2026-11-16).** Real OVMF/KVM acceptance on `eb60060`: 16 of 16
+scenarios pass ([review](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md)).
+Changes it forced: entries carry `sort-key`/`version` so the newest armed entry
+wins; `plan` no longer hashes slots and `activate` answers the PENDING row and
+arms on a worker (migration 17: `armed_at`, `min_reader` 16); the schema-bump
+drill is the test-only `g5-schema-drill` feature (migration 18); the root
+witness accepts exactly the demoted `manual-flowerly-a|b[.conf]` entry of its
+own slot (identity check unchanged); the report is written to the console.
 
 ## Non-goals
 
