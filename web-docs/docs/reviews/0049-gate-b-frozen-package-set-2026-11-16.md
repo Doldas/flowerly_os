@@ -112,9 +112,31 @@ Evidence: [evidence/0049-g5-pinned-rootfs-b05e3be](evidence/0049-g5-pinned-rootf
 The initramfs is the generic mkosi initrd from the earlier run (not part of
 the frozen set).
 
+## Kernel configuration and toolchain identity
+
+- **Kernel configuration.** `verify-binding` now also reports the build
+  configuration embedded in the frozen kernel (IKCONFIG, found the way the
+  kernel's `extract-ikconfig` does it): SHA-256 `e8f340e4…0731`, built with
+  `gcc (GCC) 16.2.1 20260810`. It is reported only when the staged kernel is the
+  frozen one. (The configuration is not a separate file in the `linux` package.)
+  Evidence: `evidence/0049-gate-b-pinned-build-8689cd4/verify-binding-with-config.json`.
+- **Build tooling of the proof build.** Container image
+  `docker.io/library/archlinux@sha256:dfc5be7be44cf1acf3d9b3b902e3e9c8a29f97ed41e35631823cdc9c97e5d4f0`
+  (created 2026-10-27), mkosi 27.1, pacman and arch-install-scripts from that
+  day's live mirrors. These are recorded, **not frozen**: they decide how the
+  rootfs is assembled but not which package bytes it contains, and
+  `verify-rootfs` checks the result.
+- **Cache retention** is not implemented. Proposed policy for the owner: the
+  cache (about 0.75 GB, content-addressed) is rebuilt by the manual, approved
+  `freeze-arch-snapshot.py` network step and kept on the runner that builds the
+  image; CI never fetches. A CI job would need a persistent volume or release
+  asset, the keyring pin and this manifest; the drill proves a cache is
+  complete without network.
+
 ## Not done
 
-- Kernel config, toolchain and output identity fields (a v2 schema).
+- Freezing the build tooling itself (container image, mkosi) and a v2 manifest
+  schema that carries it.
 - A rootfs built from the snapshot, and binding the manifest digest to a
   built Generation image and boot report (ADR-0020 step 7). The comparison
   tool exists (`distro-builder manifest verify-rootfs`; the earlier live-mirror

@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- `manifest verify-binding` also reports the frozen kernel's embedded build
+  configuration hash and compiler (#49), extracted from the kernel image with
+  the system `zstd` and `gzip`. The toolchain of the proof build (container
+  digest, mkosi 27.1) and a cache-retention proposal are recorded in the Gate B
+  review.
 - Gate D re-run on the pinned rootfs (#49, #9): `scripts/build-g5-test-image.sh`
   builds the KVM test inputs (slots A, B, B2, identities, disk) from the
   rootfs built from the frozen snapshot, each slot refused unless it is
