@@ -5,6 +5,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- `distro-builder manifest verify-rootfs` (#49, ADR-0020 step 7): compares the
+  packages installed in a built rootfs (pacman's local database, nothing
+  followed through a symlink) with the frozen manifest by name, version and
+  architecture, and fails on any missing, extra, differing or unreadable
+  record. Against the earlier live-mirror rootfs it reports 27 version
+  differences and one extra package, which is the drift the frozen set removes.
 - Frozen Arch package set (Gate B, #49): `scripts/freeze-arch-snapshot.py`
   resolves `packages.base` from a dated Arch Linux Archive snapshot, downloads
   every archive and detached signature by exact snapshot URL (no redirects, no

@@ -74,8 +74,11 @@ fixed with hard links.)
 ## Not done
 
 - Kernel config, toolchain and output identity fields (a v2 schema).
-- Binding the manifest digest to a built Generation image and boot report
-  (ADR-0020 step 7), and a build that installs only from the cache.
+- A rootfs built from the snapshot, and binding the manifest digest to a
+  built Generation image and boot report (ADR-0020 step 7). The comparison
+  tool exists (`distro-builder manifest verify-rootfs`; the earlier live-mirror
+  rootfs fails it with 27 version differences and `openssl-3` extra), the
+  pinned build does not.
 - CI retention of the cache and a scheduled drill; the freeze is a manual,
   owner-approved network action.
 - Evaluation of the master-key certification chain.
