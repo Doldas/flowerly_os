@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Single Flowerly OS supervisor for user-state modules"
 
+[features]
+# Test images only (ADR-0023 G5): one extra migration that raises min_reader
+# past every released binary, for the real downgrade drill. Never in a release.
+g5-schema-drill = ["flowerly-core/g5-schema-drill"]
+
 [dependencies]
 flowerly-core.workspace = true
 anyhow.workspace = true

@@ -186,6 +186,80 @@ def pinned_partuuid_case():
     print("Root A/B baked PARTUUIDs match GPT manifest and loader entry")
 
 
+ROOT_A = "11111111-1111-1111-1111-111111111111"
+ROOT_B = "22222222-2222-2222-2222-222222222222"
+
+
+def slot_a_identity(**change):
+    identity = {
+        "schema": "flowerly-generation-root/v2",
+        "slot": "root-a",
+        "root_partuuid": ROOT_A,
+        "source_commit": "a" * 40,
+        "input_manifest_sha256": "b" * 64,
+        "build_id": "g5-a",
+        "schema_version": 16,
+        "min_reader": 16,
+    }
+    identity.update(change)
+    return {k: v for k, v in identity.items() if v is not None}
+
+
+def identity_case():
+    """Slot A gets the boot payload and identity the broker needs to arm it
+    again later (rollback to A, ADR-0023 G5)."""
+    pinned = {
+        "FLOWERLY_AB_ROOT_A_PARTUUID": ROOT_A,
+        "FLOWERLY_AB_ROOT_B_PARTUUID": ROOT_B,
+    }
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d)
+        fakes, inputs = fixture(folder)
+        identity = slot_a_identity()
+        (inputs / "identity.json").write_text(json.dumps(identity))
+        result = run(
+            folder,
+            fakes,
+            inputs,
+            extra=["--identity", str(inputs / "identity.json")],
+            env=pinned,
+        )
+        assert result.returncode == 0, result.stderr
+        manifest = json.loads((folder / "disk.img.manifest.json").read_text())
+        root_a = manifest["partitions"][1]
+        assert root_a["boot"] == {
+            "kernel_sha256": sha(b"kernel"),
+            "initramfs_sha256": sha(b"initrd"),
+        }
+        assert root_a["identity"] == identity
+        assert "boot" not in manifest["partitions"][2]
+    for change, why in [
+        ({"slot": "root-b"}, "names another slot"),
+        ({"root_partuuid": ROOT_B}, "names another slot"),
+        ({"extra": 1}, "fields"),
+        ({"build_id": None}, "fields"),
+        ({"schema": "flowerly-generation-root/v1"}, "schema"),
+        ({"source_commit": "A" * 40}, "malformed"),
+        ({"min_reader": 17}, "schema window"),
+        ({"schema_version": "16"}, "schema window"),
+    ]:
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            fakes, inputs = fixture(folder)
+            (inputs / "identity.json").write_text(json.dumps(slot_a_identity(**change)))
+            result = run(
+                folder,
+                fakes,
+                inputs,
+                extra=["--identity", str(inputs / "identity.json")],
+                env=pinned,
+            )
+            assert result.returncode != 0 and why in result.stderr, (change, result)
+            assert not (folder / "disk.img").exists(), change
+            assert not (folder / "disk.img.manifest.json").exists(), change
+    print("Slot A identity: recorded with its boot payload; a wrong one is refused")
+
+
 def refusal_cases():
     def expect(label, message, mutate=None, env=None, extra=None):
         with tempfile.TemporaryDirectory() as d:
@@ -276,5 +350,6 @@ if __name__ == "__main__":
     success_case()
     entry_case()
     pinned_partuuid_case()
+    identity_case()
     refusal_cases()
     overwrite_case()

@@ -94,6 +94,57 @@ def prepare(root, partuuid=UUID_A, schema=("16", "16"), broker=None):
 
 
 class BootTests(unittest.TestCase):
+    def test_the_demoted_manual_entry_is_its_slot(self):
+        # An irreversible arm renames the running root's entry to
+        # manual-flowerly-<slot>.conf; the operator boots it to restore the
+        # backup (ADR-0023 R4, KVM run 6). Same slot, same identity check.
+        with tempfile.TemporaryDirectory() as d:
+            witness = guest.append_witness(
+                Path(d) / "ledger.jsonl",
+                identity(),
+                "root=PARTUUID=" + UUID_A,
+                b"\x07\x00\x00\x00" + "manual-flowerly-a.conf".encode("utf-16-le"),
+                BOOT,
+                root_device=10,
+                data_device=20,
+            )
+            self.assertEqual(witness["slot"], "root-a")
+            self.assertEqual(witness["loader_entry"], "manual-flowerly-a.conf")
+
+    def test_a_demoted_entry_still_needs_its_own_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                guest.append_witness(
+                    Path(d) / "ledger.jsonl",
+                    identity(),
+                    "root=PARTUUID=" + UUID_A,
+                    b"\x07\x00\x00\x00" + "manual-flowerly-b.conf".encode("utf-16-le"),
+                    BOOT,
+                    root_device=10,
+                    data_device=20,
+                )
+
+    def test_only_the_exact_demoted_name_is_accepted(self):
+        for name in (
+            "manual-flowerly-a+3.conf",
+            "manual-flowerly-a+0-3.conf",
+            "manual-flowerly-c.conf",
+            "manual-flowerly-a.conf.tmp",
+            "xmanual-flowerly-a.conf",
+            "manual-manual-flowerly-a.conf",
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                with self.assertRaisesRegex(ValueError, "unexpected selected"):
+                    guest.append_witness(
+                        Path(d) / "ledger.jsonl",
+                        identity(),
+                        "root=PARTUUID=" + UUID_A,
+                        b"\x07\x00\x00\x00" + name.encode("utf-16-le"),
+                        BOOT,
+                        root_device=10,
+                        data_device=20,
+                    )
+
     def test_verified_efi_kernel_and_baked_identity(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = Path(d) / "ledger.jsonl"
@@ -244,6 +295,53 @@ class BootTests(unittest.TestCase):
             os.chmod(ledger, 0o666)
             guest.append_health(ledger, BOOT, owner=owner)
             self.assertEqual(ledger.stat().st_mode & 0o7777, 0o640)
+
+    def test_ledger_group_follows_the_group_flowerlyd_runs_as(self):
+        # flowerlyd reads the ledger only if its group is the state
+        # directory's, and systemd gives that directory flowerlyd's Group=
+        # (flowerly-users with the multi-user drop-in, G5 run 1).
+        me, mine = os.getuid(), os.getgid()
+        account = type("Account", (), {"pw_uid": me})()
+        groups = {"flowerly": mine + 1, "flowerly-users": mine}
+        asked = []
+
+        def unit_group():
+            asked.append(True)
+            return "flowerly-users"
+
+        with tempfile.TemporaryDirectory() as d:
+            owner = guest.service_owner(
+                Path(d),
+                unit_group=unit_group,
+                account=lambda name: account,
+                group=lambda name: groups[name],
+            )
+            self.assertEqual(owner, (0, mine))
+            self.assertEqual(asked, [True])
+            self.assertEqual(os.stat(d).st_gid, mine)
+
+    def test_ledger_group_defaults_to_the_service_group(self):
+        account = type("Account", (), {"pw_uid": os.getuid()})()
+        with tempfile.TemporaryDirectory() as d:
+            owner = guest.service_owner(
+                Path(d),
+                unit_group=lambda: "",
+                account=lambda name: account,
+                group=lambda name: {"flowerly": os.getgid()}[name],
+            )
+            self.assertEqual(owner, (0, os.getgid()))
+
+    def test_ledger_group_refuses_a_root_or_unknown_unit_group(self):
+        account = type("Account", (), {"pw_uid": os.getuid()})()
+        for name in ("root", "0", "no-such-group"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                with self.assertRaises((ValueError, KeyError)):
+                    guest.service_owner(
+                        Path(d),
+                        unit_group=lambda name=name: name,
+                        account=lambda _: account,
+                        group=lambda g: {"flowerly": 1, "root": 0}[g],
+                    )
 
     def test_writer_output_matches_the_golden_ledger_the_reader_parses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -425,6 +523,69 @@ class BootTests(unittest.TestCase):
                     root
                     / "etc/systemd/system/sockets.target.wants/flowerly-slot-broker.socket"
                 ).is_symlink()
+            )
+
+    def test_the_gate_d_drill_is_installed_only_in_the_test_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            create_root(root)
+            result = prepare(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            drill = root / "usr/lib/flowerly/g5-drill.py"
+            self.assertTrue(drill.is_file() and os.access(drill, os.X_OK))
+            self.assertEqual(
+                drill.read_bytes(),
+                (ROOT / "testbed/generation-ab/g5-drill.py").read_bytes(),
+            )
+            unit = (
+                root / "usr/lib/systemd/system/flowerly-g5-drill.service"
+            ).read_text()
+            for line in (
+                "After=flowerly-generation-health.service",
+                "RequiresMountsFor=/var/lib/flowerly /efi",
+                "ExecStart=/usr/bin/python3 /usr/lib/flowerly/g5-drill.py",
+                "StandardOutput=journal\n",
+                # agetty flushes and reconfigures ttyS0 when it opens it, which
+                # cut a report line short in KVM run 7.
+                "Before=getty.target serial-getty@ttyS0.service\n",
+            ):
+                self.assertIn(line, unit)
+            # The drill writes its report to the console itself; a second,
+            # journald-forwarded copy could arrive cut short by the reboot.
+            self.assertNotIn("StandardOutput=journal+console", unit)
+            self.assertNotIn("Requires=flowerly-generation-health", unit)
+            self.assertTrue(
+                (
+                    root
+                    / "etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service"
+                ).is_symlink()
+            )
+            # The drill is an Admin and a flowerly-users member, never root's
+            # stand-in and never the service account.
+            users = (root / "usr/lib/sysusers.d/flowerly-g5-drill.conf").read_text()
+            for line in (
+                "m flowerly-drill flowerly-admin",
+                "m flowerly-drill flowerly-users",
+            ):
+                self.assertIn(line, users)
+            self.assertRegex(users, r"(?m)^u flowerly-drill ")
+            self.assertNotRegex(users, r"(?m)^m flowerly ")
+            dropins = root / "etc/systemd/system/flowerlyd.service.d"
+            self.assertEqual(
+                (dropins / "50-multi-user.conf").read_bytes(),
+                (
+                    ROOT
+                    / "distro/overlay/usr/share/flowerly/systemd/flowerlyd-multi-user.conf"
+                ).read_bytes(),
+            )
+            # The opt-in drop-in replaces the primary group, so the broker
+            # socket (group flowerly) needs the group back explicitly.
+            self.assertIn(
+                "SupplementaryGroups=flowerly",
+                (dropins / "60-g5-slot-broker.conf").read_text(),
+            )
+            self.assertNotEqual(
+                prepare(root).returncode, 0, "duplicate install accepted"
             )
 
     def test_installer_refuses_a_bad_schema_window_or_broker(self):

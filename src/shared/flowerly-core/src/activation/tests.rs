@@ -95,6 +95,7 @@ fn rig() -> Rig {
     let host = ActivationHost {
         broker_socket: dir.path().join("broker.sock"),
         test_profile_marker: marker,
+        release_enabled: false,
         marker_owner_uid: meta.uid(),
         ledger: LedgerSource {
             path: ledger_path,
@@ -152,6 +153,14 @@ impl Rig {
         activate(&self.store, Some(&self.host), ADMIN, command)
     }
 
+    /// Request, then arm as `flowerlyd`'s worker does.
+    fn run_and_arm(&self, command: &ActivateCommand) -> Result<Armed, Failure> {
+        match self.run(command)? {
+            Outcome::Requested { arm: request, .. } => arm(&self.store, request),
+            other => panic!("not requested: {other:?}"),
+        }
+    }
+
     fn history(&self) -> Vec<Activation> {
         self.store.lock().unwrap().activation_history().unwrap()
     }
@@ -180,11 +189,26 @@ fn a_reversible_activation_plans_records_and_then_arms() {
     let rig = rig();
     let broker = rig.broker(vec![Reply::Answer(planned(false)), Reply::Answer(armed())]);
     let outcome = rig.run(&rig.command()).unwrap();
-    let intents = broker.join().unwrap();
-    let Outcome::Armed { activation, broker } = outcome else {
-        panic!("not armed: {outcome:?}");
+    // The request is answered once the row is written, before the arm (the
+    // broker hashes both slots first, longer than an IPC request may run).
+    let Outcome::Requested {
+        activation,
+        arm: request,
+    } = outcome
+    else {
+        panic!("not requested: {outcome:?}");
     };
-    assert_eq!(broker["status"], "ARMED_PENDING");
+    assert_eq!(activation.armed_at, None);
+    assert!(!broker.is_finished(), "the arm was not asked yet");
+    let Armed {
+        activation: armed_row,
+        broker: answer,
+    } = arm(&rig.store, request).unwrap();
+    let intents = broker.join().unwrap();
+    assert_eq!(answer["status"], "ARMED_PENDING");
+    assert_eq!(armed_row.id, activation.id);
+    assert_eq!(armed_row.state, ActivationState::Pending);
+    assert!(armed_row.armed_at.is_some());
     // The row was written from the plan and the ledger before arming.
     assert_eq!(activation.state, ActivationState::Pending);
     assert_eq!(activation.expected_slot, "root-b");
@@ -258,7 +282,7 @@ fn nothing_happens_while_activation_is_disabled() {
 #[test]
 fn the_marker_must_be_a_regular_file_owned_as_required_and_not_writable_by_others() {
     let rig = rig();
-    assert!(rig.host.enabled() || RELEASE_ACTIVATION_ENABLED);
+    assert!(rig.host.enabled());
     let mut host = rig.host.clone();
     host.marker_owner_uid = host.marker_owner_uid.wrapping_add(1);
     assert!(!host.enabled());
@@ -294,9 +318,7 @@ fn an_acknowledged_irreversible_activation_takes_a_backup_first() {
     let broker = rig.broker(vec![Reply::Answer(planned(true)), Reply::Answer(armed())]);
     let mut command = rig.command();
     command.acknowledge_irreversible = true;
-    let Outcome::Armed { activation, .. } = rig.run(&command).unwrap() else {
-        panic!("not armed");
-    };
+    let Armed { activation, .. } = rig.run_and_arm(&command).unwrap();
     let intents = broker.join().unwrap();
     assert!(activation.irreversible);
     let digest = activation
@@ -340,7 +362,7 @@ fn a_refused_arm_abandons_the_row_with_the_brokers_reason() {
         Reply::Answer(planned(false)),
         Reply::Answer(refusal("root-b already has a boot entry")),
     ]);
-    let Err(Failure::Refused { activation, reason }) = rig.run(&rig.command()) else {
+    let Err(Failure::Refused { activation, reason }) = rig.run_and_arm(&rig.command()) else {
         panic!("not refused");
     };
     broker.join().unwrap();
@@ -387,11 +409,12 @@ fn an_unreachable_broker_writes_nothing() {
 fn an_unanswered_arm_leaves_the_row_pending_as_an_unknown_outcome() {
     let rig = rig();
     let broker = rig.broker(vec![Reply::Answer(planned(false)), Reply::Hangup]);
-    let Err(Failure::Unknown { activation, .. }) = rig.run(&rig.command()) else {
+    let Err(Failure::Unknown { activation, .. }) = rig.run_and_arm(&rig.command()) else {
         panic!("not unknown");
     };
     broker.join().unwrap();
     assert_eq!(activation.state, ActivationState::Pending);
+    assert_eq!(activation.armed_at, None, "an unknown answer is not armed");
     assert_eq!(rig.history().len(), 1);
 }
 
@@ -401,9 +424,7 @@ fn a_retry_with_the_same_operation_id_reads_the_row_and_asks_no_broker() {
     let broker = rig.broker(vec![Reply::Answer(planned(false)), Reply::Answer(armed())]);
     let mut command = rig.command();
     command.operation_id = Some("op-1".to_owned());
-    let Outcome::Armed { activation, .. } = rig.run(&command).unwrap() else {
-        panic!("not armed");
-    };
+    let Armed { activation, .. } = rig.run_and_arm(&command).unwrap();
     broker.join().unwrap();
     // No broker is listening any more: a retry must not need one.
     let Outcome::AlreadyRequested(again) = rig.run(&command).unwrap() else {

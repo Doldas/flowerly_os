@@ -4,23 +4,29 @@
 //!
 //! 0. The Generation must exist (an Admin sees every Generation, as for
 //!    `promote`; the database refuses a non-system one later).
-//! 1. Activation must be enabled: [`RELEASE_ACTIVATION_ENABLED`] is off until
-//!    Gate D is verified, so only an image carrying the root-owned test-profile
-//!    marker gets past this point. Nothing is written before it.
+//! 1. Activation must be enabled: [`RELEASE_ACTIVATION_ENABLED`] is on since
+//!    the G5 evidence; with it off (a pre-release build) only an image carrying
+//!    the root-owned test-profile marker gets past this point. Nothing is
+//!    written before it.
 //! 2. A retry with a known `operation_id` returns the recorded row and asks no
 //!    broker (an unknown outcome is read back, never re-sent).
-//! 3. The broker's read-only `plan` verifies the staged slot against the
-//!    Generation's recorded identity and says which slot and PARTUUID it would
-//!    arm and whether the activation is irreversible. The Admin's
-//!    acknowledgement must match that answer exactly.
+//! 3. The broker's read-only `plan` checks the staged slot's recorded
+//!    identity, payload and schema window against the Generation and says
+//!    which slot and PARTUUID it would arm and whether the activation is
+//!    irreversible. It leaves hashing the slots to the arm, so it answers
+//!    within one IPC request. The Admin's acknowledgement must match that
+//!    answer exactly.
 //! 4. Every database guard runs on a rolled-back insert, so a refused request
 //!    takes no backup and arms nothing.
 //! 5. An irreversible activation takes its coherent backup.
 //! 6. The PENDING row is written, with the ledger position read now.
-//! 7. Only then the broker is asked to `arm`. A refusal abandons the row with
-//!    the broker's reason; a lost answer leaves it PENDING for the witness.
+//! 7. The request is answered with the PENDING row. Only then is the broker
+//!    asked to `arm` ([`arm`], run by the caller's worker): it hashes both
+//!    slots first, which takes seconds per GiB (G5). An ARMED answer is
+//!    recorded as `armed_at`; a refusal abandons the row with the broker's
+//!    reason; a lost answer leaves it PENDING and unarmed for the witness.
 //!
-//! The store lock is not held while the broker hashes the slots.
+//! The store lock is not held while the broker works.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -36,9 +42,10 @@ use crate::storage::{StorageError, Store};
 use crate::types::{Caller, GenerationId};
 use crate::witness::{read_ledger, LedgerSource};
 
-/// Off until the change that records the passing G5 evidence (ADR-0023); the
-/// broker has its own copy and decides for itself.
-pub const RELEASE_ACTIVATION_ENABLED: bool = false;
+/// On by the change that archives the passing G5 evidence (ADR-0023, review
+/// 0048-g5-gate-d-kvm-acceptance); the broker has its own copy and decides for
+/// itself.
+pub const RELEASE_ACTIVATION_ENABLED: bool = true;
 pub const BROKER_SOCKET: &str = "/run/flowerly-slot-broker.sock";
 /// Installed only by the explicit Generation A/B test-image script.
 pub const TEST_PROFILE_MARKER: &str = "/usr/lib/flowerly/generation-ab-test-profile";
@@ -55,6 +62,9 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ActivationHost {
     pub broker_socket: PathBuf,
     pub test_profile_marker: PathBuf,
+    /// The release switch as this host sees it; tests turn it off to exercise
+    /// the pre-release marker rules.
+    pub release_enabled: bool,
     /// Root in production: a marker the service account could create does
     /// not enable anything.
     pub marker_owner_uid: u32,
@@ -67,6 +77,7 @@ impl ActivationHost {
         Ok(Self {
             broker_socket: PathBuf::from(BROKER_SOCKET),
             test_profile_marker: PathBuf::from(TEST_PROFILE_MARKER),
+            release_enabled: RELEASE_ACTIVATION_ENABLED,
             marker_owner_uid: 0,
             ledger: LedgerSource::for_state_dir(state_dir)?,
             backup_dir: state_dir.join(BACKUP_DIR),
@@ -76,7 +87,7 @@ impl ActivationHost {
     /// The release switch, or a test-profile marker that is a regular file
     /// (not a symlink) of the required owner and not writable by others.
     pub fn enabled(&self) -> bool {
-        RELEASE_ACTIVATION_ENABLED
+        self.release_enabled
             || std::fs::symlink_metadata(&self.test_profile_marker).is_ok_and(|meta| {
                 meta.is_file() && meta.uid() == self.marker_owner_uid && meta.mode() & 0o022 == 0
             })
@@ -98,13 +109,28 @@ pub struct ActivateCommand {
 
 #[derive(Debug)]
 pub enum Outcome {
-    /// Recorded PENDING and armed; success still needs the witnessed boot.
-    Armed {
+    /// Recorded PENDING; the caller now runs [`arm`] with `arm`.
+    Requested {
         activation: Box<Activation>,
-        broker: Value,
+        arm: ArmRequest,
     },
     /// The `operation_id` was already used for this request.
     AlreadyRequested(Box<Activation>),
+}
+
+/// The `arm` intent for a recorded PENDING activation.
+#[derive(Debug)]
+pub struct ArmRequest {
+    activation: i64,
+    broker_socket: PathBuf,
+    intent: Value,
+}
+
+/// The broker armed the slot; success still needs the witnessed boot.
+#[derive(Debug)]
+pub struct Armed {
+    pub activation: Box<Activation>,
+    pub broker: Value,
 }
 
 #[derive(Debug)]
@@ -314,21 +340,39 @@ pub fn activate(
     if let Some(digest) = &request.backup_sha256 {
         arm["irreversible"] = json!({ "backup_sha256": digest });
     }
-    match call_broker(&host.broker_socket, &arm) {
-        Ok(broker) => Ok(Outcome::Armed {
-            activation: Box::new(pending),
+    Ok(Outcome::Requested {
+        arm: ArmRequest {
+            activation: pending.id,
+            broker_socket: host.broker_socket.clone(),
+            intent: arm,
+        },
+        activation: Box::new(pending),
+    })
+}
+
+/// Ask the broker to arm a recorded activation (step 7) and record its
+/// answer: ARMED sets `armed_at`, a refusal abandons the row, a lost answer
+/// leaves it PENDING and unarmed.
+pub fn arm(store: &Mutex<Store>, request: ArmRequest) -> Result<Armed, Failure> {
+    match call_broker(&request.broker_socket, &request.intent) {
+        Ok(broker) => Ok(Armed {
+            activation: Box::new(lock(store)?.record_armed(request.activation)?),
             broker,
         }),
         Err(BrokerError::Refused(reason) | BrokerError::Unavailable(reason)) => {
-            let abandoned = lock(store)?
-                .abandon_activation(pending.id, &format!("the slot broker refused: {reason}"))?;
+            let abandoned = lock(store)?.abandon_activation(
+                request.activation,
+                &format!("the slot broker refused: {reason}"),
+            )?;
             Err(Failure::Refused {
                 activation: Some(Box::new(abandoned)),
                 reason,
             })
         }
         Err(BrokerError::Unknown(reason)) => Err(Failure::Unknown {
-            activation: Box::new(pending),
+            activation: Box::new(lock(store)?.activation(request.activation)?.ok_or_else(
+                || StorageError::NotFound(format!("activation {}", request.activation)),
+            )?),
             reason,
         }),
     }

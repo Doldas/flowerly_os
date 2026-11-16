@@ -527,10 +527,15 @@ def generation_scenario(alice, bob, admin, admin_uid):
     assert_like_missing(bob, "generation.inspect", candidate, MISSING_GENERATION)
     code, _ = error_of(bob.call("generation.create", parent=candidate))
     assert code == "not_found", code
-    # A private candidate can never become the system STABLE directly.
-    assert (
-        error_of(admin.call("generation.activate", id=candidate, reason="ship"))[0]
-        == "conflict"
+    # A private candidate can never become the system STABLE directly: with the
+    # release switch on it is refused before any broker is asked, because it
+    # has no root identity to activate.
+    code, message = error_of(
+        admin.call("generation.activate", id=candidate, reason="ship")
+    )
+    assert code == "invalid_argument" and "no complete root identity" in message, (
+        code,
+        message,
     )
     assert error_of(admin.call("generation.promote", id=candidate, reason=" "))[0] == (
         "invalid_argument"
@@ -549,9 +554,12 @@ def generation_scenario(alice, bob, admin, admin_uid):
     assert goal not in edges and f"actor:uid:{admin_uid}" not in edges, edges
     bob.ok("generation.create", parent=candidate)
     # Promotion does not activate: STABLE needs a witnessed boot (ADR-0023).
-    assert (
-        error_of(admin.call("generation.activate", id=candidate, reason="ship"))[0]
-        == "conflict"
+    code, message = error_of(
+        admin.call("generation.activate", id=candidate, reason="ship")
+    )
+    assert code == "invalid_argument" and "no complete root identity" in message, (
+        code,
+        message,
     )
     assert bob.ok("generation.inspect", id=candidate)["status"] == "CANDIDATE"
     lifecycle_scenario(bob, admin, admin_uid, candidate)
@@ -593,11 +601,13 @@ def lifecycle_scenario(bob, admin, admin_uid, generation):
     assert bob.ok("generation.inspect", id=generation)["status"] == "TESTED"
     edges = {edge["to"] for edge in bob.ok("provenance.from", ref=generation)["edges"]}
     assert f"actor:uid:{admin_uid}" not in edges, edges
-    # Activation and rollback stay refused, and leave no record behind.
+    # This daemon has no boot ledger and no slot broker, so activation and
+    # rollback are refused for that reason and leave no record behind.
     for command in ("generation.activate", "generation.rollback"):
-        assert (
-            error_of(admin.call(command, id=generation, reason="go"))[0] == "conflict"
-        )
+        code, message = error_of(admin.call(command, id=generation, reason="go"))
+        assert code in ("unavailable", "conflict") and (
+            "boot ledger" in message or "slot broker" in message
+        ), (command, code, message)
     assert admin.ok("generation.history", id=generation)["count"] == 0
     assert bob.ok("generation.inspect", id=generation)["status"] == "TESTED"
 

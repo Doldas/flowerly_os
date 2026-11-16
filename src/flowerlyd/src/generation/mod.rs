@@ -39,7 +39,7 @@ const POISONED: &str = "storage lock poisoned";
 /// Validate under the store lock, then run. Activation and rollback release
 /// the lock while the slot broker works (it hashes both slots).
 fn execute(
-    store: &Mutex<Store>,
+    store: &Arc<Mutex<Store>>,
     host: Option<&ActivationHost>,
     name: &str,
     args: &Value,
@@ -62,9 +62,12 @@ static ACTIVATION: OnceLock<ActivationHost> = OnceLock::new();
 /// Admin activation or rollback (ADR-0023 section 2, G4b): `flowerly-core`
 /// orders the steps; this maps them to IPC. Without a configured host (no
 /// state directory), or while the release gate is off, it refuses before
-/// writing anything.
+/// writing anything. The reply carries the PENDING row; the arm runs on its
+/// own thread afterwards, because the broker hashes both root slots first,
+/// longer than a request may run (G5). Its outcome is on the row: `armed_at`,
+/// or ABANDONED with the broker's reason.
 pub(crate) fn run_activation(
-    store: &Mutex<Store>,
+    store: &Arc<Mutex<Store>>,
     host: Option<&ActivationHost>,
     name: &str,
     args: &Value,
@@ -93,17 +96,28 @@ pub(crate) fn run_activation(
         Err(Failure::Storage(StorageError::NotFound(_))) => Err(CommandFailure::not_found(
             format!("generation not found: {id}"),
         )),
-        Ok(Outcome::Armed { activation, broker }) => {
-            tracing::info!(
-                activation = activation.id,
-                generation_id = %activation.generation,
-                irreversible = activation.irreversible,
-                "Generation activation armed; it is confirmed only by a witnessed healthy boot"
-            );
+        Ok(Outcome::Requested { activation, arm }) => {
+            let worker = Arc::clone(store);
+            let id = activation.id;
+            std::thread::Builder::new()
+                .name("generation-arm".into())
+                .spawn(move || log_arm(activation::arm(&worker, arm)))
+                .map_err(|e| {
+                    // Nothing was sent: the row would wait for an arm that
+                    // never comes, so it is abandoned now.
+                    let detail = format!("the arm could not be started: {e}");
+                    let _ = store
+                        .lock()
+                        .map(|mut s| s.abandon_activation(id, &detail));
+                    CommandFailure {
+                        code: ErrorCode::Unavailable,
+                        message: format!("activation {id} is ABANDONED: {detail}"),
+                    }
+                })?;
             Ok(serde_json::json!({
                 "activation": activation_json(&activation),
-                "armed": broker,
-                "note": "PENDING until the next boot is witnessed healthy; reboot to proceed",
+                "arming": true,
+                "note": "the slot broker is arming; read generation.history until armed_at is set (then reboot) or the row is ABANDONED",
             }))
         }
         Ok(Outcome::AlreadyRequested(activation)) => Ok(serde_json::json!({
@@ -127,16 +141,37 @@ pub(crate) fn run_activation(
                 None => format!("the slot broker refused; nothing was recorded: {reason}"),
             },
         }),
-        Err(Failure::Unknown { activation, reason }) => {
-            tracing::warn!(activation = activation.id, %reason, "Generation arm outcome unknown");
-            Err(CommandFailure {
-                code: ErrorCode::Unavailable,
-                message: format!(
-                    "the outcome is unknown: activation {} stays PENDING until the witness resolves it; read generation.history and do not retry blindly ({reason})",
-                    activation.id
-                ),
-            })
-        }
+        Err(Failure::Unknown { activation, reason }) => Err(CommandFailure {
+            code: ErrorCode::Unavailable,
+            message: format!(
+                "the outcome is unknown: activation {} stays PENDING until the witness resolves it; read generation.history and do not retry blindly ({reason})",
+                activation.id
+            ),
+        }),
+    }
+}
+
+/// The arm's outcome is on the row; this only logs it.
+fn log_arm(outcome: Result<activation::Armed, Failure>) {
+    match outcome {
+        Ok(armed) => tracing::info!(
+            activation = armed.activation.id,
+            generation_id = %armed.activation.generation,
+            irreversible = armed.activation.irreversible,
+            "Generation activation armed; it is confirmed only by a witnessed healthy boot"
+        ),
+        Err(Failure::Refused {
+            activation: Some(row),
+            ..
+        }) => tracing::warn!(
+            activation = row.id,
+            "Generation arm refused; the row is ABANDONED"
+        ),
+        Err(Failure::Unknown { activation, .. }) => tracing::warn!(
+            activation = activation.id,
+            "Generation arm outcome unknown; the row stays PENDING and unarmed"
+        ),
+        Err(_) => tracing::error!("Generation arm could not record its outcome"),
     }
 }
 
@@ -539,6 +574,7 @@ fn activation_json(activation: &Activation) -> Value {
         "witness_boot_id": activation.witness_boot_id,
         "witness_sequence": activation.witness_sequence,
         "detail": activation.detail,
+        "armed_at": activation.armed_at,
     })
 }
 
@@ -889,17 +925,21 @@ mod tests {
         args: &Value,
         caller: Caller,
     ) -> Result<Value, CommandFailure> {
-        let shared = Mutex::new(std::mem::replace(
+        let shared = Arc::new(Mutex::new(std::mem::replace(
             store,
             Store::open_in_memory().expect("placeholder store"),
-        ));
+        )));
         let result = match name {
             "generation.activate" | "generation.rollback" => {
                 run_activation(&shared, None, name, args, caller)
             }
             _ => run_command(&mut shared.lock().unwrap(), name, args, caller),
         };
-        *store = shared.into_inner().unwrap();
+        *store = Arc::try_unwrap(shared)
+            .ok()
+            .expect("no arm runs without a host")
+            .into_inner()
+            .unwrap();
         result
     }
 
@@ -1353,6 +1393,7 @@ mod tests {
                 witness_boot_id: None,
                 witness_sequence: None,
                 detail: None,
+                armed_at: None,
             })
         };
         for (resolution, outcome) in [

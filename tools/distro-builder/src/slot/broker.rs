@@ -4,16 +4,16 @@
 //! systemd hands it one accepted connection on stdin (`Accept=yes`). It
 //! answers one typed intent, `arm` or `disarm`, and decides everything from
 //! its own state, never from the caller:
-//! - activation must be enabled: the release switch below is off until Gate D
-//!   is verified, so only an image carrying the explicit test-profile marker
-//!   answers at all;
+//! - activation must be enabled: the release switch below is on since the G5
+//!   evidence; with it off (a pre-release build) only an image carrying the
+//!   explicit test-profile marker answers at all;
 //! - the kernel-attested peer must be the service account, and the admin uid
 //!   it speaks for must still be in the admin group per the system databases;
 //! - the disk is opened read-only and bound to the manifest through the real
 //!   GPT; the running root comes from the broker's own kernel command line;
-//! - both slots are hashed against the manifest; the staged slot, its boot
-//!   payload on the ESP and its baked identity must equal the Generation the
-//!   caller claims;
+//! - before it writes, both slots are hashed against the manifest; the staged
+//!   slot, its boot payload on the ESP and its baked identity must equal the
+//!   Generation the caller claims;
 //! - a target whose `flowerlyd` cannot read the database the running root
 //!   keeps is refused; a target whose migrations leave a `min_reader` newer
 //!   than the running root's `flowerlyd` would make the fallback unusable:
@@ -23,8 +23,11 @@
 //!   to manual-only before the target is published, so a failed boot cannot
 //!   fall back into a root that cannot start its service.
 //!
-//! `plan` runs every check of `arm` and writes nothing: `flowerlyd` records
-//! its answer in the PENDING activation row before it asks to `arm`.
+//! `plan` runs every check of `arm` except hashing the two slots, and writes
+//! nothing: `flowerlyd` records its answer in the PENDING activation row
+//! within one IPC request, then asks to `arm` from a worker (G5: hashing two
+//! root slots takes seconds per GiB). Its answer rests on the root-owned
+//! manifest; `arm` and `disarm` hash the slots again before they write.
 //!
 //! It writes nothing but boot entries on the ESP (publishing, demoting,
 //! restoring or removing one), never the block device or the backup, and
@@ -48,8 +51,8 @@ use super::{
     Faults, Slot,
 };
 
-/// Off until the change that records the passing G5 evidence (ADR-0023).
-pub const RELEASE_ACTIVATION_ENABLED: bool = false;
+/// On by the change that archives the passing G5 evidence (ADR-0023).
+pub const RELEASE_ACTIVATION_ENABLED: bool = true;
 
 pub const DEFAULT_CONFIG: &str = "/usr/lib/flowerly/slot-broker.json";
 const MAX_INTENT: usize = 8 * 1024;
@@ -72,6 +75,14 @@ pub struct BrokerConfig {
     pub admin_group: String,
     /// Where `flowerlyd` puts pre-activation backups as `<sha256>.sqlite`.
     pub backup_dir: PathBuf,
+    /// Not read from the file: tests turn the release switch off to exercise
+    /// the pre-release marker rules.
+    #[serde(skip, default = "release_switch")]
+    pub release_enabled: bool,
+}
+
+fn release_switch() -> bool {
+    RELEASE_ACTIVATION_ENABLED
 }
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -107,7 +118,7 @@ impl BrokerConfig {
     }
 
     fn enabled(&self) -> bool {
-        RELEASE_ACTIVATION_ENABLED
+        self.release_enabled
             || read_private(&self.test_profile_marker, 4096, "test-profile marker").is_ok()
     }
 }
@@ -244,7 +255,10 @@ pub fn handle(
     let cmdline = std::fs::read_to_string(&config.cmdline).context("reading the command line")?;
     let active = disk.active_slot(&running_slot(&cmdline)?)?;
     let target = active.other();
-    verify_slot(&image, disk.slot(active), "active root")?;
+    let hashes = intent.intent != "plan";
+    if hashes {
+        verify_slot(&image, disk.slot(active), "active root")?;
+    }
 
     match intent.intent.as_str() {
         "disarm" => rollback(&image, &disk, active, esp, true, faults),
@@ -270,7 +284,8 @@ pub fn handle(
             let claim = intent
                 .generation
                 .ok_or_else(|| anyhow!("{kind} needs the generation it arms"))?;
-            let window = verify_target(config, &image, &disk, active, target, esp, &claim)?;
+            let hash_against = hashes.then_some(&image);
+            let window = verify_target(config, hash_against, &disk, active, target, esp, &claim)?;
             let fallback = if window.irreversible {
                 Fallback::ManualOnly
             } else {
@@ -354,9 +369,10 @@ fn verify_backup(config: &BrokerConfig, service_uid: u32, digest: &str) -> Resul
     Ok(())
 }
 
+/// With an image, the staged slot is hashed against the manifest too.
 fn verify_target(
     config: &BrokerConfig,
-    image: &super::Image,
+    image: Option<&super::Image>,
     disk: &super::Disk,
     active: Slot,
     target: Slot,
@@ -367,7 +383,9 @@ fn verify_target(
     if part.filesystem != "ext4" {
         bail!("{} has not been staged", target.name());
     }
-    verify_slot(image, part, "staged root")?;
+    if let Some(image) = image {
+        verify_slot(image, part, "staged root")?;
+    }
     if part.sha256 != claim.rootfs_sha256 {
         bail!("the staged slot is not the claimed rootfs_sha256");
     }

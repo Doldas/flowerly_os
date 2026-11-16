@@ -92,5 +92,8 @@ kept separate from system rollback.
 - **Implemented:** the `Generation` model, typed transitions enforced in the
   database, activation history storage, root identity, recorded evidence and
   provenance links.
-- **Planned (G3–G5 of ADR-0023):** witness-based confirmation, the
-  `min_reader` schema window, the slot broker and the real KVM acceptance.
+- **Verified in a real OVMF/KVM run (G3–G5 of ADR-0023, 2026-11-16):**
+  witness-based confirmation, the `min_reader` schema window, the slot broker,
+  the irreversible path with its restore drill and the exhausted-target
+  behaviour. See the
+  [G5 review](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md).

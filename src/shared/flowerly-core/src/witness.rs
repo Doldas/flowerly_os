@@ -157,8 +157,19 @@ fn is_counter(text: &str) -> bool {
         && !(text.len() == 2 && text.starts_with('0'))
 }
 
-/// `flowerly-<letter>[+left[-done]][.conf]`, the systemd-boot counting names.
+/// `flowerly-<letter>[+left[-done]][.conf]`, the systemd-boot counting names,
+/// or `manual-flowerly-<letter>[.conf]`, the demoted entry without counters.
 fn loader_slot(entry: &str) -> Option<char> {
+    // The running root's entry after an irreversible arm (ADR-0023 R4):
+    // booted only from the menu and never counted.
+    if let Some(demoted) = entry.strip_prefix("manual-flowerly-") {
+        let letter = demoted.strip_suffix(".conf").unwrap_or(demoted);
+        return match letter {
+            "a" => Some('a'),
+            "b" => Some('b'),
+            _ => None,
+        };
+    }
     let rest = entry.strip_prefix("flowerly-")?;
     let rest = rest.strip_suffix(".conf").unwrap_or(rest);
     let mut chars = rest.chars();
@@ -641,6 +652,24 @@ mod tests {
     }
 
     // --- reader -----------------------------------------------------------
+
+    #[test]
+    fn the_demoted_manual_entry_names_its_slot() {
+        // The running root's entry after an irreversible arm (ADR-0023 R4).
+        assert_eq!(loader_slot("manual-flowerly-a.conf"), Some('a'));
+        assert_eq!(loader_slot("manual-flowerly-b"), Some('b'));
+        for name in [
+            "manual-flowerly-a+3.conf",
+            "manual-flowerly-a+0-3.conf",
+            "manual-flowerly-c.conf",
+            "manual-flowerly-a.conf.tmp",
+            "xmanual-flowerly-a.conf",
+            "manual-manual-flowerly-a.conf",
+        ] {
+            assert_eq!(loader_slot(name), None, "{name}");
+        }
+        assert_eq!(loader_slot("flowerly-a+2-1.conf"), Some('a'));
+    }
 
     #[test]
     fn an_empty_ledger_has_the_zero_head() {

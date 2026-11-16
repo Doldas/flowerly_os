@@ -128,10 +128,17 @@ test profile only.
 an irreversible arm needs the Admin's acknowledgement and a verified backup,
 and demotes the running root's entry to manual-only before publishing the
 target; `flowerlyd` runs activate/rollback through the broker on the test
-image only (the release switch stays off), with a `VACUUM INTO` backup whose
-hash is on the activation row; `reason` is required. Next: G5 (real KVM
-acceptance on the exact SHA, including the restore drill), which also turns
-the release switch on.
+image only (the release switch was still off), with a `VACUUM INTO` backup whose
+hash is on the activation row; `reason` is required.
+
+**G5 real KVM acceptance (2026-11-16):** all 16 Gate D scenarios PASS on
+`eb60060` (activation, FELL_BACK, rollback, schema-bump downgrade refusal,
+irreversible path, restore drill, user data and history after every step,
+exhausted target). Review:
+[0048-g5-gate-d-kvm-acceptance-2026-11-16](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md).
+`RELEASE_ACTIVATION_ENABLED` is turned on, in both the broker and
+`flowerly-core`, in the separate last commit of that PR (owner: please review it
+separately).
 
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/

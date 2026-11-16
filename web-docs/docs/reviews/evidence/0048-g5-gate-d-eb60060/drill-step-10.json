@@ -1,0 +1,291 @@
+{
+  "entries": [
+    {
+      "argv": [
+        "create",
+        "--source-commit",
+        "eb600602c73c1a894ae2e2da996ddb661000ea9c"
+      ],
+      "call": "create",
+      "code": 0,
+      "reply": {
+        "experiment": null,
+        "id": "gen-bd198cd073354b11bf4ed64169491e53",
+        "parent": null,
+        "reason_goal": null,
+        "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"experiment\": null,\n  \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\",\n  \"parent\": null,\n  \"reason_goal\": null,\n  \"source_commit\": \"eb600602c73c1a894ae2e2da996ddb661000ea9c\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "promote",
+        "gen-bd198cd073354b11bf4ed64169491e53",
+        "--reason",
+        "G5 drill: share B2"
+      ],
+      "call": "promote",
+      "code": 0,
+      "reply": {
+        "id": "gen-bd198cd073354b11bf4ed64169491e53",
+        "owner": "system",
+        "status": "CANDIDATE"
+      },
+      "text": "{\n  \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\",\n  \"owner\": \"system\",\n  \"status\": \"CANDIDATE\"\n}"
+    },
+    {
+      "argv": [
+        "identity",
+        "gen-bd198cd073354b11bf4ed64169491e53",
+        "--source-commit",
+        "eb600602c73c1a894ae2e2da996ddb661000ea9c",
+        "--rootfs-sha256",
+        "67f42d34af6d5edd1630f231a1eabeae282c0b5352303c5bc0aa685717bc6dd2",
+        "--kernel-sha256",
+        "be373165e6d54bfee8e95b6ba6ffd7e5726544fbb571893773d45c806ba18ef9",
+        "--initramfs-sha256",
+        "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "--input-manifest-sha256",
+        "06ef17de5f068fee790cde2bbb20b0f31d14e38bd7b8ae5ba6cdd1b8288f8511",
+        "--build-id",
+        "s7-b2-run9",
+        "--reason",
+        "G5 drill: identity of B2"
+      ],
+      "call": "identity",
+      "code": 0,
+      "reply": {
+        "id": "gen-bd198cd073354b11bf4ed64169491e53"
+      },
+      "text": "{\n  \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\"\n}"
+    },
+    {
+      "argv": [
+        "evidence",
+        "gen-bd198cd073354b11bf4ed64169491e53",
+        "--outcome",
+        "passed",
+        "--evidence-sha256",
+        "3261789c2dc393779e8d6f984965b6e9bd4b00216434126c85bc95b72f7d229b",
+        "--reason",
+        "G5 drill: acceptance of B2"
+      ],
+      "call": "evidence",
+      "code": 0,
+      "reply": {
+        "experiment": "exp-7611d978380f422b9ba859e5857332ff",
+        "id": "gen-bd198cd073354b11bf4ed64169491e53"
+      },
+      "text": "{\n  \"experiment\": \"exp-7611d978380f422b9ba859e5857332ff\",\n  \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\"\n}"
+    },
+    {
+      "argv": [
+        "test",
+        "gen-bd198cd073354b11bf4ed64169491e53",
+        "--experiment",
+        "exp-7611d978380f422b9ba859e5857332ff",
+        "--reason",
+        "G5 drill: TESTED B2"
+      ],
+      "call": "test",
+      "code": 0,
+      "reply": {
+        "id": "gen-bd198cd073354b11bf4ed64169491e53",
+        "status": "TESTED"
+      },
+      "text": "{\n  \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\",\n  \"status\": \"TESTED\"\n}"
+    },
+    {
+      "call": "registered",
+      "generation": "gen-bd198cd073354b11bf4ed64169491e53",
+      "label": "B2"
+    },
+    {
+      "argv": [
+        "list"
+      ],
+      "call": "list",
+      "code": 0,
+      "reply": {
+        "count": 3,
+        "generations": [
+          {
+            "id": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+            "parent": null,
+            "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c",
+            "status": "STABLE"
+          },
+          {
+            "id": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "parent": null,
+            "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c",
+            "status": "SUPERSEDED"
+          },
+          {
+            "id": "gen-bd198cd073354b11bf4ed64169491e53",
+            "parent": null,
+            "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c",
+            "status": "TESTED"
+          }
+        ]
+      },
+      "text": "{\n  \"count\": 3,\n  \"generations\": [\n    {\n      \"id\": \"gen-e0dedaf134044d3fbfe49e68fa64de55\",\n      \"parent\": null,\n      \"source_commit\": \"eb600602c73c1a894ae2e2da996ddb661000ea9c\",\n      \"status\": \"STABLE\"\n    },\n    {\n      \"id\": \"gen-e0158a7d2e0a49d4bca943589911ab61\",\n      \"parent\": null,\n      \"source_commit\": \"eb600602c73c1a894ae2e2da996ddb661000ea9c\",\n      \"status\": \"SUPERSEDED\"\n    },\n    {\n      \"id\": \"gen-bd198cd073354b11bf4ed64169491e53\",\n      \"parent\": null,\n      \"source_commit\": \"eb600602c73c1a894ae2e2da996ddb661000ea9c\",\n      \"status\": \"TESTED\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "history"
+      ],
+      "call": "history",
+      "code": 0,
+      "reply": {
+        "activations": [
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794781384238,
+            "backup_sha256": null,
+            "detail": "boot 4ed039e4-3b34-4a22-b24c-351dded3abec ran root-a after root-b was tried",
+            "expected_root_partuuid": "ce8c770e-ff26-465c-b659-89b622cf25d7",
+            "expected_slot": "root-b",
+            "generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "id": 1,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "7364744ba38e944c805b805abc93e8b14403c2f7b26db3f05d9530fd6153059f",
+            "ledger_sequence": 4,
+            "operation_id": null,
+            "previous_generation": null,
+            "reason": "G5 drill step 2",
+            "requested_at": 1794781379589,
+            "resolved_at": 1794781437732,
+            "state": "FELL_BACK",
+            "witness_boot_id": "4ed039e4-3b34-4a22-b24c-351dded3abec",
+            "witness_sequence": 8
+          },
+          {
+            "acknowledges": 1,
+            "actor_uid": 967,
+            "armed_at": 1794781459401,
+            "backup_sha256": null,
+            "detail": "boot eec30aee-515e-4a17-876f-add182a4137f of root-b passed the health gate",
+            "expected_root_partuuid": "ce8c770e-ff26-465c-b659-89b622cf25d7",
+            "expected_slot": "root-b",
+            "generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "id": 2,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "3590bc63c895f9515365481e1bcdaa4e77569e27bc4ce6c1279d8adb428716cc",
+            "ledger_sequence": 11,
+            "operation_id": null,
+            "previous_generation": null,
+            "reason": "G5 drill step 4",
+            "requested_at": 1794781455204,
+            "resolved_at": 1794781476028,
+            "state": "CONFIRMED",
+            "witness_boot_id": "eec30aee-515e-4a17-876f-add182a4137f",
+            "witness_sequence": 12
+          },
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794781480370,
+            "backup_sha256": null,
+            "detail": "boot 3d06be8c-f6e3-409e-a74a-5ea403ad97f2 of root-a passed the health gate",
+            "expected_root_partuuid": "8a9343f8-7703-4224-aae1-8f1eb2592355",
+            "expected_slot": "root-a",
+            "generation": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+            "id": 3,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "33a2738b441bb8c5a32b81e6899687d9a26799adc03207a283e7f5d919a7ce2a",
+            "ledger_sequence": 13,
+            "operation_id": null,
+            "previous_generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "reason": "G5 drill step 5",
+            "requested_at": 1794781476272,
+            "resolved_at": 1794781496034,
+            "state": "CONFIRMED",
+            "witness_boot_id": "3d06be8c-f6e3-409e-a74a-5ea403ad97f2",
+            "witness_sequence": 14
+          },
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794781500323,
+            "backup_sha256": null,
+            "detail": "boot 7ab02465-3398-472e-890c-9119eee31197 of root-b passed the health gate",
+            "expected_root_partuuid": "ce8c770e-ff26-465c-b659-89b622cf25d7",
+            "expected_slot": "root-b",
+            "generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "id": 4,
+            "irreversible": false,
+            "kind": "ROLLBACK",
+            "ledger_head": "1a0dd032b1caee78f7bbc6126a659ba845d35fdd7c9178ccb7c3493d2839a816",
+            "ledger_sequence": 15,
+            "operation_id": null,
+            "previous_generation": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+            "reason": "G5 drill step 6",
+            "requested_at": 1794781496289,
+            "resolved_at": 1794781517767,
+            "state": "CONFIRMED",
+            "witness_boot_id": "7ab02465-3398-472e-890c-9119eee31197",
+            "witness_sequence": 16
+          },
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794781522235,
+            "backup_sha256": null,
+            "detail": "boot 9c4ede24-f64b-499f-a2c0-2f4b583136ff ran root-b after root-a was tried",
+            "expected_root_partuuid": "8a9343f8-7703-4224-aae1-8f1eb2592355",
+            "expected_slot": "root-a",
+            "generation": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+            "id": 5,
+            "irreversible": false,
+            "kind": "ROLLBACK",
+            "ledger_head": "bd6fb6ce48d315c2b3d23145398d02808e5a8344c57e61d93c46cacf9bc8b66d",
+            "ledger_sequence": 17,
+            "operation_id": null,
+            "previous_generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "reason": "G5 drill step 7",
+            "requested_at": 1794781518101,
+            "resolved_at": 1794781580435,
+            "state": "FELL_BACK",
+            "witness_boot_id": "9c4ede24-f64b-499f-a2c0-2f4b583136ff",
+            "witness_sequence": 21
+          },
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794781585066,
+            "backup_sha256": null,
+            "detail": "boot f93a85b6-9019-4b26-9079-0e1b1e286636 of root-a passed the health gate",
+            "expected_root_partuuid": "8a9343f8-7703-4224-aae1-8f1eb2592355",
+            "expected_slot": "root-a",
+            "generation": "gen-e0dedaf134044d3fbfe49e68fa64de55",
+            "id": 6,
+            "irreversible": false,
+            "kind": "ROLLBACK",
+            "ledger_head": "a769c1ceff2c8143207431ddd796b7fcc144785bc945d3e099ef9a674a7321d9",
+            "ledger_sequence": 22,
+            "operation_id": null,
+            "previous_generation": "gen-e0158a7d2e0a49d4bca943589911ab61",
+            "reason": "G5 drill step 8",
+            "requested_at": 1794781580917,
+            "resolved_at": 1794781601106,
+            "state": "CONFIRMED",
+            "witness_boot_id": "f93a85b6-9019-4b26-9079-0e1b1e286636",
+            "witness_sequence": 23
+          }
+        ],
+        "count": 6
+      },
+      "text": "794781496289,\n      \"resolved_at\": 1794781517767,\n      \"state\": \"CONFIRMED\",\n      \"witness_boot_id\": \"7ab02465-3398-472e-890c-9119eee31197\",\n      \"witness_sequence\": 16\n    },\n    {\n      \"acknowledges\": null,\n      \"actor_uid\": 967,\n      \"armed_at\": 1794781522235,\n      \"backup_sha256\": null,\n      \"detail\": \"boot 9c4ede24-f64b-499f-a2c0-2f4b583136ff ran root-b after root-a was tried\",\n      \"expected_root_partuuid\": \"8a9343f8-7703-4224-aae1-8f1eb2592355\",\n      \"expected_slot\": \"root-a\",\n      \"generation\": \"gen-e0dedaf134044d3fbfe49e68fa64de55\",\n      \"id\": 5,\n      \"irreversible\": false,\n      \"kind\": \"ROLLBACK\",\n      \"ledger_head\": \"bd6fb6ce48d315c2b3d23145398d02808e5a8344c57e61d93c46cacf9bc8b66d\",\n      \"ledger_sequence\": 17,\n      \"operation_id\": null,\n      \"previous_generation\": \"gen-e0158a7d2e0a49d4bca943589911ab61\",\n      \"reason\": \"G5 drill step 7\",\n      \"requested_at\": 1794781518101,\n      \"resolved_at\": 1794781580435,\n      \"state\": \"FELL_BACK\",\n      \"witness_boot_id\": \"9c4ede24-f64b-499f-a2c0-2f4b583136ff\",\n      \"witness_sequence\": 21\n    },\n    {\n      \"acknowledges\": null,\n      \"actor_uid\": 967,\n      \"armed_at\": 1794781585066,\n      \"backup_sha256\": null,\n      \"detail\": \"boot f93a85b6-9019-4b26-9079-0e1b1e286636 of root-a passed the health gate\",\n      \"expected_root_partuuid\": \"8a9343f8-7703-4224-aae1-8f1eb2592355\",\n      \"expected_slot\": \"root-a\",\n      \"generation\": \"gen-e0dedaf134044d3fbfe49e68fa64de55\",\n      \"id\": 6,\n      \"irreversible\": false,\n      \"kind\": \"ROLLBACK\",\n      \"ledger_head\": \"a769c1ceff2c8143207431ddd796b7fcc144785bc945d3e099ef9a674a7321d9\",\n      \"ledger_sequence\": 22,\n      \"operation_id\": null,\n      \"previous_generation\": \"gen-e0158a7d2e0a49d4bca943589911ab61\",\n      \"reason\": \"G5 drill step 8\",\n      \"requested_at\": 1794781580917,\n      \"resolved_at\": 1794781601106,\n      \"state\": \"CONFIRMED\",\n      \"witness_boot_id\": \"f93a85b6-9019-4b26-9079-0e1b1e286636\",\n      \"witness_sequence\": 23\n    }\n  ],\n  \"count\": 6\n}"
+    }
+  ],
+  "ok": true,
+  "schema": "flowerly-g5-drill/v1-report",
+  "slot": "root-a",
+  "step": 10
+}

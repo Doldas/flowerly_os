@@ -341,7 +341,8 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   --schema-window`). A target whose `min_reader` is newer than the running
   root's `schema_version` is an irreversible activation and is refused in
   G4a; G4b adds the safe path (below).
-- *Gate.* `RELEASE_ACTIVATION_ENABLED` is `false`. The broker answers only on
+- *Gate.* `RELEASE_ACTIVATION_ENABLED` was `false` in G4a and is `true` since
+  the G5 evidence (below). While it is off, the broker answers only on
   an image carrying the test-profile marker, which only the explicit
   test-image script installs, together with the broker binary, its config and
   its socket-activated units (`Accept=yes`, one root process per intent,
@@ -385,11 +386,21 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   entry cannot be restaged until `disarm` from the other slot removes it.
   What systemd-boot does with an exhausted target when no other entry matches
   its default (boot it again or wait in the menu) is verified in G5; either
-  way it never boots the incompatible root by itself.
+  way it never boots the incompatible root by itself. *Observed in G5:* it
+  keeps booting the exhausted target (no loop, no menu), never the demoted root.
 - *The other direction.* The broker also refuses a target whose
   `schema_version` is below the running root's `min_reader`: that root has
   migrated the database past what the target can read, so going back needs
   the backup restored first.
+
+**G5 (2026-11-16).** Real OVMF/KVM acceptance on `eb60060`: 16 of 16
+scenarios pass ([review](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md)).
+Changes it forced: entries carry `sort-key`/`version` so the newest armed entry
+wins; `plan` no longer hashes slots and `activate` answers the PENDING row and
+arms on a worker (migration 17: `armed_at`, `min_reader` 16); the schema-bump
+drill is the test-only `g5-schema-drill` feature (migration 18); the root
+witness accepts exactly the demoted `manual-flowerly-a|b[.conf]` entry of its
+own slot (identity check unchanged); the report is written to the console.
 
 ## Non-goals
 

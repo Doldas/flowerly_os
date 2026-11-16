@@ -11,11 +11,12 @@ TRIES="${FLOWERLY_BOOT_TRIES:-3}"
 COMMIT="${FLOWERLY_BUILD_COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
 fail() { echo "ab disk: $*" >&2; exit 1; }
 usage() {
-    echo "usage: $0 --volume ROOT.ext4 --kernel VMLINUZ --initramfs INITRAMFS --boot-efi systemd-bootx64.efi --output DISK.img [--manifest FILE]" >&2
+    echo "usage: $0 --volume ROOT.ext4 --kernel VMLINUZ --initramfs INITRAMFS --boot-efi systemd-bootx64.efi --output DISK.img [--manifest FILE] [--identity SLOT_A_IDENTITY.json]" >&2
     exit 2
 }
 
 VOLUME= KERNEL= INITRAMFS= BOOTEFI= OUTPUT= MANIFEST=
+IDENTITY=''
 while (( $# )); do
     (( $# >= 2 )) || usage
     case "$1" in
@@ -25,6 +26,7 @@ while (( $# )); do
         --boot-efi) BOOTEFI="$2" ;;
         --output) OUTPUT="$2" ;;
         --manifest) MANIFEST="$2" ;;
+        --identity) IDENTITY="$2" ;;
         *) usage ;;
     esac
     shift 2
@@ -79,6 +81,38 @@ uuid_re="^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
    "$ROOT_B_UUID" != "$ESP_UUID" && "$ROOT_A_UUID" != "$DATA_UUID" &&
    "$ROOT_B_UUID" != "$DATA_UUID" ]] ||
     fail "root slot PARTUUIDs must be distinct"
+# Slot A's baked identity (its generation-root.json), recorded with its boot
+# payload so the slot broker can verify and arm slot A again later, as for a
+# slot staged with `slot stage --kernel --initramfs --identity` (ADR-0023 G5).
+if [[ -n "$IDENTITY" ]]; then
+    [[ -f "$IDENTITY" && ! -L "$IDENTITY" && -s "$IDENTITY" ]] ||
+        fail "identity missing, empty or symlinked: $IDENTITY"
+    python3 - "$IDENTITY" "$ROOT_A_UUID" <<'PY_EOF' || fail "slot A identity refused"
+import json, re, sys
+identity = json.load(open(sys.argv[1]))
+def refuse(why):
+    print("ab disk: slot A identity " + why, file=sys.stderr)
+    sys.exit(1)
+keys = {"schema", "slot", "root_partuuid", "source_commit", "input_manifest_sha256",
+        "build_id", "schema_version", "min_reader"}
+if not isinstance(identity, dict) or set(identity) != keys:
+    refuse("fields must be exactly " + ", ".join(sorted(keys)))
+if identity["schema"] != "flowerly-generation-root/v2":
+    refuse("schema must be flowerly-generation-root/v2")
+if identity["slot"] != "root-a" or identity["root_partuuid"] != sys.argv[2]:
+    refuse("names another slot than root-a")
+if not (isinstance(identity["source_commit"], str)
+        and re.fullmatch(r"[0-9a-f]{40}", identity["source_commit"])
+        and isinstance(identity["input_manifest_sha256"], str)
+        and re.fullmatch(r"[0-9a-f]{64}", identity["input_manifest_sha256"])
+        and isinstance(identity["build_id"], str)
+        and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", identity["build_id"])):
+    refuse("source_commit, input_manifest_sha256 or build_id is malformed")
+version, reader = identity["schema_version"], identity["min_reader"]
+if not all(type(n) is int for n in (version, reader)) or not 1 <= reader <= version:
+    refuse("schema window must be integers with 1 <= min_reader <= schema_version")
+PY_EOF
+fi
 
 WORK="$(mktemp -d "$(dirname "$OUTPUT")/.flowerly-ab.XXXXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -136,7 +170,7 @@ ROOT_B_SHA="$(slice_sha "$ROOT_B_START" "$ROOT_MB")"
 [[ "$ROOT_B_SHA" == "$(head -c $(( ROOT_MB * 1048576 )) /dev/zero | sha256sum | cut -d' ' -f1)" ]] ||
     fail "root-b is not empty"
 
-export DISK_UUID ESP_UUID ROOT_A_UUID ROOT_B_UUID DATA_UUID COMMIT ENTRY ROOT_MB ESP_MB DATA_MB \
+export IDENTITY DISK_UUID ESP_UUID ROOT_A_UUID ROOT_B_UUID DATA_UUID COMMIT ENTRY ROOT_MB ESP_MB DATA_MB \
     ESP_START ROOT_A_START ROOT_B_START DATA_START TOTAL_MB
 export ESP_SHA="$(slice_sha "$ESP_START" "$ESP_MB")" ROOT_A_SHA="$(slice_sha "$ROOT_A_START" "$ROOT_MB")" \
     ROOT_B_SHA DATA_SHA="$(slice_sha "$DATA_START" "$DATA_MB")" DISK_SHA="$(sha "$DISK")" \
@@ -168,6 +202,11 @@ manifest = {
         "/loader/entries/" + e["ENTRY"]: e["ENTRY_SHA"],
     },
 }
+if e["IDENTITY"]:
+    root_a = manifest["partitions"][1]
+    root_a["boot"] = {"kernel_sha256": e["KERNEL_SHA"], "initramfs_sha256": e["INITRAMFS_SHA"]}
+    with open(e["IDENTITY"]) as handle:
+        root_a["identity"] = json.load(handle)
 with open(sys.argv[1], "w") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)
     handle.write("\n")

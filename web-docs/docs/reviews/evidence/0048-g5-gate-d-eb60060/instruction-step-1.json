@@ -1,0 +1,34 @@
+{
+  "actions": [
+    {
+      "evidence_sha256": "9ee73605d05f704d21c877c7f4483a7e78447600d1d805bfda71d98ffff5bd95",
+      "identity": {
+        "build_id": "s7-a-run9",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "06ef17de5f068fee790cde2bbb20b0f31d14e38bd7b8ae5ba6cdd1b8288f8511",
+        "kernel_sha256": "be373165e6d54bfee8e95b6ba6ffd7e5726544fbb571893773d45c806ba18ef9",
+        "rootfs_sha256": "c17fe338178b0a9b71a20b3f063dcf2065efc5cbbf78cfb3000ddeda457e31a3",
+        "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c"
+      },
+      "label": "A",
+      "op": "register"
+    },
+    {
+      "evidence_sha256": "f2554e0f6f94a68dc13a2040a9b651a219988f5a0f8dcbcc49eb0dbdef1a355a",
+      "identity": {
+        "build_id": "s7-b-run9",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "06ef17de5f068fee790cde2bbb20b0f31d14e38bd7b8ae5ba6cdd1b8288f8511",
+        "kernel_sha256": "be373165e6d54bfee8e95b6ba6ffd7e5726544fbb571893773d45c806ba18ef9",
+        "rootfs_sha256": "a9ae407c2cbb957e4b7be1473f15b13213e295865e4c38ff956fa0188a630843",
+        "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c"
+      },
+      "label": "B",
+      "op": "register"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 1
+}

@@ -1,0 +1,22 @@
+{
+  "exhausted-target.serial.log": "8d529d967d0b3f7b5bf4f0eca0bd92d5c1bfa20d83c1df511c6d8289ba56a074",
+  "step-1-a-register.serial.log": "169bc09045a445662dc5e6924c0a0960c21a061de7e3b5b04d0a2eb249368b60",
+  "step-10-a-register-b2.serial.log": "046cdd118bc9216e1ea95275f436f533d6ccbfd07c36850ca351b6dafe3a8790",
+  "step-11-a-irreversible.serial.log": "e81a0b2b755bba4766a479484d41f9b154c5a09aca4ae997716d4b881c2117a7",
+  "step-12-b2-confirmed.serial.log": "82884dca8aab44ea3328e86da9e6c74f3dfd0f30aad98b654ae8de2a8d0514a0",
+  "step-13-a-restore.serial.log": "70771f77b6494bf36efb3fdb560295ae7bca8211ca4593c4ef3f00046c7c97da",
+  "step-2-a-activate-b.serial.log": "ef962e4c5f4d856e70c4f511831409d78178a12f221e76d00f5c536bc99a1c15",
+  "step-2-b-unhealthy-1.serial.log": "a45b648f12b0a589bcf1c9efcc12648595f40c1b418a86882b82aed2d8e0c4a9",
+  "step-2-b-unhealthy-2.serial.log": "6920a6f69fd8990625591003ba4b490781ab7ec3a4c7241f74609c3b11725d7f",
+  "step-2-b-unhealthy-3.serial.log": "077c90b8affb0fa7004be86a2211ed48cf35f1844dde58e34df2f8f97efe88f2",
+  "step-3-a-fell-back.serial.log": "ddb48b528c8bf6c2ac296b2d08c4623f314d3ef28d91596a00c5a0c0f6f429d5",
+  "step-4-a-acknowledged.serial.log": "4ce698a9725a2d35c37f9e53f842dd87b81733c22eaf44419d134aef3b8da9f6",
+  "step-5-b-confirmed.serial.log": "5fe7cf33ee6a0552ed483f070f5f66261ccd12b769567bc5eeb2f4009b37fd3b",
+  "step-6-a-confirmed.serial.log": "33b0e33e3da193b4709e6b87d7ccca7a1cd354705a1c5ab605b20993238af01e",
+  "step-7-a-unhealthy-1.serial.log": "990aa6b071a2cb2a0aac4c8d82116a8369a343489fe58d9e93c585f7333577c5",
+  "step-7-a-unhealthy-2.serial.log": "58c5ab0880f6d0605db61e57d1928e4831784dbf572c125b8adb4a409fcb9612",
+  "step-7-a-unhealthy-3.serial.log": "45c8aa99c40b347ec7483d71e603174a3cab07e6ce86d8bef9c2e3004ab3c396",
+  "step-7-b-rollback-confirmed.serial.log": "bdb74d39916107b7bb7dcb7de149981210cc7656f81365cd44647c4919f1bba5",
+  "step-8-b-fell-back.serial.log": "31a69956dcb9ef9167b236e1534651fefe95f1ddb781b44b7669c136bf7eeef6",
+  "step-9-a-confirmed.serial.log": "80b4bb1acb9abfd293f2dab9cb466eb76c0e634a4768250f866b26d81aed6f97"
+}

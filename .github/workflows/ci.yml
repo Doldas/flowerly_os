@@ -123,6 +123,11 @@ jobs:
           FLOWERLY_REQUIRE_AB_TOOLS: "1"
         run: cargo test -p distro-builder --features fault-injection --locked
 
+      # Test images only (ADR-0023 G5): the drill migration that makes the
+      # real downgrade drill possible must keep working behind its feature.
+      - name: G5 schema drill feature (test images only)
+        run: cargo test -p flowerly-core --lib --features g5-schema-drill --locked schema_drill
+
       - name: Release build
         run: just build
 
@@ -348,6 +353,8 @@ jobs:
       - name: Generation A/B guest identity and opt-in health-gate installation
         run: |
           python3 ./scripts/test-generation-ab-guest.py
+          python3 ./scripts/test-generation-gate-d-drill.py
+          python3 ./scripts/test-generation-gate-d-kvm-acceptance.py
           python3 ./scripts/test-schema-compat.py --self-test
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh

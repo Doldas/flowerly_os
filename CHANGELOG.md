@@ -5,6 +5,18 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- **Activation is enabled** (`RELEASE_ACTIVATION_ENABLED = true` in the slot
+  broker and `flowerly-core`), in its own commit after the passing G5 evidence;
+  the test-profile marker is no longer needed.
+- Gate D real KVM acceptance (ADR-0023 G5, #9): all 16 scenarios pass on an
+  exact SHA with OVMF and systemd-boot (activate, FELL_BACK, rollback, schema
+  bump, irreversible activation, restore drill, user data and history intact,
+  exhausted target: systemd-boot keeps booting the exhausted target and never
+  the demoted root). Found and fixed on the way: boot entries now carry
+  sort-key/version; activation answers PENDING and arms asynchronously
+  (migration 17, `armed_at`); the root witness accepts exactly the demoted
+  `manual-flowerly-a|b` entry of its own slot; the drill reports through the
+  console. Evidence in `web-docs/docs/reviews/evidence/0048-g5-gate-d-eb60060`.
 - Irreversible activation path and `flowerlyd`'s activation path (ADR-0023
   G4b, #9), test profile only. On the A/B test image `generation.activate`
   and `generation.rollback` (now with a required `reason`) ask the slot

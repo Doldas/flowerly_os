@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Unified Flowerly OS types, SQLite state, IPC and daemon foundations"
 
+[features]
+# Test images only (ADR-0023 G5): one extra migration that raises min_reader
+# past every released binary, for the real downgrade drill. Never in a release.
+g5-schema-drill = []
+
 [dependencies]
 anyhow.workspace = true
 rusqlite.workspace = true
