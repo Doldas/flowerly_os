@@ -486,7 +486,7 @@ fn hash_cached(path: &Path, expected_size: Option<u64>) -> Result<(), CacheError
     Ok(())
 }
 
-fn sha256_reader(reader: &mut impl Read) -> std::io::Result<String> {
+pub fn sha256_reader(reader: &mut impl Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
