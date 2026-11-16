@@ -28,6 +28,20 @@ fi
 [[ -d "$ROOTFS" && ! -L "$ROOTFS" ]] || fail "missing/symlinked rootfs"
 [[ -f "$ROOTFS/usr/lib/os-release" ]] &&
     grep -qx ID=arch "$ROOTFS/usr/lib/os-release" || fail "not an Arch rootfs"
+# FLOWERLY_FROZEN_INPUTS=<distro-builder binary> makes the frozen package set
+# a precondition (#49, ADR-0020 step 7): the identity must name the committed
+# manifest and the rootfs must contain exactly its packages. Checked before
+# anything is written.
+if [[ -n "${FLOWERLY_FROZEN_INPUTS:-}" ]]; then
+    FROZEN_MANIFEST="$ROOT/distro/base-image/arch/inputs.manifest.json"
+    [[ -f "$FROZEN_MANIFEST" && -x "$FLOWERLY_FROZEN_INPUTS" ]] ||
+        fail "frozen inputs requested but the manifest or distro-builder is missing"
+    FROZEN_SHA="$(sha256sum "$FROZEN_MANIFEST" | cut -d' ' -f1)"
+    [[ "$INPUT_SHA" == "$FROZEN_SHA" ]] ||
+        fail "--input-manifest-sha256 is not the digest of the committed frozen manifest"
+    "$FLOWERLY_FROZEN_INPUTS" manifest verify-rootfs "$FROZEN_MANIFEST" --rootfs "$ROOTFS" >&2 ||
+        fail "rootfs does not contain exactly the frozen package set"
+fi
 ROOTFS_REAL="$(realpath "$ROOTFS")"
 for file in usr/bin/python3 usr/bin/runuser usr/lib/systemd/systemd-bless-boot \
             usr/lib/systemd/system/flowerlyd.service usr/lib/flowerly/boot-ipc-health.sh; do

@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Frozen inputs as a precondition for baking a Generation (#49):
+  `FLOWERLY_FROZEN_INPUTS=<distro-builder>` makes
+  `scripts/prepare-generation-ab-rootfs.sh` refuse unless the identity's
+  `--input-manifest-sha256` is the committed manifest's digest and the rootfs
+  contains exactly the frozen packages, checked before any write. Opt-in.
 - Pinned rootfs build (#49): `FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh`
   points mkosi at the frozen manifest's dated Arch Archive snapshot. A real
   build from it installs exactly the 157 manifest packages at the manifest
