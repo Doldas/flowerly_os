@@ -1,0 +1,11 @@
+{
+  "container_image": "docker.io/library/archlinux@sha256:dfc5be7be44cf1acf3d9b3b902e3e9c8a29f97ed41e35631823cdc9c97e5d4f0",
+  "schema": "flowerly.build-tooling.v1",
+  "tool_packages": [
+    "arch-install-scripts",
+    "cpio",
+    "diffutils",
+    "mkosi",
+    "python-pefile"
+  ]
+}

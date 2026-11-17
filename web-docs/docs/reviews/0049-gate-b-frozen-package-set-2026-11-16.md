@@ -126,6 +126,16 @@ the frozen set).
   day's live mirrors. These are recorded, **not frozen**: they decide how the
   rootfs is assembled but not which package bytes it contains, and
   `verify-rootfs` checks the result.
+- **Tooling now pinned too** (`scripts/build-arch-rootfs-pinned-container.sh`,
+  `distro/base-image/arch/build-tooling.json`): the container image is named by
+  digest and its pacman is pointed at the manifest's snapshot, so the tools are
+  the snapshot's (mkosi 27.1-1, arch-install-scripts 32-1, cpio 2.15-3,
+  diffutils 3.12-2, python-pefile 2024.8.26-2, pacman 7.1.0.r9.g54d9411-3).
+  A build with it passes `verify-rootfs` (157 / 0 / 0 / 0) and its kernel is
+  the frozen `vmlinuz`. Evidence:
+  `evidence/0049-gate-b-pinned-tooling-8689cd4`. The image is still a registry
+  object (its digest is verified by podman on pull) and the keyring bootstrap
+  inside the container trusts the image's own pacman keyring.
 - **Cache retention** is not implemented. Proposed policy for the owner: the
   cache (about 0.75 GB, content-addressed) is rebuilt by the manual, approved
   `freeze-arch-snapshot.py` network step and kept on the runner that builds the
@@ -135,8 +145,8 @@ the frozen set).
 
 ## Not done
 
-- Freezing the build tooling itself (container image, mkosi) and a v2 manifest
-  schema that carries it.
+- A v2 manifest schema that carries the tooling inside the manifest (it is a
+  separate pinned file today).
 - A rootfs built from the snapshot, and binding the manifest digest to a
   built Generation image and boot report (ADR-0020 step 7). The comparison
   tool exists (`distro-builder manifest verify-rootfs`; the earlier live-mirror

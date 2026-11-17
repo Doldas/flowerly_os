@@ -229,6 +229,22 @@ class ResolutionTests(unittest.TestCase):
                 freeze.read_requested(tmp / "unsorted")
 
 
+class BuildToolingTests(unittest.TestCase):
+    def test_the_build_tooling_is_pinned_by_digest(self):
+        tooling = json.loads(
+            (ROOT / "distro/base-image/arch/build-tooling.json").read_text()
+        )
+        self.assertEqual(tooling["schema"], "flowerly.build-tooling.v1")
+        self.assertRegex(tooling["container_image"], r"@sha256:[0-9a-f]{64}$")
+        self.assertEqual(
+            tooling["tool_packages"], sorted(set(tooling["tool_packages"]))
+        )
+        script = (ROOT / "scripts/build-arch-rootfs-pinned-container.sh").read_text()
+        # The container's pacman follows the manifest's snapshot, never a live mirror.
+        self.assertIn("Server = %s/\\$repo/os/\\$arch", script)
+        self.assertIn('--mirror="$SNAPSHOT"', script)
+
+
 class PolicyTests(unittest.TestCase):
     def test_the_committed_policy_is_well_formed(self):
         policy = freeze.load_policy(ROOT / "distro/base-image/arch/trust-policy.json")

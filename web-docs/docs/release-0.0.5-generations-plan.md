@@ -189,8 +189,8 @@ separately).
   `reviews/evidence/0049-gate-b-pinned-build-8689cd4`). `prepare-generation-ab-rootfs.sh` can now require the frozen set
   (`FLOWERLY_FROZEN_INPUTS`), and `scripts/build-g5-test-image.sh` uses it: the
   Gate D KVM matrix passes 16/16 on a rootfs built from the snapshot (`b05e3be`). The kernel's embedded config hash
-  and compiler are now reported. Still open: freezing the build tooling
-  (container image, mkosi; recorded, not frozen), a v2 manifest schema, and
+  and compiler are now reported. The build tooling is pinned too
+  (`build-arch-rootfs-pinned-container.sh`). Still open: a v2 manifest schema, and
   CI retention of the cache (policy proposed in the Gate B review, owner
   decision).
 

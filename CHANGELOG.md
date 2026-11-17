@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Pinned build tooling (#49): `scripts/build-arch-rootfs-pinned-container.sh`
+  runs mkosi in the container image named by digest in
+  `distro/base-image/arch/build-tooling.json`, with its pacman pointed at the
+  same dated snapshot as the rootfs, and records the tool versions it used. A
+  real build passes `manifest verify-rootfs` and yields the frozen kernel.
 - `manifest verify-binding` also reports the frozen kernel's embedded build
   configuration hash and compiler (#49), extracted from the kernel image with
   the system `zstd` and `gzip`. The toolchain of the proof build (container
