@@ -56,6 +56,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # The runner workspace persists and git does not clean ignored files.
+      # Without this, a run that fails before the Arch guest step uploads the
+      # previous run's report under this commit's exact-SHA artifact name.
+      - name: Remove Arch guest evidence left by an earlier run
+        if: github.event_name != 'pull_request'
+        run: rm -rf target/arch-kernel/release-push target/arch-kernel/dispatch
+
       - name: Ensure all workflow actions are immutable SHA-pinned
         run: python3 scripts/test-workflow-action-pins.py
 
