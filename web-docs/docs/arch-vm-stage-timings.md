@@ -47,6 +47,17 @@ a hit cannot make a stale build pass. The image lives under
 `host-metadata.txt`. Pure acceptance is unchanged; only compile time is saved.
 `bash scripts/test-arch-vm-build-cache.sh` covers the states offline.
 
+**Defect found by the first cache run (`51f6e6b`).** The run before it
+(`4d2c80c`) had the host's QEMU segfault mid-build; the next run reused the cache
+image and rustc failed with `internal compiler error: failed to load disk-cached
+value for green node` (incremental compilation data torn by the crash). The
+failure was real but caused by the cache, not by the code. The cache now (a)
+turns incremental compilation off in the guest (`CARGO_INCREMENTAL=0`), (b)
+marks the image dirty when a run starts and clean only when the run passed and
+the VM powered off by itself, rotating a dirty image (`rotated-unclean`), and
+(c) uses a versioned file name (`build-cache-v2.raw`) so the image written
+under the old rules is deleted, never reused.
+
 The release-push guest is also sized up from 4 vCPU / 6 GiB to 8 vCPU / 12 GiB
 (`ARCH_VM_CPUS`, `ARCH_VM_MEMORY_MB` in `ci.yml`; both are recorded in
 `host-metadata.txt`), so the first run changes two things at once. Read the

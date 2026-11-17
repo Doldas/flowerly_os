@@ -5,6 +5,10 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Arch VM build cache made crash-safe (#285): incremental compilation is off in
+  the guest, an image left by a run that did not end cleanly is rotated, and the
+  pre-fix image is discarded. Found when a host QEMU crash tore the cache and the
+  next run hit an internal compiler error.
 - The Arch VM resource timeline also records the highest CPU and DIMM hwmon
   temperatures (#184, #285), and the host is correctly described as 6 cores / 12
   threads in the docs and CI comment.

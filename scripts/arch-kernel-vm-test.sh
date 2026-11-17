@@ -111,7 +111,7 @@ cache_drive_args=()
 guest_cargo_env=""
 if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
     cache_drive_args=(-drive "if=virtio,format=raw,file=$FLOWERLY_BUILD_CACHE_IMAGE")
-    guest_cargo_env="CARGO_HOME=/mnt/build-cache/cargo-home "
+    guest_cargo_env="CARGO_HOME=/mnt/build-cache/cargo-home CARGO_INCREMENTAL=0 "
 fi
 echo "Arch guest build cache: $FLOWERLY_BUILD_CACHE_STATE"
 
@@ -459,6 +459,19 @@ if [[ -f "$pidfile" ]]; then
         [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || break
         sleep 1
     done
+fi
+
+# Reuse the build cache only after a run that passed and whose VM powered off
+# by itself; anything else leaves the dirty marker, so the next run starts cold.
+if [[ -f "$pidfile" ]]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "guest did not power off in time; the build cache stays dirty" >&2
+    else
+        flowerly_build_cache_mark_clean
+    fi
+else
+    flowerly_build_cache_mark_clean
 fi
 
 echo "Arch kernel system test passed for $TEST_REF @ $TEST_SHA"
