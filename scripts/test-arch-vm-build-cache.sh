@@ -19,25 +19,40 @@ prep '' 1
 
 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == cold ]] || fail "first use must be cold, got $FLOWERLY_BUILD_CACHE_STATE"
-image="$tmp/c/build-cache.raw"
+image="$tmp/c/build-cache-v2.raw"
 [[ "$FLOWERLY_BUILD_CACHE_IMAGE" == "$image" && -f "$image" && "$(label "$image")" == FLOWERLY_BUILD ]] ||
     fail "image is not a labelled ext4"
 [[ "$(stat -c %s "$image")" == 1073741824 ]] || fail "unexpected image size"
 
 printf marker | dd of="$image" bs=1 seek=4194304 conv=notrunc status=none
+# A run that never finished (crash) leaves the cache dirty: the next one is cold.
+prep "$tmp/c" 1
+[[ "$FLOWERLY_BUILD_CACHE_STATE" == rotated-unclean ]] || fail "unclean cache reused, got $FLOWERLY_BUILD_CACHE_STATE"
+[[ "$(dd if="$image" bs=1 skip=4194304 count=6 status=none | tr -d "\0")" != marker ]] || fail "dirty cache content survived"
+printf marker | dd of="$image" bs=1 seek=4194304 conv=notrunc status=none
+flowerly_build_cache_mark_clean
 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == warm ]] || fail "second use must be warm, got $FLOWERLY_BUILD_CACHE_STATE"
 [[ "$(dd if="$image" bs=1 skip=4194304 count=6 status=none)" == marker ]] || fail "warm cache lost its content"
 
 touch -d '30 days ago' "$image"
+flowerly_build_cache_mark_clean
 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == rotated-age ]] || fail "old cache must rotate"
 [[ "$(label "$image")" == FLOWERLY_BUILD ]] || fail "rotated image is not usable"
 
+flowerly_build_cache_mark_clean
 FLOWERLY_BUILD_CACHE_MAX_GB=0 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == rotated-size ]] || fail "oversized cache must rotate"
 
+# An image written under the old name is deleted, never reused.
+flowerly_build_cache_mark_clean
+printf old > "$tmp/c/build-cache.raw"
+prep "$tmp/c" 1
+[[ ! -e "$tmp/c/build-cache.raw" ]] || fail "pre-v2 image kept"
+
 # A symlinked image is never followed; it is replaced.
+flowerly_build_cache_mark_clean
 rm -f "$image"; ln -s /etc/hostname "$image"
 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == cold && ! -L "$image" ]] || fail "symlinked image kept"
