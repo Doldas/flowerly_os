@@ -260,7 +260,7 @@ jobs:
           # only; cargo fingerprints decide reuse, rotated after 14 days / 20 GiB.
           FLOWERLY_VM_BUILD_CACHE: "1"
           # Guest size for the release-push run (was 4 vCPU / 6 GiB), sized for
-          # a shared 14-core host: compile time scales with vCPUs (#285).
+          # a shared 6-core / 12-thread host: compile time scales with vCPUs (#285).
           ARCH_VM_CPUS: "8"
           ARCH_VM_MEMORY_MB: "12288"
         run: bash ./scripts/arch-kernel-vm-test.sh

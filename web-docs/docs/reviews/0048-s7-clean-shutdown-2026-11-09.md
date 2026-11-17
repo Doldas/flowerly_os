@@ -39,7 +39,7 @@ for a full system.
 
 ## Nightly VM budget (#51 acceptance, this host only)
 
-Measured on this self-hosted machine (12 cores, KVM): mkosi rootfs + initrd +
+Measured on this self-hosted machine (6 cores / 12 threads, KVM): mkosi rootfs + initrd +
 two slot volumes + GPT disk build ≈ 7 min (the rootfs is 1.6 GiB, the images
 3 GiB each, ≈ 7 GiB of disk for the matrix plus ≈ 25 GiB of transient copies);
 the full 17-boot KVM matrix with host scenarios ≈ 9 min. Roughly 17 minutes and
