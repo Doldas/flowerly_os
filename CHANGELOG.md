@@ -5,6 +5,13 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Release-push Arch guest sized 8 vCPU / 12 GiB (was 4 / 6) alongside the build
+  cache (#285); both are recorded in the run's host metadata.
+- Persistent build cache for the Arch guest in release-push CI (#285): the guest
+  builds into a sparse ext4 image kept on the runner (cargo target and
+  registry), rotated after 14 days or 20 GiB, one VM at a time, never failing
+  the run. The last green push spent about 26 of its 53 minutes compiling in a
+  fresh VM; the saving is to be measured on the first cold and warm runs.
 - Gate B owner decisions recorded (#49, ADR-0020): runner-local manual cache
   retention, and manifest v2 at the next re-freeze.
 - Pinned build tooling (#49): `scripts/build-arch-rootfs-pinned-container.sh`
