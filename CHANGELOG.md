@@ -5,6 +5,8 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Gate B owner decisions recorded (#49, ADR-0020): runner-local manual cache
+  retention, and manifest v2 at the next re-freeze.
 - Pinned build tooling (#49): `scripts/build-arch-rootfs-pinned-container.sh`
   runs mkosi in the container image named by digest in
   `distro/base-image/arch/build-tooling.json`, with its pacman pointed at the

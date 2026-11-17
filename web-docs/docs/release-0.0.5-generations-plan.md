@@ -190,9 +190,9 @@ separately).
   (`FLOWERLY_FROZEN_INPUTS`), and `scripts/build-g5-test-image.sh` uses it: the
   Gate D KVM matrix passes 16/16 on a rootfs built from the snapshot (`b05e3be`). The kernel's embedded config hash
   and compiler are now reported. The build tooling is pinned too
-  (`build-arch-rootfs-pinned-container.sh`). Still open: a v2 manifest schema, and
-  CI retention of the cache (policy proposed in the Gate B review, owner
-  decision).
+  (`build-arch-rootfs-pinned-container.sh`). Owner decisions 2026-11-17: the cache stays
+  runner-local and manually filled; manifest v2 comes at the next re-freeze.
+  Nothing else is open for Gate B except the exact-head push CI.
 
 ## Immediate next engineering action
 

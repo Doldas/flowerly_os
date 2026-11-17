@@ -136,7 +136,7 @@ the frozen set).
   `evidence/0049-gate-b-pinned-tooling-8689cd4`. The image is still a registry
   object (its digest is verified by podman on pull) and the keyring bootstrap
   inside the container trusts the image's own pacman keyring.
-- **Cache retention** is not implemented. Proposed policy for the owner: the
+- **Cache retention** (decided 2026-11-17: runner-local, manual; manifest v2 at the next re-freeze). The policy considered: the
   cache (about 0.75 GB, content-addressed) is rebuilt by the manual, approved
   `freeze-arch-snapshot.py` network step and kept on the runner that builds the
   image; CI never fetches. A CI job would need a persistent volume or release
