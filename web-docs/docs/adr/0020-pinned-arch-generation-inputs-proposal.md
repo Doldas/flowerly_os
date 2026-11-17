@@ -46,6 +46,17 @@ until the acceptance evidence below exists.
   (`-` means the image builder provides the name itself, as mkosi does for
   `initramfs`).
 
+### Owner decisions (2026-11-17)
+
+- **Cache retention.** The content-addressed cache (about 0.75 GB) lives on the
+  runner that builds the image and is filled only by the manual, approved
+  `freeze-arch-snapshot.py` step. CI never fetches packages; it runs the offline
+  tests and `manifest check`. A release-asset cache is not adopted.
+- **Manifest v2.** The manifest stays `flowerly.generation-inputs.v1`; the
+  tooling pin stays in `build-tooling.json`. A v2 schema that carries the
+  tooling is introduced at the next re-freeze (a new snapshot), when the
+  manifest digest changes once and Gate D is re-run against it.
+
 ### v1 format
 
 The manifest is a JSON object with `schema`, `source`
