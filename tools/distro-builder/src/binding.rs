@@ -35,6 +35,10 @@ pub struct Binding {
     pub frozen_vmlinuz_sha256: String,
     pub staged_kernel_sha256: String,
     pub staged_kernel_is_the_frozen_one: bool,
+    /// SHA-256 of the build configuration embedded in the kernel (IKCONFIG),
+    /// and the compiler the kernel says it was built with.
+    pub kernel_config_sha256: String,
+    pub kernel_compiler: String,
 }
 
 impl Binding {
@@ -149,6 +153,66 @@ pub fn frozen_kernel(checked: &Checked, cache: &Path) -> Result<(String, String,
     Ok((package.version.clone(), release, digest))
 }
 
+/// The kernel's embedded build configuration: a zstd-compressed payload holds
+/// `IKCFG_ST` followed by a gzip stream (the same walk as the kernel's
+/// `scripts/extract-ikconfig`). Returns `(sha256, CONFIG_CC_VERSION_TEXT)`.
+pub fn embedded_config(kernel: &[u8]) -> Result<(String, String)> {
+    const ZSTD: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    let run = |program: &str, flag: &str, input: &[u8]| -> Result<Vec<u8>> {
+        let mut child = Command::new(program)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .arg(flag)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("starting {program}"))?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let data = input.to_vec();
+        let writer = std::thread::spawn(move || {
+            let _ = std::io::Write::write_all(&mut stdin, &data);
+        });
+        let mut out = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("piped")
+            .take(MAX_KERNEL)
+            .read_to_end(&mut out)?;
+        let _ = writer.join();
+        // Both tools exit non-zero on trailing bytes after the stream; the
+        // decoded prefix is what is wanted.
+        let _ = child.wait();
+        Ok(out)
+    };
+    let start = kernel
+        .windows(ZSTD.len())
+        .position(|window| window == ZSTD)
+        .ok_or_else(|| anyhow!("no zstd payload in the kernel image"))?;
+    let payload = run("zstd", "-dc", &kernel[start..])?;
+    let marker = payload
+        .windows(8)
+        .position(|window| window == b"IKCFG_ST")
+        .ok_or_else(|| anyhow!("the kernel has no embedded configuration"))?;
+    let config = run("gzip", "-dc", &payload[marker + 8..])?;
+    ensure!(
+        config.starts_with(b"#\n# Automatically generated file"),
+        "the embedded kernel configuration did not decode"
+    );
+    let text = String::from_utf8_lossy(&config);
+    let compiler = text
+        .lines()
+        .find_map(|line| line.strip_prefix("CONFIG_CC_VERSION_TEXT="))
+        .map(|value| value.trim_matches('"').to_owned())
+        .ok_or_else(|| anyhow!("the configuration names no compiler"))?;
+    Ok((hex(&Sha256::digest(&config)), compiler))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Checks both facts for a baked identity and a staged kernel image.
 pub fn verify_binding(
     checked: &Checked,
@@ -167,7 +231,20 @@ pub fn verify_binding(
         staged.metadata()?.len() <= MAX_KERNEL,
         "the staged kernel is implausibly large"
     );
-    let staged = sha256_reader(&mut staged)?;
+    let staged_bytes = {
+        let mut bytes = Vec::new();
+        std::io::Seek::rewind(&mut staged)?;
+        staged.take(MAX_KERNEL).read_to_end(&mut bytes)?;
+        bytes
+    };
+    let staged = hex(&Sha256::digest(&staged_bytes));
+    // The configuration is reported for the frozen kernel only; a kernel from
+    // elsewhere simply does not bind, whatever it embeds.
+    let (kernel_config_sha256, kernel_compiler) = if staged == frozen {
+        embedded_config(&staged_bytes)?
+    } else {
+        (String::new(), String::new())
+    };
     Ok(Binding {
         manifest_sha256: checked.sha256.clone(),
         identity_names_this_manifest: identity.input_manifest_sha256 == checked.sha256,
@@ -177,6 +254,8 @@ pub fn verify_binding(
         staged_kernel_is_the_frozen_one: staged == frozen,
         frozen_vmlinuz_sha256: frozen,
         staged_kernel_sha256: staged,
+        kernel_config_sha256,
+        kernel_compiler,
     })
 }
 
@@ -281,18 +360,50 @@ mod tests {
         path
     }
 
-    const KERNEL: &[u8] = b"kernel image bytes";
+    const CONFIG: &[u8] = b"#\n# Automatically generated file; DO NOT EDIT.\n# Linux/x86 7.2.14-arch1 Kernel Configuration\n#\nCONFIG_CC_VERSION_TEXT=\"gcc (GCC) 16.2.1 20260101\"\nCONFIG_IKCONFIG=y\n";
+
+    fn pipe(program: &str, flag: &str, input: &[u8]) -> Vec<u8> {
+        let mut child = Command::new(program)
+            .arg(flag)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let data = input.to_vec();
+        let writer = std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &data));
+        let mut out = Vec::new();
+        child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
+        writer.join().unwrap().unwrap();
+        assert!(child.wait().unwrap().success());
+        out
+    }
+
+    /// A stand-in bzImage: a header, then a zstd payload that holds
+    /// `IKCFG_ST` and a gzip of the configuration.
+    fn kernel_with(config: &[u8], tag: &[u8]) -> Vec<u8> {
+        let mut payload = b"payload-prefix".to_vec();
+        payload.extend_from_slice(b"IKCFG_ST");
+        payload.extend(pipe("gzip", "-c", config));
+        payload.extend_from_slice(tag);
+        let mut image = b"MZ-header-bytes".to_vec();
+        image.extend(pipe("zstd", "-c", &payload));
+        image
+    }
+
+    static KERNEL: std::sync::LazyLock<Vec<u8>> =
+        std::sync::LazyLock::new(|| kernel_with(CONFIG, b""));
 
     fn linux_files() -> Vec<(&'static str, &'static [u8])> {
         vec![
-            ("usr/lib/modules/7.2.14-arch1-1/vmlinuz", KERNEL),
+            ("usr/lib/modules/7.2.14-arch1-1/vmlinuz", &KERNEL[..]),
             ("usr/lib/modules/7.2.14-arch1-1/modules.dep", b"x"),
         ]
     }
 
     #[test]
     fn the_staged_kernel_and_identity_of_this_manifest_bind() {
-        let rig = rig(&linux_files(), KERNEL);
+        let rig = rig(&linux_files(), &KERNEL);
         let sha = rig.checked.sha256.clone();
         let binding = verify_binding(
             &rig.checked,
@@ -303,12 +414,12 @@ mod tests {
         .unwrap();
         assert!(binding.holds(), "{binding:?}");
         assert_eq!(binding.kernel_release, "7.2.14-arch1-1");
-        assert_eq!(binding.frozen_vmlinuz_sha256, hex(KERNEL));
+        assert_eq!(binding.frozen_vmlinuz_sha256, hex(&KERNEL));
     }
 
     #[test]
     fn a_kernel_from_elsewhere_does_not_bind() {
-        let rig = rig(&linux_files(), KERNEL);
+        let rig = rig(&linux_files(), &KERNEL);
         let sha = rig.checked.sha256.clone();
         let binding = verify_binding(
             &rig.checked,
@@ -323,7 +434,7 @@ mod tests {
 
     #[test]
     fn an_identity_for_another_manifest_does_not_bind() {
-        let rig = rig(&linux_files(), KERNEL);
+        let rig = rig(&linux_files(), &KERNEL);
         let binding = verify_binding(
             &rig.checked,
             &rig.dir.path().join("cache"),
@@ -337,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_tampered_or_ambiguous_linux_archive_is_refused() {
-        let rig = rig(&linux_files(), KERNEL);
+        let rig = rig(&linux_files(), &KERNEL);
         let cache = rig.dir.path().join("cache");
         let entry = cache
             .join("sha256")
@@ -358,16 +469,16 @@ mod tests {
     fn rig_two_kernels() -> Rig {
         rig(
             &[
-                ("usr/lib/modules/7.2.14-arch1-1/vmlinuz", KERNEL),
+                ("usr/lib/modules/7.2.14-arch1-1/vmlinuz", &KERNEL[..]),
                 ("usr/lib/modules/7.2.15-arch1-1/vmlinuz", b"other"),
             ],
-            KERNEL,
+            &KERNEL,
         )
     }
 
     #[test]
     fn a_symlinked_cache_entry_or_kernel_is_not_followed() {
-        let rig = rig(&linux_files(), KERNEL);
+        let rig = rig(&linux_files(), &KERNEL);
         let cache = rig.dir.path().join("cache");
         let entry = cache
             .join("sha256")
@@ -380,5 +491,40 @@ mod tests {
             format!("{error:#}").contains("opening the frozen linux archive"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn the_embedded_configuration_is_hashed_and_names_the_compiler() {
+        let (digest, compiler) = embedded_config(&KERNEL).unwrap();
+        assert_eq!(digest, hex(CONFIG));
+        assert_eq!(compiler, "gcc (GCC) 16.2.1 20260101");
+        // Trailing bytes after the gzip stream do not change the result.
+        let tagged = kernel_with(CONFIG, b"trailing-bytes");
+        assert_eq!(embedded_config(&tagged).unwrap().0, digest);
+        // A different configuration is a different identity.
+        let other = [CONFIG, b"CONFIG_X=y\n"].concat();
+        assert_ne!(
+            embedded_config(&kernel_with(&other, b"")).unwrap().0,
+            digest
+        );
+    }
+
+    #[test]
+    fn a_kernel_without_a_readable_configuration_is_refused() {
+        for image in [
+            b"no payload at all".to_vec(),
+            [
+                b"MZ".to_vec(),
+                pipe("zstd", "-c", b"payload without the marker"),
+            ]
+            .concat(),
+            [
+                b"MZ".to_vec(),
+                pipe("zstd", "-c", b"xxIKCFG_STnot a gzip stream"),
+            ]
+            .concat(),
+        ] {
+            assert!(embedded_config(&image).is_err());
+        }
     }
 }
