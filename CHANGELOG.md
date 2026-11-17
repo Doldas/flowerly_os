@@ -5,6 +5,9 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- The Arch VM resource timeline also records the highest CPU and DIMM hwmon
+  temperatures (#184, #285), and the host is correctly described as 6 cores / 12
+  threads in the docs and CI comment.
 - Release-push Arch guest sized 8 vCPU / 12 GiB (was 4 / 6) alongside the build
   cache (#285); both are recorded in the run's host metadata.
 - Persistent build cache for the Arch guest in release-push CI (#285): the guest

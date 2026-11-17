@@ -48,6 +48,42 @@ class ResourceMonitorTests(unittest.TestCase):
             self.assertEqual(row["cgroup_memory_current_bytes"], 67108864)
             self.assertEqual(row["cgroup_oom_kill"], 1)
 
+    def test_cpu_and_dimm_temperatures_come_from_named_hwmon_chips_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def chip(directory, name, **temps):
+                (root / directory).mkdir()
+                (root / directory / "name").write_text(name + "\n", encoding="ascii")
+                for key, value in temps.items():
+                    (root / directory / key).write_text(f"{value}\n", encoding="ascii")
+
+            chip("hwmon1", "k10temp", temp1_input=61250, temp3_input=58000)
+            chip("hwmon2", "spd5118", temp1_input=45000)
+            chip("hwmon3", "spd5118", temp1_input=52500)
+            chip("hwmon4", "nvme", temp1_input=99000)
+            chip("hwmon5", "amdgpu", temp1_input=88000)
+            row = module.sample(root / "none", proc=root, cgroup=root, hwmon=root)
+            self.assertEqual(row["cpu_temp_mc"], 61250)
+            self.assertEqual(row["dimm_temp_max_mc"], 52500)
+
+    def test_missing_unreadable_or_absurd_temperatures_are_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            row = module.sample(
+                root / "none", proc=root, cgroup=root, hwmon=root / "absent"
+            )
+            self.assertIsNone(row["cpu_temp_mc"])
+            self.assertIsNone(row["dimm_temp_max_mc"])
+            (root / "hwmon1").mkdir()
+            (root / "hwmon1" / "name").write_text("k10temp\n", encoding="ascii")
+            (root / "hwmon1" / "temp1_input").write_text("garbage\n", encoding="ascii")
+            (root / "hwmon1" / "temp2_input").write_text(
+                "999999999\n", encoding="ascii"
+            )
+            row = module.sample(root / "none", proc=root, cgroup=root, hwmon=root)
+            self.assertIsNone(row["cpu_temp_mc"])
+
     def test_unreadable_metrics_are_unknown_not_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
