@@ -27,6 +27,7 @@ VM_MEMORY_MB="${ARCH_VM_MEMORY_MB:-6144}"
 # QCOW2 is sparse: this is virtual guest capacity, not host preallocation.
 VM_DISK_GB="${ARCH_VM_DISK_GB:-32}"
 source "$ROOT/scripts/lib/arch-vm-disk.sh"
+source "$ROOT/scripts/lib/arch-vm-build-cache.sh"
 flowerly_arch_vm_validate_disk_gb "$VM_DISK_GB"
 
 
@@ -102,6 +103,17 @@ overlay="$WORK_DIR/overlay.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base_image" "$overlay"
 flowerly_arch_vm_resize_overlay "$overlay" "$VM_DISK_GB"
 echo "Arch guest sparse overlay configured with ${VM_DISK_GB} GiB virtual disk"
+
+# Opt-in persistent cargo cache for the guest (#285); never fails the run.
+flowerly_build_cache_prepare "${ARCH_VM_BUILD_CACHE_DIR:-$HOME/.cache/flowerly/arch-vm-build}" \
+    "${FLOWERLY_VM_BUILD_CACHE:-0}"
+cache_drive_args=()
+guest_cargo_env=""
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
+    cache_drive_args=(-drive "if=virtio,format=raw,file=$FLOWERLY_BUILD_CACHE_IMAGE")
+    guest_cargo_env="CARGO_HOME=/mnt/build-cache/cargo-home "
+fi
+echo "Arch guest build cache: $FLOWERLY_BUILD_CACHE_STATE"
 
 ssh_key="$WORK_DIR/id_ed25519"
 rm -f "$ssh_key" "$ssh_key.pub"
@@ -194,6 +206,7 @@ launch_vm() {
         -drive "if=pflash,format=raw,file=$ovmf_vars" \
         -drive "if=virtio,format=qcow2,file=$overlay" \
         -drive "if=virtio,format=raw,readonly=on,file=$WORK_DIR/seed.img" \
+        "${cache_drive_args[@]}" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \
         -display none \
@@ -393,12 +406,17 @@ ssh "${ssh_opts[@]}" "$guest" \
 printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
     'cat > "$HOME/flowerly_os/.flowerly-tested-commit"'
 
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
+    echo "attaching the persistent build cache ($FLOWERLY_BUILD_CACHE_STATE)"
+    flowerly_build_cache_guest_attach | ssh "${ssh_opts[@]}" "$guest" 'bash -s'
+fi
+
 echo "running complete Flowerly verification inside Arch VM"
 stage="verify"
 flowerly_stage_begin guest_verification
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
-    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
+    "cd \"\$HOME/flowerly_os\" && ${guest_cargo_env}FLOWERLY_TEST_SHA=\"\$(cat .flowerly-tested-commit)\" bash testbed/evolution-world/arch-kernel/guest-verify.sh \"\$HOME/flowerly_os\"" \
     2>&1 | tee "$REPORT_DIR/guest-execution.log"
 guest_status=("${PIPESTATUS[@]}")
 guest_ssh_status="${guest_status[0]}"
@@ -428,6 +446,7 @@ fi
     echo "vm_disk_gb=$VM_DISK_GB"
     echo "vm_root_minimum_gb=16"
     echo "vm_free_minimum_gb=8"
+    echo "build_cache=$FLOWERLY_BUILD_CACHE_STATE"
 } >"$REPORT_DIR/host-metadata.txt"
 
 echo "requesting clean guest shutdown"

@@ -52,6 +52,8 @@ python3 scripts/test-probe-arch-qemu-boot.py
 python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
 bash scripts/test-arch-vm-disk.sh
+bash -n scripts/lib/arch-vm-build-cache.sh
+bash scripts/test-arch-vm-build-cache.sh
 bash scripts/test-arch-vm-stage-timing.sh
 python3 scripts/test-arch-vm-failure-classify.py
 bash -n scripts/remote-provider-arch-kvm-acceptance.sh
