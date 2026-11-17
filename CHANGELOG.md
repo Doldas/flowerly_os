@@ -5,6 +5,8 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Release-push Arch guest sized 8 vCPU / 12 GiB (was 4 / 6) alongside the build
+  cache (#285); both are recorded in the run's host metadata.
 - Persistent build cache for the Arch guest in release-push CI (#285): the guest
   builds into a sparse ext4 image kept on the runner (cargo target and
   registry), rotated after 14 days or 20 GiB, one VM at a time, never failing

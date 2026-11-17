@@ -47,6 +47,12 @@ a hit cannot make a stale build pass. The image lives under
 `host-metadata.txt`. Pure acceptance is unchanged; only compile time is saved.
 `bash scripts/test-arch-vm-build-cache.sh` covers the states offline.
 
+The release-push guest is also sized up from 4 vCPU / 6 GiB to 8 vCPU / 12 GiB
+(`ARCH_VM_CPUS`, `ARCH_VM_MEMORY_MB` in `ci.yml`; both are recorded in
+`host-metadata.txt`), so the first run changes two things at once. Read the
+cold run (new size, empty cache) against the 3193 s baseline and the warm run
+against the cold one.
+
 The first run after enabling is cold. The saving is **not yet measured**: the
 first two exact-SHA release pushes give the cold and warm numbers, which belong
 in the list below.
