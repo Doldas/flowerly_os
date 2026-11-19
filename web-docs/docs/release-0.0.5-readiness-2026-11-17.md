@@ -14,7 +14,7 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 | Arch package set: exact name/version/architecture | `distro/base-image/arch/inputs.manifest.json`: 157 packages, snapshot 2026/11/09, manifest `8689cd41…` |
 | acquisition identity and artifact hashes; signatures | `freeze-arch-snapshot.py`, `trust-policy.json`, `verify-cache --keyring` (314 artifacts) |
 | kernel source/config/artifact identity | `verify-binding`: signed Arch kernel package `7.2.14.arch1-1`, `vmlinuz` `b1e9eaf5…`, embedded config `e8f340e4…`, gcc 16.2.1 20260810. The signed package build metadata binds the [tagged Arch recipe and upstream source](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#upstream-kernel-source-identity-2026-11-19). |
-| Flowerly source/output hashes | baked identity v2: `source_commit`, rootfs/kernel/initramfs hashes, `input_manifest_sha256` |
+| Flowerly source/output hashes | Baked identity v2 records `source_commit` and `input_manifest_sha256`. Generation activation verifies the rootfs, kernel and initramfs hashes against the staged slot manifest. |
 | pinned/recorded build toolchain identity | `build-tooling.json` (container by digest, tools from the same snapshot) |
 | schema-version guard; coherent backup; recovery | G3 schema window, G4b `VACUUM INTO` backup, G5 restore drill |
 | rollback to a known previous state; history survives reboot | G5 on a real OVMF/KVM guest: 16/16, twice (`eb60060` and, on the pinned rootfs, `b05e3be`) |
