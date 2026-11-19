@@ -394,7 +394,7 @@ broker, G4b the irreversible path and `flowerlyd`'s activation path to it.
   the backup restored first.
 
 **G5 (2026-11-16).** Real OVMF/KVM acceptance on `eb60060`: 16 of 16
-scenarios pass ([review](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md)).
+scenarios pass ([review](../reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md)).
 Changes it forced: entries carry `sort-key`/`version` so the newest armed entry
 wins; `plan` no longer hashes slots and `activate` answers the PENDING row and
 arms on a worker (migration 17: `armed_at`, `min_reader` 16); the schema-bump

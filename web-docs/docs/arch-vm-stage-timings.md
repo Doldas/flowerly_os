@@ -72,7 +72,7 @@ in the list below.
 
 The [green push for `fd5e386`](https://github.com/Doldas/flowerly_os/actions/runs/44124162315)
 reported a cold v2 cache, 8 vCPU and 12 GiB, with TCG and Arch kernel
-`7.3.4-arch1-2`. Its stage ledger sums to 2,854 s. Guest verification took
+`7.3.4-arch1-2`. Its stage ledger sums to 2,855 s. Guest verification took
 2,577 s, pacman took 64 s, and first boot plus reboot took 179 s.
 Compared with the earlier 2,928 s guest verification, the observed
 difference is 351 s. The VM sizing changed and this cache was empty.

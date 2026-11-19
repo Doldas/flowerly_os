@@ -27,6 +27,7 @@ ca() {
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
         -subj "/O=$label/CN=$1" -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -addext "subjectKeyIdentifier=hash" \
         -keyout "$out/$2.key" -out "$out/$2.crt" 2>/dev/null
 }
 
@@ -34,7 +35,14 @@ leaf() {
     local name=$1 ca=$2 sans=$3
     openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
         -subj "/O=$label/CN=$name" -keyout "$out/$name.key" -out "$out/$name.csr" 2>/dev/null
-    printf 'subjectAltName=%s\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n' "$sans" >"$out/$name.ext"
+    cat >"$out/$name.ext" <<EOF
+subjectAltName=$sans
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always
+EOF
     openssl x509 -req -in "$out/$name.csr" -CA "$out/$ca.crt" -CAkey "$out/$ca.key" \
         -CAcreateserial -days 2 -extfile "$out/$name.ext" -out "$out/$name.crt" 2>/dev/null
     rm -f "$out/$name.csr" "$out/$name.ext"
