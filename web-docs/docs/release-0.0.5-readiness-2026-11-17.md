@@ -44,9 +44,10 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
   build, and measured rootfs and KVM resources. The
   [Gate B review](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#repeat-acquisition-and-kvm-resource-measurements-2026-11-19)
   records the evidence. Manifest v2 belongs to the next re-freeze per ADR-0020.
-- #285 has a matched local KVM cold/warm comparison and a failed-cache drill.
-  The first protected push attempt lost the runner during Arch acceptance.
-  See [the VM timing notes](arch-vm-stage-timings.md).
+- #285 has a matched local KVM cold/warm comparison and two failed-cache
+  drills. Both protected push attempts for `d653371` lost the runner during
+  Arch acceptance. See [the VM timing notes](arch-vm-stage-timings.md) and
+  [runner interruption details](arch-vm-resource-timeline.md#release-push-runner-interruption-2026-11-19).
 - #9 tracks the Generation milestone until the remaining evidence is in.
 - After the final merge, the resulting `release/2` SHA needs fresh push CI,
   including the executed Arch step, security and CodeQL. The owner controls
