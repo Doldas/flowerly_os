@@ -1,7 +1,7 @@
 # 0.0.5 Generations — readiness against the roadmap (2026-11-17)
 
 Status: **Generation lifecycle verified on the 0.0.5 test fixture.**
-The milestone remains open for the outstanding input and CI evidence. Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9),
+The milestone remains open for protected release CI evidence. Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9),
 plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 
 ## Roadmap checklist (#9) against evidence
@@ -13,8 +13,8 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 | no public status setter; DB-level protection of the stable invariant | G2 (typed transitions only), G3 witness resolution |
 | Arch package set: exact name/version/architecture | `distro/base-image/arch/inputs.manifest.json`: 157 packages, snapshot 2026/11/09, manifest `8689cd41…` |
 | acquisition identity and artifact hashes; signatures | `freeze-arch-snapshot.py`, `trust-policy.json`, `verify-cache --keyring` (314 artifacts) |
-| kernel artifact/config identity | `verify-binding`: signed Arch kernel package `7.2.14.arch1-1`, `vmlinuz` `b1e9eaf5…`, embedded config `e8f340e4…`, gcc 16.2.1 20260810. Upstream source revision evidence is outstanding. |
-| Flowerly source/output hashes | baked identity v2: `source_commit`, rootfs/kernel/initramfs hashes, `input_manifest_sha256` |
+| kernel source/config/artifact identity | `verify-binding`: signed Arch kernel package `7.2.14.arch1-1`, `vmlinuz` `b1e9eaf5…`, embedded config `e8f340e4…`, gcc 16.2.1 20260810. The signed package build metadata binds the [tagged Arch recipe and upstream source](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#upstream-kernel-source-identity-2026-11-19). |
+| Flowerly source/output hashes | Baked identity v2 records `source_commit` and `input_manifest_sha256`. Generation activation verifies the rootfs, kernel and initramfs hashes against the staged slot manifest. |
 | pinned/recorded build toolchain identity | `build-tooling.json` (container by digest, tools from the same snapshot) |
 | schema-version guard; coherent backup; recovery | G3 schema window, G4b `VACUUM INTO` backup, G5 restore drill |
 | rollback to a known previous state; history survives reboot | G5 on a real OVMF/KVM guest: 16/16, twice (`eb60060` and, on the pinned rootfs, `b05e3be`) |
@@ -40,16 +40,14 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
   power-loss matrix. The full-tree Ruff check passed on all 150 Python files
   in the baseline. Enabling the checked-in `python-quality` rule in GitHub
   remains an administrator action.
-- #49 has a verified pinned rootfs and a replay drill. The pinned build still
-  needs its own download/build time, image-size and nightly resource evidence.
-  The prior S7 fixture has separate measurements. Manifest v2 belongs to the
-  next re-freeze, as already decided in ADR-0020.
-- #285 needs a cold/warm comparison on the new image format, signed-package
-  reuse measured across runs, and real-guest verification of cache failures.
+- #49 has a repeatable signed package acquisition, a verified pinned
+  build, and measured rootfs and KVM resources. The
+  [Gate B review](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#repeat-acquisition-and-kvm-resource-measurements-2026-11-19)
+  records the evidence. Manifest v2 belongs to the next re-freeze per ADR-0020.
+- #285 has a matched local KVM cold/warm comparison and a failed-cache drill.
+  The first protected push attempt lost the runner during Arch acceptance.
   See [the VM timing notes](arch-vm-stage-timings.md).
 - #9 tracks the Generation milestone until the remaining evidence is in.
-  The Arch package, config and booted kernel are bound to the fixture. The
-  signed package does not identify the upstream source revision by itself.
 - After the final merge, the resulting `release/2` SHA needs fresh push CI,
   including the executed Arch step, security and CodeQL. The owner controls
   promotion in [#388](https://github.com/Doldas/flowerly_os/pull/388), the

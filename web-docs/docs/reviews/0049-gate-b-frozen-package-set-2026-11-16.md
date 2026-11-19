@@ -1,8 +1,8 @@
 # #49 Gate B — a real frozen, signed Arch package set (2026-11-16)
 
-Status: **FROZEN SET PRODUCED AND INDEPENDENTLY VERIFIED; GATE B NOT CLOSED.**
-Input identity only: this does not claim bit-for-bit reproducible images, and
-the manifest is not yet bound to a built Generation. Network use was approved
+Status: **Frozen inputs independently verified and built into the Gate D fixture.**
+The frozen inputs identify the packages used by the Generation fixture.
+The resulting filesystem can have different bytes between builds. Network use was approved
 by the owner for `https://archive.archlinux.org` only (no keyserver, no
 mirror, no other host).
 
@@ -69,7 +69,7 @@ fixed with hard links.)
 - Size: 738,921,801 bytes of archives, 739 MB cache (signatures and keyring
   add little). The kernel `linux` is 169 MB and the firmware packages are the
   next largest, so a nightly cache needs about 0.75 GB plus the builder's
-  scratch. Download time was not measured separately.
+  scratch. See the measured fresh acquisition below.
 
 ## Pinned build (same day)
 
@@ -143,15 +143,75 @@ the frozen set).
   asset, the keyring pin and this manifest; the drill proves a cache is
   complete without network.
 
+## Upstream kernel source identity (2026-11-19)
+
+The pinned manifest names the signed x86_64 package `linux-7.2.14.arch1-1`.
+The archive retrieved from Arch Linux Archive matched the manifest SHA-256
+`e5c8674514d6ec198b24ebc26bd282a44afa2ce445662d8958fbdc7717bf3bb7`.
+Its `.BUILDINFO` names the same package version and records
+`pkgbuild_sha256sum = 4c0e83cf54c98401b98383c2c7902c9c853d1372348077797143fa32171c59b5`.
+That is the SHA-256 of the [Arch packaging tag's PKGBUILD](https://gitlab.archlinux.org/archlinux/packaging/packages/linux/-/blob/7.2.14.arch1-1/PKGBUILD).
+
+| Source input declared by that recipe | SHA-256 |
+| --- | --- |
+| [Linux stable v7.2.14 tarball](https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.14.tar.xz) | `bb1b871ef95a8de10b3f7b7baf0e0d754abbf620f804b6caf860f226aa97647d` |
+| [Arch v7.2.14-arch1 patch](https://github.com/archlinux/linux/releases/tag/v7.2.14-arch1) | `8048e7c6bf74e4d9195cfea2f52b47326eed35b85b6be90ab9ba1928dc0575fa` |
+
+Arch's signed release tag points to commit
+[`8ae86fbb961a2953a8883b767465417f667d8d21`](https://github.com/archlinux/linux/commit/8ae86fbb961a2953a8883b767465417f667d8d21).
+Together with the `verify-binding` evidence above, this identifies the
+declared source revision and recipe, embedded config and compiler, and
+actual kernel bytes used in the Generation fixture.
+
+To repeat the package-to-recipe comparison, download the package named in
+the manifest and the tagged recipe as `PKGBUILD`. Compare both SHA-256
+digests and extract the recipe hash from the archive without running it:
+
+```sh
+sha256sum linux-7.2.14.arch1-1-x86_64.pkg.tar.zst PKGBUILD
+bsdtar -xOf linux-7.2.14.arch1-1-x86_64.pkg.tar.zst .BUILDINFO |
+  sed -n '/^pkgbuild_sha256sum = /p'
+```
+
+## Repeat acquisition and KVM resource measurements (2026-11-19)
+
+On `d6533714084ac39d1067adef0178880dec25afed`, a fresh cache populated
+from the same dated snapshot took **241.225 s**. This measures downloading,
+dependency resolution and signature verification together. The new
+manifest matched the committed manifest byte for byte. A separate offline
+`distro-builder manifest verify-cache --keyring` took **18.075 s** and
+verified all 314 package and signature artifacts, with zero missing,
+mismatched, or untrusted artifacts. The archive payload is 738,921,801 bytes.
+
+On the same checkout, the digest-pinned builder image took **82.549 s**
+to pull. `scripts/build-arch-rootfs-pinned-container.sh` then completed
+in **301.609 s** using Docker as the local container runtime. This
+includes installing the pinned tooling, acquiring the snapshot packages,
+assembling the rootfs and exporting the output. Pacman reported 22.90 MiB
+for the tooling transaction and 704.28 MiB for the rootfs transaction.
+Mkosi reported **1.6 GiB** for the rootfs directory and the separate
+`vmlinuz` was **17,248,768 bytes**. The offline verifier found exactly
+157 installed packages with no differences, and the exported kernel
+matched the frozen kernel SHA-256 in `verify-binding`.
+
+The archived [pinned fixture KVM report](evidence/0049-g5-pinned-rootfs-b05e3be/acceptance.json)
+contains 20 sequential boots with a verified KVM file descriptor. Their
+recorded QEMU durations sum to **354.536 s**, including the deliberate
+120.074 s observation of the exhausted target. The harness uses two
+vCPUs and 2 GiB RAM per guest. This is guest-process time, with extra
+host work for disk copying, hashing and running the fixture builder.
+The measured cold acquisition, builder pull, rootfs build and QEMU
+stages total about 16.5 minutes. For a nightly Gate D trial, budget 30
+minutes for these and the remaining host work, plus 35 GiB of scratch
+as recorded in the [Gate D review](0048-g5-gate-d-kvm-acceptance-2026-11-16.md).
+This is a planning budget based on the measured stages and the earlier
+scratch requirement. The existing nightly Arch workflow tests the
+official cloud guest and does not schedule this fixture drill.
+
 ## Not done
 
 - A v2 manifest schema that carries the tooling inside the manifest (it is a
   separate pinned file today).
-- A rootfs built from the snapshot, and binding the manifest digest to a
-  built Generation image and boot report (ADR-0020 step 7). The comparison
-  tool exists (`distro-builder manifest verify-rootfs`; the earlier live-mirror
-  rootfs fails it with 27 version differences and `openssl-3` extra), the
-  pinned build does not.
 - CI retention of the cache and a scheduled drill; the freeze is a manual,
   owner-approved network action.
 - Evaluation of the master-key certification chain.
