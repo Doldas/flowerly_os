@@ -26,7 +26,7 @@ existing host metadata/report files. A stage interrupted by failure is
 interrupted records and duplicate-finish suppression. It is included
 in `bash scripts/preflight-docs.sh`.
 
-## Baseline and the guest build cache (2026-11-17)
+## Baseline and initial guest build cache (2026-11-17)
 
 Measured on the green exact-SHA push run of `40ebfeb` (4 vCPU, 6 GiB guest):
 the Arch step took 3193 s, of which `guest_verification` was 2928 s. Inside
@@ -35,10 +35,10 @@ the guest nothing is reused between runs: the dev build for clippy took 4 m 28 s
 26 minutes of compiling in a fresh VM. Boot, upgrade, reboot and toolchain
 install together are about 4 minutes.
 
-`FLOWERLY_VM_BUILD_CACHE=1` (set for release pushes in `ci.yml`) attaches a
+`FLOWERLY_VM_BUILD_CACHE=1` (set for release pushes in `ci.yml`) first attached a
 persistent sparse ext4 image (label `FLOWERLY_BUILD`, 28 GiB virtual) as a
-second virtio drive. The guest mounts it, symlinks the checkout's `target/` to
-it and keeps `CARGO_HOME` there, so dependency artifacts and the downloaded
+second virtio drive. The guest mounted it, symlinked the checkout's `target/` to
+it and kept `CARGO_HOME` there, so dependency artifacts and the downloaded
 registry survive between runs. cargo's fingerprints decide what is reused, so
 a hit cannot make a stale build pass. The image lives under
 `~/.cache/flowerly/arch-vm-build` on the runner, is used by one VM at a time
@@ -63,10 +63,6 @@ The release-push guest is also sized up from 4 vCPU / 6 GiB to 8 vCPU / 12 GiB
 `host-metadata.txt`), so the first run changes two things at once. Read the
 cold run (new size, empty cache) against the 3193 s baseline and the warm run
 against the cold one.
-
-The first run after enabling is cold. The saving is **not yet measured**: the
-first two exact-SHA release pushes give the cold and warm numbers, which belong
-in the list below.
 
 ## Measured cold run
 
@@ -97,8 +93,67 @@ the guest verification log has wall times for Clippy, compile check,
 the Rust test command and release build. The Cargo test-profile compile
 line can be compared with the Rust test command's wall time.
 
-Collect consecutive cold and warm v3 runs with identical guest sizing.
-Compare host timings, the download sizes in `guest-pacman.log`, and the
-guest compiler and test timings. Confirm that a corrupt archive or an
-interrupted run cannot produce accepted evidence. Until these runs are
-available, the package reuse and its speedup remain unmeasured.
+### Matched KVM runs (2026-11-19)
+
+Both local runs used `d6533714084ac39d1067adef0178880dec25afed`, the
+same rehashed official Arch base image, fresh overlays, KVM, 4 vCPU and
+6 GiB RAM. The cold run created a new cache after rotating the malformed
+image described below. The next run reported `warm`. Both completed
+`pacman -Syu`, rebooted into `7.3.5-arch1-1` and streamed fresh
+exact-SHA success reports.
+
+| Stage | Cold | Warm |
+| --- | ---: | ---: |
+| Base image acquisition/check | 1 s | 1 s |
+| Overlay setup and VM launch | <1 s each | <1 s each |
+| Initial boot/cloud-init | 90 s | 91 s |
+| Pacman upgrade | 147 s | 17 s |
+| Downloaded package archives | 351.76 MiB | 0 MiB |
+| Post-upgrade reboot | 58 s | 49 s |
+| Rust toolchain setup | 12 s | 7 s |
+| Source transfer | 1 s | 1 s |
+| Guest verification | 312 s | 182 s |
+| Report transfer and shutdown | 2 s | 3 s |
+| Total wall time | 623 s | 351 s |
+
+The cold transaction reported 351.76 MiB of package downloads. With the
+warm image pacman still synchronized repository databases and its
+transaction listed no package downloads. The `release` compilation
+reported 68 s cold and 0.07 s warm. The test-profile compilation
+reported 16.77 s cold and 0.06 s warm. Both runs executed the full guest
+test suite. Total wall time fell by 272 s (44%).
+
+The [protected release push](https://github.com/Doldas/flowerly_os/actions/runs/44602528217)
+began the Arch step on the same SHA. The self-hosted runner lost contact
+with GitHub during the step and preserved no artifact for attempt 1.
+The local KVM pair establishes the cache comparison. The protected
+release acceptance still needs the rerun's fresh guest artifact.
+
+### Real-guest cached disk failure (2026-11-19)
+
+On `d6533714084ac39d1067adef0178880dec25afed`, a local KVM run
+used an independently rehashed cached Arch cloud image and an isolated
+build cache containing a 1 GiB zero-filled `build-cache-v3.raw` with no
+dirty marker. The run directory contained a pre-existing `guest-report.txt`
+with the same SHA and the success marker. The host classified the image as
+`warm`, booted the guest and completed cloud-init and root geometry
+checks. The guest then failed the cache mount with
+`can't find LABEL=FLOWERLY_BUILD`. The host exited 1, reported the
+pacman stage as interrupted, retained the dirty marker, and had no final
+guest report. The next run reported `rotated-unclean` before booting.
+
+To repeat, use fresh private directories for `ARCH_VM_BUILD_CACHE_DIR`
+and `ARCH_VM_WORK_DIR`, enable `FLOWERLY_VM_BUILD_CACHE=1`, and provide
+a previously verified cloud image. Seed the two files described above
+and run the normal VM script with an unused `ARCH_VM_SSH_PORT`.
+
+### Real-guest cached package failure (2026-11-19)
+
+After the warm run shut down cleanly, the test zeroed the first block of
+the cached `git-2.56.1-1-x86_64.pkg.tar.zst` with `debugfs punch`,
+keeping the archive name, length and detached signature. A fresh KVM
+overlay on the same SHA mounted the warm cache and synchronized its
+repositories. Pacman reported an invalid PGP signature, refused to
+commit the upgrade and installed no packages. The host exited 1, kept the
+dirty marker and emitted no final guest report, despite a seeded
+same-SHA success report in the run directory.

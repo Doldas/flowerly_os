@@ -191,11 +191,10 @@ separately).
   `reviews/evidence/0049-gate-b-pinned-build-8689cd4`). `prepare-generation-ab-rootfs.sh` can now require the frozen set
   (`FLOWERLY_FROZEN_INPUTS`), and `scripts/build-g5-test-image.sh` uses it: the
   Gate D KVM matrix passes 16/16 on a rootfs built from the snapshot (`b05e3be`). The kernel's embedded config hash
-  and compiler are now reported. The build tooling is pinned too
+  and compiler are now reported. The [upstream source and Arch recipe](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#upstream-kernel-source-identity-2026-11-19) are bound by the frozen package build metadata. The build tooling is pinned too
   (`build-arch-rootfs-pinned-container.sh`). Owner decisions 2026-11-17: the cache stays
   runner-local and manually filled; manifest v2 comes at the next re-freeze.
-  Record sizing and build timings for the pinned-rootfs pipeline before
-  closing #49.
+  The [Gate B review](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#repeat-acquisition-and-kvm-resource-measurements-2026-11-19) records the repeated acquisition, build time, rootfs size and KVM budget.
 
 ## Remaining engineering validation
 
