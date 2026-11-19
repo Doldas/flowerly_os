@@ -1,6 +1,8 @@
 # Flowerly OS 0.0.5 — Generations implementation and acceptance plan
 
-Status: **PLANNING / NOT RELEASE-CERTIFIED**. Started 2026-10-29.
+Status: **Generation fixture verified; milestone evidence pending.**
+Started 2026-10-29. See the [readiness review](release-0.0.5-readiness-2026-11-17.md)
+for the current issue and CI status.
 Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9).
 Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 [#49](https://github.com/Doldas/flowerly_os/issues/49),
@@ -192,18 +194,15 @@ separately).
   and compiler are now reported. The build tooling is pinned too
   (`build-arch-rootfs-pinned-container.sh`). Owner decisions 2026-11-17: the cache stays
   runner-local and manually filled; manifest v2 comes at the next re-freeze.
-  Nothing else is open for Gate B except the exact-head push CI.
+  Record sizing and build timings for the pinned-rootfs pipeline before
+  closing #49.
 
-## Immediate next engineering action
+## Remaining engineering validation
 
-Start with #48: author the substrate ADR and an isolated bootable-VM
-rollback proof, **before** implementing activation logic. In parallel, #49
-can define the package manifest and trusted archive acquisition contract.
-Document all negative results and keep warnings visible.
-
-The ordered PR breakdown for #51 + #48 is in
-[0.0.5 step 1 — Flowerly boots its own image and survives one real rollback](release-0.0.5-step1-ab-boot-rollback-plan.md).
-
+Use the [readiness review](release-0.0.5-readiness-2026-11-17.md) and the
+[VM timing notes](arch-vm-stage-timings.md) for the measurements still needed
+in #49 and #285. The implementation order and earlier work are preserved
+in the [A/B fixture plan](release-0.0.5-step1-ab-boot-rollback-plan.md).
 
 ## 2026-11-07: 16 scoped Generation 0.0.5 contracts (not release acceptance)
 

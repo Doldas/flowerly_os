@@ -68,18 +68,37 @@ The first run after enabling is cold. The saving is **not yet measured**: the
 first two exact-SHA release pushes give the cold and warm numbers, which belong
 in the list below.
 
-## Remaining work before #285 is complete
+## Measured cold run
 
-- Capture cold and warm exact-SHA runs on the authorized self-hosted
-  runner and compare total durations with the prior baseline.
-- Measure guest compile and guest tests independently, and collect
-  cache hit/miss, transferred bytes and request counts.
-- Package caching in the guest (pacman) is not done; the cargo cache above
-  covers compilation only. A trusted pacman cache would need signature
-  verification, bounded age and a cold fallback.
-- Repeat the full real Arch guest verification and validate release
-  gates against the exact commit. Do not infer speedup or release
-  acceptance from instrumentation alone.
+The [green push for `fd5e386`](https://github.com/Doldas/flowerly_os/actions/runs/44124162315)
+reported a cold v2 cache, 8 vCPU and 12 GiB, with TCG and Arch kernel
+`7.3.4-arch1-2`. Its stage ledger sums to 2,854 s. Guest verification took
+2,577 s, pacman took 64 s, and first boot plus reboot took 179 s.
+Compared with the earlier 2,928 s guest verification, the observed
+difference is 351 s. The VM sizing changed and this cache was empty.
 
-Status 2026-11-07: phase-1 host instrumentation proposed;
-benchmarks, cache implementation, and real VM evidence pending.
+## Cache v3
+
+The trusted release-push runner uses one image for the Cargo registry,
+the debug and release build profiles, and a root-owned pacman archive
+directory. Manual dispatch uses the guest's local cache. The image is
+rotated if the previous run did not finish and unmount it cleanly, if its
+modification time is at least 14 days old, or if its allocation reaches
+20 GiB. Older layouts are discarded. The host refuses a shared cache
+directory writable by group or other users.
+
+The guest still refreshes its repositories, validates package signatures
+and completes the full `pacman -Syu` transaction before the mandatory reboot.
+A failed transaction fails the run and leaves the cache dirty for rotation.
+Runtime state and reports stay off the cache disk. `guest-report.txt` comes
+from this invocation's SSH stream, with the expected commit and the final
+success marker. `guest-pacman.log` records pacman's download summary, and
+the guest verification log has wall times for Clippy, compile check,
+the Rust test command and release build. The Cargo test-profile compile
+line can be compared with the Rust test command's wall time.
+
+Collect consecutive cold and warm v3 runs with identical guest sizing.
+Compare host timings, the download sizes in `guest-pacman.log`, and the
+guest compiler and test timings. Confirm that a corrupt archive or an
+interrupted run cannot produce accepted evidence. Until these runs are
+available, the package reuse and its speedup remain unmeasured.

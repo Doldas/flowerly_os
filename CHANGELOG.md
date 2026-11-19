@@ -5,6 +5,11 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- The release Arch VM can reuse signed pacman downloads (#285), while each
+  disposable guest still completes a full upgrade and reboot. Only the
+  Cargo build profiles and downloaded dependencies persist on the cache
+  disk. CI collects fresh exact-commit test evidence and package download
+  timings for each run.
 - Arch VM build cache made crash-safe (#285): incremental compilation is off in
   the guest, an image left by a run that did not end cleanly is rotated, and the
   pre-fix image is discarded. Found when a host QEMU crash tore the cache and the

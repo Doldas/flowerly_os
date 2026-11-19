@@ -1,8 +1,7 @@
 # 0.0.5 Generations — readiness against the roadmap (2026-11-17)
 
-Status: **ENGINEERING COMPLETE ON `release/2`; NOT RELEASED.** Nothing here
-tags, promotes or publishes. The remaining gates are the exact-head push CI and
-the owner's decisions. Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9),
+Status: **Generation lifecycle verified on the 0.0.5 test fixture.**
+The milestone remains open for the outstanding input and CI evidence. Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9),
 plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 
 ## Roadmap checklist (#9) against evidence
@@ -14,7 +13,7 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 | no public status setter; DB-level protection of the stable invariant | G2 (typed transitions only), G3 witness resolution |
 | Arch package set: exact name/version/architecture | `distro/base-image/arch/inputs.manifest.json`: 157 packages, snapshot 2026/11/09, manifest `8689cd41…` |
 | acquisition identity and artifact hashes; signatures | `freeze-arch-snapshot.py`, `trust-policy.json`, `verify-cache --keyring` (314 artifacts) |
-| kernel artifact/config identity | `verify-binding`: frozen `vmlinuz` `b1e9eaf5…`, embedded config `e8f340e4…`, gcc 16.2.1 20260810 |
+| kernel artifact/config identity | `verify-binding`: signed Arch kernel package `7.2.14.arch1-1`, `vmlinuz` `b1e9eaf5…`, embedded config `e8f340e4…`, gcc 16.2.1 20260810. Upstream source revision evidence is outstanding. |
 | Flowerly source/output hashes | baked identity v2: `source_commit`, rootfs/kernel/initramfs hashes, `input_manifest_sha256` |
 | pinned/recorded build toolchain identity | `build-tooling.json` (container by digest, tools from the same snapshot) |
 | schema-version guard; coherent backup; recovery | G3 schema window, G4b `VACUUM INTO` backup, G5 restore drill |
@@ -28,28 +27,34 @@ plan: [release-0.0.5-generations-plan.md](release-0.0.5-generations-plan.md).
 
 | Gate | State |
 | --- | --- |
-| CI green | PR checks green on every merged PR; **exact-head push CI on `release/2` pending** (run for `5adba0c` was still in progress; a merge cancels the previous push run) |
-| real-Arch kernel validation | part of that push run |
+| CI green | Baseline `fd5e38656da6dad0c8578371d6cae23c6dd061c7`: [push CI](https://github.com/Doldas/flowerly_os/actions/runs/44124162315), [security](https://github.com/Doldas/flowerly_os/actions/runs/44124162400), [CodeQL](https://github.com/Doldas/flowerly_os/actions/runs/44124162314) |
+| real-Arch kernel validation | Push artifact confirms Arch kernel `7.3.4-arch1-2`, accelerator TCG, and completion at the exact baseline SHA. The separate Flowerly-built fixture acceptance used KVM. |
 | migration path | schema window and the G5 downgrade/restore drill |
 | boot test, rollback test | G5 and S7 evidence |
 | known data corruption | none known |
-| release notes | `CHANGELOG.md` `Unreleased` holds the entries; the 0.0.5 section is written when tagging |
+| release notes | `CHANGELOG.md` records the changes under Unreleased |
 
-## What remains, and who decides
+## Remaining milestone work
 
-1. **Green exact-head push CI** on the final `release/2` head, then re-run the
-   promotion PR's "Verify release promotion exact-SHA Arch acceptance" (#388).
-   No merges to `release/2` while it runs.
-2. **Owner:** promotion to `master`, the tag and the GitHub Release; none is done
-   by an agent.
-3. **Owner:** the open Scorecard alerts (posture checks, e.g. Vulnerabilities,
-   Maintained, CodeReview, BranchProtection, Fuzzing, Pinned dependencies; no
-   open Dependabot alerts) are tracked in #187.
-4. **Release notes** must say what is verified and what is not (below).
-5. Workspace version still reports `0.0.1` (known since 0.0.4); decide whether
-   0.0.5 bumps it.
-6. Housekeeping the owner can close: #359 and #364 (python-quality passes on
-   push and PRs); #285 (Arch VM speed, PR #399) is not a release blocker.
+- #48, #359 and #364 are closed. S7 covers the substrate decision and its
+  power-loss matrix. The full-tree Ruff check passed on all 150 Python files
+  in the baseline. Enabling the checked-in `python-quality` rule in GitHub
+  remains an administrator action.
+- #49 has a verified pinned rootfs and a replay drill. The pinned build still
+  needs its own download/build time, image-size and nightly resource evidence.
+  The prior S7 fixture has separate measurements. Manifest v2 belongs to the
+  next re-freeze, as already decided in ADR-0020.
+- #285 needs a cold/warm comparison on the new image format, signed-package
+  reuse measured across runs, and real-guest verification of cache failures.
+  See [the VM timing notes](arch-vm-stage-timings.md).
+- #9 tracks the Generation milestone until the remaining evidence is in.
+  The Arch package, config and booted kernel are bound to the fixture. The
+  signed package does not identify the upstream source revision by itself.
+- After the final merge, the resulting `release/2` SHA needs fresh push CI,
+  including the executed Arch step, security and CodeQL. The owner controls
+  promotion in [#388](https://github.com/Doldas/flowerly_os/pull/388), the
+  version bump decision, tag and publication. Scorecard dispositions remain
+  tracked in [#187](https://github.com/Doldas/flowerly_os/issues/187).
 
 ## What the release notes must not overstate
 

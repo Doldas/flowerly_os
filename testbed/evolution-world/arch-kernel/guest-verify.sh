@@ -7,10 +7,6 @@ set -euo pipefail
 ROOT="${1:-$HOME/flowerly_os}"
 cd "$ROOT"
 
-REPORT="$ROOT/target/arch-kernel-report.txt"
-mkdir -p "$(dirname "$REPORT")"
-exec > >(tee "$REPORT") 2>&1
-
 echo "== Flowerly Arch kernel system test =="
 echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "commit=${FLOWERLY_TEST_SHA:-$(cat .flowerly-tested-commit 2>/dev/null || echo exported-worktree)}"
@@ -47,19 +43,27 @@ just fmt-check
 
 echo
 echo "== Clippy =="
+started=$SECONDS
 just lint
+printf 'guest_lint_seconds=%s\n' "$((SECONDS - started))"
 
 echo
 echo "== Compile check =="
+started=$SECONDS
 just check
+printf 'guest_check_seconds=%s\n' "$((SECONDS - started))"
 
 echo
 echo "== Rust tests =="
+started=$SECONDS
 just test
+printf 'guest_test_seconds=%s\n' "$((SECONDS - started))"
 
 echo
 echo "== Release build =="
+started=$SECONDS
 just build
+printf 'guest_build_seconds=%s\n' "$((SECONDS - started))"
 
 echo
 echo "== #225 cross-UID authorization and per-user ownership with real Arch UIDs =="
