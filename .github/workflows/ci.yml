@@ -256,9 +256,9 @@ jobs:
           FLOWERLY_TEST_REF: ${{ github.ref_name }}
           FLOWERLY_TEST_SHA: ${{ github.sha }}
           FLOWERLY_TEST_SLUG: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'release-push' }}
-          # Persistent cargo cache for the guest (#285): trusted release pushes
-          # only; cargo fingerprints decide reuse, rotated after 14 days / 20 GiB.
-          FLOWERLY_VM_BUILD_CACHE: "1"
+          # Persistent package and Cargo cache (#285), for protected release
+          # pushes only. Other refs use a disposable cache inside their VM.
+          FLOWERLY_VM_BUILD_CACHE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') && '1' || '0' }}
           # Guest size for the release-push run (was 4 vCPU / 6 GiB), sized for
           # a shared 6-core / 12-thread host: compile time scales with vCPUs (#285).
           ARCH_VM_CPUS: "8"

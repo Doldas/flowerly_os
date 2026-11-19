@@ -16,10 +16,18 @@ prep relative/path 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == unavailable ]] || fail "relative directory accepted"
 prep '' 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == unavailable ]] || fail "empty directory accepted"
+mkdir "$tmp/shared"
+chmod 0777 "$tmp/shared"
+prep "$tmp/shared" 1
+[[ "$FLOWERLY_BUILD_CACHE_STATE" == unavailable ]] || fail "shared directory accepted"
+ln -s "$tmp/shared" "$tmp/symlink"
+chmod 0700 "$tmp/shared"
+prep "$tmp/symlink" 1
+[[ "$FLOWERLY_BUILD_CACHE_STATE" == unavailable ]] || fail "symlinked directory accepted"
 
 prep "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == cold ]] || fail "first use must be cold, got $FLOWERLY_BUILD_CACHE_STATE"
-image="$tmp/c/build-cache-v2.raw"
+image="$tmp/c/build-cache-v3.raw"
 [[ "$FLOWERLY_BUILD_CACHE_IMAGE" == "$image" && -f "$image" && "$(label "$image")" == FLOWERLY_BUILD ]] ||
     fail "image is not a labelled ext4"
 [[ "$(stat -c %s "$image")" == 1073741824 ]] || fail "unexpected image size"
@@ -48,8 +56,9 @@ FLOWERLY_BUILD_CACHE_MAX_GB=0 prep "$tmp/c" 1
 # An image written under the old name is deleted, never reused.
 flowerly_build_cache_mark_clean
 printf old > "$tmp/c/build-cache.raw"
+printf old > "$tmp/c/build-cache-v2.raw"
 prep "$tmp/c" 1
-[[ ! -e "$tmp/c/build-cache.raw" ]] || fail "pre-v2 image kept"
+[[ ! -e "$tmp/c/build-cache.raw" && ! -e "$tmp/c/build-cache-v2.raw" ]] || fail "obsolete image kept"
 
 # A symlinked image is never followed; it is replaced.
 flowerly_build_cache_mark_clean
@@ -64,10 +73,16 @@ FLOWERLY_BUILD_CACHE_LOCK_FD="" flowerly_build_cache_prepare "$tmp/c" 1
 [[ "$FLOWERLY_BUILD_CACHE_STATE" == locked && -z "$FLOWERLY_BUILD_CACHE_IMAGE" ]] || fail "lock not honoured"
 exec 9>&-
 
-# The guest attach script follows the checkout layout the tests rely on.
-guest="$(flowerly_build_cache_guest_attach)"
-for needle in 'LABEL=FLOWERLY_BUILD' '/mnt/build-cache/target' '$HOME/flowerly_os/target'; do
-    grep -qF -- "$needle" <<<"$guest" || fail "guest attach lacks $needle"
+# The guest retains cacheable build profiles, keeping runtime state and reports
+# in the disposable checkout. Both mounts use the same restricted options.
+mount_script="$(flowerly_build_cache_guest_mount)"
+attach_script="$(flowerly_build_cache_guest_attach)"
+grep -qFx 'sudo mount -o noatime,nodev,nosuid LABEL=FLOWERLY_BUILD /mnt/build-cache' <<<"$mount_script" ||
+    fail "guest mount lacks the required label or options"
+[[ "$attach_script" == "$mount_script"$'\n'* ]] || fail "mount after reboot differs"
+for profile in debug release; do
+    grep -qFx "ln -s /mnt/build-cache/$profile \"\$HOME/flowerly_os/target/$profile\"" <<<"$attach_script" ||
+        fail "guest attach lacks $profile output link"
 done
-bash -n <<<"$guest" || fail "guest attach is not valid shell"
+bash -n <<<"$attach_script" || fail "guest attach is not valid shell"
 echo "Arch VM build cache: opt-in, labelled ext4, warm/cold/rotated/locked states, guest attach layout"
