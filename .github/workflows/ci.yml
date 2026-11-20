@@ -259,10 +259,9 @@ jobs:
           # Persistent package and Cargo cache (#285), for protected release
           # pushes only. Other refs use a disposable cache inside their VM.
           FLOWERLY_VM_BUILD_CACHE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') && '1' || '0' }}
-          # Guest size for the release-push run (was 4 vCPU / 6 GiB), sized for
-          # a shared 6-core / 12-thread host: compile time scales with vCPUs (#285).
-          ARCH_VM_CPUS: "8"
-          ARCH_VM_MEMORY_MB: "12288"
+          # Use the measured shared-runner profile documented for #184.
+          ARCH_VM_CPUS: "4"
+          ARCH_VM_MEMORY_MB: "6144"
         run: bash ./scripts/arch-kernel-vm-test.sh
 
       - name: Preserve exact-SHA Arch guest and failed kernel acceptance evidence
