@@ -1,6 +1,6 @@
 # Flowerly OS 0.0.5 — Generations implementation and acceptance plan
 
-Status: **Generation fixture verified; milestone evidence pending.**
+Status: **Released as v0.0.5 on 2026-11-20.** All gates passed; milestone closed.
 Started 2026-10-29. See the [readiness review](release-0.0.5-readiness-2026-11-17.md)
 for the current issue and CI status.
 Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9).
@@ -25,7 +25,24 @@ Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
   only after verifying the branch-forward policy, base SHA, CI and maintainer
   intention; do not assume a branch name from the version number.
 - No automatic promotion to `master`; no `v0.0.5` tag or publication without
-  explicit owner approval and exact-head acceptance.
+  explicit owner approval and exact-head acceptance. (Met: protected exact-SHA
+  Arch acceptance on `release/2@5f13ad5`, CI run 44762734605, then promotion
+  #388 as `cd29a9d`, tag `v0.0.5`.)
+
+## Release record (2026-11-20)
+
+| Item | Result |
+| --- | --- |
+| Gate D G5 real OVMF/KVM acceptance | 16/16 scenarios PASS on `eb60060` |
+| Protected exact-SHA Arch acceptance | PASS on `5f13ad5` (run 44762734605, `arch-release-pty-5f13ad5…` artifact) |
+| Arch stage timings (that run) | cloud-init 110 s, pacman upgrade 149 s, reboot 66 s, Rust 20 s, guest verification 2936 s |
+| Cache cold/warm (#285, #405) | total 623/351 s; pacman 147/17 s; package downloads 351.76/0 MiB; tamper drills fail closed |
+| Promotion | #388 `release/2` to `master` as `cd29a9d` |
+| Tag and Release | `v0.0.5` |
+| Issues | #9 and #285 closed; milestone 0.0.5 closed |
+
+The runner-capacity fix (#406, 4 vCPU / 6 GiB) was required for the protected
+run to complete; earlier attempts on `d653371` and `c055f41` lost the runner.
 
 ## Threat model and invariants
 
