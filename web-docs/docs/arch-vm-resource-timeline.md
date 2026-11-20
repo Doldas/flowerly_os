@@ -6,7 +6,11 @@ The exact-SHA Arch guest acceptance script collects a bounded
 `host-resource-timeline.csv` while QEMU is running. It samples host
 available memory and swap, the QEMU resident set size and process
 presence, and readable cgroup-v2 memory counters every 10 seconds,
-up to 1,000 samples. This is **observability, not an OOM fix**.
+up to 1,000 samples. It also records the highest CPU (`k10temp`/`coretemp`) and DIMM (`spd5118`)
+hwmon temperatures in millidegrees Celsius (`cpu_temp_mc`,
+`dimm_temp_max_mc`; blank when the host has no such sensor), so a run that
+fails with a segfault under long load can be compared with how hot the host
+was. This is **observability, not an OOM fix**.
 
 The report lives under
 `target/arch-kernel/release-push/report/host-resource-timeline.csv`
@@ -106,3 +110,24 @@ unlogged kernel crash. Impact on release confidence:
   known, a release candidate needs a **completed** exact-SHA run. A missing
   run is never treated as passed, and evidence is never reused from another
   SHA.
+
+## Release-push runner interruption (2026-11-19)
+
+On the same protected head `d6533714084ac39d1067adef0178880dec25afed`,
+both attempts of [push CI 44602528217](https://github.com/Doldas/flowerly_os/actions/runs/44602528217)
+lost contact with the self-hosted runner during Arch acceptance.
+The job records show about 29 and 18 minutes in that step, with neither
+attempt reaching the artifact upload. The cause of the disconnect is
+unconfirmed because no job log or resource report survived.
+
+Use the previously measured 4 vCPU and 6 GiB runner profile for the
+release-push and manual CI guest. The two interrupted attempts were
+configured at 8 vCPU and 12 GiB. The smaller guest leaves headroom for
+the shared host and matches the profile that passed three consecutive
+TCG acceptance runs in October. Matched local KVM runs on `d653371`
+also completed at 4 vCPU and 6 GiB with a cold and then a warm v3 cache.
+See [the stage timing evidence](arch-vm-stage-timings.md#matched-kvm-runs-2026-11-19).
+
+The configuration change needs a completed protected push run and its
+fresh guest report. If the runner disconnects again, fault diagnosis
+needs the host journal or runner service logs covering the interruption.

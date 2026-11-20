@@ -27,6 +27,7 @@ VM_MEMORY_MB="${ARCH_VM_MEMORY_MB:-6144}"
 # QCOW2 is sparse: this is virtual guest capacity, not host preallocation.
 VM_DISK_GB="${ARCH_VM_DISK_GB:-32}"
 source "$ROOT/scripts/lib/arch-vm-disk.sh"
+source "$ROOT/scripts/lib/arch-vm-build-cache.sh"
 flowerly_arch_vm_validate_disk_gb "$VM_DISK_GB"
 
 
@@ -102,6 +103,17 @@ overlay="$WORK_DIR/overlay.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base_image" "$overlay"
 flowerly_arch_vm_resize_overlay "$overlay" "$VM_DISK_GB"
 echo "Arch guest sparse overlay configured with ${VM_DISK_GB} GiB virtual disk"
+
+# Opt-in persistent package and cargo cache for the guest (#285).
+flowerly_build_cache_prepare "${ARCH_VM_BUILD_CACHE_DIR:-$HOME/.cache/flowerly/arch-vm-build}" \
+    "${FLOWERLY_VM_BUILD_CACHE:-0}"
+cache_drive_args=()
+guest_cargo_env=""
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
+    cache_drive_args=(-drive "if=virtio,format=raw,file=$FLOWERLY_BUILD_CACHE_IMAGE")
+    guest_cargo_env="CARGO_HOME=/mnt/build-cache/cargo-home CARGO_INCREMENTAL=0 "
+fi
+echo "Arch guest build cache: $FLOWERLY_BUILD_CACHE_STATE"
 
 ssh_key="$WORK_DIR/id_ed25519"
 rm -f "$ssh_key" "$ssh_key.pub"
@@ -194,6 +206,7 @@ launch_vm() {
         -drive "if=pflash,format=raw,file=$ovmf_vars" \
         -drive "if=virtio,format=qcow2,file=$overlay" \
         -drive "if=virtio,format=raw,readonly=on,file=$WORK_DIR/seed.img" \
+        "${cache_drive_args[@]}" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \
         -display none \
@@ -363,8 +376,15 @@ if ! ssh "${ssh_opts[@]}" "$guest" 'bash -s -- 16 8' \
 fi
 
 echo "upgrading Arch and installing Flowerly build dependencies"
+pacman_cache=""
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
+    flowerly_build_cache_guest_mount | ssh "${ssh_opts[@]}" "$guest" 'bash -s'
+    ssh "${ssh_opts[@]}" "$guest" 'sudo install -d -m 0755 -o root -g root /mnt/build-cache/pacman'
+    pacman_cache="--cachedir /mnt/build-cache/pacman"
+fi
 ssh "${ssh_opts[@]}" "$guest" \
-    'sudo pacman -Syu --noconfirm --needed base-devel git just ripgrep rustup python'
+    "sudo env LC_ALL=C pacman -Syu --noconfirm --needed $pacman_cache base-devel git just ripgrep rustup python" \
+    2>&1 | tee "$REPORT_DIR/guest-pacman.log"
 
 echo "rebooting so tests execute on the kernel installed by the full upgrade"
 stage="reboot"
@@ -393,12 +413,17 @@ ssh "${ssh_opts[@]}" "$guest" \
 printf '%s\n' "$TEST_SHA" | ssh "${ssh_opts[@]}" "$guest" \
     'cat > "$HOME/flowerly_os/.flowerly-tested-commit"'
 
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]]; then
+    echo "attaching the persistent build cache ($FLOWERLY_BUILD_CACHE_STATE)"
+    flowerly_build_cache_guest_attach | ssh "${ssh_opts[@]}" "$guest" 'bash -s'
+fi
+
 echo "running complete Flowerly verification inside Arch VM"
 stage="verify"
 flowerly_stage_begin guest_verification
 set +e
 ssh "${ssh_opts[@]}" "$guest" \
-    'cd "$HOME/flowerly_os" && FLOWERLY_TEST_SHA="$(cat .flowerly-tested-commit)" bash testbed/evolution-world/arch-kernel/guest-verify.sh "$HOME/flowerly_os"' \
+    "cd \"\$HOME/flowerly_os\" && ${guest_cargo_env}FLOWERLY_TEST_SHA=\"\$(cat .flowerly-tested-commit)\" bash testbed/evolution-world/arch-kernel/guest-verify.sh \"\$HOME/flowerly_os\"" \
     2>&1 | tee "$REPORT_DIR/guest-execution.log"
 guest_status=("${PIPESTATUS[@]}")
 guest_ssh_status="${guest_status[0]}"
@@ -406,16 +431,19 @@ stage="report"
 flowerly_stage_begin guest_report_transfer
 set -e
 
-if ! scp "${scp_opts[@]}" \
-    "$guest:flowerly_os/target/arch-kernel-report.txt" \
-    "$REPORT_DIR/guest-report.txt"; then
-    echo "Arch guest report could not be retrieved; preserved SSH and QEMU logs" >&2
-    exit 1
-fi
 if [[ "${guest_status[0]}" -ne 0 || "${guest_status[1]}" -ne 0 ]]; then
     echo "Arch guest verification failed: ssh_exit=${guest_status[0]} tee_exit=${guest_status[1]}" >&2
     exit 1
 fi
+# Publish only evidence streamed by this SSH invocation. A persistent build
+# directory can contain output from an earlier run.
+guest_log="$REPORT_DIR/guest-execution.log"
+if ! grep -Fxq "commit=$TEST_SHA" "$guest_log" ||
+    [[ "$(tail -n 1 "$guest_log")" != "ARCH_KERNEL_SYSTEM_TEST=PASS" ]]; then
+    echo "Arch guest output is missing its exact commit or completion marker" >&2
+    exit 1
+fi
+cp "$guest_log" "$REPORT_DIR/guest-report.txt"
 
 {
     echo "ref=$TEST_REF"
@@ -428,18 +456,35 @@ fi
     echo "vm_disk_gb=$VM_DISK_GB"
     echo "vm_root_minimum_gb=16"
     echo "vm_free_minimum_gb=8"
+    echo "build_cache=$FLOWERLY_BUILD_CACHE_STATE"
 } >"$REPORT_DIR/host-metadata.txt"
 
 echo "requesting clean guest shutdown"
 stage="shutdown"
 flowerly_stage_begin guest_shutdown
+cache_unmounted=0
+if [[ -n "$FLOWERLY_BUILD_CACHE_IMAGE" ]] &&
+    ssh "${ssh_opts[@]}" "$guest" 'sudo umount /mnt/build-cache'; then
+    cache_unmounted=1
+fi
 ssh "${ssh_opts[@]}" "$guest" 'sudo systemctl poweroff' || true
+pid=""
 if [[ -f "$pidfile" ]]; then
     pid="$(cat "$pidfile" 2>/dev/null || true)"
     for _ in $(seq 1 60); do
         [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || break
         sleep 1
     done
+fi
+
+# Reuse the build cache only after a run that passed and whose VM powered off
+# by itself; anything else leaves the dirty marker, so the next run starts cold.
+if (( cache_unmounted )); then
+    if [[ -f "$pidfile" && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "guest did not power off in time; the build cache stays dirty" >&2
+    else
+        flowerly_build_cache_mark_clean
+    fi
 fi
 
 echo "Arch kernel system test passed for $TEST_REF @ $TEST_SHA"

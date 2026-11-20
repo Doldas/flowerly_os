@@ -725,6 +725,44 @@ fn check_loader_default(esp: &dyn Esp) -> Result<()> {
     Ok(())
 }
 
+/// The `version` of an entry; an entry without one counts as 0.
+fn entry_version(text: &str) -> Result<u64> {
+    let mut found = None;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("version ") {
+            let value = value.trim();
+            if found.is_some()
+                || value.is_empty()
+                || value.len() > 9
+                || !value.bytes().all(|b| b.is_ascii_digit())
+            {
+                bail!("boot entry has a malformed version line");
+            }
+            found = Some(value.parse()?);
+        }
+    }
+    Ok(found.unwrap_or(0))
+}
+
+/// The version a newly armed entry carries: above every Flowerly entry,
+/// regular or demoted. systemd-boot sorts entries with a sort-key before
+/// entries without one and, within the same sort-key, the highest version
+/// first, so the newest arm is the loader default whichever letter it has
+/// (the id alone would always favour `flowerly-b`).
+fn next_version(esp: &dyn Esp, listing: &Listing) -> Result<u64> {
+    let names = listing
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .chain(listing.demoted.iter().map(|slot| demoted_name(*slot)));
+    let mut top = 0;
+    for name in names {
+        let text = String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{name}"))?).into_owned();
+        top = top.max(entry_version(&text).with_context(|| name.clone())?);
+    }
+    Ok(top + 1)
+}
+
 /// Build slot B's entry from the active slot's entry: same options, new root.
 pub fn derive_entry(
     active_entry: &str,
@@ -732,6 +770,7 @@ pub fn derive_entry(
     to: Slot,
     to_uuid: &str,
     extra: &[String],
+    version: u64,
 ) -> Result<String> {
     let options = active_entry
         .lines()
@@ -765,7 +804,7 @@ pub fn derive_entry(
     }
     let l = to.letter();
     Ok(format!(
-        "title Flowerly OS slot {}\nlinux /flowerly/{l}/vmlinuz\ninitrd /flowerly/{l}/initramfs.img\noptions {}\n",
+        "title Flowerly OS slot {}\nsort-key flowerly\nversion {version}\nlinux /flowerly/{l}/vmlinuz\ninitrd /flowerly/{l}/initramfs.img\noptions {}\n",
         l.to_ascii_uppercase(),
         tokens.join(" ")
     ))
@@ -949,22 +988,14 @@ pub fn arm(
         bail!("{} has not been staged", target.name());
     }
     verify_slot(image, part, "staged root")?;
-    let listing = list_entries(&*esp)?;
-    if listing.has_entry(target) {
-        bail!(
-            "{} already has a boot entry; roll back first",
-            target.name()
-        );
-    }
-    let active_entry = listing.source_entry(active, false)?;
-    check_loader_default(&*esp)?;
     // Validate the entry (extra options included) before any payload is written.
-    derive_entry(
-        &String::from_utf8_lossy(&esp.read(&format!("{ENTRIES}/{active_entry}"))?),
-        &disk.slot(active).partuuid,
+    prepare_entry(
+        disk,
+        active,
         target,
-        &part.partuuid,
+        &*esp,
         request.extra_options,
+        Fallback::Automatic,
     )?;
     let dir = format!("/flowerly/{}", target.letter());
     if !esp.exists(&dir)? {
@@ -1012,6 +1043,9 @@ struct Prepared {
     listing: Listing,
     active_entry: String,
     entry_text: String,
+    /// The target's earlier entries, blessed or exhausted, which the new
+    /// entry supersedes.
+    stale: Vec<String>,
 }
 
 /// Every check `publish_entry` makes before it writes, and the entry it would
@@ -1025,12 +1059,27 @@ fn prepare_entry(
     fallback: Fallback,
 ) -> Result<Prepared> {
     let listing = list_entries(esp)?;
-    if listing.has_entry(target) {
+    // A pending entry is an arm in flight and a demoted one is a manual-only
+    // root; neither is replaced. A blessed or exhausted entry is a decision
+    // already settled, and a new Admin decision supersedes it.
+    if listing.demoted.contains(&target) {
         bail!(
-            "{} already has a boot entry; roll back first",
+            "{} already has a boot entry (demoted to manual-only); roll back first",
             target.name()
         );
     }
+    let ours: Vec<&Entry> = listing
+        .entries
+        .iter()
+        .filter(|e| e.slot == target)
+        .collect();
+    if ours.iter().any(|e| e.state == EntryState::Counting) {
+        bail!(
+            "{} already has a boot entry pending its boot; roll back first",
+            target.name()
+        );
+    }
+    let stale = ours.iter().map(|e| e.name.clone()).collect();
     let active_entry = listing.source_entry(active, fallback == Fallback::ManualOnly)?;
     check_loader_default(esp)?;
     let entry_text = derive_entry(
@@ -1039,11 +1088,13 @@ fn prepare_entry(
         target,
         &disk.slot(target).partuuid,
         extra_options,
+        next_version(esp, &listing)?,
     )?;
     Ok(Prepared {
         listing,
         active_entry,
         entry_text,
+        stale,
     })
 }
 
@@ -1083,6 +1134,7 @@ pub(crate) fn publish_entry(
         listing,
         active_entry,
         entry_text,
+        stale,
     } = prepare_entry(disk, active, target, &*esp, extra_options, fallback)?;
     // An earlier interrupted arm may have left a temp entry; it is not a boot
     // entry, so it can be dropped and the arm re-run.
@@ -1094,6 +1146,16 @@ pub(crate) fn publish_entry(
     esp.write_new(&temp, entry_text.as_bytes())?;
     esp.sync()?;
     faults.at("arm:after-tmp-entry")?;
+    // Superseded entries go before the new one is published: a bless rename
+    // of the new entry could otherwise collide with them. The running root's
+    // entry is untouched, so the loader always has it to boot.
+    for name in &stale {
+        esp.delete(&format!("{ENTRIES}/{name}"))?;
+    }
+    if !stale.is_empty() {
+        esp.sync()?;
+    }
+    faults.at("arm:after-replace")?;
     let demoted = demoted_name(active);
     if fallback == Fallback::ManualOnly && active_entry != demoted {
         esp.rename(
@@ -1110,6 +1172,7 @@ pub(crate) fn publish_entry(
         "status": "ARMED_PENDING",
         "target": target.name(),
         "boot_entry": entry,
+        "replaced_entries": stale,
         "note": "pending only: success needs a witnessed boot and the health gate",
     });
     match fallback {

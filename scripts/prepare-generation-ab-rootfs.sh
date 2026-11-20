@@ -28,6 +28,20 @@ fi
 [[ -d "$ROOTFS" && ! -L "$ROOTFS" ]] || fail "missing/symlinked rootfs"
 [[ -f "$ROOTFS/usr/lib/os-release" ]] &&
     grep -qx ID=arch "$ROOTFS/usr/lib/os-release" || fail "not an Arch rootfs"
+# FLOWERLY_FROZEN_INPUTS=<distro-builder binary> makes the frozen package set
+# a precondition (#49, ADR-0020 step 7): the identity must name the committed
+# manifest and the rootfs must contain exactly its packages. Checked before
+# anything is written.
+if [[ -n "${FLOWERLY_FROZEN_INPUTS:-}" ]]; then
+    FROZEN_MANIFEST="$ROOT/distro/base-image/arch/inputs.manifest.json"
+    [[ -f "$FROZEN_MANIFEST" && -x "$FLOWERLY_FROZEN_INPUTS" ]] ||
+        fail "frozen inputs requested but the manifest or distro-builder is missing"
+    FROZEN_SHA="$(sha256sum "$FROZEN_MANIFEST" | cut -d' ' -f1)"
+    [[ "$INPUT_SHA" == "$FROZEN_SHA" ]] ||
+        fail "--input-manifest-sha256 is not the digest of the committed frozen manifest"
+    "$FLOWERLY_FROZEN_INPUTS" manifest verify-rootfs "$FROZEN_MANIFEST" --rootfs "$ROOTFS" >&2 ||
+        fail "rootfs does not contain exactly the frozen package set"
+fi
 ROOTFS_REAL="$(realpath "$ROOTFS")"
 for file in usr/bin/python3 usr/bin/runuser usr/lib/systemd/systemd-bless-boot \
             usr/lib/systemd/system/flowerlyd.service usr/lib/flowerly/boot-ipc-health.sh; do
@@ -49,7 +63,8 @@ done
 for path in etc etc/systemd etc/systemd/system etc/systemd/system/sockets.target.wants \
             etc/fstab usr/lib/flowerly \
             usr/lib/systemd/system usr/lib/systemd/system/flowerlyd.service.d \
-            etc/systemd/system/multi-user.target.wants var/lib/flowerly efi; do
+            etc/systemd/system/multi-user.target.wants etc/systemd/system/flowerlyd.service.d \
+            usr/lib/sysusers.d var/lib/flowerly efi; do
     [[ ! -L "$ROOTFS/$path" ]] || fail "symlink in Generation rootfs destination: $path"
 done
 for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab-test-profile \
@@ -64,7 +79,12 @@ for path in usr/lib/flowerly/generation-root.json usr/lib/flowerly/generation-ab
             usr/lib/systemd/system/flowerlyd.service.d/10-generation-witness.conf \
             etc/systemd/system/systemd-bless-boot.service \
             etc/systemd/system/multi-user.target.wants/flowerly-generation-witness.service \
-            etc/systemd/system/multi-user.target.wants/flowerly-generation-health.service; do
+            etc/systemd/system/multi-user.target.wants/flowerly-generation-health.service \
+            usr/lib/flowerly/g5-drill.py usr/lib/systemd/system/flowerly-g5-drill.service \
+            etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service \
+            usr/lib/sysusers.d/flowerly-g5-drill.conf \
+            etc/systemd/system/flowerlyd.service.d/50-multi-user.conf \
+            etc/systemd/system/flowerlyd.service.d/60-g5-slot-broker.conf; do
     [[ ! -e "$ROOTFS/$path" && ! -L "$ROOTFS/$path" ]] ||
         fail "refusing existing A/B installation path: $path"
 done
@@ -121,6 +141,21 @@ chmod 0644 "$ROOTFS/usr/lib/systemd/system/flowerlyd.service.d/10-generation-wit
 # The stock systemd-bless-boot.service can otherwise bless before Flowerly's
 # health gate. Mask its unit but call the actual binary ONLY after IPC passes.
 ln -s /dev/null "$ROOTFS/etc/systemd/system/systemd-bless-boot.service"
+# The Gate D Admin drill (ADR-0023 G5), test profile only: it runs the Admin
+# steps a host instruction on the ESP names, as the flowerly-drill Admin, and
+# reports them on the console. Admin access needs the opt-in multi-user
+# drop-in exactly as shipped, plus the broker socket's group (see the file).
+install -m 0755 "$ROOT/testbed/generation-ab/g5-drill.py" "$ROOTFS/usr/lib/flowerly/g5-drill.py"
+install -m 0644 "$ROOT/testbed/generation-ab/systemd/flowerly-g5-drill.service" \
+    "$ROOTFS/usr/lib/systemd/system/flowerly-g5-drill.service"
+ln -s /usr/lib/systemd/system/flowerly-g5-drill.service \
+    "$ROOTFS/etc/systemd/system/multi-user.target.wants/flowerly-g5-drill.service"
+install -D -m 0644 "$ROOT/testbed/generation-ab/sysusers/flowerly-g5-drill.conf" \
+    "$ROOTFS/usr/lib/sysusers.d/flowerly-g5-drill.conf"
+install -D -m 0644 "$ROOT/distro/overlay/usr/share/flowerly/systemd/flowerlyd-multi-user.conf" \
+    "$ROOTFS/etc/systemd/system/flowerlyd.service.d/50-multi-user.conf"
+install -m 0644 "$ROOT/testbed/generation-ab/systemd/flowerlyd-g5-slot-broker.conf" \
+    "$ROOTFS/etc/systemd/system/flowerlyd.service.d/60-g5-slot-broker.conf"
 # The slot boots with a read-only root, so systemd-sysusers cannot create the
 # service accounts at first boot (found by the third real KVM run: "user
 # flowerly does not exist"). Bake them into the image instead.

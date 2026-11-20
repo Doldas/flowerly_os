@@ -5,6 +5,86 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- The release Arch VM can reuse signed pacman downloads (#285), while each
+  disposable guest still completes a full upgrade and reboot. Only the
+  Cargo build profiles and downloaded dependencies persist on the cache
+  disk. CI collects fresh exact-commit test evidence and package download
+  timings for each run.
+- Arch VM build cache made crash-safe (#285): incremental compilation is off in
+  the guest, an image left by a run that did not end cleanly is rotated, and the
+  pre-fix image is discarded. Found when a host QEMU crash tore the cache and the
+  next run hit an internal compiler error.
+- The Arch VM resource timeline also records the highest CPU and DIMM hwmon
+  temperatures (#184, #285), and the host is correctly described as 6 cores / 12
+  threads in the docs and CI comment.
+- Release-push Arch guest sized 8 vCPU / 12 GiB (was 4 / 6) alongside the build
+  cache (#285); both are recorded in the run's host metadata.
+- Persistent build cache for the Arch guest in release-push CI (#285): the guest
+  builds into a sparse ext4 image kept on the runner (cargo target and
+  registry), rotated after 14 days or 20 GiB, one VM at a time, never failing
+  the run. The last green push spent about 26 of its 53 minutes compiling in a
+  fresh VM; the saving is to be measured on the first cold and warm runs.
+- Gate B owner decisions recorded (#49, ADR-0020): runner-local manual cache
+  retention, and manifest v2 at the next re-freeze.
+- Pinned build tooling (#49): `scripts/build-arch-rootfs-pinned-container.sh`
+  runs mkosi in the container image named by digest in
+  `distro/base-image/arch/build-tooling.json`, with its pacman pointed at the
+  same dated snapshot as the rootfs, and records the tool versions it used. A
+  real build passes `manifest verify-rootfs` and yields the frozen kernel.
+- `manifest verify-binding` also reports the frozen kernel's embedded build
+  configuration hash and compiler (#49), extracted from the kernel image with
+  the system `zstd` and `gzip`. The toolchain of the proof build (container
+  digest, mkosi 27.1) and a cache-retention proposal are recorded in the Gate B
+  review.
+- Gate D re-run on the pinned rootfs (#49, #9): `scripts/build-g5-test-image.sh`
+  builds the KVM test inputs (slots A, B, B2, identities, disk) from the
+  rootfs built from the frozen snapshot, each slot refused unless it is
+  exactly the frozen set. The exact-SHA OVMF/KVM matrix passes 16 of 16
+  scenarios; evidence under `web-docs/docs/reviews/evidence/0049-g5-pinned-rootfs-b05e3be`.
+- Frozen inputs as a precondition for baking a Generation (#49):
+  `FLOWERLY_FROZEN_INPUTS=<distro-builder>` makes
+  `scripts/prepare-generation-ab-rootfs.sh` refuse unless the identity's
+  `--input-manifest-sha256` is the committed manifest's digest and the rootfs
+  contains exactly the frozen packages, checked before any write. Opt-in.
+- Pinned rootfs build (#49): `FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh`
+  points mkosi at the frozen manifest's dated Arch Archive snapshot. A real
+  build from it installs exactly the 157 manifest packages at the manifest
+  versions (`manifest verify-rootfs`: 0 missing, 0 extra, 0 differing) and its
+  kernel image equals the frozen `linux` archive's `vmlinuz`
+  (`manifest verify-binding`).
+- `distro-builder manifest verify-binding` (#49, ADR-0020 step 7): checks that
+  a Generation's baked identity names the frozen manifest by digest and that
+  the kernel staged for boot is byte-identical to the `vmlinuz` in the frozen
+  `linux` archive (read from the verified cache, symlinks refused). Exits
+  non-zero unless both hold.
+- `distro-builder manifest verify-rootfs` (#49, ADR-0020 step 7): compares the
+  packages installed in a built rootfs (pacman's local database, nothing
+  followed through a symlink) with the frozen manifest by name, version and
+  architecture, and fails on any missing, extra, differing or unreadable
+  record. Against the earlier live-mirror rootfs it reports 27 version
+  differences and one extra package, which is the drift the frozen set removes.
+- Frozen Arch package set (Gate B, #49): `scripts/freeze-arch-snapshot.py`
+  resolves `packages.base` from a dated Arch Linux Archive snapshot, downloads
+  every archive and detached signature by exact snapshot URL (no redirects, no
+  other host, explicit approval string), checks size, SHA-256 and signature
+  against a keyring pinned in `distro/base-image/arch/trust-policy.json` and
+  writes the canonical manifest. `distro/base-image/arch/inputs.manifest.json`
+  freezes 157 packages from 2026/11/09; the independent `distro-builder
+  manifest verify-cache --keyring` verifies all 314 artifacts. A drill shows
+  the cache replays after the mirror moved and that tampering, a swapped
+  signer, an empty keyring and a removed archive fail closed.
+- **Activation is enabled** (`RELEASE_ACTIVATION_ENABLED = true` in the slot
+  broker and `flowerly-core`), in its own commit after the passing G5 evidence;
+  the test-profile marker is no longer needed.
+- Gate D real KVM acceptance (ADR-0023 G5, #9): all 16 scenarios pass on an
+  exact SHA with OVMF and systemd-boot (activate, FELL_BACK, rollback, schema
+  bump, irreversible activation, restore drill, user data and history intact,
+  exhausted target: systemd-boot keeps booting the exhausted target and never
+  the demoted root). Found and fixed on the way: boot entries now carry
+  sort-key/version; activation answers PENDING and arms asynchronously
+  (migration 17, `armed_at`); the root witness accepts exactly the demoted
+  `manual-flowerly-a|b` entry of its own slot; the drill reports through the
+  console. Evidence in `web-docs/docs/reviews/evidence/0048-g5-gate-d-eb60060`.
 - Irreversible activation path and `flowerlyd`'s activation path (ADR-0023
   G4b, #9), test profile only. On the A/B test image `generation.activate`
   and `generation.rollback` (now with a required `reason`) ask the slot

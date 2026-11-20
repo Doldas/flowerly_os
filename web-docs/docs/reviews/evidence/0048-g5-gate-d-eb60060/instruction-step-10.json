@@ -1,0 +1,21 @@
+{
+  "actions": [
+    {
+      "evidence_sha256": "3261789c2dc393779e8d6f984965b6e9bd4b00216434126c85bc95b72f7d229b",
+      "identity": {
+        "build_id": "s7-b2-run9",
+        "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+        "input_manifest_sha256": "06ef17de5f068fee790cde2bbb20b0f31d14e38bd7b8ae5ba6cdd1b8288f8511",
+        "kernel_sha256": "be373165e6d54bfee8e95b6ba6ffd7e5726544fbb571893773d45c806ba18ef9",
+        "rootfs_sha256": "67f42d34af6d5edd1630f231a1eabeae282c0b5352303c5bc0aa685717bc6dd2",
+        "source_commit": "eb600602c73c1a894ae2e2da996ddb661000ea9c"
+      },
+      "label": "B2",
+      "op": "register"
+    }
+  ],
+  "reboot": false,
+  "schema": "flowerly-g5-drill/v1",
+  "slot": "root-a",
+  "step": 10
+}

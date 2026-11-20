@@ -27,8 +27,12 @@ python3 scripts/test-layer-15-sqlite-contracts.py
 python3 scripts/test-install-flowerly-rootfs.py
 python3 scripts/test-prepare-arch-boot.py
 python3 scripts/test-generation-ab-guest.py
+python3 scripts/test-generation-gate-d-drill.py
+python3 scripts/test-generation-gate-d-kvm-acceptance.py
 python3 scripts/test-schema-compat.py --self-test
 bash -n scripts/prepare-generation-ab-rootfs.sh
+bash -n scripts/build-g5-test-image.sh
+bash -n scripts/build-arch-rootfs-pinned-container.sh
 bash -n distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 python3 scripts/test-boot-ipc-health.py
 python3 scripts/test-build-arch-root-volume.py
@@ -48,6 +52,8 @@ python3 scripts/test-probe-arch-qemu-boot.py
 python3 scripts/test-build-arch-initrd.py
 bash -n scripts/test-arch-vm-disk.sh
 bash scripts/test-arch-vm-disk.sh
+bash -n scripts/lib/arch-vm-build-cache.sh
+bash scripts/test-arch-vm-build-cache.sh
 bash scripts/test-arch-vm-stage-timing.sh
 python3 scripts/test-arch-vm-failure-classify.py
 bash -n scripts/remote-provider-arch-kvm-acceptance.sh
@@ -55,6 +61,7 @@ python3 scripts/test-remote-provider-kvm-harness.py
 python3 scripts/test-remote-provider-egress-ownership.py
 python3 scripts/test-cluster-peer-admission.py
 python3 scripts/test-arch-image-verify.py
+python3 scripts/test-freeze-arch-snapshot.py
 python3 scripts/test-host-process-authority.py
 
 echo "Offline docs preflight passed. CI docs also builds the site and checks Markdown."

@@ -1,6 +1,8 @@
 # Flowerly OS 0.0.5 — Generations implementation and acceptance plan
 
-Status: **PLANNING / NOT RELEASE-CERTIFIED**. Started 2026-10-29.
+Status: **Generation fixture verified; milestone evidence pending.**
+Started 2026-10-29. See the [readiness review](release-0.0.5-readiness-2026-11-17.md)
+for the current issue and CI status.
 Tracking: [#9](https://github.com/Doldas/flowerly_os/issues/9).
 Dependencies: [#48](https://github.com/Doldas/flowerly_os/issues/48),
 [#49](https://github.com/Doldas/flowerly_os/issues/49),
@@ -128,10 +130,17 @@ test profile only.
 an irreversible arm needs the Admin's acknowledgement and a verified backup,
 and demotes the running root's entry to manual-only before publishing the
 target; `flowerlyd` runs activate/rollback through the broker on the test
-image only (the release switch stays off), with a `VACUUM INTO` backup whose
-hash is on the activation row; `reason` is required. Next: G5 (real KVM
-acceptance on the exact SHA, including the restore drill), which also turns
-the release switch on.
+image only (the release switch was still off), with a `VACUUM INTO` backup whose
+hash is on the activation row; `reason` is required.
+
+**G5 real KVM acceptance (2026-11-16):** all 16 Gate D scenarios PASS on
+`eb60060` (activation, FELL_BACK, rollback, schema-bump downgrade refusal,
+irreversible path, restore drill, user data and history after every step,
+exhausted target). Review:
+[0048-g5-gate-d-kvm-acceptance-2026-11-16](reviews/0048-g5-gate-d-kvm-acceptance-2026-11-16.md).
+`RELEASE_ACTIVATION_ENABLED` is turned on, in both the broker and
+`flowerly-core`, in the separate last commit of that PR (owner: please review it
+separately).
 
 - Reconcile typed states `CANDIDATE/TESTED/STABLE/REJECTED/SUPERSEDED/REVOKED`
   in an ADR and implement validated create/list/inspect/test/promote/
@@ -166,16 +175,33 @@ the release switch on.
 - Default PTY enablement without verified systemd cgroup delegation.
 - Claiming fully reproducible binaries solely from pinned inputs.
 
-## Immediate next engineering action
+- **Progress (2026-11-16):** a real frozen set exists: 157 packages,
+  738,921,801 bytes, snapshot 2026/11/09, every archive and signature
+  verified by the independent Rust verifier against the pinned keyring. The
+  mirror moved on (26 packages changed by 2026/11/15) and the cache still
+  verified; seven tamperings and an offline removal failed closed for the
+  specific reason. Review:
+  [0049-gate-b-frozen-package-set-2026-11-16](reviews/0049-gate-b-frozen-package-set-2026-11-16.md).
+  `distro-builder manifest verify-rootfs` now compares a built rootfs's
+  installed packages with the manifest, and `manifest verify-binding` checks
+  that a baked identity names the manifest and that the staged kernel is the
+  frozen `linux` archive's `vmlinuz`. A rootfs **built from the snapshot**
+  (`FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh`) matches the manifest
+  exactly and boots the frozen kernel image (evidence
+  `reviews/evidence/0049-gate-b-pinned-build-8689cd4`). `prepare-generation-ab-rootfs.sh` can now require the frozen set
+  (`FLOWERLY_FROZEN_INPUTS`), and `scripts/build-g5-test-image.sh` uses it: the
+  Gate D KVM matrix passes 16/16 on a rootfs built from the snapshot (`b05e3be`). The kernel's embedded config hash
+  and compiler are now reported. The [upstream source and Arch recipe](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#upstream-kernel-source-identity-2026-11-19) are bound by the frozen package build metadata. The build tooling is pinned too
+  (`build-arch-rootfs-pinned-container.sh`). Owner decisions 2026-11-17: the cache stays
+  runner-local and manually filled; manifest v2 comes at the next re-freeze.
+  The [Gate B review](reviews/0049-gate-b-frozen-package-set-2026-11-16.md#repeat-acquisition-and-kvm-resource-measurements-2026-11-19) records the repeated acquisition, build time, rootfs size and KVM budget.
 
-Start with #48: author the substrate ADR and an isolated bootable-VM
-rollback proof, **before** implementing activation logic. In parallel, #49
-can define the package manifest and trusted archive acquisition contract.
-Document all negative results and keep warnings visible.
+## Remaining engineering validation
 
-The ordered PR breakdown for #51 + #48 is in
-[0.0.5 step 1 — Flowerly boots its own image and survives one real rollback](release-0.0.5-step1-ab-boot-rollback-plan.md).
-
+Use the [readiness review](release-0.0.5-readiness-2026-11-17.md) and the
+[VM timing notes](arch-vm-stage-timings.md) for the measurements still needed
+in #49 and #285. The implementation order and earlier work are preserved
+in the [A/B fixture plan](release-0.0.5-step1-ab-boot-rollback-plan.md).
 
 ## 2026-11-07: 16 scoped Generation 0.0.5 contracts (not release acceptance)
 

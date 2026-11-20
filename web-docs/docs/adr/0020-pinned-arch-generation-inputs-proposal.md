@@ -1,8 +1,8 @@
 # Proposed ADR: pinned Arch package inputs for Generations
 
-**Status:** Proposed — no snapshot source or archive trust contract approved.
+**Status:** Implemented for the first frozen test fixture. Proposed for broader use.
 **Issues:** #49, #9, #48. **Scope:** prerequisites for 0.0.5.
-This document is a specification, **not** an implemented package fetcher.
+The table records which parts of the specification are implemented.
 
 ## Implementation status
 
@@ -11,14 +11,49 @@ This document is a specification, **not** an implemented package fetcher.
 | Manifest schema `flowerly.generation-inputs.v1`, canonical form and digest | Implemented: `distro-builder manifest check` |
 | Content-addressed cache verification, missing/tampered artifacts fail closed | Implemented: `distro-builder manifest verify-cache` |
 | Detached signature check against a supplied keyring | Implemented: `verify-cache --keyring <file>` (gpgv) |
-| Trust policy: which keyring is acceptable, key expiry on historic replay | **Not decided**; without `--keyring` the report says `signature_trust: not_verified` |
-| Repository database verification and transitive resolution | Not implemented |
-| Fetch from a dated snapshot, real frozen package set, mirror-change demo | Not done; needs approval for network acquisition |
-| Kernel, toolchain and output identity fields | Not in v1; a later schema version |
+| Trust policy: which keyring is acceptable, key expiry on historic replay | Decided for the first frozen set, see *Trust policy (Gate B)* below; without `--keyring` the report says `signature_trust: not_verified` |
+| Transitive resolution and fetch from a dated snapshot | Implemented: `scripts/freeze-arch-snapshot.py` (`freeze`), network only to `archive.archlinux.org/repos/`, only with the approval string |
+| Real frozen package set, mirror-change demo, tamper and offline-removal drill | Done 2026-11-16: `distro/base-image/arch/inputs.manifest.json` (157 packages, snapshot 2026/11/09), evidence in [the Gate B review](../reviews/0049-gate-b-frozen-package-set-2026-11-16.md) |
+| Installed set equals the manifest (`manifest verify-rootfs`) | Implemented, reads pacman's local database of a built rootfs; checked against the 2026-11-09-era live-mirror rootfs, which it correctly rejects (27 versions differ, `openssl-3` is extra). The snapshot-built rootfs passes with 157 packages |
+| Identity and kernel bound to the manifest (`manifest verify-binding`) | Implemented: the baked identity's `input_manifest_sha256` must equal the manifest digest, and the kernel staged for boot must equal the `vmlinuz` inside the frozen `linux` archive (archive digest re-checked first). Run against the real cache: kernel 7.2.14-arch1-1, vmlinuz SHA-256 `b1e9eaf5…325b`; one appended byte makes it fail. The kernel's embedded build configuration (IKCONFIG) is hashed and its compiler named in the report: `e8f340e4…0731`, gcc 16.2.1 20260810 |
+| Rootfs built from the snapshot | Done 2026-11-16: `FLOWERLY_PINNED=1 scripts/build-arch-rootfs.sh` points mkosi at the manifest's own snapshot. The result passes `manifest verify-rootfs` with 157 installed, 0 missing, 0 extra, 0 version differences, and its kernel is the frozen `vmlinuz` (`verify-binding`). The later build pins the container digest and installs mkosi and its tooling from the same snapshot |
+| Baking an identity only for the frozen set | `FLOWERLY_FROZEN_INPUTS=<distro-builder> scripts/prepare-generation-ab-rootfs.sh` refuses unless `--input-manifest-sha256` is the digest of the committed manifest and `verify-rootfs` passes, before anything is written. The pinned Gate D build enables this check |
+| Repository database signature | Not available: the Archive serves no `.db.sig` for dated snapshots (404). Database fields are bound by the per-package signatures instead |
+| Kernel, toolchain and output identity fields | The frozen package binds the recipe and kernel sources. The artifact binding report, pinned tooling file and baked identity record the remaining fields. Manifest v2 is deferred until the next re-freeze |
 
-A passing `verify-cache` proves only that the cached bytes are the bytes the
-manifest names. It does not establish who published them. #49 stays open
-until the acceptance evidence below exists.
+`verify-cache` always checks digests. Use the keyring pinned by the trust policy to also verify publisher signatures.
+
+### Trust policy (Gate B)
+
+- **Anchor.** `distro/base-image/arch/trust-policy.json` pins the SHA-256 of
+  the snapshot's `archlinux-keyring` package. The freeze refuses any other
+  bytes. The pin was produced from the snapshot's own database and is a human
+  review decision (trust on first review), not an out-of-band root of trust.
+- **Signers.** Every package must be signed by a key of that keyring and not
+  by one on the keyring's `archlinux-revoked` list. The certification chain
+  from Arch's master keys is **not** evaluated.
+- **Binding.** The detached signature fetched from the snapshot must equal
+  the `%PGPSIG%` in the repository database, and the archive must match the
+  database's size and SHA-256 and the signature; this ties the unsigned
+  database fields to signed bytes.
+- **Expiry on replay.** `gpgv` evaluates expiry now; a replay after a signer
+  expired fails closed (`EXPKEYSIG`). Accepting historic replay needs a new
+  pinned keyring and a recorded decision, not a flag.
+- **Virtual dependencies** with several providers are never guessed:
+  `distro/base-image/arch/provider-choices.txt` is reviewed like code
+  (`-` means the image builder provides the name itself, as mkosi does for
+  `initramfs`).
+
+### Owner decisions (2026-11-17)
+
+- **Cache retention.** The content-addressed cache (about 0.75 GB) lives on the
+  runner that builds the image and is filled only by the manual, approved
+  `freeze-arch-snapshot.py` step. CI never fetches packages; it runs the offline
+  tests and `manifest check`. A release-asset cache is not adopted.
+- **Manifest v2.** The manifest stays `flowerly.generation-inputs.v1`; the
+  tooling pin stays in `build-tooling.json`. A v2 schema that carries the
+  tooling is introduced at the next re-freeze (a new snapshot), when the
+  manifest digest changes once and Gate D is re-run against it.
 
 ### v1 format
 

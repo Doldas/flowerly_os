@@ -19,7 +19,15 @@ COLUMNS = (
     "cgroup_memory_current_bytes",
     "cgroup_oom",
     "cgroup_oom_kill",
+    # Millidegrees Celsius, blank when the host exposes no such sensor.
+    "cpu_temp_mc",
+    "dimm_temp_max_mc",
 )
+
+# hwmon chips whose temperatures help tell a hot or marginal host from a code
+# fault (the self-hosted runner has shown segfaults under long load).
+CPU_CHIPS = ("k10temp", "coretemp")
+DIMM_CHIPS = ("spd5118",)
 
 
 def fields(path, keys):
@@ -47,7 +55,31 @@ def qemu_pid(pidfile):
         return None
 
 
-def sample(pidfile, proc="/proc", cgroup="/sys/fs/cgroup"):
+def hwmon_temps(root, chips):
+    """Highest temp*_input (millidegrees) over the named hwmon chips, or None."""
+    best = None
+    try:
+        entries = sorted(Path(root).iterdir())
+    except OSError:
+        return None
+    for chip in entries:
+        try:
+            name = (chip / "name").read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            continue
+        if name not in chips:
+            continue
+        for sensor in sorted(chip.glob("temp*_input")):
+            try:
+                value = int(sensor.read_text(encoding="ascii").strip())
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if -50_000 < value < 200_000:
+                best = value if best is None else max(best, value)
+    return best
+
+
+def sample(pidfile, proc="/proc", cgroup="/sys/fs/cgroup", hwmon="/sys/class/hwmon"):
     pid = qemu_pid(pidfile)
     status = fields(f"{proc}/{pid}/status", {"VmRSS"}) if pid else {}
     # A missing /proc/<pid>/status means the QEMU process has exited or is
@@ -67,6 +99,8 @@ def sample(pidfile, proc="/proc", cgroup="/sys/fs/cgroup"):
         "cgroup_memory_current_bytes": current_bytes,
         "cgroup_oom": events.get("oom"),
         "cgroup_oom_kill": events.get("oom_kill"),
+        "cpu_temp_mc": hwmon_temps(hwmon, CPU_CHIPS),
+        "dimm_temp_max_mc": hwmon_temps(hwmon, DIMM_CHIPS),
     }
 
 

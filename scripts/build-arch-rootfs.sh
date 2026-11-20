@@ -18,7 +18,17 @@ if [[ -e "$ARTIFACT" ]]; then
     exit 1
 fi
 mkdir -p "$OUTPUT"
-mkosi --directory="$CONFIG" --output-directory="$OUTPUT" build
+# FLOWERLY_PINNED=1 builds from the frozen snapshot instead of a rolling
+# mirror (#49, ADR-0020): the mirror is the manifest's own dated snapshot.
+MIRROR_ARGS=()
+if [[ "${FLOWERLY_PINNED:-0}" == "1" ]]; then
+    SNAPSHOT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"]["snapshot_url"].rstrip("/"))' "$CONFIG/inputs.manifest.json")"
+    [[ "$SNAPSHOT" =~ ^https://archive\.archlinux\.org/repos/[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]] ||
+        { echo "manifest snapshot_url is not a dated Arch Archive snapshot" >&2; exit 1; }
+    MIRROR_ARGS=(--mirror="$SNAPSHOT")
+    echo "Pinned build from $SNAPSHOT; verify with: distro-builder manifest verify-rootfs"
+fi
+mkosi --directory="$CONFIG" --output-directory="$OUTPUT" "${MIRROR_ARGS[@]}" build
 if [[ ! -d "$ARTIFACT" ]] || [[ ! -f "$ARTIFACT/usr/lib/os-release" ]] ||
    [[ ! -e "$ARTIFACT/usr/lib/systemd/systemd" ]] ||
    [[ ! -e "$ARTIFACT/usr/bin/pacman" ]]; then

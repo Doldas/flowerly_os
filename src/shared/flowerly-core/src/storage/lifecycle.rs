@@ -193,12 +193,15 @@ pub struct Activation {
     pub witness_boot_id: Option<String>,
     pub witness_sequence: Option<u64>,
     pub detail: Option<String>,
+    /// When the slot broker answered ARMED (G5: arming runs after the row is
+    /// written); `None` while arming, after a refusal or a lost answer.
+    pub armed_at: Option<Timestamp>,
 }
 
 const ACTIVATION_COLUMNS: &str = "id, generation, previous_generation, kind, actor_uid, reason, \
      operation_id, request_digest, expected_slot, expected_root_partuuid, ledger_sequence, \
      ledger_head, irreversible, backup_sha256, acknowledges, state, requested_at, resolved_at, \
-     witness_boot_id, witness_sequence, detail";
+     witness_boot_id, witness_sequence, detail, armed_at";
 
 fn map_activation(row: &Row<'_>) -> rusqlite::Result<Activation> {
     let parse_id = |raw: String, index: usize| -> rusqlite::Result<GenerationId> {
@@ -235,6 +238,7 @@ fn map_activation(row: &Row<'_>) -> rusqlite::Result<Activation> {
         witness_boot_id: row.get(18)?,
         witness_sequence: row.get::<_, Option<i64>>(19)?.map(|n| n as u64),
         detail: row.get(20)?,
+        armed_at: row.get::<_, Option<i64>>(21)?.map(Timestamp::from_millis),
     })
 }
 
@@ -875,6 +879,36 @@ impl Store {
             .map_err(StorageError::from)
     }
 
+    /// The slot broker armed this `PENDING` activation. The first time is
+    /// kept; a resolved activation is not armed any more.
+    pub fn record_armed(&mut self, id: i64) -> Result<Activation> {
+        retry_on_busy(RetryConfig::default(), || {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current = load_activation(&tx, id)?
+                .ok_or_else(|| StorageError::NotFound(format!("activation {id}")))?;
+            if current.armed_at.is_some() {
+                tx.commit()?;
+                return Ok(current);
+            }
+            if current.state != ActivationState::Pending {
+                return Err(StorageError::OperationConflict(format!(
+                    "activation {id} is already {}",
+                    current.state.as_str()
+                )));
+            }
+            guard(tx.execute(
+                "UPDATE generation_activations SET armed_at = ?2 WHERE id = ?1",
+                params![id, Timestamp::now().as_millis().max(current.requested_at.as_millis())],
+            ))?;
+            let armed = load_activation(&tx, id)?
+                .ok_or_else(|| StorageError::NotFound(format!("activation {id}")))?;
+            tx.commit()?;
+            Ok(armed)
+        })
+    }
+
     /// `PENDING` -> `ABANDONED` (the slot could not be armed). Idempotent.
     pub fn abandon_activation(&mut self, id: i64, detail: &str) -> Result<Activation> {
         self.resolve_activation(id, ActivationState::Abandoned, None, detail)
@@ -1454,6 +1488,101 @@ mod tests {
         assert_refused(
             raw_status(&store, &id, "STABLE"),
             "only through a confirmed activation",
+        );
+    }
+
+    #[test]
+    fn arming_is_recorded_once_and_only_on_a_pending_activation() {
+        let mut store = store();
+        let id = tested(&mut store);
+        let pending = store
+            .request_activation(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        assert_eq!(pending.armed_at, None);
+        let armed = store.record_armed(pending.id).unwrap();
+        assert!(armed.armed_at.is_some());
+        assert_eq!(armed.state, ActivationState::Pending);
+        // A retry keeps the first time.
+        assert_eq!(
+            store.record_armed(pending.id).unwrap().armed_at,
+            armed.armed_at
+        );
+        let abandoned = store.abandon_activation(pending.id, "lost").unwrap();
+        assert_eq!(abandoned.armed_at, armed.armed_at);
+        let other = store
+            .request_activation(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        store.abandon_activation(other.id, "refused").unwrap();
+        assert!(matches!(
+            store.record_armed(other.id),
+            Err(StorageError::OperationConflict(_))
+        ));
+        assert!(matches!(
+            store.record_armed(9999),
+            Err(StorageError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn the_database_lets_arming_change_nothing_but_armed_at_once() {
+        let mut store = store();
+        let id = tested(&mut store);
+        let pending = store
+            .request_activation(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        let raw = |store: &Store, sql: &str| store.conn.execute(sql, params![pending.id]);
+        assert_refused(
+            raw(
+                &store,
+                "UPDATE generation_activations SET armed_at = requested_at, detail = 'x' WHERE id = ?1",
+            ),
+            "resolves to CONFIRMED",
+        );
+        assert_refused(
+            raw(
+                &store,
+                "UPDATE generation_activations SET armed_at = requested_at, reason = 'other' WHERE id = ?1",
+            ),
+            "only the resolution columns",
+        );
+        assert_refused(
+            raw(
+                &store,
+                "UPDATE generation_activations SET armed_at = requested_at - 1 WHERE id = ?1",
+            ),
+            "CHECK constraint",
+        );
+        raw(
+            &store,
+            "UPDATE generation_activations SET armed_at = requested_at WHERE id = ?1",
+        )
+        .unwrap();
+        assert_refused(
+            raw(
+                &store,
+                "UPDATE generation_activations SET armed_at = armed_at + 1 WHERE id = ?1",
+            ),
+            "armed once",
+        );
+        assert_refused(
+            raw(
+                &store,
+                "UPDATE generation_activations SET state = 'ABANDONED', resolved_at = 1, armed_at = NULL WHERE id = ?1",
+            ),
+            "armed once",
+        );
+        // An unarmed row cannot be armed by its resolution.
+        store.abandon_activation(pending.id, "lost").unwrap();
+        let other = store
+            .request_activation(ADMIN, &request(&id, ActivationKind::Activate))
+            .unwrap();
+        assert_refused(
+            store.conn.execute(
+                "UPDATE generation_activations SET state = 'ABANDONED', resolved_at = requested_at,
+                 armed_at = requested_at WHERE id = ?1",
+                params![other.id],
+            ),
+            "only while PENDING",
         );
     }
 

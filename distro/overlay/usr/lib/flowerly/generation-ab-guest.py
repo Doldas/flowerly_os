@@ -18,6 +18,7 @@ import pwd
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
@@ -26,6 +27,9 @@ COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 LOADER = re.compile(
     r"flowerly-([ab])(?:\+(?:0|[1-9][0-9]?)(?:-(?:0|[1-9][0-9]?))?)?(?:\.conf)?\Z"
 )
+# The running root's entry after an irreversible arm (ADR-0023 R4): booted
+# only from the menu, never counted, and still the same slot's root.
+DEMOTED = re.compile(r"manual-flowerly-([ab])(?:\.conf)?\Z")
 EFI_LOADER_GUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 MAX_LEDGER = 2097152
 SCHEMA = "flowerly-generation-boot/v2"
@@ -237,7 +241,7 @@ def append_witness(
         entry_name = efi_bytes[4:].decode("utf-16-le").rstrip("\x00")
     except UnicodeError as error:
         raise ValueError("invalid EFI selection encoding") from error
-    match = LOADER.fullmatch(entry_name)
+    match = LOADER.fullmatch(entry_name) or DEMOTED.fullmatch(entry_name)
     if not match:
         raise ValueError("unexpected selected bootloader entry")
     slot = "root-" + match.group(1)
@@ -285,18 +289,45 @@ def append_health(ledger, boot_id, owner=None):
     return append_record(ledger, build, owner)
 
 
-def service_owner(data):
-    """Root owns the ledger; the service group may read it. The data directory
-    itself is given to the service account first, so systemd's StateDirectory
-    does not recursively chown the ledger away from root on the first boot."""
-    account = pwd.getpwnam("flowerly")
-    group = grp.getgrnam("flowerly").gr_gid
+def flowerlyd_group():
+    """The Group= flowerlyd runs as ("" when the unit sets none)."""
+    done = subprocess.run(
+        ["systemctl", "show", "--property=Group", "--value", "flowerlyd.service"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    return done.stdout.strip()
+
+
+def service_owner(
+    data,
+    *,
+    unit_group=flowerlyd_group,
+    account=pwd.getpwnam,
+    group=lambda name: grp.getgrnam(name).gr_gid,
+):
+    """Root owns the ledger; flowerlyd's group may read it.
+
+    flowerlyd reads the ledger only if its group is the state directory's, and
+    systemd's StateDirectory gives that directory flowerlyd's Group= (the
+    service group, or flowerly-users with the multi-user drop-in). The
+    directory is given that owner first, so systemd does not recursively chown
+    the ledger away from root on the first boot."""
+    uid = account("flowerly").pw_uid
+    name = unit_group() or "flowerly"
+    if name in ("root", "0") or not re.fullmatch(r"[a-z_][a-z0-9_-]*", name):
+        raise ValueError("flowerlyd runs as an unexpected group: " + name)
+    gid = group(name)
+    if gid == 0:
+        raise ValueError("flowerlyd runs as an unexpected group: " + name)
     state = os.stat(data, follow_symlinks=False)
     if not stat.S_ISDIR(state.st_mode):
         raise ValueError("unsafe Flowerly data directory")
-    if (state.st_uid, state.st_gid) != (account.pw_uid, group):
-        os.chown(data, account.pw_uid, group, follow_symlinks=False)
-    return (0, group)
+    if (state.st_uid, state.st_gid) != (uid, gid):
+        os.chown(data, uid, gid, follow_symlinks=False)
+    return (0, gid)
 
 
 def main_health():
@@ -309,7 +340,7 @@ def main():
     if sys.argv[1:] == ["health"]:
         try:
             main_health()
-        except (ValueError, OSError, KeyError) as error:
+        except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
             sys.exit(f"Flowerly Generation health record refused: {error}")
         return
     if sys.argv != [sys.argv[0], "witness"]:
@@ -338,7 +369,14 @@ def main():
             data / "generation-user-marker.bin",
             service_owner(data),
         )
-    except (ValueError, OSError, TypeError, KeyError, json.JSONDecodeError) as error:
+    except (
+        ValueError,
+        OSError,
+        TypeError,
+        KeyError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as error:
         sys.exit(f"Flowerly Generation witness refused: {error}")
     print("FLOWERLY_GENERATION_ROOT_VERIFIED")
     print("FLOWERLY_GENERATION_USER_MARKER_SHA256=" + evidence["user_data_sha256"])

@@ -1,0 +1,180 @@
+{
+  "entries": [
+    {
+      "argv": [
+        "activate",
+        "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "--reason",
+        "G5 drill step 5"
+      ],
+      "call": "activate",
+      "code": 0,
+      "reply": {
+        "activation": {
+          "acknowledges": null,
+          "actor_uid": 967,
+          "armed_at": null,
+          "backup_sha256": null,
+          "detail": null,
+          "expected_root_partuuid": "ea29286b-4b0a-46fd-8b3d-56bed34d5a99",
+          "expected_slot": "root-a",
+          "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+          "id": 3,
+          "irreversible": false,
+          "kind": "ACTIVATE",
+          "ledger_head": "c991e638d6449b4c816974a1586e98c4d0d351d15e834a0d491f57625706d004",
+          "ledger_sequence": 13,
+          "operation_id": null,
+          "previous_generation": "gen-6d46fee820284321998ba695d6b27ae6",
+          "reason": "G5 drill step 5",
+          "requested_at": 1794850641437,
+          "resolved_at": null,
+          "state": "PENDING",
+          "witness_boot_id": null,
+          "witness_sequence": null
+        },
+        "arming": true,
+        "note": "the slot broker is arming; read generation.history until armed_at is set (then reboot) or the row is ABANDONED"
+      },
+      "text": "{\n  \"activation\": {\n    \"acknowledges\": null,\n    \"actor_uid\": 967,\n    \"armed_at\": null,\n    \"backup_sha256\": null,\n    \"detail\": null,\n    \"expected_root_partuuid\": \"ea29286b-4b0a-46fd-8b3d-56bed34d5a99\",\n    \"expected_slot\": \"root-a\",\n    \"generation\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n    \"id\": 3,\n    \"irreversible\": false,\n    \"kind\": \"ACTIVATE\",\n    \"ledger_head\": \"c991e638d6449b4c816974a1586e98c4d0d351d15e834a0d491f57625706d004\",\n    \"ledger_sequence\": 13,\n    \"operation_id\": null,\n    \"previous_generation\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n    \"reason\": \"G5 drill step 5\",\n    \"requested_at\": 1794850641437,\n    \"resolved_at\": null,\n    \"state\": \"PENDING\",\n    \"witness_boot_id\": null,\n    \"witness_sequence\": null\n  },\n  \"arming\": true,\n  \"note\": \"the slot broker is arming; read generation.history until armed_at is set (then reboot) or the row is ABANDONED\"\n}"
+    },
+    {
+      "activation": {
+        "acknowledges": null,
+        "actor_uid": 967,
+        "armed_at": 1794850646684,
+        "backup_sha256": null,
+        "detail": null,
+        "expected_root_partuuid": "ea29286b-4b0a-46fd-8b3d-56bed34d5a99",
+        "expected_slot": "root-a",
+        "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+        "id": 3,
+        "irreversible": false,
+        "kind": "ACTIVATE",
+        "ledger_head": "c991e638d6449b4c816974a1586e98c4d0d351d15e834a0d491f57625706d004",
+        "ledger_sequence": 13,
+        "operation_id": null,
+        "previous_generation": "gen-6d46fee820284321998ba695d6b27ae6",
+        "reason": "G5 drill step 5",
+        "requested_at": 1794850641437,
+        "resolved_at": null,
+        "state": "PENDING",
+        "witness_boot_id": null,
+        "witness_sequence": null
+      },
+      "call": "armed",
+      "text": ""
+    },
+    {
+      "argv": [
+        "list"
+      ],
+      "call": "list",
+      "code": 0,
+      "reply": {
+        "count": 2,
+        "generations": [
+          {
+            "id": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+            "parent": null,
+            "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+            "status": "TESTED"
+          },
+          {
+            "id": "gen-6d46fee820284321998ba695d6b27ae6",
+            "parent": null,
+            "source_commit": "b05e3be5199704c1050b4a88a8e132fb2eb765f5",
+            "status": "STABLE"
+          }
+        ]
+      },
+      "text": "{\n  \"count\": 2,\n  \"generations\": [\n    {\n      \"id\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n      \"parent\": null,\n      \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n      \"status\": \"TESTED\"\n    },\n    {\n      \"id\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n      \"parent\": null,\n      \"source_commit\": \"b05e3be5199704c1050b4a88a8e132fb2eb765f5\",\n      \"status\": \"STABLE\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "history"
+      ],
+      "call": "history",
+      "code": 0,
+      "reply": {
+        "activations": [
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794850552848,
+            "backup_sha256": null,
+            "detail": "boot e40de3f8-5b78-4c81-bd9a-686237178b21 ran root-a after root-b was tried",
+            "expected_root_partuuid": "2206d559-6174-43fa-a176-155c3a63b43a",
+            "expected_slot": "root-b",
+            "generation": "gen-6d46fee820284321998ba695d6b27ae6",
+            "id": 1,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "b78eb3c19220f25373615001c63c136665bbdd42effe160901472a4e6de0610c",
+            "ledger_sequence": 4,
+            "operation_id": null,
+            "previous_generation": null,
+            "reason": "G5 drill step 2",
+            "requested_at": 1794850548330,
+            "resolved_at": 1794850600932,
+            "state": "FELL_BACK",
+            "witness_boot_id": "e40de3f8-5b78-4c81-bd9a-686237178b21",
+            "witness_sequence": 8
+          },
+          {
+            "acknowledges": 1,
+            "actor_uid": 967,
+            "armed_at": 1794850623343,
+            "backup_sha256": null,
+            "detail": "boot 1203b3b8-a98d-41c3-afba-acc5c3157adf of root-b passed the health gate",
+            "expected_root_partuuid": "2206d559-6174-43fa-a176-155c3a63b43a",
+            "expected_slot": "root-b",
+            "generation": "gen-6d46fee820284321998ba695d6b27ae6",
+            "id": 2,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "af1e8ed5d41643c5a7012598791d13f15a1603320149bf19d205674b3afae46f",
+            "ledger_sequence": 11,
+            "operation_id": null,
+            "previous_generation": null,
+            "reason": "G5 drill step 4",
+            "requested_at": 1794850618464,
+            "resolved_at": 1794850641127,
+            "state": "CONFIRMED",
+            "witness_boot_id": "1203b3b8-a98d-41c3-afba-acc5c3157adf",
+            "witness_sequence": 12
+          },
+          {
+            "acknowledges": null,
+            "actor_uid": 967,
+            "armed_at": 1794850646684,
+            "backup_sha256": null,
+            "detail": null,
+            "expected_root_partuuid": "ea29286b-4b0a-46fd-8b3d-56bed34d5a99",
+            "expected_slot": "root-a",
+            "generation": "gen-4f070e2db1e64b2080ab4af850e5f49c",
+            "id": 3,
+            "irreversible": false,
+            "kind": "ACTIVATE",
+            "ledger_head": "c991e638d6449b4c816974a1586e98c4d0d351d15e834a0d491f57625706d004",
+            "ledger_sequence": 13,
+            "operation_id": null,
+            "previous_generation": "gen-6d46fee820284321998ba695d6b27ae6",
+            "reason": "G5 drill step 5",
+            "requested_at": 1794850641437,
+            "resolved_at": null,
+            "state": "PENDING",
+            "witness_boot_id": null,
+            "witness_sequence": null
+          }
+        ],
+        "count": 3
+      },
+      "text": "0c\",\n      \"ledger_sequence\": 4,\n      \"operation_id\": null,\n      \"previous_generation\": null,\n      \"reason\": \"G5 drill step 2\",\n      \"requested_at\": 1794850548330,\n      \"resolved_at\": 1794850600932,\n      \"state\": \"FELL_BACK\",\n      \"witness_boot_id\": \"e40de3f8-5b78-4c81-bd9a-686237178b21\",\n      \"witness_sequence\": 8\n    },\n    {\n      \"acknowledges\": 1,\n      \"actor_uid\": 967,\n      \"armed_at\": 1794850623343,\n      \"backup_sha256\": null,\n      \"detail\": \"boot 1203b3b8-a98d-41c3-afba-acc5c3157adf of root-b passed the health gate\",\n      \"expected_root_partuuid\": \"2206d559-6174-43fa-a176-155c3a63b43a\",\n      \"expected_slot\": \"root-b\",\n      \"generation\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n      \"id\": 2,\n      \"irreversible\": false,\n      \"kind\": \"ACTIVATE\",\n      \"ledger_head\": \"af1e8ed5d41643c5a7012598791d13f15a1603320149bf19d205674b3afae46f\",\n      \"ledger_sequence\": 11,\n      \"operation_id\": null,\n      \"previous_generation\": null,\n      \"reason\": \"G5 drill step 4\",\n      \"requested_at\": 1794850618464,\n      \"resolved_at\": 1794850641127,\n      \"state\": \"CONFIRMED\",\n      \"witness_boot_id\": \"1203b3b8-a98d-41c3-afba-acc5c3157adf\",\n      \"witness_sequence\": 12\n    },\n    {\n      \"acknowledges\": null,\n      \"actor_uid\": 967,\n      \"armed_at\": 1794850646684,\n      \"backup_sha256\": null,\n      \"detail\": null,\n      \"expected_root_partuuid\": \"ea29286b-4b0a-46fd-8b3d-56bed34d5a99\",\n      \"expected_slot\": \"root-a\",\n      \"generation\": \"gen-4f070e2db1e64b2080ab4af850e5f49c\",\n      \"id\": 3,\n      \"irreversible\": false,\n      \"kind\": \"ACTIVATE\",\n      \"ledger_head\": \"c991e638d6449b4c816974a1586e98c4d0d351d15e834a0d491f57625706d004\",\n      \"ledger_sequence\": 13,\n      \"operation_id\": null,\n      \"previous_generation\": \"gen-6d46fee820284321998ba695d6b27ae6\",\n      \"reason\": \"G5 drill step 5\",\n      \"requested_at\": 1794850641437,\n      \"resolved_at\": null,\n      \"state\": \"PENDING\",\n      \"witness_boot_id\": null,\n      \"witness_sequence\": null\n    }\n  ],\n  \"count\": 3\n}"
+    }
+  ],
+  "ok": true,
+  "schema": "flowerly-g5-drill/v1-report",
+  "slot": "root-b",
+  "step": 5
+}

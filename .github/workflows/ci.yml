@@ -56,6 +56,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # The runner workspace persists and git does not clean ignored files.
+      # Without this, a run that fails before the Arch guest step uploads the
+      # previous run's report under this commit's exact-SHA artifact name.
+      - name: Remove Arch guest evidence left by an earlier run
+        if: github.event_name != 'pull_request'
+        run: rm -rf target/arch-kernel/release-push target/arch-kernel/dispatch
+
       - name: Ensure all workflow actions are immutable SHA-pinned
         run: python3 scripts/test-workflow-action-pins.py
 
@@ -122,6 +129,14 @@ jobs:
         env:
           FLOWERLY_REQUIRE_AB_TOOLS: "1"
         run: cargo test -p distro-builder --features fault-injection --locked
+
+      - name: Frozen Arch package manifest is canonical and matches packages.base (#49)
+        run: cargo run -q -p distro-builder --locked -- manifest check distro/base-image/arch/inputs.manifest.json
+
+      # Test images only (ADR-0023 G5): the drill migration that makes the
+      # real downgrade drill possible must keep working behind its feature.
+      - name: G5 schema drill feature (test images only)
+        run: cargo test -p flowerly-core --lib --features g5-schema-drill --locked schema_drill
 
       - name: Release build
         run: just build
@@ -241,6 +256,12 @@ jobs:
           FLOWERLY_TEST_REF: ${{ github.ref_name }}
           FLOWERLY_TEST_SHA: ${{ github.sha }}
           FLOWERLY_TEST_SLUG: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'release-push' }}
+          # Persistent package and Cargo cache (#285), for protected release
+          # pushes only. Other refs use a disposable cache inside their VM.
+          FLOWERLY_VM_BUILD_CACHE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/') && '1' || '0' }}
+          # Use the measured shared-runner profile documented for #184.
+          ARCH_VM_CPUS: "4"
+          ARCH_VM_MEMORY_MB: "6144"
         run: bash ./scripts/arch-kernel-vm-test.sh
 
       - name: Preserve exact-SHA Arch guest and failed kernel acceptance evidence
@@ -348,6 +369,8 @@ jobs:
       - name: Generation A/B guest identity and opt-in health-gate installation
         run: |
           python3 ./scripts/test-generation-ab-guest.py
+          python3 ./scripts/test-generation-gate-d-drill.py
+          python3 ./scripts/test-generation-gate-d-kvm-acceptance.py
           python3 ./scripts/test-schema-compat.py --self-test
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
@@ -370,6 +393,8 @@ jobs:
           bash -n ./scripts/lib/arch-vm-disk.sh
           bash -n ./scripts/arch-vm-guest-disk-preflight.sh
           bash -n ./scripts/test-arch-vm-disk.sh
+          bash -n ./scripts/lib/arch-vm-build-cache.sh
+          bash -n ./scripts/test-arch-vm-build-cache.sh
           bash -n ./testbed/evolution-world/arch-kernel/guest-verify.sh
           bash -n ./scripts/arch-pty-cgroup-acceptance.sh
           bash -n ./scripts/remote-provider-arch-kvm-acceptance.sh
@@ -379,6 +404,9 @@ jobs:
       - name: Arch VM sparse disk growth and guest preflight regression
         run: bash ./scripts/test-arch-vm-disk.sh
 
+      - name: Arch VM persistent build cache states and guest attach, offline (#285)
+        run: bash ./scripts/test-arch-vm-build-cache.sh
+
       - name: Arch VM failure classification regression (#184)
         run: python3 ./scripts/test-arch-vm-failure-classify.py
 
@@ -387,6 +415,9 @@ jobs:
 
       - name: Arch image signature verification with real GnuPG on synthetic keys, offline (#263)
         run: python3 ./scripts/test-arch-image-verify.py
+
+      - name: Frozen Arch snapshot acquisition, trust policy and refusals with synthetic keys, offline (#49)
+        run: python3 ./scripts/test-freeze-arch-snapshot.py
 
       - name: Markdown lint
         uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0

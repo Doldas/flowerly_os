@@ -1,0 +1,10 @@
+{
+  "manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+  "identity_input_manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+  "identity_names_this_manifest": true,
+  "kernel_package_version": "7.2.14.arch1-1",
+  "kernel_release": "7.2.14-arch1-1",
+  "frozen_vmlinuz_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+  "staged_kernel_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+  "staged_kernel_is_the_frozen_one": true
+}

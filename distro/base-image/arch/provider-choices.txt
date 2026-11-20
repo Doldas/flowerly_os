@@ -1,0 +1,8 @@
+# Virtual dependencies with several providers in the snapshot, decided once and
+# reviewed like code (ADR-0020). Resolution refuses to guess.
+# Arch's default firewall provider; its nft backend is what `iptables` ships.
+libxtables.so = iptables
+# `linux` needs some `initramfs`. mkosi builds the initramfs itself and runs
+# pacman with --assume-installed initramfs, so no provider is installed ("-").
+# The real rootfs package list confirms it: no mkinitcpio, dracut or booster.
+initramfs = -
