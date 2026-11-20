@@ -208,6 +208,7 @@ instead of an abstract future distribution.
 
 ## 0.0.5 — Generations
 
+- **Status:** released as `v0.0.5` (2026-11-20); milestone closed. See the plan's release record.
 - **Implementation and acceptance gates:** [0.0.5 Generations plan](release-0.0.5-generations-plan.md) — real snapshot rollback (#48), pinned Arch acquisition (#49), bootable Flowerly fixture (#51), then durable activation (#9). No metadata-only rollback claims.
 
 - **Goal:** a reproducible model for system state and rollback.
