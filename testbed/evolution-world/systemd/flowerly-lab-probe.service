@@ -1,0 +1,29 @@
+[Unit]
+Description=Flowerly Evolution Lab guest probe (A/B test image only, ADR-0024 D2)
+ConditionPathExists=/usr/lib/flowerly/generation-ab-test-profile
+# Ordering only: an unhealthy boot must still report its failed health gate.
+After=flowerly-generation-health.service flowerlyd.service flowerly-slot-broker.socket
+After=flowerly-g5-drill.service
+RequiresMountsFor=/var/lib/flowerly /efi
+# The report goes to the console: agetty flushes and reconfigures ttyS0 when
+# it opens it, so the serial login waits until the probe has finished.
+Before=getty.target serial-getty@ttyS0.service
+# The host boots with -no-reboot and waits for QEMU to exit after the report.
+# A probe that fails still powers off rather than waiting for the deadline.
+SuccessAction=poweroff
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Reads the booted root, the ESP and systemd state as root; runs agenticctl
+# and evolutiond as flowerly-lab (runuser).
+ExecStart=/usr/bin/python3 -I /usr/lib/flowerly/lab-probe.py
+StandardOutput=journal
+StandardError=journal+console
+TimeoutStartSec=600
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target

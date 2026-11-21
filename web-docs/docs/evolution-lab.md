@@ -6,11 +6,12 @@ the guest reports against what was built, and records the candidate as
 ADR-0024 and the work plan is the 0.0.6 Evolution Lab plan, both proposed
 in #415.
 
-**Status (0.0.6, #410):** the `evolutiond lab` commands, plan, report and
-result formats, checks and promotion policy are implemented and covered by
-unit tests and fake-QEMU tests. The guest probe (#411), the candidate build
-and `just vm-test` (#412), and real KVM acceptance (#413) are separate steps.
-No KVM run has used this code yet.
+**Status (0.0.6, #410, #411):** the `evolutiond lab` commands, plan, report
+and result formats, checks and promotion policy are implemented and covered by
+unit tests and fake-QEMU tests. The test-profile [guest probe](#the-guest-probe)
+is implemented and tested offline; a shared console fixture ties its output to
+the host parser. The candidate build and `just vm-test` (#412) and real KVM
+acceptance (#413) are separate steps. No KVM run has used this code yet.
 
 ## What the lab is and is not
 
@@ -142,8 +143,58 @@ that Generation's root identity (`generation.identity`).
 | --- | --- |
 | `health_gate` | `passed`, `failed` or `absent` |
 | `flowerlyd_active`, `status_ok` | `flowerlyd` is active and its status answers |
-| `admin_roundtrip` | as a member of `flowerly-admin`, the probe created a Generation through `agenticctl` and read the same record back |
+| `admin_roundtrip` | as a member of `flowerly-admin`, the probe created a Generation through `agenticctl`, rejected it as Admin (audited) and read the rejection back |
 | `evolutiond_self_test` | `evolutiond --self-test` succeeded |
+
+## The guest probe
+
+The probe is `testbed/evolution-world/lab-probe.py`, run once per boot by
+`flowerly-lab-probe.service`. It exists only in a lab candidate image:
+`scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile` adds it to a
+rootfs that `prepare-generation-ab-rootfs.sh` already made an A/B test image,
+and refuses any other rootfs, a symlinked destination or an existing
+installation. The candidate build (#412) installs it in **both** slots: a
+rollback boot falls back to slot A, which must report too.
+
+Facts come from the booted system, not from what the baked identity claims:
+
+| Fact | Where the probe reads it |
+| --- | --- |
+| `slot`, `root_partuuid` | the partition mounted at `/`: its `PARTNAME`, and the one `/dev/disk/by-partuuid` link to it |
+| `identity_sha256`, `build_id` | `/usr/lib/flowerly/generation-root.json` (at most 4 KiB) |
+| `kernel_release`, `vmlinuz_sha256` | the running kernel's release, and the booted slot's ESP copy `/efi/flowerly/<slot>/vmlinuz` |
+| `packages_sha256`, `package_count` | the pacman database; any malformed entry makes both `null` |
+| `binaries` | `agenticctl`, `evolutiond`, `flowerlyd`, `flowerly-slot-broker` |
+| `boot_phases_ms` | systemd's boot timestamps; `kernel` runs to the initrd (or to userspace without one), `userspace` to the end of startup (or to now) |
+| `failed_units` | `systemctl list-units --state=failed`; `(unknown)` when systemd cannot answer, so an unknown state never reads as none failed |
+
+- `health_gate` is `passed` only when `flowerly-generation-health.service`
+  ran on this boot and exited 0, and `absent` when the unit does not exist.
+- `flowerlyd_active` is `systemctl is-active flowerlyd.service`; `status_ok`
+  is `agenticctl status`.
+- `admin_roundtrip` runs as the test-only account `flowerly-lab`, a member of
+  `flowerly-admin` baked in by sysusers, never the `flowerly` service account:
+  `agenticctl generation create`, then `generation reject` with a reason
+  (Admin, audited), then `generation inspect` must show the same id
+  `REJECTED`. It goes through `flowerlyd`'s authenticated socket, never the
+  database, and the Generation exists only in the guest's test database.
+- `evolutiond_self_test` is `evolutiond --self-test`, also as `flowerly-lab`.
+
+Every command has a 60-second deadline. The unit runs as root with
+`PrivateNetwork=yes`. It is ordered after the health gate and `flowerlyd` but
+does not require them, because an unhealthy boot must still report. It powers
+the guest off through both `SuccessAction` and `FailureAction`, so QEMU exits
+even if the probe crashes; a crash before the report reads as no report.
+
+`lab-probe.py --offline ROOT` prints the file facts (`identity_sha256`,
+`build_id`, `packages_sha256`, `package_count`, `binaries`) of an unbooted
+root tree, so the candidate build writes its plan with the probe's own
+hashing.
+
+`scripts/test-lab-probe.py` tests the probe offline against fake trees and a
+fake systemd. It also proves that the probe emits exactly
+`testbed/evolution-world/fixtures/lab-report.console`, which the host's own
+tests parse and evaluate to every check passing.
 
 ## Checks and the decision
 

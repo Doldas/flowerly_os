@@ -68,7 +68,8 @@ pub struct Observations {
     /// `agenticctl status` answered.
     pub status_ok: Option<bool>,
     /// As a member of `flowerly-admin`, the probe created a Generation
-    /// through `agenticctl` and read the same record back.
+    /// through `agenticctl`, rejected it as Admin (audited) and read the
+    /// rejection back.
     pub admin_roundtrip: Option<bool>,
     pub evolutiond_self_test: Option<bool>,
 }
@@ -239,6 +240,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// What the guest probe (`testbed/evolution-world/lab-probe.py`) emits
+    /// for its test fixture; `scripts/test-lab-probe.py` proves it still does.
+    pub(crate) const PROBE_CONSOLE: &str =
+        include_str!("../../../../testbed/evolution-world/fixtures/lab-report.console");
+
     pub(crate) fn console(report: &ProbeReport) -> String {
         let body = serde_json::to_vec(report).unwrap();
         let mut text = String::from("[    3.1] systemd[1]: Started probe.\r\n");
@@ -256,6 +262,28 @@ pub(crate) mod tests {
         let received = parse(&console(&report)).unwrap().unwrap();
         assert_eq!(received.report, report);
         assert_eq!(received.sha256, sha256_hex(&received.body));
+    }
+
+    #[test]
+    fn the_guest_probes_report_is_read() {
+        // As the serial console delivers it: terminal noise and CRLF.
+        let serial: String = PROBE_CONSOLE
+            .lines()
+            .map(|line| format!("\x1b[0m{line}\r\n"))
+            .collect();
+        let received = parse(&serial).unwrap().unwrap();
+        assert_eq!(received, parse(PROBE_CONSOLE).unwrap().unwrap());
+        let (facts, seen) = (&received.report.facts, &received.report.observations);
+        assert_eq!(facts.slot.as_deref(), Some("root-b"));
+        assert_eq!(facts.build_id.as_deref(), Some("lab-b"));
+        assert_eq!(facts.package_count, Some(3));
+        assert_eq!(facts.binaries.len(), 4);
+        assert_eq!(
+            facts.boot_phases_ms.keys().collect::<Vec<_>>(),
+            ["firmware", "initrd", "kernel", "loader", "userspace"]
+        );
+        assert_eq!(seen.health_gate.as_deref(), Some("passed"));
+        assert_eq!(seen.admin_roundtrip, Some(true));
     }
 
     #[test]

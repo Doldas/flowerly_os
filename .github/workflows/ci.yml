@@ -375,6 +375,11 @@ jobs:
           bash -n ./scripts/prepare-generation-ab-rootfs.sh
           bash -n ./distro/overlay/usr/lib/flowerly/generation-health-gate.sh
 
+      - name: Evolution Lab guest probe and its test-only installation
+        run: |
+          python3 ./scripts/test-lab-probe.py
+          bash -n ./scripts/prepare-lab-probe-rootfs.sh
+
       - name: Provision real GPT FAT and ext4 tools for Generation A/B tests
         run: bash ./scripts/prepare-ab-disk-ci-tools.sh
 

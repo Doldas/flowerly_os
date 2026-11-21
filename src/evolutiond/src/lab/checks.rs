@@ -297,6 +297,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_guest_probes_report_passes_a_plan_that_expects_it() {
+        let received = crate::lab::report::parse(crate::lab::report::tests::PROBE_CONSOLE)
+            .unwrap()
+            .unwrap();
+        let facts = &received.report.facts;
+        let mut value = crate::lab::plan::tests::sample_value();
+        let slot = &mut value["expect"]["root-b"];
+        slot["partuuid"] = serde_json::json!(facts.root_partuuid);
+        slot["identity_sha256"] = serde_json::json!(facts.identity_sha256);
+        slot["build_id"] = serde_json::json!(facts.build_id);
+        slot["kernel_release"] = serde_json::json!(facts.kernel_release);
+        slot["vmlinuz_sha256"] = serde_json::json!(facts.vmlinuz_sha256);
+        slot["packages_sha256"] = serde_json::json!(facts.packages_sha256);
+        slot["binaries"] = serde_json::json!(facts.binaries);
+        let plan = Plan::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let results = evaluate(&plan, &plan.boots[0], &clean(), Some(&received.report));
+        assert_eq!(results.len(), 8);
+        assert_eq!(failed(&results), vec![]);
+    }
+
+    #[test]
     fn no_report_or_an_unverified_kvm_process_fails_everything() {
         let plan = plan();
         let mut stopped = clean();
