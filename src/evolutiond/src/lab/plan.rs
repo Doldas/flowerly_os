@@ -539,6 +539,20 @@ pub(crate) mod tests {
     const PREPARED_INITIAL: &str =
         include_str!("../../../../testbed/evolution-world/fixtures/lab-plan-initial.json");
 
+    /// What the same tool writes for an upstream lane candidate: the package
+    /// set is recorded from the guest's report, never claimed.
+    const PREPARED_UPSTREAM: &str =
+        include_str!("../../../../testbed/evolution-world/fixtures/lab-plan-upstream.json");
+
+    #[test]
+    fn the_candidate_tools_upstream_plan_is_valid() {
+        let plan = Plan::parse(PREPARED_UPSTREAM.as_bytes()).unwrap();
+        assert_eq!(plan.lane, ExperimentLane::Upstream);
+        assert!(plan.checks.contains(&Check::Packages));
+        assert_eq!(plan.expect.len(), 2);
+        assert!(plan.expect.values().all(|e| e.packages_sha256.is_none()));
+    }
+
     #[test]
     fn the_candidate_tools_initial_plan_is_valid() {
         let plan = Plan::parse(PREPARED_INITIAL.as_bytes()).unwrap();

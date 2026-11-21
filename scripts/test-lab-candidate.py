@@ -12,6 +12,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "scripts/lab-candidate.py"
@@ -25,6 +26,10 @@ BAKER = ROOT / "scripts/prepare-generation-ab-rootfs.sh"
 # FLOWERLY_REGENERATE_LAB_FIXTURE=1 after a deliberate plan change.
 PLAN_FIXTURE = ROOT / "testbed/evolution-world/fixtures/lab-plan-rollback.json"
 INITIAL_FIXTURE = ROOT / "testbed/evolution-world/fixtures/lab-plan-initial.json"
+UPSTREAM_FIXTURE = ROOT / "testbed/evolution-world/fixtures/lab-plan-upstream.json"
+INPUTS = ROOT / "scripts/build-lab-inputs.sh"
+PINNED_INPUTS = ROOT / "scripts/build-arch-rootfs-pinned-container.sh"
+WORKFLOW = ROOT / ".github/workflows/lab-vm-test.yml"
 
 
 def load(name, path):
@@ -43,6 +48,9 @@ UUID = {
     "root-b": "0f0e0d0c-0b0a-4908-8706-050403020100",
 }
 RELEASE = "6.17.1-arch1-1"
+# What lab-probe.py --package-list prints for an upstream lane's rootfs.
+RESOLVED = "base 3-2\nlinux 6.17.1.arch1-1\nsystemd 258.1-1\n"
+RESOLVED_SHA = hashlib.sha256(RESOLVED.encode()).hexdigest()
 
 
 def sha(data):
@@ -93,6 +101,20 @@ def make_build(base, identities=None, facts=None):
     write(out / "ab.img", b"\0" * 4096 + b"disk")
     write(out / "ab.img.manifest.json", "{}")
     write(out / "slot-tool", "#!/bin/false\n")
+    return out
+
+
+def make_upstream_build(base, facts=None):
+    """An upstream lane build: identities, probe facts and resolved-packages.txt
+    all name the one package list the live mirror resolved."""
+    identities = {
+        slot: identity(slot, input_manifest_sha256=RESOLVED_SHA) for slot in lab.SLOTS
+    }
+    baked = {slot: {"packages_sha256": RESOLVED_SHA} for slot in lab.SLOTS}
+    for slot, changes in (facts or {}).items():
+        baked[slot].update(changes)
+    out = make_build(base, identities=identities, facts=baked)
+    write(out / lab.RESOLVED, RESOLVED)
     return out
 
 
@@ -174,6 +196,7 @@ class Runner:
 
 # The fixture's build: fixed facts, so the plan is the same on every host.
 FIXTURE_CANDIDATE = {
+    "lane": "reproducibility",
     "slots": {
         slot: {
             "partuuid": UUID[slot],
@@ -189,7 +212,7 @@ FIXTURE_CANDIDATE = {
             },
         }
         for slot, letter in lab.SLOTS.items()
-    }
+    },
 }
 
 
@@ -221,6 +244,38 @@ def fixture_plan():
         request.tries,
         "/lab/run/candidate.img",
         "a" * 64,
+        {"root-b": "gen-candidate", "root-a": "gen-baseline"},
+        request,
+    )
+    return json.dumps(value, sort_keys=True, indent=2) + "\n"
+
+
+def fixture_upstream_plan():
+    request = lab.parser().parse_args(
+        [
+            "prepare",
+            "/lab/build",
+            "/lab/run",
+            "--candidate-generation",
+            "gen-candidate",
+            "--baseline-generation",
+            "gen-baseline",
+            "--firmware-code",
+            "/fw/OVMF_CODE.fd",
+            "--firmware-vars",
+            "/fw/OVMF_VARS.fd",
+            "--evolutiond",
+            "/lab/bin/evolutiond",
+            "--qemu",
+            "/usr/bin/qemu-system-x86_64",
+        ]
+    )
+    value = lab.plan(
+        {**FIXTURE_CANDIDATE, "lane": "upstream"},
+        request.scenario,
+        request.tries,
+        "/lab/run/candidate.img",
+        "c" * 64,
         {"root-b": "gen-candidate", "root-a": "gen-baseline"},
         request,
     )
@@ -264,6 +319,8 @@ class Describe(unittest.TestCase):
             written = json.loads((out / "candidate.json").read_text())
             self.assertEqual(written, candidate)
             self.assertEqual(candidate["schema"], lab.CANDIDATE_SCHEMA)
+            self.assertEqual(candidate["lane"], "reproducibility")
+            self.assertNotIn("resolved_packages", candidate["files"])
             self.assertEqual(
                 (candidate["active"], candidate["staged"]), ("root-a", "root-b")
             )
@@ -393,6 +450,11 @@ class Describe(unittest.TestCase):
                 {"schema": "flowerly-lab-candidate/v0"},
                 {"active": "root-b", "staged": "root-a"},
                 {"slots": {"root-b": candidate["slots"]["root-b"]}},
+                {"lane": None},
+                {"lane": "nightly"},
+                # An upstream candidate always carries its resolved list.
+                {"lane": "upstream"},
+                {"files": None},
             ):
                 with self.subTest(change):
                     write(out / "candidate.json", json.dumps({**candidate, **change}))
@@ -401,6 +463,69 @@ class Describe(unittest.TestCase):
             write(out / "candidate.json", json.dumps(candidate))
             (out / "slot-tool").unlink()
             with self.assertRaisesRegex(lab.Refused, "slot-tool"):
+                lab.load_candidate(out)
+
+
+class Lanes(unittest.TestCase):
+    def test_an_upstream_candidate_binds_the_list_it_resolved(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = make_upstream_build(d)
+            candidate = lab.describe(out, COMMIT, RESOLVED_SHA, "upstream")
+            self.assertEqual(candidate["lane"], "upstream")
+            self.assertEqual(candidate["files"]["resolved_packages"], lab.RESOLVED)
+            self.assertEqual(candidate["input_manifest_sha256"], RESOLVED_SHA)
+            for built in candidate["slots"].values():
+                self.assertEqual(built["packages_sha256"], RESOLVED_SHA)
+            self.assertEqual(lab.load_candidate(out), candidate)
+
+    def test_an_upstream_candidate_refuses_another_list(self):
+        def missing(out):
+            (out / lab.RESOLVED).unlink()
+
+        def symlinked(out):
+            (out / lab.RESOLVED).rename(out / "elsewhere.txt")
+            (out / lab.RESOLVED).symlink_to(out / "elsewhere.txt")
+
+        def other_list(out):
+            write(out / lab.RESOLVED, RESOLVED + "zstd 1.5.7-2\n")
+
+        for mutate in (missing, symlinked, other_list):
+            with self.subTest(mutate.__name__), tempfile.TemporaryDirectory() as d:
+                out = make_upstream_build(d)
+                mutate(out)
+                with self.assertRaises(lab.Refused):
+                    lab.describe(out, COMMIT, RESOLVED_SHA, "upstream")
+                self.assertFalse((out / "candidate.json").exists())
+        with tempfile.TemporaryDirectory() as d:
+            # A slot whose probe will report another package set.
+            out = make_upstream_build(
+                d, facts={"root-b": {"packages_sha256": "3" * 64}}
+            )
+            with self.assertRaisesRegex(lab.Refused, "root-b: its package set"):
+                lab.describe(out, COMMIT, RESOLVED_SHA, "upstream")
+        with tempfile.TemporaryDirectory() as d:
+            out = make_upstream_build(d)
+            with mock.patch.object(lab, "MAX_RESOLVED", len(RESOLVED) - 1):
+                with self.assertRaisesRegex(lab.Refused, "larger than"):
+                    lab.describe(out, COMMIT, RESOLVED_SHA, "upstream")
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(lab.Refused, "lane"):
+                lab.describe(make_build(d), COMMIT, MANIFEST, "nightly")
+
+    def test_load_candidate_refuses_a_list_that_changed_or_does_not_belong(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = make_upstream_build(d)
+            lab.describe(out, COMMIT, RESOLVED_SHA, "upstream")
+            write(out / lab.RESOLVED, RESOLVED + "zstd 1.5.7-2\n")
+            with self.assertRaisesRegex(lab.Refused, "not the list"):
+                lab.load_candidate(out)
+        with tempfile.TemporaryDirectory() as d:
+            out = make_build(d)
+            candidate = lab.describe(out, COMMIT, MANIFEST)
+            write(out / lab.RESOLVED, RESOLVED)
+            candidate["files"]["resolved_packages"] = lab.RESOLVED
+            write(out / "candidate.json", json.dumps(candidate))
+            with self.assertRaisesRegex(lab.Refused, "only an upstream"):
                 lab.load_candidate(out)
 
 
@@ -463,6 +588,7 @@ class Prepare(unittest.TestCase):
                 [{"label": "candidate", "subject": "candidate", "slot": "root-b"}],
             )
             self.assertNotIn("hypothesis", plan)
+            self.assertFalse((run / lab.RESOLVED).exists())
 
     def test_the_copy_first_boots_as_slot_a_before_b_is_armed(self):
         # The guest's witness creates the persistent data marker only on the
@@ -564,6 +690,22 @@ class Prepare(unittest.TestCase):
                 plan["limits"], {"boot_seconds": 600, "shutdown_seconds": 120}
             )
 
+    def test_an_upstream_run_records_the_package_set_without_claiming_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_upstream_build(d)
+            lab.describe(Path(d) / "build", COMMIT, RESOLVED_SHA, "upstream")
+            runner = Runner()
+            path = lab.prepare(options(d, "--scenario", "rollback"), run=runner)
+            plan = json.loads(path.read_text())
+            (initial,) = runner.initial_plans
+            for written in (plan, initial):
+                self.assertEqual(written["lane"], "upstream")
+                self.assertIn("packages", written["checks"])
+                for slot, expected in written["expect"].items():
+                    self.assertNotIn("packages_sha256", expected, slot)
+            # The run keeps the list its unclaimed package set was resolved as.
+            self.assertEqual((path.parent / lab.RESOLVED).read_text(), RESOLVED)
+
     def test_refuses_to_reuse_a_run_directory(self):
         for kind in ("directory", "symlink"):
             with self.subTest(kind), tempfile.TemporaryDirectory() as d:
@@ -646,6 +788,13 @@ class HostContract(unittest.TestCase):
         self.assertEqual(PLAN_FIXTURE.read_text(), text)
         self.assertIn("lab-plan-rollback.json", HOST_PLAN.read_text())
 
+    def test_the_hosts_upstream_fixture_is_what_prepare_writes(self):
+        text = fixture_upstream_plan()
+        if os.environ.get("FLOWERLY_REGENERATE_LAB_FIXTURE") == "1":
+            UPSTREAM_FIXTURE.write_text(text)
+        self.assertEqual(UPSTREAM_FIXTURE.read_text(), text)
+        self.assertIn("lab-plan-upstream.json", HOST_PLAN.read_text())
+
     def test_the_hosts_initial_fixture_is_what_prepare_boots_first(self):
         text = fixture_initial_plan()
         if os.environ.get("FLOWERLY_REGENERATE_LAB_FIXTURE") == "1":
@@ -717,10 +866,12 @@ class Command(unittest.TestCase):
             self.assertEqual(status, 2)
 
     def test_the_scripts_parse_and_check_their_usage_first(self):
-        for script in (BUILD, VM_TEST):
+        for script in (BUILD, VM_TEST, INPUTS):
             subprocess.run(["bash", "-n", str(script)], check=True)
         # Usage is checked before /dev/kvm, the build or anything else.
         for argv in (
+            ["--lane", "nightly"],
+            ["--lane"],
             ["--scenario", "worse"],
             ["--tries", "0"],
             ["--tries", "10"],
@@ -744,6 +895,66 @@ class Command(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 1)
         self.assertIn("usage:", done.stderr)
+        done = subprocess.run(
+            ["bash", str(BUILD), "a", "b", "c"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "FLOWERLY_LAB_LANE": "nightly"},
+        )
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("unknown lane", done.stderr)
+
+    def test_the_inputs_build_refuses_before_it_reaches_the_network(self):
+        with tempfile.TemporaryDirectory() as d:
+            for argv, status, message in (
+                ([], 2, "usage:"),
+                (["upstream"], 2, "usage:"),
+                (["nightly", str(Path(d) / "new")], 2, "usage:"),
+                (["reproducibility", d], 1, "refusing to reuse"),
+                (["upstream", d], 1, "refusing to reuse"),
+            ):
+                with self.subTest(argv):
+                    done = subprocess.run(
+                        ["bash", str(INPUTS), *argv],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(done.returncode, status, done.stderr)
+                    self.assertIn(message, done.stderr)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_the_reproducibility_inputs_are_the_pinned_build(self):
+        # The same digest-pinned tooling image and the same snapshot; only
+        # the upstream lane differs, and only in its mirror.
+        def pinning(path):
+            text = path.read_text()
+            image = re.search(r"(?s)<<'PY'\n(.*?)\nPY\n", text).group(1)
+            snapshot = re.search(r"python3 -c ('[^\n]*snapshot_url[^\n]*')", text)
+            return image, snapshot.group(1)
+
+        self.assertEqual(pinning(INPUTS), pinning(PINNED_INPUTS))
+        self.assertRegex(INPUTS.read_text(), r'(?m)^UPSTREAM_MIRROR="https://[^"$]+"$')
+
+    def test_the_ci_job_is_opt_in_read_only_and_runs_vm_test(self):
+        text = WORKFLOW.read_text()
+        triggers = re.search(r"(?ms)^on:\n(.*?)^\S", text).group(1)
+        self.assertEqual(re.findall(r"(?m)^  (\S+):", triggers), ["workflow_dispatch"])
+        lanes = re.search(
+            r"(?m)^      lane:\n(?:        .*\n)*?        options:\n"
+            r"((?:          - .*\n)+)",
+            text,
+        )
+        self.assertEqual(tuple(re.findall(r"- (\S+)", lanes.group(1))), lab.LANES)
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        self.assertRegex(text, r"(?m)^    runs-on: flowerly-runner$")
+        self.assertIn("persist-credentials: false", text)
+        self.assertIn('bash ./scripts/vm-test.sh --lane "$LANE"', text)
+        # Dispatch inputs reach the shell only through the environment.
+        for line in text.splitlines():
+            if "${{ inputs." in line:
+                self.assertRegex(line, r"^\s+(name|LANE|SCENARIOS): ", line)
 
     def test_vm_test_hands_prepare_the_tools_of_its_own_run(self):
         self.assertIn(

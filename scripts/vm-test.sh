@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
-# `just vm-test` / `make vm-test` (ADR-0024, #412): build an Evolution Lab
-# candidate from the cached pinned inputs, boot it on this KVM host with
+# `just vm-test` / `make vm-test` (ADR-0024, #412, #414): build an Evolution
+# Lab candidate from the lane's cached inputs, boot it on this KVM host with
 # `evolutiond lab run --record`, and record the result in a private lab
 # flowerlyd. Runs in the foreground as the invoking user; nothing is
 # activated, and the host's own flowerlyd (if any) is never contacted.
 #
-# usage: vm-test.sh [--scenario good|bad|rollback] [--tries N]
+# usage: vm-test.sh [--lane reproducibility|upstream]
+#                   [--scenario good|bad|rollback] [--tries N]
 #   good      B healthy: the run passes and the candidate becomes TESTED
 #   bad       B's entry injects a health failure: the candidate is REJECTED
 #   rollback  as bad, booted once per boot-count try, then the loader must
 #             fall back to A, which reports healthy: REJECTED with a fallback
 #
-# Inputs (no network is used; build missing inputs first):
-#   FLOWERLY_LAB_ROOTFS     pinned rootfs (target/pinned-rootfs/flowerly-rootfs,
-#                           from scripts/build-arch-rootfs-pinned-container.sh)
-#   FLOWERLY_LAB_INITRAMFS  initramfs (target/pinned-rootfs/initramfs.img,
-#                           from scripts/build-arch-initrd.sh)
-#   FLOWERLY_LAB_CANDIDATE  reuse a candidate built at this commit
-#   FLOWERLY_LAB_OUT        new output directory (target/lab/<utc>-<scenario>)
+# Lanes (ADR-0024 D4): reproducibility (the default) builds from the pinned
+# inputs and checks each slot's package set against the committed manifest.
+# upstream builds from inputs resolved from today's Arch mirror, records the
+# package set it resolved (candidate/resolved-packages.txt) and claims none:
+# an upstream run is never reproducibility evidence.
+#
+# Inputs (no network is used; build missing inputs first with
+# scripts/build-lab-inputs.sh LANE DIR, which does use the network):
+#   FLOWERLY_LAB_ROOTFS     rootfs (DIR/flowerly-rootfs; DIR is
+#                           target/pinned-rootfs or target/upstream-rootfs)
+#   FLOWERLY_LAB_INITRAMFS  initramfs (DIR/initramfs.img)
+#   FLOWERLY_LAB_CANDIDATE  reuse a candidate built at this commit in this lane
+#   FLOWERLY_LAB_OUT        new output directory
+#                           (target/lab/<utc>-<lane>-<scenario>)
 #   FLOWERLY_LAB_OVMF_CODE, FLOWERLY_LAB_OVMF_VARS  OVMF firmware and vars
 #   FLOWERLY_LAB_QEMU       QEMU binary (qemu-system-x86_64 from PATH)
 #
@@ -31,15 +39,20 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { echo "vm-test: $*" >&2; exit 1; }
-usage() { echo "usage: $0 [--scenario good|bad|rollback] [--tries N]" >&2; exit 2; }
-SCENARIO=good; TRIES=2
+usage() {
+    echo "usage: $0 [--lane reproducibility|upstream] [--scenario good|bad|rollback] [--tries N]" >&2
+    exit 2
+}
+LANE=reproducibility; SCENARIO=good; TRIES=2
 while (( $# )); do
     case "$1" in
+        --lane) (( $# >= 2 )) || usage; LANE="$2"; shift 2 ;;
         --scenario) (( $# >= 2 )) || usage; SCENARIO="$2"; shift 2 ;;
         --tries) (( $# >= 2 )) || usage; TRIES="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
+case "$LANE" in reproducibility) INPUTS=target/pinned-rootfs ;; upstream) INPUTS=target/upstream-rootfs ;; *) usage ;; esac
 case "$SCENARIO" in good) WANT=TESTED ;; bad|rollback) WANT=REJECTED ;; *) usage ;; esac
 [[ "$TRIES" =~ ^[1-9]$ ]] || usage
 
@@ -58,10 +71,10 @@ VARS="$(firmware FLOWERLY_LAB_OVMF_VARS /usr/share/edk2/x64/OVMF_VARS.4m.fd \
     /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/edk2/ovmf/OVMF_VARS.fd)"
 
 COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
-OUT="${FLOWERLY_LAB_OUT:-$ROOT/target/lab/$(date -u +%Y%m%dT%H%M%SZ)-$SCENARIO}"
+OUT="${FLOWERLY_LAB_OUT:-$ROOT/target/lab/$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$SCENARIO}"
 [[ ! -e "$OUT" ]] || fail "refusing to reuse $OUT"
 mkdir -p "$(dirname "$OUT")"; mkdir -m 0700 "$OUT"; OUT="$(realpath "$OUT")"
-echo "vm-test: $SCENARIO at $COMMIT in $OUT"
+echo "vm-test: $SCENARIO ($LANE lane) at $COMMIT in $OUT"
 
 cargo build --release --locked -p flowerlyd -p agenticctl -p evolutiond -p distro-builder
 BIN="$ROOT/target/release"
@@ -75,17 +88,21 @@ if [[ -n "${FLOWERLY_LAB_CANDIDATE:-}" ]]; then
     CANDIDATE="$(realpath "$FLOWERLY_LAB_CANDIDATE")"
     [[ "$(json "$CANDIDATE/candidate.json" source_commit)" == "$COMMIT" ]] ||
         fail "$CANDIDATE was not built at $COMMIT"
+    [[ "$(json "$CANDIDATE/candidate.json" lane)" == "$LANE" ]] ||
+        fail "$CANDIDATE was not built in the $LANE lane"
 else
-    ROOTFS="${FLOWERLY_LAB_ROOTFS:-$ROOT/target/pinned-rootfs/flowerly-rootfs}"
-    INITRAMFS="${FLOWERLY_LAB_INITRAMFS:-$ROOT/target/pinned-rootfs/initramfs.img}"
-    [[ -d "$ROOTFS" ]] || fail "missing pinned rootfs $ROOTFS
-  build it: bash scripts/build-arch-rootfs-pinned-container.sh target/pinned-rootfs
-  or set FLOWERLY_LAB_ROOTFS"
-    [[ -f "$INITRAMFS" ]] || fail "missing initramfs $INITRAMFS
-  build it with scripts/build-arch-initrd.sh (see web-docs/docs/build.md)
-  or set FLOWERLY_LAB_INITRAMFS"
+    ROOTFS="${FLOWERLY_LAB_ROOTFS:-$ROOT/$INPUTS/flowerly-rootfs}"
+    INITRAMFS="${FLOWERLY_LAB_INITRAMFS:-$ROOT/$INPUTS/initramfs.img}"
+    [[ -d "$ROOTFS" && -f "$INITRAMFS" ]] || fail "missing $LANE inputs $ROOTFS or $INITRAMFS
+  build them (network): bash scripts/build-lab-inputs.sh $LANE $INPUTS
+  or set FLOWERLY_LAB_ROOTFS and FLOWERLY_LAB_INITRAMFS"
     CANDIDATE="$OUT/candidate"
-    nice bash "$ROOT/scripts/build-lab-candidate.sh" "$ROOTFS" "$INITRAMFS" "$CANDIDATE"
+    FLOWERLY_LAB_LANE="$LANE" nice bash "$ROOT/scripts/build-lab-candidate.sh" \
+        "$ROOTFS" "$INITRAMFS" "$CANDIDATE"
+fi
+if [[ "$LANE" == upstream ]]; then
+    echo "vm-test: upstream: resolved package set $(json "$CANDIDATE/candidate.json" input_manifest_sha256)" \
+        "($CANDIDATE/resolved-packages.txt), recorded, not claimed; not reproducibility evidence"
 fi
 
 # A private flowerlyd whose only Admin is the invoking user: its socket is
@@ -141,4 +158,4 @@ print("yes" if f and f["booted"] and f["healthy"] else "no")' "$OUT/run/result/r
     echo "vm-test: rollback: healthy fallback to root-a observed: $FALLBACK"
     [[ "$FALLBACK" == yes ]] || exit 3
 fi
-echo "vm-test: PASS ($SCENARIO) evidence $(cut -d' ' -f1 "$OUT/run/result/result.sha256")"
+echo "vm-test: PASS ($SCENARIO, $LANE lane) evidence $(cut -d' ' -f1 "$OUT/run/result/result.sha256")"
