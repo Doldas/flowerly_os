@@ -366,9 +366,14 @@ name = "evolutiond"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "flowerly-core",
+ "libc",
+ "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "tokio",
 ]
 

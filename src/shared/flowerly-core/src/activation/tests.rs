@@ -76,6 +76,7 @@ fn rig() -> Rig {
             &generation.id,
             EvidenceOutcome::Passed,
             &hash('9'),
+            None,
             "kvm",
         )
         .unwrap();

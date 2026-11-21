@@ -5,6 +5,20 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Complete Experiment records (#409, ADR-0024 D5): `generation.evidence` takes
+  an optional `experiment` object (hypothesis, baseline, test plan, metrics,
+  content-addressed artifacts with `produced` edges); `generation.test` and
+  `generation.reject` set the Experiment's decision, and a rejection may name
+  the Experiment. New Admin read commands `experiment.inspect` and
+  `experiment.list` (`agenticctl experiment inspect|list`). No migration.
+- `evolutiond lab run|verify|record` (#410, ADR-0024): boots a candidate disk
+  under QEMU (KVM, or TCG for development only) in the foreground as the
+  invoking user, with `-net none`, a private OVMF variable store and the Gate D
+  process check; reads the probe report from the serial console; evaluates the
+  planned checks host-side; writes a canonical, re-verifiable result; and
+  records it as Experiment evidence followed by `generation.test` or
+  `generation.reject`. Fail closed; it never activates. No real KVM run yet.
+
 ## 0.0.5 — Generations (2026-11-20)
 
 - Generations released: A/B root slots, boot counting, witness ledger, root

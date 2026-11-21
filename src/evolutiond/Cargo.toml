@@ -5,11 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Separately privileged evolution and KVM boundary (not yet provisioned)"
+description = "Separately privileged evolution and KVM boundary, and the foreground Evolution Lab"
 
 [dependencies]
 flowerly-core.workspace = true
 anyhow.workspace = true
+base64 = "0.23"
 clap.workspace = true
+libc.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
