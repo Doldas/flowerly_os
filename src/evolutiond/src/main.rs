@@ -1,10 +1,15 @@
+mod benchmarks;
 #[allow(dead_code)]
 mod kvm;
+mod lab;
+mod promotion;
+mod vm;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
 use flowerly_core::{coded_error_envelope, init_tracing, ok_envelope, run_service, ServiceConfig};
 
@@ -16,11 +21,24 @@ struct Cli {
 
     #[arg(long)]
     self_test: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// The foreground Evolution Lab (ADR-0024): boot, verify and record a
+    /// candidate Generation as the invoking user.
+    Lab(lab::LabArgs),
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Lab(args)) = cli.command {
+        std::process::exit(lab::main(args).await);
+    }
     let config = match cli.config {
         Some(path) => ServiceConfig::load(&path).context("loading config")?,
         None => ServiceConfig::for_service("evolutiond"),
