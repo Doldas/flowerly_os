@@ -232,6 +232,11 @@ instead of an abstract future distribution.
 - **Entry criteria:** generations (0.0.5) and a buildable image.
 - **Exit criteria:** `just vm-test` builds a candidate, boots it, verifies a
   service, exits, and records success or failure.
+- **Plan:** [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md)
+  and [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) (proposed):
+  the lab runs as a foreground `evolutiond lab` with the operator's
+  `/dev/kvm` access, promotes only to `TESTED` or `REJECTED`, and proves a
+  good candidate, a bad candidate and rollback after a bad candidate.
 
 ## 0.0.7 — Goal Runtime
 
