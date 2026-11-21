@@ -5,6 +5,18 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+## 0.0.5 — Generations (2026-11-20)
+
+- Generations released: A/B root slots, boot counting, witness ledger, root
+  slot broker, activation history, `flowerlyd` and `agenticctl`. Gate D (G1–G5)
+  passed with real OVMF/KVM acceptance (16/16), and the protected exact-SHA Arch
+  acceptance passed on `5f13ad5` (CI run 44762734605). Promoted to `master` in
+  #388 (`cd29a9d`); issues #9 and #285 closed.
+- Release Arch guest back to 4 vCPU / 6 GiB (#406) after larger profiles lost
+  the self-hosted runner during acceptance.
+
+### Changes since 0.0.4 (carried over from Unreleased)
+
 - The release Arch VM can reuse signed pacman downloads (#285), while each
   disposable guest still completes a full upgrade and reboot. Only the
   Cargo build profiles and downloaded dependencies persist on the cache
