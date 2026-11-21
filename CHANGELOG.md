@@ -27,6 +27,17 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   `scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile`
   installs it; a shared console fixture ties its output to the host parser.
   Never in the shipped distro. No real KVM run yet.
+- `just vm-test` / `make vm-test` (#412, ADR-0024): builds an Evolution Lab
+  candidate (two A/B test slots from the cached pinned rootfs, both with the
+  probe; B staged) and boots it with `evolutiond lab run --record`, recording
+  the outcome in a private `flowerlyd` run as the invoking user. Scenarios
+  `good` (TESTED), `bad` (injected health failure: REJECTED) and `rollback`
+  (REJECTED, then a healthy fallback boot of A). No network; each run boots
+  its own copy of the built disk once as slot A, unrecorded (the first boot
+  the guest requires before any boot of B), then arms B. `scripts/lab-candidate.py`
+  describes builds and writes plans; shared plan fixtures tie them to the
+  host parser. The
+  `vm-test` placeholder no longer fails closed.
 
 ## 0.0.5 — Generations (2026-11-20)
 

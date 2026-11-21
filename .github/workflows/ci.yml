@@ -380,6 +380,11 @@ jobs:
           python3 ./scripts/test-lab-probe.py
           bash -n ./scripts/prepare-lab-probe-rootfs.sh
 
+      - name: Evolution Lab candidate build and vm-test (offline)
+        run: |
+          python3 ./scripts/test-lab-candidate.py
+          bash -n ./scripts/build-lab-candidate.sh ./scripts/vm-test.sh
+
       - name: Provision real GPT FAT and ext4 tools for Generation A/B tests
         run: bash ./scripts/prepare-ab-disk-ci-tools.sh
 

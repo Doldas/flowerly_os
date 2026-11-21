@@ -1,0 +1,83 @@
+{
+  "baseline": "gen-baseline",
+  "boots": [
+    {
+      "label": "candidate-1",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "label": "candidate-2",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "label": "fallback",
+      "slot": "root-a",
+      "subject": "baseline"
+    }
+  ],
+  "candidate": {
+    "disk": "/lab/run/candidate.img",
+    "disk_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": "gen-candidate"
+  },
+  "checks": [
+    "identity",
+    "root",
+    "kernel",
+    "packages",
+    "binaries",
+    "health",
+    "integration",
+    "shutdown"
+  ],
+  "expect": {
+    "root-a": {
+      "binaries": {
+        "agenticctl": "6666666666666666666666666666666666666666666666666666666666666666",
+        "evolutiond": "6666666666666666666666666666666666666666666666666666666666666666",
+        "flowerly-slot-broker": "6666666666666666666666666666666666666666666666666666666666666666",
+        "flowerlyd": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "build_id": "lab-a",
+      "generation": "gen-baseline",
+      "identity_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "kernel_release": "6.17.1-arch1-1",
+      "packages_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "partuuid": "00010203-0405-4607-8809-0a0b0c0d0e0f",
+      "vmlinuz_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "root-b": {
+      "binaries": {
+        "agenticctl": "4444444444444444444444444444444444444444444444444444444444444444",
+        "evolutiond": "4444444444444444444444444444444444444444444444444444444444444444",
+        "flowerly-slot-broker": "4444444444444444444444444444444444444444444444444444444444444444",
+        "flowerlyd": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "build_id": "lab-b",
+      "generation": "gen-candidate",
+      "identity_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "kernel_release": "6.17.1-arch1-1",
+      "packages_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "partuuid": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "vmlinuz_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "firmware": {
+    "code": "/fw/OVMF_CODE.fd",
+    "vars": "/fw/OVMF_VARS.fd"
+  },
+  "hypothesis": "a candidate that fails its health gate is left unblessed and, once its boot-count tries are spent, the loader falls back to the baseline, which boots healthy",
+  "lane": "reproducibility",
+  "limits": {
+    "boot_seconds": 600,
+    "shutdown_seconds": 120
+  },
+  "machine": {
+    "accel": "kvm",
+    "memory_mib": 2048,
+    "smp": 2
+  },
+  "schema": "flowerly-lab-plan/v1"
+}

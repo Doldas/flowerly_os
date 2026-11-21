@@ -1,0 +1,58 @@
+{
+  "baseline": null,
+  "boots": [
+    {
+      "label": "initial",
+      "slot": "root-a",
+      "subject": "candidate"
+    }
+  ],
+  "candidate": {
+    "disk": "/lab/run/candidate.img",
+    "disk_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "generation": "gen-baseline"
+  },
+  "checks": [
+    "identity",
+    "root",
+    "kernel",
+    "packages",
+    "binaries",
+    "health",
+    "integration",
+    "shutdown"
+  ],
+  "expect": {
+    "root-a": {
+      "binaries": {
+        "agenticctl": "6666666666666666666666666666666666666666666666666666666666666666",
+        "evolutiond": "6666666666666666666666666666666666666666666666666666666666666666",
+        "flowerly-slot-broker": "6666666666666666666666666666666666666666666666666666666666666666",
+        "flowerlyd": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "build_id": "lab-a",
+      "generation": "gen-baseline",
+      "identity_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "kernel_release": "6.17.1-arch1-1",
+      "packages_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "partuuid": "00010203-0405-4607-8809-0a0b0c0d0e0f",
+      "vmlinuz_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "firmware": {
+    "code": "/fw/OVMF_CODE.fd",
+    "vars": "/fw/OVMF_VARS.fd"
+  },
+  "hypothesis": "the baseline in slot A boots as the machine's first boot, reports what was built and passes its checks, before the candidate is armed",
+  "lane": "reproducibility",
+  "limits": {
+    "boot_seconds": 600,
+    "shutdown_seconds": 120
+  },
+  "machine": {
+    "accel": "kvm",
+    "memory_mib": 2048,
+    "smp": 2
+  },
+  "schema": "flowerly-lab-plan/v1"
+}

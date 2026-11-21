@@ -6,12 +6,15 @@ the guest reports against what was built, and records the candidate as
 ADR-0024 and the work plan is the 0.0.6 Evolution Lab plan, both proposed
 in #415.
 
-**Status (0.0.6, #410, #411):** the `evolutiond lab` commands, plan, report
-and result formats, checks and promotion policy are implemented and covered by
-unit tests and fake-QEMU tests. The test-profile [guest probe](#the-guest-probe)
-is implemented and tested offline; a shared console fixture ties its output to
-the host parser. The candidate build and `just vm-test` (#412) and real KVM
-acceptance (#413) are separate steps. No KVM run has used this code yet.
+**Status (0.0.6, #410, #411, #412):** the `evolutiond lab` commands, plan,
+report and result formats, checks and promotion policy are implemented and
+covered by unit tests and fake-QEMU tests. The test-profile
+[guest probe](#the-guest-probe) is implemented and tested offline; a shared
+console fixture ties its output to the host parser. The
+[candidate build and `just vm-test`](#the-candidate-build-and-just-vm-test)
+are implemented and tested offline; a shared plan fixture ties the plans they
+write to the host's plan parser. Real KVM acceptance (#413) is a separate
+step, and no KVM run is evidence until then.
 
 ## What the lab is and is not
 
@@ -273,3 +276,96 @@ identity records. `generation.inspect` does not return the root identity, so
 `record` cannot compare them itself. Recording the
 same directory again returns the same Experiment from `generation.evidence`;
 the second state change is refused by flowerlyd.
+
+## The candidate build and `just vm-test`
+
+`just vm-test` (or `make vm-test`) runs `scripts/vm-test.sh`, which builds a
+lab candidate at the checked-out commit, boots it on this host with
+`evolutiond lab run --record`, and records the outcome in a **private**
+`flowerlyd`. It runs in the foreground as the invoking user, needs read and
+write access to `/dev/kvm`, uses no network, and activates nothing. The
+host's own `flowerlyd`, if any, is never contacted.
+
+```text
+scripts/vm-test.sh [--scenario good|bad|rollback] [--tries N]
+```
+
+| Scenario | Slot B's entry | Boots | Expected outcome |
+| --- | --- | --- | --- |
+| `good` (default) | as built | B once | the run passes; the candidate is `TESTED` |
+| `bad` | `flowerly.test.fail_health=1` | B once | the health check fails; the candidate is `REJECTED` |
+| `rollback` | `flowerly.test.fail_health=1` | B once per boot-count try, then A (`fallback`) | `REJECTED`, and the fallback boot of A is booted and healthy |
+
+Every scenario's recorded boots follow one unrecorded initial boot of slot A
+(step 6).
+
+`--tries` (default 2) is the boot-count tries slot B is armed with: 1 to 9,
+and 1 to 7 for `rollback`, whose plan must also fit the fallback boot within
+the lab's limit of 8 boots. The health failure is injected only through the
+ESP entry of the armed copy; the slot images are the same in all scenarios.
+
+The steps:
+
+1. `cargo build --release --locked` of `flowerlyd`, `agenticctl`,
+   `evolutiond` and `distro-builder` (the slot tool).
+2. `scripts/build-lab-candidate.sh PINNED_ROOTFS INITRAMFS OUT` (from a clean
+   checkout): two copies of the pinned rootfs become slot A (`lab-a`, the
+   baseline) and slot B (`lab-b`, the candidate). Each is an A/B test image
+   prepared with `FLOWERLY_FROZEN_INPUTS`, so the rootfs must hold exactly
+   the committed manifest's packages, and each gets the
+   [guest probe](#the-guest-probe). `lab-probe.py --offline` records each
+   slot's file facts before its root volume is built. The two-slot disk is
+   built with A active, and B is staged but not armed.
+3. `scripts/lab-candidate.py describe` writes `candidate.json`
+   (`flowerly-lab-candidate/v1`). It binds each slot's identity document,
+   root volume, kernel release and the ESP kernel to the facts its probe will
+   report, and refuses a build whose baked identity, `build_id`, package
+   hash or binaries do not match, or whose slots share a PARTUUID or a
+   `build_id`.
+4. A private `flowerlyd` under the output directory: its runtime and state
+   directories are `0700`, its socket is `0600`, and the only Admin group is
+   the invoking user's primary group.
+5. Two Generations through that `flowerlyd`: the baseline for slot A and the
+   candidate for slot B, each with the root identity its slot was built with
+   (`generation create`, then `generation identity`).
+6. `lab-candidate.py prepare` copies the built disk into a new run directory
+   and first boots the copy once as slot A: the first boot an installed
+   machine has. The guest's witness creates its persistent data marker only
+   on that first boot of `root-a` and refuses a first boot of `root-b`, so a
+   copy armed straight away would record the guest's refusal as the
+   candidate's failure. The initial boot is its own plan, `run/initial/`,
+   run by `evolutiond lab run` without `--record`: slot A's Generation as
+   its subject, slot A's expectations, all eight checks. It must pass.
+   Only then does `prepare` arm slot B of the same copy (`slot arm --tries
+   N`, plus the injected failure for `bad` and `rollback`), hash the armed
+   copy and write the run's plan: the reproducibility lane, all eight
+   checks, both slots' expectations from `candidate.json`, and the
+   scenario's boots. The built disk is never booted, so one build serves
+   any number of runs.
+7. `evolutiond lab run --record` boots the plan and records the decision.
+
+The exit status is 0 when the recorded outcome is the scenario's expected
+one (for `good`, a recorded passing run: `TESTED`), 3 when the other outcome
+was recorded, 1 on any error and 2 on usage. Everything is kept in the output
+directory: `candidate/` (the build), `flowerlyd/` (the private daemon's
+state and log), and `run/` (the armed disk, `initial/` with the initial
+boot's plan and result, `plan.json` and `result/`).
+
+| Variable | Default |
+| --- | --- |
+| `FLOWERLY_LAB_ROOTFS` | `target/pinned-rootfs/flowerly-rootfs`, from `scripts/build-arch-rootfs-pinned-container.sh` |
+| `FLOWERLY_LAB_INITRAMFS` | `target/pinned-rootfs/initramfs.img`, from `scripts/build-arch-initrd.sh` |
+| `FLOWERLY_LAB_CANDIDATE` | unset; a candidate directory built at the same commit, reused instead of building |
+| `FLOWERLY_LAB_OUT` | `target/lab/<UTC time>-<scenario>`; must not exist |
+| `FLOWERLY_LAB_OVMF_CODE`, `FLOWERLY_LAB_OVMF_VARS` | the Arch, Debian/Ubuntu or Fedora OVMF paths |
+| `FLOWERLY_LAB_QEMU` | `qemu-system-x86_64` from `PATH` |
+
+`vm-test` downloads nothing: a missing pinned rootfs or initramfs is an
+error that names the script that builds it. A local `vm-test` run is a
+development run. Acceptance evidence comes from the exact-SHA runs of #413.
+
+`scripts/test-lab-candidate.py` tests `describe` and `prepare` offline
+against fake builds, a fake slot tool and a fake `evolutiond`, and the
+scripts' usage handling. It also proves that `prepare` writes exactly
+`testbed/evolution-world/fixtures/lab-plan-initial.json` and
+`lab-plan-rollback.json`, which the host's plan tests parse.
