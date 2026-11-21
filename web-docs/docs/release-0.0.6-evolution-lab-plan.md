@@ -26,6 +26,8 @@ a bad candidate) and their evidence archived.
 
 ### E1 — Complete Experiment records (`flowerly-core`, `flowerlyd`, `agenticctl`)
 
+Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409).
+
 - `generation.evidence` accepts the optional `experiment` object of ADR-0024
   D5 and writes `hypothesis`, `baseline`, `test_plan`, `metrics`; each
   artifact becomes an `artifacts` row (`sha256:<hex>`) with a `produced`
@@ -39,6 +41,8 @@ a bad candidate) and their evidence archived.
   `generation-ipc-v1-arguments.md`.
 
 ### E2 — `evolutiond lab` (Rust: `vm`, `benchmarks`, `promotion`)
+
+Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410).
 
 - Plan (`flowerly-lab-plan/v1`) and result (`flowerly-lab-result/v1`)
   documents with canonical JSON and SHA-256.
@@ -57,6 +61,8 @@ a bad candidate) and their evidence archived.
 
 ### E3 — Guest probe (test profile)
 
+Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411).
+
 - `testbed/evolution-world/lab-probe.py`, its unit (ordered after
   `flowerlyd` and the health gate, before the serial getty) and a sysusers
   entry for the lab Admin account, installed by the test-profile script only.
@@ -70,6 +76,8 @@ a bad candidate) and their evidence archived.
 
 ### E4 — Candidate build and `just vm-test`
 
+Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412).
+
 - `scripts/build-lab-candidate.sh`: slot images from the pinned rootfs, the
   probe installed, A/B disk, optional bad candidate and armed B.
 - `scripts/vm-test.sh` (`just vm-test`, `make vm-test`): release build →
@@ -82,12 +90,16 @@ a bad candidate) and their evidence archived.
 
 ### E5 — Real KVM acceptance
 
+Issue: [#413](https://github.com/Doldas/flowerly_os/issues/413).
+
 - Run the three ADR-0024 scenarios on the exact PR SHA; archive results,
   serial logs and hashes under `reviews/evidence/0010-evolution-lab-<sha>`
   with a review note.
 - **Exit:** owner review of the evidence.
 
 ### E6 — Lanes and CI
+
+Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414).
 
 - Upstream lane switch (D6) and its result marking.
 - An opt-in `workflow_dispatch` job on the self-hosted KVM runner that runs
