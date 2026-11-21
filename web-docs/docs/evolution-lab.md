@@ -156,7 +156,12 @@ and refuses any other rootfs, a symlinked destination or an existing
 installation. The candidate build (#412) installs it in **both** slots: a
 rollback boot falls back to slot A, which must report too.
 
-Facts come from the booted system, not from what the baked identity claims:
+Facts come from the booted system, not from what the baked identity claims.
+The guest mounts a tmpfs over `/var` (`systemd.volatile=state`), which hides
+the image's pacman database from `/`. The unit therefore binds the booted root
+filesystem alone, without its submounts, read-only at `/run/flowerly-lab/root`,
+and the probe reads the file facts (identity, binaries, packages) there:
+the same tree that `--offline` reads before the boot.
 
 | Fact | Where the probe reads it |
 | --- | --- |

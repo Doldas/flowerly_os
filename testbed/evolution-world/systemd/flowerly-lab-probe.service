@@ -24,6 +24,9 @@ StandardOutput=journal
 StandardError=journal+console
 TimeoutStartSec=600
 PrivateNetwork=yes
+# The root filesystem without its submounts, where the probe reads the image's
+# files: the tmpfs mounted over /var hides the pacman database from /.
+BindReadOnlyPaths=/:/run/flowerly-lab/root:norbind
 
 [Install]
 WantedBy=multi-user.target

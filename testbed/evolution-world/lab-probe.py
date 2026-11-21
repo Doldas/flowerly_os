@@ -18,7 +18,9 @@ check.
 
 Facts come from the booted system, not from what the baked identity claims:
 the slot and PARTUUID from the partition mounted at /, the kernel image from
-that slot's ESP directory, packages from the pacman database. The Admin round
+that slot's ESP directory, and the baked identity, binaries and pacman
+database out of that root filesystem itself, without what is mounted over it
+(BUILT_ROOT). The Admin round
 trip runs as the flowerly-lab account through agenticctl and flowerlyd, never
 as root and never by writing the database itself; the Generation it creates
 and rejects lives in this guest's own test database.
@@ -41,6 +43,10 @@ import time
 SCHEMA = "flowerly-lab-report/v1"
 CONSOLE = "/dev/console"
 IDENTITY = "usr/lib/flowerly/generation-root.json"
+# The booted root filesystem alone, which the unit binds read-only without its
+# submounts: the guest mounts a tmpfs over /var (systemd.volatile=state), which
+# hides the image's pacman database from /.
+BUILT_ROOT = "/run/flowerly-lab/root"
 PACMAN_LOCAL = "var/lib/pacman/local"
 BINARIES = {
     "agenticctl": "usr/bin/agenticctl",
@@ -400,6 +406,7 @@ def observations(runner):
 def probe(
     runner,
     root="/",
+    files_root=None,
     efi_root="/efi",
     sys_root="/sys",
     dev_root="/dev",
@@ -407,13 +414,13 @@ def probe(
     release=None,
     now_us=None,
 ):
-    """The report for this boot."""
+    """The report for this boot; file facts come from ``files_root``, or ``root``."""
     if device is None:
         device = os.stat(root).st_dev
     slot, partuuid = booted_root(device, sys_root, dev_root)
     kernel_release, vmlinuz_sha256 = kernel(slot, efi_root, release)
     facts = {"slot": slot, "root_partuuid": partuuid}
-    facts.update(file_facts(root))
+    facts.update(file_facts(root if files_root is None else files_root))
     facts.update(
         {
             "kernel_release": kernel_release,
@@ -476,7 +483,7 @@ def main(argv):
         print("usage: lab-probe.py [--offline ROOT]", file=sys.stderr)
         return 2
     emit = console_emitter(CONSOLE)
-    for line in report_lines(probe(run)):
+    for line in report_lines(probe(run, files_root=BUILT_ROOT)):
         emit(line)
     return 0
 

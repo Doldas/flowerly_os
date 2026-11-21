@@ -507,6 +507,45 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(CONSOLE_FIXTURE.read_text(), text)
         self.assertIn("lab-report.console", HOST_REPORT.read_text())
 
+    def test_file_facts_come_from_the_root_filesystem_under_its_mounts(self):
+        # The guest mounts a tmpfs over /var (systemd.volatile=state), so /
+        # shows no pacman database; the unit binds the root filesystem alone
+        # at BUILT_ROOT and the file facts come from there.
+        with tempfile.TemporaryDirectory() as d:
+            built = make_root(d)
+            shadowed = Path(d) / "mounted"
+            write(shadowed / probe.IDENTITY, IDENTITY)
+            sys_root, dev_root, device = make_disk(d)
+            report = probe.probe(
+                FakeSystem(),
+                root=shadowed,
+                files_root=built,
+                efi_root=Path(d) / "efi",
+                sys_root=str(sys_root),
+                dev_root=str(dev_root),
+                device=device,
+                release="6.17.1-arch1-1",
+                now_us=10_000_000,
+            )
+            facts = report["facts"]
+            for key, value in probe.file_facts(built).items():
+                self.assertEqual(facts[key], value, key)
+        self.assertEqual(facts["packages_sha256"], package_digest())
+
+    def test_the_booted_probe_reads_files_from_the_built_root(self):
+        calls = []
+
+        def fake_probe(runner, **options):
+            calls.append(options)
+            return {"schema": probe.SCHEMA, "facts": {}, "observations": {}}
+
+        with (
+            mock.patch.object(probe, "probe", fake_probe),
+            mock.patch.object(probe, "console_emitter", lambda path: lambda line: None),
+        ):
+            self.assertEqual(probe.main([]), 0)
+        self.assertEqual(calls, [{"files_root": probe.BUILT_ROOT}])
+
     def test_report_lines_decode_to_the_report(self):
         with tempfile.TemporaryDirectory() as d:
             report = self.full_report(d)
@@ -680,6 +719,7 @@ class UnitTests(unittest.TestCase):
             "ExecStart=/usr/bin/python3 -I /usr/lib/flowerly/lab-probe.py",
             "StandardOutput=journal",
             "PrivateNetwork=yes",
+            "BindReadOnlyPaths=/:%s:norbind" % probe.BUILT_ROOT,
             "WantedBy=multi-user.target",
         ):
             self.assertIn(line + "\n", text, line)

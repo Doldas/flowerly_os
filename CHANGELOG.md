@@ -22,7 +22,9 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   `flowerly-lab-probe.service` reports the booted slot, identity, kernel,
   packages, binaries, boot phases, failed units, health gate, an audited Admin
   round trip and `evolutiond --self-test` on the serial console, then powers
-  the guest off. `scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile`
+  the guest off. It reads the image's files from the root filesystem without
+  the tmpfs mounted over `/var`, which hides the pacman database.
+  `scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile`
   installs it; a shared console fixture ties its output to the host parser.
   Never in the shipped distro. No real KVM run yet.
 
