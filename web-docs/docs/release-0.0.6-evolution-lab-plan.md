@@ -26,7 +26,8 @@ a bad candidate) and their evidence archived.
 
 ### E1 — Complete Experiment records (`flowerly-core`, `flowerlyd`, `agenticctl`)
 
-Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409).
+Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409). Draft PR:
+[#416](https://github.com/Doldas/flowerly_os/pull/416).
 
 - `generation.evidence` accepts the optional `experiment` object of ADR-0024
   D5 and writes `hypothesis`, `baseline`, `test_plan`, `metrics`; each
@@ -55,7 +56,8 @@ Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410).
   phases, image sizes — recorded as metrics with units.
 - `promotion`: the fixed policy of D3; never recommends activation.
 - `lab run`, `lab verify` (rehash artifacts, recompute the verdict),
-  `lab record` (through flowerlyd: create, identity, evidence, test|reject).
+  `lab record` (through flowerlyd: evidence, then test|reject). The
+  candidate Generation and its identity already exist; E4 creates them.
 - **Exit:** unit tests for argv, parser, policy and result binding; a
   fake-QEMU test of the run loop (timeout, crash, missing report).
 
@@ -82,8 +84,9 @@ Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412).
   probe installed, A/B disk, optional bad candidate and armed B.
 - `scripts/vm-test.sh` (`just vm-test`, `make vm-test`): release build →
   cached pinned rootfs and initramfs → candidate → private lab flowerlyd
-  (Admin group = the invoking user's group) → `evolutiond lab run --record`
-  → summary. Exit status 0 only for a recorded passing run.
+  (Admin group = the invoking user's group) → create the candidate
+  Generation and set its identity → `evolutiond lab run --record` →
+  summary. Exit status 0 only for a recorded passing run.
 - `test-build-task-parity.py` updated: `vm-test` is real; `vm` and `image`
   still fail closed.
 - **Exit:** the recipe runs end to end on the KVM host.
