@@ -5,6 +5,13 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Complete Experiment records (#409, ADR-0024 D5): `generation.evidence` takes
+  an optional `experiment` object (hypothesis, baseline, test plan, metrics,
+  content-addressed artifacts with `produced` edges); `generation.test` and
+  `generation.reject` set the Experiment's decision, and a rejection may name
+  the Experiment. New Admin read commands `experiment.inspect` and
+  `experiment.list` (`agenticctl experiment inspect|list`). No migration.
+
 ## 0.0.5 — Generations (2026-11-20)
 
 - Generations released: A/B root slots, boot counting, witness ledger, root

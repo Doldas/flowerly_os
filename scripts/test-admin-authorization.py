@@ -51,6 +51,8 @@ import uuid
 
 ADMIN_COMMANDS = [
     "provenance.add",
+    "experiment.inspect",
+    "experiment.list",
     "generation.activate",
     "generation.evidence",
     "generation.history",
