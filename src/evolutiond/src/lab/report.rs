@@ -83,10 +83,14 @@ pub struct Received {
 }
 
 /// The report in `text`, `Ok(None)` while its DONE line has not arrived.
+///
+/// A line counts once its newline has arrived: `lab run` reads the serial
+/// log while the guest is still writing it, so the text can end mid-line.
 pub fn parse(text: &str) -> Result<Option<Received>, String> {
+    let complete = text.rfind('\n').map_or("", |end| &text[..end]);
     let mut done = None;
     let mut parts: BTreeMap<usize, (usize, &str)> = BTreeMap::new();
-    for line in text.lines() {
+    for line in complete.lines() {
         if let Some(at) = line.find(DONE) {
             let fields = done_fields(&line[at + DONE.len()..])
                 .ok_or_else(|| "malformed report DONE line".to_owned())?;
@@ -299,6 +303,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_console_read_mid_line_is_not_yet_a_report() {
+        // `lab run` polls the serial log while the guest writes it, so any
+        // poll can end inside a line (a development run stopped a passing
+        // boot on a DONE line cut inside its digest).
+        let report = sample();
+        let text = console(&report);
+        for end in 0..text.len() {
+            match parse(&text[..end]) {
+                Ok(None) => {}
+                Ok(Some(received)) => assert_eq!(received.report, report, "cut at {end}"),
+                Err(reason) => panic!("cut at {end}: {reason}"),
+            }
+        }
+        assert!(parse(&text).unwrap().is_some());
+    }
+
+    #[test]
     fn identical_copies_of_a_part_are_accepted() {
         let text = console(&sample());
         let first_part = text.lines().find(|l| l.contains("part=1/")).unwrap();
@@ -315,8 +336,8 @@ pub(crate) mod tests {
         let altered = format!("{}{last}", &part_two[..part_two.len() - 1]);
         let cases: Vec<(&str, String)> = vec![
             ("missing part", text.replace(part_two, "")),
-            ("differing copy", format!("{text}\n{altered}")),
-            ("second done", format!("{text}\n{done}")),
+            ("differing copy", format!("{text}{altered}\n")),
+            ("second done", format!("{text}{done}\n")),
             (
                 "bad base64",
                 text.replace(part_two, &format!("{part_two}!")),
@@ -338,7 +359,7 @@ pub(crate) mod tests {
         let last = forged.pop().unwrap();
         let (head, _) = last.split_once(" sha256=").unwrap();
         forged.push(format!("{head} sha256={}", "0".repeat(64)));
-        assert!(parse(&forged.join("\n")).unwrap_err().contains("digest"));
+        assert!(parse(&terminated(&forged)).unwrap_err().contains("digest"));
 
         let mut other = sample();
         other.schema = "flowerly-lab-report/v0".to_owned();
@@ -346,23 +367,31 @@ pub(crate) mod tests {
 
         let mut value = serde_json::to_value(sample()).unwrap();
         value["facts"]["extra"] = serde_json::json!(1);
-        let text = lines(&serde_json::to_vec(&value).unwrap(), 40).join("\n");
+        let text = terminated(&lines(&serde_json::to_vec(&value).unwrap(), 40));
         assert!(parse(&text).unwrap_err().contains("v1 report"));
     }
 
     #[test]
     fn oversized_and_inconsistent_part_counts_are_refused() {
         let big = vec![b'x'; MAX_REPORT_BYTES + 1];
-        assert!(parse(&lines(&big, 4096).join("\n"))
+        assert!(parse(&terminated(&lines(&big, 4096)))
             .unwrap_err()
             .contains("too large"));
         let text = "FLOWERLY_LAB_REPORT part=1/2 eyJ9\nFLOWERLY_LAB_REPORT_DONE parts=1 sha256="
             .to_owned()
-            + &"0".repeat(64);
+            + &"0".repeat(64)
+            + "\n";
         assert!(parse(&text).unwrap_err().contains("disagree"));
-        let zero = format!("FLOWERLY_LAB_REPORT_DONE parts=0 sha256={}", "0".repeat(64));
+        let zero = format!(
+            "FLOWERLY_LAB_REPORT_DONE parts=0 sha256={}\n",
+            "0".repeat(64)
+        );
         assert!(parse(&zero).is_err());
-        assert!(parse("FLOWERLY_LAB_REPORT part=3/2 eyJ9").is_err());
-        assert!(parse("FLOWERLY_LAB_REPORT_DONE parts=1 sha256=xyz").is_err());
+        assert!(parse("FLOWERLY_LAB_REPORT part=3/2 eyJ9\n").is_err());
+        assert!(parse("FLOWERLY_LAB_REPORT_DONE parts=1 sha256=xyz\n").is_err());
+    }
+
+    fn terminated(lines: &[String]) -> String {
+        lines.iter().map(|line| format!("{line}\n")).collect()
     }
 }
