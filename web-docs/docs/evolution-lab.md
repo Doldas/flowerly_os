@@ -115,7 +115,8 @@ FLOWERLY_LAB_REPORT_DONE parts=3 sha256=<hex of the JSON>
 ```
 
 Console noise may surround the lines and an identical copy of a part is
-accepted. A part that differs from an earlier copy, a missing part, a second
+accepted. A line counts only once its newline has arrived, because `lab run`
+reads the serial log while the guest is still writing it. A part that differs from an earlier copy, a missing part, a second
 digest line, more than 256 KiB, bad base64, a digest mismatch or another
 schema refuses the report; the boot is stopped at once.
 
