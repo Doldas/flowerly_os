@@ -68,11 +68,13 @@ Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411).
 - `testbed/evolution-world/lab-probe.py`, its unit (ordered after
   `flowerlyd` and the health gate, before the serial getty) and a sysusers
   entry for the lab Admin account, installed by the test-profile script only.
-- Facts: baked identity, booted root PARTUUID, kernel release and `vmlinuz`
-  hash, installed packages, Flowerly binary hashes, boot phases, failed
-  units. Checks: health (`flowerlyd` active, status answers), integration
-  (an Admin write/read round trip through `agenticctl`, Generation
-  resolution, `evolutiond --self-test`).
+- Facts: baked identity (its hash and `build_id`), booted root PARTUUID,
+  kernel release and `vmlinuz` hash, installed packages, Flowerly binary
+  hashes, boot phases, failed units. Observations: health (`flowerlyd`
+  active, status answers), integration (an Admin write/read round trip
+  through `agenticctl`, `evolutiond --self-test`). The guest's flowerlyd has
+  its own database, so the guest cannot know the host's Generation id; the
+  identity's `build_id` is what its Generation's root identity records.
 - Writes the report to the console itself and powers the guest off.
 - **Exit:** offline Python tests with fake commands in the preflight.
 
@@ -85,8 +87,9 @@ Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412).
 - `scripts/vm-test.sh` (`just vm-test`, `make vm-test`): release build →
   cached pinned rootfs and initramfs → candidate → private lab flowerlyd
   (Admin group = the invoking user's group) → create the candidate
-  Generation and set its identity → `evolutiond lab run --record` →
-  summary. Exit status 0 only for a recorded passing run.
+  Generation and set its identity with the `build_id` baked into its slot →
+  plan → `evolutiond lab run --record` → summary. Exit status 0 only for a
+  recorded passing run.
 - `test-build-task-parity.py` updated: `vm-test` is real; `vm` and `image`
   still fail closed.
 - **Exit:** the recipe runs end to end on the KVM host.
