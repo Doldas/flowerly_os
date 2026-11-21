@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::Context;
 use flowerly_core::activation::{self, ActivateCommand, ActivationHost, Failure, Outcome};
 use flowerly_core::ipc::{Envelope, ErrorCode, Payload};
+use flowerly_core::storage::experiment::{ExperimentDetails, MAX_EXPERIMENT_LIST};
 use flowerly_core::storage::lifecycle::{
     validate_operation_id, Activation, ActivationKind, EvidenceOutcome, Resolution, RootIdentity,
 };
@@ -212,6 +213,15 @@ struct GenerationReasonArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct GenerationRejectArgs {
+    id: String,
+    reason: String,
+    /// The recorded Experiment the rejection decides (ADR-0024 D5).
+    #[serde(default)]
+    experiment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GenerationIdentityArgs {
     id: String,
     source_commit: String,
@@ -229,6 +239,9 @@ struct GenerationEvidenceArgs {
     outcome: String,
     evidence_sha256: String,
     reason: String,
+    /// What an Evolution Lab run adds to the record (ADR-0024 D5).
+    #[serde(default)]
+    experiment: Option<ExperimentDetails>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +271,36 @@ struct GenerationResolveArgs {}
 struct GenerationHistoryArgs {
     #[serde(default)]
     id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentInspectArgs {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExperimentListArgs {
+    #[serde(default)]
+    candidate: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Experiments `experiment.list` returns when no `limit` is given.
+const DEFAULT_EXPERIMENT_LIST: usize = 50;
+
+fn validate_experiment_id(raw: &str) -> Result<ExperimentId, (ErrorCode, String)> {
+    ExperimentId::from_str(raw).map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))
+}
+
+fn experiment_list_limit(limit: Option<usize>) -> Result<usize, (ErrorCode, String)> {
+    match limit.unwrap_or(DEFAULT_EXPERIMENT_LIST) {
+        n @ 1..=MAX_EXPERIMENT_LIST => Ok(n),
+        _ => Err((
+            ErrorCode::InvalidArgument,
+            format!("`limit` must be 1..{MAX_EXPERIMENT_LIST}"),
+        )),
+    }
 }
 
 /// Longest `source_commit` or `system_manifest` accepted on create.
@@ -387,6 +430,11 @@ fn validate_generation_command(
             validate_reason_arg(&typed.reason)?;
             EvidenceOutcome::from_str(&typed.outcome)
                 .map_err(|error| (ErrorCode::InvalidArgument, error))?;
+            if let Some(details) = &typed.experiment {
+                details
+                    .validate()
+                    .map_err(|e| (storage_error_code(&e), e.to_string()))?;
+            }
         }
         "generation.test" => {
             let typed: GenerationTestArgs = typed_generation_args(args)?;
@@ -395,7 +443,15 @@ fn validate_generation_command(
             ExperimentId::from_str(&typed.experiment)
                 .map_err(|error| (ErrorCode::InvalidArgument, error.to_string()))?;
         }
-        "generation.reject" | "generation.revoke" => {
+        "generation.reject" => {
+            let typed: GenerationRejectArgs = typed_generation_args(args)?;
+            validate_generation_id(&typed.id)?;
+            validate_reason_arg(&typed.reason)?;
+            if let Some(experiment) = &typed.experiment {
+                validate_experiment_id(experiment)?;
+            }
+        }
+        "generation.revoke" => {
             let typed: GenerationReasonArgs = typed_generation_args(args)?;
             validate_generation_id(&typed.id)?;
             validate_reason_arg(&typed.reason)?;
@@ -413,6 +469,17 @@ fn validate_generation_command(
             let typed: GenerationPromoteArgs = typed_generation_args(args)?;
             validate_generation_id(&typed.id)?;
             validate_reason_arg(&typed.reason)?;
+        }
+        "experiment.inspect" => {
+            let typed: ExperimentInspectArgs = crate::args::typed_args("experiment", args)?;
+            validate_experiment_id(&typed.id)?;
+        }
+        "experiment.list" => {
+            let typed: ExperimentListArgs = crate::args::typed_args("experiment", args)?;
+            if let Some(candidate) = &typed.candidate {
+                validate_generation_id(candidate)?;
+            }
+            experiment_list_limit(typed.limit)?;
         }
         other => {
             return Err((
@@ -741,7 +808,14 @@ fn run_command(
             let outcome =
                 EvidenceOutcome::from_str(&typed.outcome).map_err(CommandFailure::invalid)?;
             let experiment = store
-                .record_evidence(caller, &id, outcome, &typed.evidence_sha256, &typed.reason)
+                .record_evidence(
+                    caller,
+                    &id,
+                    outcome,
+                    &typed.evidence_sha256,
+                    typed.experiment.as_ref(),
+                    &typed.reason,
+                )
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": id, "experiment": experiment }))
         }
@@ -755,16 +829,62 @@ fn run_command(
                 .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": tested.id, "status": tested.status }))
         }
-        "generation.reject" | "generation.revoke" => {
+        "generation.reject" => {
+            let typed: GenerationRejectArgs = parsed_args(args)?;
+            let id = parsed_id(&typed.id)?;
+            let experiment = typed
+                .experiment
+                .as_deref()
+                .map(ExperimentId::from_str)
+                .transpose()
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let finished = store
+                .reject_generation(caller, &id, experiment.as_ref(), &typed.reason)
+                .map_err(CommandFailure::storage)?;
+            Ok(serde_json::json!({ "id": finished.id, "status": finished.status }))
+        }
+        "generation.revoke" => {
             let typed: GenerationReasonArgs = parsed_args(args)?;
             let id = parsed_id(&typed.id)?;
-            let finished = if name == "generation.reject" {
-                store.reject_generation(caller, &id, &typed.reason)
-            } else {
-                store.revoke_generation(caller, &id, &typed.reason)
-            }
-            .map_err(CommandFailure::storage)?;
+            let finished = store
+                .revoke_generation(caller, &id, &typed.reason)
+                .map_err(CommandFailure::storage)?;
             Ok(serde_json::json!({ "id": finished.id, "status": finished.status }))
+        }
+        // Admin, read-only: the acceptance records of system Generations.
+        "experiment.inspect" => {
+            let typed: ExperimentInspectArgs = parsed_args(args)?;
+            let id = ExperimentId::from_str(&typed.id)
+                .map_err(|error| CommandFailure::invalid(error.to_string()))?;
+            let mut record = store
+                .experiment(&id)
+                .map_err(CommandFailure::storage)?
+                .ok_or_else(|| CommandFailure::not_found(format!("experiment not found: {id}")))?;
+            // A Goal the caller cannot see is not revealed (redaction
+            // contract, #225 PR 4), as on `generation.inspect`.
+            if let Some(goal) = &record.goal {
+                let visible = match GoalId::from_str(goal) {
+                    Ok(goal) => store
+                        .goal_for(caller, &goal)
+                        .map_err(CommandFailure::storage)?
+                        .is_some(),
+                    Err(_) => false,
+                };
+                if !visible {
+                    record.goal = None;
+                }
+            }
+            Ok(serde_json::to_value(&record).map_err(err_str)?)
+        }
+        "experiment.list" => {
+            let typed: ExperimentListArgs = parsed_args(args)?;
+            let candidate = typed.candidate.as_deref().map(parsed_id).transpose()?;
+            let limit = experiment_list_limit(typed.limit)
+                .map_err(|(code, message)| CommandFailure { code, message })?;
+            let items = store
+                .experiments(candidate.as_ref(), limit)
+                .map_err(CommandFailure::storage)?;
+            Ok(serde_json::json!({ "count": items.len(), "experiments": items }))
         }
         // Service account only: reads the ledger itself and takes no input.
         "generation.resolve" => {
@@ -891,7 +1011,7 @@ pub(crate) async fn self_test() -> anyhow::Result<()> {
     };
     store.insert_generation(&second)?;
     let admin = Caller::new(0);
-    store.reject_generation(admin, &first.id, "self-test")?;
+    store.reject_generation(admin, &first.id, None, "self-test")?;
     anyhow::ensure!(
         store
             .revoke_generation(admin, &second.id, "self-test")
@@ -1576,6 +1696,20 @@ mod tests {
         bad_outcome["outcome"] = serde_json::json!("maybe");
         let mut bad_hash = evidence_args(&id);
         bad_hash["evidence_sha256"] = serde_json::json!("xyz");
+        let mut details_not_object = evidence_args(&id);
+        details_not_object["experiment"] = serde_json::json!("lab");
+        let mut details_unknown_field = evidence_args(&id);
+        details_unknown_field["experiment"] = lab_details(None);
+        details_unknown_field["experiment"]["fitness"] = serde_json::json!(1);
+        let mut details_bad_check = evidence_args(&id);
+        details_bad_check["experiment"] = lab_details(None);
+        details_bad_check["experiment"]["test_plan"] = serde_json::json!(["Health"]);
+        let mut details_bad_baseline = evidence_args(&id);
+        details_bad_baseline["experiment"] = lab_details(None);
+        details_bad_baseline["experiment"]["baseline"] = serde_json::json!("goal-1");
+        let mut details_bad_artifact = evidence_args(&id);
+        details_bad_artifact["experiment"] = lab_details(None);
+        details_bad_artifact["experiment"]["artifacts"][0]["name"] = serde_json::json!("../x");
         for (name, args) in [
             ("generation.identity", serde_json::json!({})),
             ("generation.identity", bad_identity),
@@ -1583,6 +1717,11 @@ mod tests {
             ("generation.evidence", serde_json::json!({"id": id})),
             ("generation.evidence", bad_outcome),
             ("generation.evidence", bad_hash),
+            ("generation.evidence", details_not_object),
+            ("generation.evidence", details_unknown_field),
+            ("generation.evidence", details_bad_check),
+            ("generation.evidence", details_bad_baseline),
+            ("generation.evidence", details_bad_artifact),
             (
                 "generation.test",
                 serde_json::json!({"id": id, "reason": "x"}),
@@ -1600,6 +1739,18 @@ mod tests {
                 "generation.reject",
                 serde_json::json!({"id": id, "reason": ""}),
             ),
+            (
+                "generation.reject",
+                serde_json::json!({"id": id, "reason": "r", "experiment": "not-an-id"}),
+            ),
+            ("experiment.inspect", serde_json::json!({})),
+            ("experiment.inspect", serde_json::json!({"id": "x"})),
+            ("experiment.inspect", serde_json::json!({"id": 1})),
+            ("experiment.inspect", serde_json::json!([])),
+            ("experiment.list", serde_json::json!({"limit": 0})),
+            ("experiment.list", serde_json::json!({"limit": 201})),
+            ("experiment.list", serde_json::json!({"limit": "5"})),
+            ("experiment.list", serde_json::json!({"candidate": "x"})),
             (
                 "generation.revoke",
                 serde_json::json!({"id": "x", "reason": "r"}),
@@ -1638,6 +1789,120 @@ mod tests {
                 "{name} {args}"
             );
         }
+    }
+
+    fn lab_details(baseline: Option<&GenerationId>) -> Value {
+        serde_json::json!({
+            "hypothesis": "the candidate boots and answers",
+            "baseline": baseline,
+            "test_plan": ["identity.root", "health.flowerlyd"],
+            "metrics": {"boot.report_ms": 8125.0},
+            "artifacts": [
+                {"kind": "result", "name": "result.json", "sha256": hash('e'), "bytes": 2048},
+            ],
+            "lane": "reproducibility",
+        })
+    }
+
+    #[test]
+    fn lab_experiments_are_recorded_decided_and_read_back() {
+        let mut store = migrated_store();
+        let baseline = system_candidate(&mut store);
+        let good = system_candidate(&mut store);
+        call(&mut store, "generation.identity", &identity_args(&good)).expect("identity");
+        let mut args = evidence_args(&good);
+        args["experiment"] = lab_details(Some(&baseline));
+        let evidence = call(&mut store, "generation.evidence", &args).expect("evidence");
+        let experiment = evidence["experiment"].clone();
+        let shown = call(
+            &mut store,
+            "experiment.inspect",
+            &serde_json::json!({"id": experiment}),
+        )
+        .expect("inspect");
+        assert_eq!(shown["candidate"], serde_json::json!(good));
+        assert_eq!(shown["baseline"], serde_json::json!(baseline));
+        assert_eq!(shown["result"], "passed");
+        assert_eq!(shown["decision"], Value::Null);
+        assert_eq!(shown["metrics"]["values"]["boot.report_ms"], 8125.0);
+        assert_eq!(shown["metrics"]["lane"], "reproducibility");
+        assert_eq!(
+            shown["artifacts"][0]["uri"],
+            format!("sha256:{}", hash('e'))
+        );
+        assert_eq!(shown["artifacts"][0]["name"], "result.json");
+        call(
+            &mut store,
+            "generation.test",
+            &serde_json::json!({"id": good, "experiment": experiment, "reason": "ok"}),
+        )
+        .expect("test");
+        let shown = call(
+            &mut store,
+            "experiment.inspect",
+            &serde_json::json!({"id": experiment}),
+        )
+        .unwrap();
+        assert_eq!(shown["decision"], "tested");
+
+        let bad = system_candidate(&mut store);
+        let mut args = evidence_args(&bad);
+        args["outcome"] = serde_json::json!("failed");
+        args["evidence_sha256"] = serde_json::json!(hash('8'));
+        args["experiment"] = lab_details(Some(&good));
+        let failed = call(&mut store, "generation.evidence", &args).expect("evidence");
+        let reject = serde_json::json!({
+            "id": good, "experiment": failed["experiment"], "reason": "not about it",
+        });
+        assert_eq!(
+            code_of(call(&mut store, "generation.reject", &reject)),
+            ErrorCode::Conflict
+        );
+        let reject = serde_json::json!({
+            "id": bad, "experiment": failed["experiment"], "reason": "health failed",
+        });
+        let done = call(&mut store, "generation.reject", &reject).expect("reject");
+        assert_eq!(done["status"], "REJECTED");
+
+        let listed = call(&mut store, "experiment.list", &serde_json::json!({})).unwrap();
+        assert_eq!(listed["count"], 2);
+        let decisions: Vec<&str> = listed["experiments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["decision"].as_str())
+            .collect();
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions.contains(&"tested") && decisions.contains(&"rejected"));
+        let only_bad = call(
+            &mut store,
+            "experiment.list",
+            &serde_json::json!({"candidate": bad, "limit": 5}),
+        )
+        .unwrap();
+        assert_eq!(only_bad["count"], 1);
+        assert_eq!(only_bad["experiments"][0]["id"], failed["experiment"]);
+
+        assert_eq!(
+            code_of(call(
+                &mut store,
+                "experiment.inspect",
+                &serde_json::json!({"id": ExperimentId::new()}),
+            )),
+            ErrorCode::NotFound
+        );
+        let fresh = system_candidate(&mut store);
+        let mut args = evidence_args(&fresh);
+        args["experiment"] = lab_details(Some(&GenerationId::new()));
+        assert_eq!(
+            code_of(call(&mut store, "generation.evidence", &args)),
+            ErrorCode::NotFound
+        );
+        args["experiment"] = lab_details(Some(&fresh));
+        assert_eq!(
+            code_of(call(&mut store, "generation.evidence", &args)),
+            ErrorCode::InvalidArgument
+        );
     }
 
     #[test]

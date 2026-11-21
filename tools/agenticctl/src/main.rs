@@ -58,6 +58,8 @@ enum Command {
     Device(DeviceArgs),
     #[command(about = "Inspect or reassign data ownership (Admin, audited).")]
     Ownership(OwnershipArgs),
+    #[command(about = "Read the acceptance records of Generations (Admin).")]
+    Experiment(ExperimentArgs),
     #[command(about = "List the capability catalog.")]
     Capability,
 }
@@ -286,6 +288,12 @@ enum GenerationAction {
         outcome: String,
         #[arg(long, help = "SHA-256 of the evidence archive.")]
         evidence_sha256: String,
+        #[arg(
+            long,
+            help = "JSON file with the Experiment details: hypothesis, baseline, test_plan, \
+                    metrics, artifacts, lane."
+        )]
+        experiment_file: Option<PathBuf>,
         #[arg(long, help = "Reason recorded in the admin audit log.")]
         reason: String,
     },
@@ -302,6 +310,8 @@ enum GenerationAction {
     Reject {
         #[arg(help = "Generation id.")]
         id: String,
+        #[arg(long, help = "Recorded Experiment this rejection decides.")]
+        experiment: Option<String>,
         #[arg(long, help = "Reason recorded in the admin audit log.")]
         reason: String,
     },
@@ -498,6 +508,28 @@ enum OwnershipAction {
     },
 }
 
+#[derive(Debug, Args)]
+struct ExperimentArgs {
+    #[command(subcommand)]
+    action: ExperimentAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum ExperimentAction {
+    #[command(about = "Show one Experiment with its metrics and artifacts.")]
+    Inspect {
+        #[arg(help = "Experiment id.")]
+        id: String,
+    },
+    #[command(about = "List Experiments, newest first.")]
+    List {
+        #[arg(long, help = "Only Experiments about this Generation.")]
+        candidate: Option<String>,
+        #[arg(long, help = "At most this many (1..200, default 50).")]
+        limit: Option<usize>,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum DeviceAction {
     #[command(about = "Read local memory observations and explicit enforcement limits.")]
@@ -539,6 +571,7 @@ async fn dispatch(runtime_dir: &std::path::Path, command: Command) -> Result<Val
         Command::Model(action) => dispatch_model(runtime_dir, action.action).await,
         Command::Device(action) => dispatch_device(runtime_dir, action.action).await,
         Command::Ownership(action) => dispatch_ownership(runtime_dir, action.action).await,
+        Command::Experiment(action) => dispatch_experiment(runtime_dir, action.action).await,
         Command::Capability => {
             let response = call(
                 &socket(runtime_dir, "capabilityd"),
@@ -753,16 +786,23 @@ async fn dispatch_generation(
             id,
             outcome,
             evidence_sha256,
+            experiment_file,
             reason,
-        } => Payload::Command {
-            name: "generation.evidence".into(),
-            args: serde_json::json!({
+        } => {
+            let mut args = serde_json::json!({
                 "id": id,
                 "outcome": outcome,
                 "evidence_sha256": evidence_sha256,
                 "reason": reason,
-            }),
-        },
+            });
+            if let Some(path) = experiment_file {
+                args["experiment"] = read_experiment_file(&path)?;
+            }
+            Payload::Command {
+                name: "generation.evidence".into(),
+                args,
+            }
+        }
         GenerationAction::Test {
             id,
             experiment,
@@ -771,9 +811,13 @@ async fn dispatch_generation(
             name: "generation.test".into(),
             args: serde_json::json!({ "id": id, "experiment": experiment, "reason": reason }),
         },
-        GenerationAction::Reject { id, reason } => Payload::Command {
+        GenerationAction::Reject {
+            id,
+            experiment,
+            reason,
+        } => Payload::Command {
             name: "generation.reject".into(),
-            args: serde_json::json!({ "id": id, "reason": reason }),
+            args: serde_json::json!({ "id": id, "experiment": experiment, "reason": reason }),
         },
         GenerationAction::Revoke { id, reason } => Payload::Command {
             name: "generation.revoke".into(),
@@ -949,6 +993,49 @@ async fn dispatch_ownership(
         },
     };
     reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
+}
+
+async fn dispatch_experiment(
+    runtime_dir: &std::path::Path,
+    action: ExperimentAction,
+) -> Result<Value> {
+    let payload = match action {
+        ExperimentAction::Inspect { id } => Payload::Command {
+            name: "experiment.inspect".into(),
+            args: serde_json::json!({ "id": id }),
+        },
+        ExperimentAction::List { candidate, limit } => Payload::Command {
+            name: "experiment.list".into(),
+            args: serde_json::json!({ "candidate": candidate, "limit": limit }),
+        },
+    };
+    reply_value(call(&socket(runtime_dir, "flowerlyd"), payload).await?)
+}
+
+/// Largest Experiment details file read; the daemon bounds every field.
+const MAX_EXPERIMENT_FILE: u64 = 1024 * 1024;
+
+fn read_experiment_file(path: &std::path::Path) -> Result<Value> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("opening experiment file {}", path.display()))?;
+    let mut text = String::new();
+    file.take(MAX_EXPERIMENT_FILE + 1)
+        .read_to_string(&mut text)
+        .with_context(|| format!("reading experiment file {}", path.display()))?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_EXPERIMENT_FILE,
+        "experiment file {} is larger than {MAX_EXPERIMENT_FILE} bytes",
+        path.display()
+    );
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("parsing experiment file {}", path.display()))?;
+    anyhow::ensure!(
+        value.is_object(),
+        "experiment file {} must hold a JSON object",
+        path.display()
+    );
+    Ok(value)
 }
 
 fn flow_reference(target: &str) -> Value {
