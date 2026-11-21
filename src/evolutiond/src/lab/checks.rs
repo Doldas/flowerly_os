@@ -99,13 +99,9 @@ fn one(
                     &expected.identity_sha256,
                     facts.identity_sha256.as_deref(),
                 ),
-                same(
-                    "generation",
-                    &expected.generation,
-                    facts.generation.as_deref(),
-                ),
+                same("build id", &expected.build_id, facts.build_id.as_deref()),
             ],
-            "identity and Generation are the ones built",
+            "the identity built for this slot",
         ),
         Check::Root => all(
             [
@@ -176,11 +172,6 @@ fn one(
         Check::Integration => all(
             [
                 flag("Admin round trip", seen.admin_roundtrip),
-                same(
-                    "resolved Generation",
-                    &expected.generation,
-                    seen.generation_resolved.as_deref(),
-                ),
                 flag("evolutiond self-test", seen.evolutiond_self_test),
             ],
             "integrated",
@@ -266,7 +257,10 @@ pub(crate) mod tests {
             (Check::Identity, |r| {
                 r.facts.identity_sha256 = Some("0".repeat(64))
             }),
-            (Check::Identity, |r| r.facts.generation = None),
+            (Check::Identity, |r| r.facts.build_id = None),
+            (Check::Identity, |r| {
+                r.facts.build_id = Some("lab-a".to_owned())
+            }),
             (Check::Root, |r| r.facts.slot = Some("root-a".to_owned())),
             (Check::Root, |r| r.facts.root_partuuid = None),
             (Check::Kernel, |r| {
@@ -289,9 +283,6 @@ pub(crate) mod tests {
             }),
             (Check::Integration, |r| {
                 r.observations.admin_roundtrip = Some(false)
-            }),
-            (Check::Integration, |r| {
-                r.observations.generation_resolved = Some("gen-baseline".to_owned());
             }),
             (Check::Integration, |r| {
                 r.observations.evolutiond_self_test = None

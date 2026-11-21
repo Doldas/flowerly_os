@@ -78,6 +78,7 @@ boot can be followed by the fallback boot it causes.
       "generation": "gen-…",
       "partuuid": "<lowercase UUID>",
       "identity_sha256": "<64 hex>",
+      "build_id": "lab-…",
       "kernel_release": "6.17.1-arch1-1",
       "vmlinuz_sha256": "<64 hex>",
       "packages_sha256": "<64 hex>",
@@ -93,7 +94,8 @@ boot can be followed by the fallback boot it causes.
 Bounds: at most 64 KiB; unknown keys are refused. Paths are absolute,
 UTF-8, without commas or control characters. `smp` 1–16, `memory_mib`
 512–65536, both limits 1–3600 seconds. `expect` describes one or two of
-`root-a` and `root-b`; `packages_sha256` is required in the reproducibility
+`root-a` and `root-b`; `build_id` is 1–64 of `[A-Za-z0-9_.-]`, as flowerlyd
+bounds a root identity; `packages_sha256` is required in the reproducibility
 lane and optional in the upstream lane. `checks` are distinct and include
 `identity`, `root` and `health`. There are 1–8 boots with distinct labels of
 `[a-z][a-z0-9-]`; each boot's slot must hold its subject's Generation
@@ -120,10 +122,16 @@ The JSON has `schema`, `facts` and `observations`; unknown keys are refused
 and anything the probe could not determine is `null`. The probe does not
 judge.
 
+The guest cannot know the host's Generation id: the guest's own flowerlyd has
+its own database. What ties a slot to its Generation is the identity
+document baked into the slot (`/usr/lib/flowerly/generation-root.json`).
+Its hash is `identity_sha256`, and its `build_id` is the one recorded in
+that Generation's root identity (`generation.identity`).
+
 | `facts` | |
 | --- | --- |
 | `slot`, `root_partuuid` | the booted root (`root-a`/`root-b`) and its PARTUUID |
-| `identity_sha256`, `generation` | the baked identity document's hash and Generation |
+| `identity_sha256`, `build_id` | the baked identity document's hash and its `build_id` |
 | `kernel_release`, `vmlinuz_sha256` | the running kernel and its image |
 | `packages_sha256`, `package_count` | hash of the sorted `name version` lines |
 | `binaries` | Flowerly binary name → SHA-256 |
@@ -134,8 +142,7 @@ judge.
 | --- | --- |
 | `health_gate` | `passed`, `failed` or `absent` |
 | `flowerlyd_active`, `status_ok` | `flowerlyd` is active and its status answers |
-| `admin_roundtrip` | an Admin write/read round trip through `agenticctl` |
-| `generation_resolved` | the Generation `agenticctl` resolves |
+| `admin_roundtrip` | as a member of `flowerly-admin`, the probe created a Generation through `agenticctl` and read the same record back |
 | `evolutiond_self_test` | `evolutiond --self-test` succeeded |
 
 ## Checks and the decision
@@ -146,13 +153,13 @@ boot whose process was not verified fails every check.
 
 | Check | Passes when |
 | --- | --- |
-| `identity` | identity hash and Generation equal the slot's expectation |
+| `identity` | identity hash and `build_id` equal the slot's expectation |
 | `root` | the booted slot and PARTUUID are the expected ones |
 | `kernel` | kernel release and `vmlinuz` hash are the ones built |
 | `packages` | reproducibility lane: the frozen package hash; upstream lane: a hash was reported (recorded, not claimed) |
 | `binaries` | every expected binary is present with its hash (an empty expectation fails) |
 | `health` | health gate `passed`, `flowerlyd` active, status answered, no failed units |
-| `integration` | Admin round trip, the expected Generation resolved, `evolutiond --self-test` |
+| `integration` | Admin round trip and `evolutiond --self-test` |
 | `shutdown` | QEMU exited 0 on its own after the report, within the shutdown deadline |
 
 The policy (ADR-0024 D3) is fixed: the verdict is **passed** only when every
@@ -204,6 +211,9 @@ result, and then, through `flowerlyd` as the invoking Admin:
 2. `generation.test` or `generation.reject` with the returned Experiment.
 
 The candidate Generation must already exist with its identity; creating it
-and setting its identity belongs to the candidate build (#412). Recording the
+and setting its identity belongs to the candidate build (#412), which also
+writes the plan, so the plan's `build_id` is the one the Generation's root
+identity records. `generation.inspect` does not return the root identity, so
+`record` cannot compare them itself. Recording the
 same directory again returns the same Experiment from `generation.evidence`;
 the second state change is refused by flowerlyd.

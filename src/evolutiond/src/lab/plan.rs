@@ -139,6 +139,9 @@ pub struct SlotExpectation {
     pub generation: String,
     pub partuuid: String,
     pub identity_sha256: String,
+    /// The `build_id` the slot's identity document and its Generation's
+    /// recorded root identity share.
+    pub build_id: String,
     pub kernel_release: String,
     pub vmlinuz_sha256: String,
     /// Required in the reproducibility lane; the upstream lane records what
@@ -170,6 +173,15 @@ fn is_label(text: &str) -> bool {
         && bytes
             .iter()
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+}
+
+/// The bounds flowerlyd applies to a root identity's `build_id`.
+fn is_build_id(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 fn is_partuuid(text: &str) -> bool {
@@ -278,6 +290,9 @@ impl Plan {
             if !is_partuuid(&expected.partuuid) {
                 return Err(format!("{slot} partuuid is not a lowercase UUID"));
             }
+            if !is_build_id(&expected.build_id) {
+                return Err(format!("{slot} build_id must be 1..64 of [A-Za-z0-9_.-]"));
+            }
             let hashes = [
                 ("identity_sha256", Some(&expected.identity_sha256)),
                 ("vmlinuz_sha256", Some(&expected.vmlinuz_sha256)),
@@ -378,6 +393,7 @@ pub(crate) mod tests {
                     "generation": BASELINE,
                     "partuuid": "00010203-0405-4607-8809-0a0b0c0d0e0f",
                     "identity_sha256": "5".repeat(64),
+                    "build_id": "lab-a",
                     "kernel_release": "6.17.1-arch1-1",
                     "vmlinuz_sha256": "2".repeat(64),
                     "packages_sha256": "3".repeat(64),
@@ -387,6 +403,7 @@ pub(crate) mod tests {
                     "generation": CANDIDATE,
                     "partuuid": "0f0e0d0c-0b0a-4908-8706-050403020100",
                     "identity_sha256": "1".repeat(64),
+                    "build_id": "lab-b",
                     "kernel_release": "6.17.1-arch1-1",
                     "vmlinuz_sha256": "2".repeat(64),
                     "packages_sha256": "3".repeat(64),
@@ -444,6 +461,9 @@ pub(crate) mod tests {
             }),
             ("partuuid", |v| {
                 v["expect"]["root-b"]["partuuid"] = json!("not-a-uuid")
+            }),
+            ("build id", |v| {
+                v["expect"]["root-b"]["build_id"] = json!("../b")
             }),
             ("packages in repro lane", |v| {
                 v["expect"]["root-b"]

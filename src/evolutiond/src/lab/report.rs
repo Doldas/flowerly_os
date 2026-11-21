@@ -42,7 +42,9 @@ pub struct Facts {
     pub root_partuuid: Option<String>,
     /// SHA-256 of the baked identity document.
     pub identity_sha256: Option<String>,
-    pub generation: Option<String>,
+    /// The identity document's `build_id`. The guest cannot know the host's
+    /// Generation id; its root identity records this `build_id`.
+    pub build_id: Option<String>,
     pub kernel_release: Option<String>,
     pub vmlinuz_sha256: Option<String>,
     /// SHA-256 of the sorted `name version` lines of the installed packages.
@@ -65,10 +67,9 @@ pub struct Observations {
     pub flowerlyd_active: Option<bool>,
     /// `agenticctl status` answered.
     pub status_ok: Option<bool>,
-    /// An Admin write/read round trip through `agenticctl` succeeded.
+    /// As a member of `flowerly-admin`, the probe created a Generation
+    /// through `agenticctl` and read the same record back.
     pub admin_roundtrip: Option<bool>,
-    /// The Generation `agenticctl generation current` resolved.
-    pub generation_resolved: Option<String>,
     pub evolutiond_self_test: Option<bool>,
 }
 
@@ -216,7 +217,7 @@ pub(crate) mod tests {
                 slot: Some("root-b".to_owned()),
                 root_partuuid: Some("0f0e0d0c-0b0a-4908-8706-050403020100".to_owned()),
                 identity_sha256: Some("1".repeat(64)),
-                generation: Some("gen-candidate".to_owned()),
+                build_id: Some("lab-b".to_owned()),
                 kernel_release: Some("6.17.1-arch1-1".to_owned()),
                 vmlinuz_sha256: Some("2".repeat(64)),
                 packages_sha256: Some("3".repeat(64)),
@@ -233,7 +234,6 @@ pub(crate) mod tests {
                 flowerlyd_active: Some(true),
                 status_ok: Some(true),
                 admin_roundtrip: Some(true),
-                generation_resolved: Some("gen-candidate".to_owned()),
                 evolutiond_self_test: Some(true),
             },
         }
