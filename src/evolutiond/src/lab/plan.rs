@@ -528,4 +528,51 @@ pub(crate) mod tests {
         }
         assert!(Plan::parse(&serde_json::to_vec(&value).unwrap()).is_ok());
     }
+
+    /// What `scripts/lab-candidate.py prepare --scenario rollback` writes for
+    /// its test fixture; `scripts/test-lab-candidate.py` proves it still does.
+    const PREPARED_ROLLBACK: &str =
+        include_str!("../../../../testbed/evolution-world/fixtures/lab-plan-rollback.json");
+
+    /// What the same tool boots first on each run's copy: slot A alone, as
+    /// the machine's first boot, before slot B is armed. Never recorded.
+    const PREPARED_INITIAL: &str =
+        include_str!("../../../../testbed/evolution-world/fixtures/lab-plan-initial.json");
+
+    #[test]
+    fn the_candidate_tools_initial_plan_is_valid() {
+        let plan = Plan::parse(PREPARED_INITIAL.as_bytes()).unwrap();
+        assert_eq!(plan.lane, ExperimentLane::Reproducibility);
+        assert_eq!(plan.baseline, None);
+        assert_eq!(plan.candidate.generation, BASELINE);
+        assert_eq!(plan.expect.keys().collect::<Vec<_>>(), ["root-a"]);
+        assert_ne!(plan.hypothesis(), DEFAULT_HYPOTHESIS);
+        let boots: Vec<_> = plan
+            .boots
+            .iter()
+            .map(|b| (b.label.as_str(), b.subject, b.slot.as_str()))
+            .collect();
+        assert_eq!(boots, [("initial", Subject::Candidate, "root-a")]);
+    }
+
+    #[test]
+    fn the_candidate_tools_rollback_plan_is_valid() {
+        let plan = Plan::parse(PREPARED_ROLLBACK.as_bytes()).unwrap();
+        assert_eq!(plan.lane, ExperimentLane::Reproducibility);
+        assert_eq!(plan.checks.len(), 8);
+        assert_ne!(plan.hypothesis(), DEFAULT_HYPOTHESIS);
+        let boots: Vec<_> = plan
+            .boots
+            .iter()
+            .map(|b| (b.label.as_str(), b.subject, b.slot.as_str()))
+            .collect();
+        assert_eq!(
+            boots,
+            [
+                ("candidate-1", Subject::Candidate, "root-b"),
+                ("candidate-2", Subject::Candidate, "root-b"),
+                ("fallback", Subject::Baseline, "root-a"),
+            ]
+        );
+    }
 }

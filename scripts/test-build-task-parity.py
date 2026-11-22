@@ -105,12 +105,18 @@ assert make["status"][1] == ["./scripts/dev-runtime.sh status"]
 assert "check-image-inputs.sh" in " ".join(make["image-inputs"][1])
 assert "check-image-inputs.sh" in " ".join(just["image-inputs"][1])
 assert make["image-rootfs"] == just["image-rootfs"], "image-rootfs tasks differ"
-for name in ("image", "vm", "vm-test"):
+for name in ("image", "vm"):
     for flavor, recipeset in (("make", make), ("just", just)):
         joined = "\n".join(recipeset[name][1])
         assert "exit 1" in joined or "exit 1" in joined.replace("@", ""), (
             f"{flavor} {name} must fail closed until implemented"
         )
+# vm-test is the Evolution Lab KVM run (ADR-0024); both runners call the
+# same script, which builds what it boots itself.
+assert make["vm-test"] == just["vm-test"] == ([], ["bash ./scripts/vm-test.sh"]), (
+    make["vm-test"],
+    just["vm-test"],
+)
 assert "web-docs/docs/releases.md" in MAKE, "release doc link must use actual case"
 assert (ROOT / "web-docs/docs/releases.md").is_file()
 assert "docs/RELEASES.md" not in MAKE

@@ -9,4 +9,10 @@ its unit in `systemd/`, its test-only Admin account in `sysusers/`, and in
 an A/B test image. The KVM harness that boots it is `evolutiond lab`; see
 `web-docs/docs/evolution-lab.md`.
 
+`just vm-test` (#412) builds a lab candidate with
+`scripts/build-lab-candidate.sh` and boots it. `fixtures/lab-plan-initial.json`
+(the unrecorded first boot of slot A) and `fixtures/lab-plan-rollback.json` are
+the plans `scripts/lab-candidate.py prepare` writes for its test fixture,
+which the host's plan tests parse.
+
 No privileged host fallback is allowed.
