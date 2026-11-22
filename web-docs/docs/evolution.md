@@ -41,7 +41,9 @@ promotion decision ──►  promote to STABLE or reject
 One command, `just vm-test`, builds a Flowerly lab candidate, boots it under
 QEMU/KVM, verifies what the guest reports, and records success or failure in a
 private `flowerlyd` ([Evolution Lab](evolution-lab.md)). It is implemented
-(0.0.6, #412); real KVM acceptance of the lab (#413) is still to come.
+(0.0.6, #412); real KVM acceptance of the lab (#413) is still to come. Its
+design is [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) and its
+work plan is the [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md).
 
 A precursor is now implemented as the nightly Arch-kernel system test. It boots
 the official Arch Linux cloud image under QEMU/KVM, performs a full
