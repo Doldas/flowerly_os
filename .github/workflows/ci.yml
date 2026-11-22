@@ -102,9 +102,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
+          # target/ embeds absolute paths (env!("CARGO_MANIFEST_DIR")) that Cargo
+          # does not rebuild when the workspace moves, so never restore it into
+          # a different checkout path.
+          key: ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-cargo-${{ github.workspace }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
           restore-keys: |
-            ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-cargo-
+            ${{ env.FLOWERLY_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-cargo-${{ github.workspace }}-
 
       - name: Format check
         run: just fmt-check
