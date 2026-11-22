@@ -225,6 +225,8 @@ instead of an abstract future distribution.
 
 ## 0.0.6 — Evolution Lab
 
+- **Status:** released as `v0.0.6` (2026-11-22); milestone closed. See the [plan's release record](release-0.0.6-evolution-lab-plan.md).
+
 - **Goal:** build and test candidate generations inside KVM automatically.
 - **Key deliverables:** `evolution/vm`, `evolution/benchmarks`, and
   `evolution/promotion`; automated candidate build to KVM boot, health test,

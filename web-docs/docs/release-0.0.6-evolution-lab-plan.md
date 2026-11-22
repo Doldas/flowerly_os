@@ -1,6 +1,6 @@
 # Flowerly OS 0.0.6 — Evolution Lab implementation and acceptance plan
 
-Status: **Started 2026-11-21.** Design: [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md)
+Status: **Released as v0.0.6 on 2026-11-22.** All workstreams (E1–E6) merged and accepted; milestone closed. Started 2026-11-21. Design: [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md)
 (accepted 2026-11-22). Tracking: [#10](https://github.com/Doldas/flowerly_os/issues/10)
 (roadmap) and [#3](https://github.com/Doldas/flowerly_os/issues/3)
 (vertical slice, `just vm-test`).
@@ -14,11 +14,8 @@ healthy fallback ([review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.
 on 2026-11-22. The upstream lane's first networked run, at the same commit,
 passed all three scenarios too; it is not reproducibility evidence.
 
-Open:
-
-- E5: the owner's review of the evidence.
-- The CI job's first run on the runner. GitHub allows it only once the
-  workflow is on the default branch.
+Nothing is open: the owner accepted the evidence and ADR-0024, and the opt-in
+CI job has run on the runner (see the release record).
 
 ## Baseline and branch discipline
 
@@ -137,6 +134,24 @@ Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414). Merged PR:
 - An opt-in `workflow_dispatch` job on the self-hosted KVM runner that runs
   `just vm-test` and uploads the result; not a required check until it has
   run cleanly on the runner.
+
+## Release record (2026-11-22)
+
+| Item | Result |
+| --- | --- |
+| Exact-SHA KVM acceptance, reproducibility lane | `good` TESTED, `bad` REJECTED, `rollback` REJECTED with healthy fallback, at `7ce5942` (archived, `check` exits 0) |
+| `lab-vm-test` on `master` (reproducibility, all scenarios, `accel: kvm`) | PASS, run 45050611328 on `94e4aea`; `good` TESTED, `bad` REJECTED, `rollback` REJECTED + healthy fallback to root-a |
+| Earlier `lab-vm-test` runs | 45033918983 and 45035394982 failed (socket path too long under the deep work tree, fixed in #426); 45036373578 passed at `ea10e70` |
+| Upstream lane | first networked run passed all three scenarios; claims no package set |
+| release/2 push CI | PASS on `b6be94e` (run 45047530206); master push CI PASS on `94e4aea` (run 45050523717) |
+| Promotion | #424 (`ea10e70`) and #427 (`94e4aea`); ancestry reconciled by #430 |
+| Tag and Release | `v0.0.6` |
+| Issues | #409, #410, #411, #412, #413, #414, #3 and #10 closed; milestone 0.0.6 closed |
+
+Evidence was found on the way, not assumed: the first runner runs exposed the
+`sun_path` limit (#426) and a stale cargo cache after the runner's work
+directory moved (#428). The upstream lane is still a compatibility signal, not
+reproducibility evidence.
 
 ## Deliberately out of scope
 
