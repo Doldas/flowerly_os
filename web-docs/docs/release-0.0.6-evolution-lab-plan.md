@@ -5,6 +5,15 @@ Status: **Started 2026-11-21.** Design: [ADR-0024](adr/0024-evolution-lab-experi
 (roadmap) and [#3](https://github.com/Doldas/flowerly_os/issues/3)
 (vertical slice, `just vm-test`).
 
+## Progress
+
+E1–E4 and E6 are implemented as stacked draft PRs (#416 → #417 → #418 →
+#419 → #420), each tested locally. Local KVM development runs of the
+reproducibility lane pass all three scenarios; they are not acceptance
+evidence. Open: E5 (exact-SHA KVM evidence, owner approved), the upstream
+lane's first networked run, and the CI job's first run on the runner, which
+GitHub allows only once the workflow is on the default branch.
+
 ## Baseline and branch discipline
 
 - v0.0.5 is published (tag `v0.0.5`; promotion #388 as `cd29a9d` on `master`).
@@ -43,7 +52,8 @@ Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409). Draft PR:
 
 ### E2 — `evolutiond lab` (Rust: `vm`, `benchmarks`, `promotion`)
 
-Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410).
+Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410). Draft PR:
+[#417](https://github.com/Doldas/flowerly_os/pull/417).
 
 - Plan (`flowerly-lab-plan/v1`) and result (`flowerly-lab-result/v1`)
   documents with canonical JSON and SHA-256.
@@ -63,7 +73,8 @@ Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410).
 
 ### E3 — Guest probe (test profile)
 
-Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411).
+Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411). Draft PR:
+[#418](https://github.com/Doldas/flowerly_os/pull/418).
 
 - `testbed/evolution-world/lab-probe.py`, its unit (ordered after
   `flowerlyd` and the health gate, before the serial getty) and a sysusers
@@ -80,7 +91,8 @@ Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411).
 
 ### E4 — Candidate build and `just vm-test`
 
-Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412).
+Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412). Draft PR:
+[#419](https://github.com/Doldas/flowerly_os/pull/419).
 
 - `scripts/build-lab-candidate.sh`: slot images from the pinned rootfs, the
   probe installed, A/B disk, optional bad candidate and armed B.
@@ -105,7 +117,8 @@ Issue: [#413](https://github.com/Doldas/flowerly_os/issues/413).
 
 ### E6 — Lanes and CI
 
-Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414).
+Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414). Draft PR:
+[#420](https://github.com/Doldas/flowerly_os/pull/420).
 
 - Upstream lane switch (D6) and its result marking.
 - An opt-in `workflow_dispatch` job on the self-hosted KVM runner that runs
