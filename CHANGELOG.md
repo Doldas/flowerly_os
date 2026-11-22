@@ -5,6 +5,31 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+## 0.0.6 — Evolution Lab (2026-11-22)
+
+- Evolution Lab released: `just vm-test` builds a candidate Generation, boots it
+  under QEMU/KVM, checks it with a guest probe and a host-side policy, and
+  records the outcome as an Experiment with provenance. Scenarios `good`
+  (TESTED), `bad` (REJECTED) and `rollback` (REJECTED, then a healthy fallback
+  to root-a); the lab never activates a Generation. Accepted by the owner in
+  ADR-0024 (#409–#414, issues #10 and #3).
+- Real KVM acceptance, reproducibility lane, all scenarios: at `7ce5942`
+  (archived evidence) and again through the opt-in `lab-vm-test` workflow on
+  `master` `94e4aea` (run 45050611328, `accel: kvm`). Promoted to `master` in
+  #424 and #427.
+- The `lab-vm-test` workflow's first runs on the self-hosted runner found two
+  host/CI problems, both fixed: the lab's private `flowerlyd` socket path
+  exceeded `sun_path` under a deep runner work tree (#426, now a short
+  `mktemp` runtime directory), and the cargo cache restored a `target/` built
+  under another checkout path, which broke `distro-builder`'s manifest tests
+  after the runner work directory moved (#428, the cache key now includes the
+  checkout path).
+- `master` receives promotions as squash commits. Each promotion therefore needs
+  a `-s ours` merge of `master` into `release/2` (merged as a merge commit)
+  first, as in #368 and #430.
+
+### Changes since 0.0.5 (carried over from Unreleased)
+
 - Complete Experiment records (#409, ADR-0024 D5): `generation.evidence` takes
   an optional `experiment` object (hypothesis, baseline, test plan, metrics,
   content-addressed artifacts with `produced` edges); `generation.test` and
