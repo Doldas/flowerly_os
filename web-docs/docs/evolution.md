@@ -51,8 +51,12 @@ Flowerly build/test/runtime smoke suite inside that guest. It validates the real
 rolling substrate while the Flowerly generation image builder is being built;
 it does not yet claim to boot a Flowerly generation.
 
-`evolutiond` currently remains a stub that exposes a health contract
-(`evolution.experiment-status` returns `idle`).
+The `evolutiond` daemon remains a stub that exposes a health contract
+(`evolution.experiment-status` returns `idle`). The Evolution Lab
+(`evolutiond lab`, 0.0.6) is a foreground command that boots a candidate disk
+under QEMU/KVM, checks the guest's report, and records the candidate as
+`TESTED` or `REJECTED`; it never promotes or activates. See
+[evolution-lab.md](evolution-lab.md).
 
 ## Experiment record
 
@@ -72,13 +76,15 @@ generations and goals. See [provenance.md](provenance.md).
 ## Implementation status and requirements
 
 - **Implemented:** `evolutiond` stub; the `Generation` and experiment storage
-  models that the pipeline will populate.
+  models that the pipeline will populate; `evolutiond lab` (QEMU boots, checks,
+  benchmarks, the fail-closed `TESTED`/`REJECTED` policy and verifiable results),
+  tested locally without a real KVM run yet.
 - **Implemented precursor:** nightly/manual official-Arch VM harness with
   KVM-preferred/QEMU-TCG fallback, rolling upgrade + reboot, whole-project
   verification, daemon smoke test and retained evidence artifacts.
-- **Planned:** the Flowerly candidate-image builder, `just vm-test`, generation
-  manifest verification, benchmarks, multidimensional fitness evaluation, and
-  promotion/rejection policy.
+- **Planned:** the in-guest lab probe, the Flowerly candidate-image builder,
+  `just vm-test`, real KVM acceptance of the lab, and multidimensional fitness
+  evaluation.
 - **Environment requirement:** the heavyweight nightly test uses the
   `flowerly-runner` with QEMU; KVM is preferred when available and TCG is a
   correctness fallback.

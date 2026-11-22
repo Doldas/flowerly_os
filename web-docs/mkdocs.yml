@@ -40,6 +40,7 @@ nav:
       - Goal Model: goal-model.md
       - Generations: generations.md
       - Evolution: evolution.md
+      - Evolution Lab: evolution-lab.md
       - Provenance: provenance.md
       - Capabilities: capabilities.md
       - Command Authorization: command-authorization.md
