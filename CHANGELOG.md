@@ -49,6 +49,12 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   container (network). The `lab-vm-test` workflow runs the lab on the
   self-hosted KVM runner on `workflow_dispatch` only; it is not a required
   check and has not run yet. The candidate build now also runs as root.
+- `scripts/archive-lab-evidence.py` (#413, ADR-0024): collects one exact-SHA
+  `vm-test` session's three scenarios (reproducibility lane, one candidate)
+  into a review directory with `evidence.json` (`flowerly-lab-evidence/v1`),
+  refusing a wrong commit or lane, a missing scenario, an unexpected outcome,
+  a file that differs from its recorded hash, or a copy `evolutiond lab verify`
+  refuses; `check` re-reads an archive. No acceptance run yet.
 
 ## 0.0.5 — Generations (2026-11-20)
 

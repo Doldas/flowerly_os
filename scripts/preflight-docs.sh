@@ -33,6 +33,7 @@ python3 scripts/test-lab-probe.py
 bash -n scripts/prepare-lab-probe-rootfs.sh
 python3 scripts/test-lab-candidate.py
 bash -n scripts/build-lab-candidate.sh scripts/vm-test.sh
+python3 scripts/test-archive-lab-evidence.py
 python3 scripts/test-schema-compat.py --self-test
 bash -n scripts/prepare-generation-ab-rootfs.sh
 bash -n scripts/build-g5-test-image.sh

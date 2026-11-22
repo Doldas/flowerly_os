@@ -432,3 +432,44 @@ The runner's jobs run as root, so the candidate build works on the rootfs
 directly instead of inside `podman unshare`. The job is not a required
 check, and GitHub can dispatch it only once the workflow file is on the
 default branch; it has not run on the runner yet.
+
+## Acceptance evidence (#413)
+
+Acceptance is one `vm-test` session at an exact commit: the three scenarios
+in the reproducibility lane, from one candidate built at that commit, on a
+real KVM host. Development runs are not evidence. Run the scenarios with the
+candidate reused, then archive them:
+
+```sh
+FLOWERLY_LAB_OUT=target/lab/acc-good bash scripts/vm-test.sh --scenario good
+export FLOWERLY_LAB_CANDIDATE=target/lab/acc-good/candidate
+FLOWERLY_LAB_OUT=target/lab/acc-bad bash scripts/vm-test.sh --scenario bad
+FLOWERLY_LAB_OUT=target/lab/acc-rollback bash scripts/vm-test.sh --scenario rollback
+python3 scripts/archive-lab-evidence.py archive \
+    web-docs/docs/reviews/evidence/0010-evolution-lab-<sha7> \
+    --source-commit "$(git rev-parse HEAD)" \
+    --candidate target/lab/acc-good/candidate \
+    --evolutiond target/release/evolutiond \
+    good=target/lab/acc-good bad=target/lab/acc-bad rollback=target/lab/acc-rollback
+```
+
+`scripts/archive-lab-evidence.py archive` copies each scenario's recorded
+result directory and its initial boot's (plan, `result.json`,
+`result.sha256`, every serial log and probe report the result names), the
+private flowerlyd's log and `candidate.json`; never disks, firmware variables
+or databases. It refuses the archive, and leaves nothing behind, when:
+
+- the candidate was not built at the commit, or is from the upstream lane;
+- a scenario is missing or repeated;
+- a plan expects slots other than the candidate's;
+- a file differs from the hash its result records;
+- an outcome is not the scenario's. `good` must pass and recommend test.
+  `bad` must fail and recommend reject. `rollback` must fail, recommend
+  reject, and boot a healthy fallback to root-a. Every initial boot must pass;
+- `evolutiond lab verify` refuses a copied result directory.
+
+It then writes `evidence.json` (`flowerly-lab-evidence/v1`): the commit, the
+lane, each scenario's outcome and result digests, and the SHA-256 of every
+other archived file. `archive-lab-evidence.py check DIR [--evolutiond BIN]`
+re-reads an archive for review. The review note beside the evidence names
+the host, QEMU and OVMF, and is what the owner accepts.
