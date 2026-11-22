@@ -83,6 +83,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # flowerly-runner is itself a container with an overlayfs root, which
+          # nested podman's overlay driver cannot sit on; keep its image store
+          # on the ext4 cache volume and its runtime state in the job's temp.
+          storage="$HOME/.cache/flowerly/containers"
+          mkdir -p "$storage" "$RUNNER_TEMP/containers-run"
+          printf '[storage]\ndriver = "overlay"\ngraphroot = "%s"\nrunroot = "%s"\n' \
+              "$storage" "$RUNNER_TEMP/containers-run" > "$RUNNER_TEMP/storage.conf"
+          export CONTAINERS_STORAGE_CONF="$RUNNER_TEMP/storage.conf"
           if [[ "$LANE" == reproducibility ]]; then
               # Keyed by everything the pinned build reads.
               key="$(git ls-files -s -- distro/base-image/arch distro/base-image/arch-initrd \
