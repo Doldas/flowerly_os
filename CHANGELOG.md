@@ -18,6 +18,15 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   planned checks host-side; writes a canonical, re-verifiable result; and
   records it as Experiment evidence followed by `generation.test` or
   `generation.reject`. Fail closed; it never activates. No real KVM run yet.
+- Evolution Lab guest probe (#411, ADR-0024 D2), A/B test images only:
+  `flowerly-lab-probe.service` reports the booted slot, identity, kernel,
+  packages, binaries, boot phases, failed units, health gate, an audited Admin
+  round trip and `evolutiond --self-test` on the serial console, then powers
+  the guest off. It reads the image's files from the root filesystem without
+  the tmpfs mounted over `/var`, which hides the pacman database.
+  `scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile`
+  installs it; a shared console fixture ties its output to the host parser.
+  Never in the shipped distro. No real KVM run yet.
 
 ## 0.0.5 — Generations (2026-11-20)
 
