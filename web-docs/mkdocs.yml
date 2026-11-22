@@ -66,6 +66,7 @@ nav:
       - 0.0.5 Generations Plan: release-0.0.5-generations-plan.md
       - 0.0.5 Readiness (2026-11-17): release-0.0.5-readiness-2026-11-17.md
       - 0.0.5 Step 1 Plan: release-0.0.5-step1-ab-boot-rollback-plan.md
+      - 0.0.6 Evolution Lab Plan: release-0.0.6-evolution-lab-plan.md
       - Releases: releases.md
       - Build Guide: build.md
   - Contributing: contributing.md
