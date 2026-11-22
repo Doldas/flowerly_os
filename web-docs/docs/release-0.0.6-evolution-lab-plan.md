@@ -10,9 +10,15 @@ Status: **Started 2026-11-21.** Design: [ADR-0024](adr/0024-evolution-lab-experi
 E1–E4 and E6 are implemented as stacked draft PRs (#416 → #417 → #418 →
 #419 → #420), each tested locally. Local KVM development runs of the
 reproducibility lane pass all three scenarios; they are not acceptance
-evidence. Open: E5 (exact-SHA KVM evidence, owner approved), the upstream
-lane's first networked run, and the CI job's first run on the runner, which
-GitHub allows only once the workflow is on the default branch.
+evidence. E5's archive tool is draft PR #421 on top of them.
+
+Open:
+
+- E5: the exact-SHA KVM evidence. The owner approved it, to run once
+  #416–#420 are merged, on the `release/2` SHA.
+- The upstream lane's first networked run.
+- The CI job's first run on the runner. GitHub allows it only once the
+  workflow is on the default branch.
 
 ## Baseline and branch discipline
 
@@ -108,11 +114,16 @@ Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412). Draft PR:
 
 ### E5 — Real KVM acceptance
 
-Issue: [#413](https://github.com/Doldas/flowerly_os/issues/413).
+Issue: [#413](https://github.com/Doldas/flowerly_os/issues/413). Archive
+tool draft PR: [#421](https://github.com/Doldas/flowerly_os/pull/421).
 
-- Run the three ADR-0024 scenarios on the exact PR SHA; archive results,
-  serial logs and hashes under `reviews/evidence/0010-evolution-lab-<sha>`
-  with a review note.
+- After #416–#420 are merged, run the three ADR-0024 scenarios on
+  `release/2`'s exact SHA against one reproducibility-lane candidate.
+- `scripts/archive-lab-evidence.py archive` checks the three runs against
+  the candidate and the SHA. It then archives the plans, results, serial
+  logs and hashes under `reviews/evidence/0010-evolution-lab-<sha7>`, and a
+  review note is added. `archive-lab-evidence.py check` re-verifies the
+  archive.
 - **Exit:** owner review of the evidence.
 
 ### E6 — Lanes and CI
