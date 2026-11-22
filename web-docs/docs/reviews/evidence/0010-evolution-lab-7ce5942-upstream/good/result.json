@@ -1,0 +1,145 @@
+{
+  "accel": "kvm",
+  "artifacts": [
+    {
+      "bytes": 2489,
+      "kind": "plan",
+      "name": "plan.json",
+      "sha256": "7a2868adfeee9ae9cc25fe82c84f7a87e34002f1d5ffce4ab8cbb1b502369333"
+    },
+    {
+      "bytes": 48729,
+      "kind": "serial-log",
+      "name": "1-candidate.serial.log",
+      "sha256": "39b5611bee6f0dc975d336e347a5f91c25d8afd0fb51fc112b517930655054a2"
+    },
+    {
+      "bytes": 1010,
+      "kind": "probe-report",
+      "name": "1-candidate.report.json",
+      "sha256": "327a71d6e2f16545a48090b074b209fe51ff148c5ba640616222b1c94910eaa2"
+    }
+  ],
+  "baseline": "gen-07ddc74279984f29a29d57a8ccdc2f2b",
+  "boots": [
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "healthy",
+          "passed": true
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "recorded, not claimed: 18ba60b748f36dc6c8687ecd81fc600d094462f80694db4a3092dc407e2ced20",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "candidate",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "3ac1519550724b0cffc2ebfc87175e177af98877ad05a9634bebd0ff27d59d6b",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.4,
+        "to_report": 11.409
+      },
+      "report": {
+        "error": null,
+        "file": "1-candidate.report.json",
+        "sha256": "327a71d6e2f16545a48090b074b209fe51ff148c5ba640616222b1c94910eaa2",
+        "status": "received"
+      },
+      "serial": "1-candidate.serial.log",
+      "slot": "root-b",
+      "subject": "candidate"
+    }
+  ],
+  "candidate": "gen-b9548b2674404b9198f480a0fff47980",
+  "decision": {
+    "fallback": null,
+    "reasons": [],
+    "recommendation": "test",
+    "verdict": "passed"
+  },
+  "disk": {
+    "allocated_bytes": 3716571136,
+    "bytes": 7249854464,
+    "sha256": "88668ddc89883b8c518a550aeee8cfe164c9c75d699d74fc41ada2adfac13368"
+  },
+  "evolutiond": "0.0.1",
+  "firmware": {
+    "code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+    "vars_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+  },
+  "lane": "upstream",
+  "metrics": [
+    {
+      "name": "candidate.boot_to_report_s",
+      "unit": "s",
+      "value": 11.409
+    },
+    {
+      "name": "candidate.shutdown_s",
+      "unit": "s",
+      "value": 0.4
+    },
+    {
+      "name": "candidate.phase.kernel_ms",
+      "unit": "ms",
+      "value": 1055.524
+    },
+    {
+      "name": "candidate.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2466.603
+    },
+    {
+      "name": "candidate.phase.userspace_ms",
+      "unit": "ms",
+      "value": 6078.272
+    },
+    {
+      "name": "disk.bytes",
+      "unit": "bytes",
+      "value": 7249854464.0
+    },
+    {
+      "name": "disk.allocated_bytes",
+      "unit": "bytes",
+      "value": 3716571136.0
+    }
+  ],
+  "plan_sha256": "7a2868adfeee9ae9cc25fe82c84f7a87e34002f1d5ffce4ab8cbb1b502369333",
+  "qemu": {
+    "path": "/usr/bin/qemu-system-x86_64",
+    "sha256": "fa552a45c337a88fe71e1e1af9ebace875f30e88685a6986d9406c92efaf44cb"
+  },
+  "schema": "flowerly-lab-result/v1"
+}

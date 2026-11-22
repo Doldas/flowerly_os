@@ -1,0 +1,147 @@
+{
+  "accel": "kvm",
+  "artifacts": [
+    {
+      "bytes": 2488,
+      "kind": "plan",
+      "name": "plan.json",
+      "sha256": "373f76538e2ff130f63fcc8c089558ce1c557b482f2f3d05d5a755c6cf43bfe7"
+    },
+    {
+      "bytes": 48637,
+      "kind": "serial-log",
+      "name": "1-candidate.serial.log",
+      "sha256": "6a4f9ac092180f16194cde859d731f67f0d111a7d5e927533ebcd1544d11bc94"
+    },
+    {
+      "bytes": 1046,
+      "kind": "probe-report",
+      "name": "1-candidate.report.json",
+      "sha256": "a2b569ffee8be1916c40cf033f34e4bc418f1eb99bd7c697442a2befad905bb5"
+    }
+  ],
+  "baseline": "gen-df418f4a02154aa79c3d689f1c2398a6",
+  "boots": [
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service",
+          "passed": false
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "recorded, not claimed: 18ba60b748f36dc6c8687ecd81fc600d094462f80694db4a3092dc407e2ced20",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "candidate",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "99193497b9768ec25e800b866f3cb38aecd7bf5de5f0c43f7bf409b20cbaf107",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.4,
+        "to_report": 11.41
+      },
+      "report": {
+        "error": null,
+        "file": "1-candidate.report.json",
+        "sha256": "a2b569ffee8be1916c40cf033f34e4bc418f1eb99bd7c697442a2befad905bb5",
+        "status": "received"
+      },
+      "serial": "1-candidate.serial.log",
+      "slot": "root-b",
+      "subject": "candidate"
+    }
+  ],
+  "candidate": "gen-9e854d96f36b4c0484a7cb4207c61a1f",
+  "decision": {
+    "fallback": null,
+    "reasons": [
+      "candidate: health failed: health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service"
+    ],
+    "recommendation": "reject",
+    "verdict": "failed"
+  },
+  "disk": {
+    "allocated_bytes": 3716567040,
+    "bytes": 7249854464,
+    "sha256": "55d08b63fb01155d8ba354fafc9a180cd102f44146bce21b4da78a97398357ed"
+  },
+  "evolutiond": "0.0.1",
+  "firmware": {
+    "code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+    "vars_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+  },
+  "lane": "upstream",
+  "metrics": [
+    {
+      "name": "candidate.boot_to_report_s",
+      "unit": "s",
+      "value": 11.41
+    },
+    {
+      "name": "candidate.shutdown_s",
+      "unit": "s",
+      "value": 0.4
+    },
+    {
+      "name": "candidate.phase.kernel_ms",
+      "unit": "ms",
+      "value": 1096.237
+    },
+    {
+      "name": "candidate.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2447.169
+    },
+    {
+      "name": "candidate.phase.userspace_ms",
+      "unit": "ms",
+      "value": 6111.935
+    },
+    {
+      "name": "disk.bytes",
+      "unit": "bytes",
+      "value": 7249854464.0
+    },
+    {
+      "name": "disk.allocated_bytes",
+      "unit": "bytes",
+      "value": 3716567040.0
+    }
+  ],
+  "plan_sha256": "373f76538e2ff130f63fcc8c089558ce1c557b482f2f3d05d5a755c6cf43bfe7",
+  "qemu": {
+    "path": "/usr/bin/qemu-system-x86_64",
+    "sha256": "fa552a45c337a88fe71e1e1af9ebace875f30e88685a6986d9406c92efaf44cb"
+  },
+  "schema": "flowerly-lab-result/v1"
+}

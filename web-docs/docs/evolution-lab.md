@@ -3,8 +3,8 @@
 The Evolution Lab boots a candidate Generation under QEMU/KVM, checks what
 the guest reports against what was built, and records the candidate as
 `TESTED` or `REJECTED` with a complete Experiment record. The design is
-ADR-0024 and the work plan is the 0.0.6 Evolution Lab plan, both proposed
-in #415.
+ADR-0024 (accepted 2026-11-22) and the work plan is the 0.0.6 Evolution Lab
+plan, both from #415.
 
 **Status (0.0.6, #410, #411, #412):** the `evolutiond lab` commands, plan,
 report and result formats, checks and promotion policy are implemented and
@@ -13,8 +13,9 @@ covered by unit tests and fake-QEMU tests. The test-profile
 console fixture ties its output to the host parser. The
 [candidate build and `just vm-test`](#the-candidate-build-and-just-vm-test)
 are implemented and tested offline; a shared plan fixture ties the plans they
-write to the host's plan parser. Real KVM acceptance (#413) is a separate
-step, and no KVM run is evidence until then.
+write to the host's plan parser. Real KVM acceptance (#413) passed at
+`7ce5942`: all three scenarios, reproducibility lane
+([review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md)).
 
 ## What the lab is and is not
 
@@ -371,7 +372,7 @@ upstream lane), `flowerlyd/` (the private daemon's state and log), and
 `vm-test` downloads nothing: missing inputs are an error that names
 `scripts/build-lab-inputs.sh LANE DIR`, which builds them
 ([Lanes](#lanes)). A local `vm-test` run is a development run. Acceptance
-evidence comes from the exact-SHA runs of #413.
+evidence comes from exact-SHA runs ([#413](#acceptance-evidence-413)).
 
 `scripts/test-lab-candidate.py` tests `describe` and `prepare` offline
 against fake builds, a fake slot tool and a fake `evolutiond`, both lanes,
@@ -414,6 +415,10 @@ the rootfs (`DIR/flowerly-rootfs`) and the generic mkosi initrd
 from which mirror). The reproducibility lane is the same pinned build as
 `scripts/build-arch-rootfs-pinned-container.sh`. It needs podman and the
 network; `vm-test` itself never does.
+
+The upstream lane's first run (2026-11-22, `7ce5942`) passed all three
+scenarios against the live mirror; its record is in the
+[#413 review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md#upstream-lane-first-run-not-reproducibility-evidence).
 
 ## The opt-in CI job (`lab-vm-test`)
 
@@ -473,3 +478,8 @@ lane, each scenario's outcome and result digests, and the SHA-256 of every
 other archived file. `archive-lab-evidence.py check DIR [--evolutiond BIN]`
 re-reads an archive for review. The review note beside the evidence names
 the host, QEMU and OVMF, and is what the owner accepts.
+
+The first acceptance ran at `7ce5942` (`release/2` after #416–#421): `good`
+TESTED, `bad` REJECTED, `rollback` REJECTED with a healthy fallback to
+root-a ([review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md),
+[evidence](reviews/evidence/0010-evolution-lab-7ce5942/)).

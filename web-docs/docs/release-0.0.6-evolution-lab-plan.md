@@ -1,22 +1,22 @@
 # Flowerly OS 0.0.6 — Evolution Lab implementation and acceptance plan
 
 Status: **Started 2026-11-21.** Design: [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md)
-(proposed). Tracking: [#10](https://github.com/Doldas/flowerly_os/issues/10)
+(accepted 2026-11-22). Tracking: [#10](https://github.com/Doldas/flowerly_os/issues/10)
 (roadmap) and [#3](https://github.com/Doldas/flowerly_os/issues/3)
 (vertical slice, `just vm-test`).
 
 ## Progress
 
-E1–E4 and E6 are implemented as stacked draft PRs (#416 → #417 → #418 →
-#419 → #420), each tested locally. Local KVM development runs of the
-reproducibility lane pass all three scenarios; they are not acceptance
-evidence. E5's archive tool is draft PR #421 on top of them.
+E1–E4, E6 and E5's archive tool are merged to `release/2` (#416–#421).
+E5's exact-SHA KVM acceptance passed at `7ce5942`, `release/2`'s head after
+those merges: `good` TESTED, `bad` REJECTED, `rollback` REJECTED with a
+healthy fallback ([review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md)). ADR-0024 was accepted by the owner
+on 2026-11-22. The upstream lane's first networked run, at the same commit,
+passed all three scenarios too; it is not reproducibility evidence.
 
 Open:
 
-- E5: the exact-SHA KVM evidence. The owner approved it, to run once
-  #416–#420 are merged, on the `release/2` SHA.
-- The upstream lane's first networked run.
+- E5: the owner's review of the evidence.
 - The CI job's first run on the runner. GitHub allows it only once the
   workflow is on the default branch.
 
@@ -41,7 +41,7 @@ a bad candidate) and their evidence archived.
 
 ### E1 — Complete Experiment records (`flowerly-core`, `flowerlyd`, `agenticctl`)
 
-Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409). Draft PR:
+Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409). Merged PR:
 [#416](https://github.com/Doldas/flowerly_os/pull/416).
 
 - `generation.evidence` accepts the optional `experiment` object of ADR-0024
@@ -58,7 +58,7 @@ Issue: [#409](https://github.com/Doldas/flowerly_os/issues/409). Draft PR:
 
 ### E2 — `evolutiond lab` (Rust: `vm`, `benchmarks`, `promotion`)
 
-Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410). Draft PR:
+Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410). Merged PR:
 [#417](https://github.com/Doldas/flowerly_os/pull/417).
 
 - Plan (`flowerly-lab-plan/v1`) and result (`flowerly-lab-result/v1`)
@@ -79,7 +79,7 @@ Issue: [#410](https://github.com/Doldas/flowerly_os/issues/410). Draft PR:
 
 ### E3 — Guest probe (test profile)
 
-Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411). Draft PR:
+Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411). Merged PR:
 [#418](https://github.com/Doldas/flowerly_os/pull/418).
 
 - `testbed/evolution-world/lab-probe.py`, its unit (ordered after
@@ -97,7 +97,7 @@ Issue: [#411](https://github.com/Doldas/flowerly_os/issues/411). Draft PR:
 
 ### E4 — Candidate build and `just vm-test`
 
-Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412). Draft PR:
+Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412). Merged PR:
 [#419](https://github.com/Doldas/flowerly_os/pull/419).
 
 - `scripts/build-lab-candidate.sh`: slot images from the pinned rootfs, the
@@ -115,7 +115,7 @@ Issue: [#412](https://github.com/Doldas/flowerly_os/issues/412). Draft PR:
 ### E5 — Real KVM acceptance
 
 Issue: [#413](https://github.com/Doldas/flowerly_os/issues/413). Archive
-tool draft PR: [#421](https://github.com/Doldas/flowerly_os/pull/421).
+tool: [#421](https://github.com/Doldas/flowerly_os/pull/421) (merged).
 
 - After #416–#420 are merged, run the three ADR-0024 scenarios on
   `release/2`'s exact SHA against one reproducibility-lane candidate.
@@ -124,11 +124,13 @@ tool draft PR: [#421](https://github.com/Doldas/flowerly_os/pull/421).
   logs and hashes under `reviews/evidence/0010-evolution-lab-<sha7>`, and a
   review note is added. `archive-lab-evidence.py check` re-verifies the
   archive.
+- Done at `7ce5942`: [review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md),
+  [evidence](reviews/evidence/0010-evolution-lab-7ce5942/).
 - **Exit:** owner review of the evidence.
 
 ### E6 — Lanes and CI
 
-Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414). Draft PR:
+Issue: [#414](https://github.com/Doldas/flowerly_os/issues/414). Merged PR:
 [#420](https://github.com/Doldas/flowerly_os/pull/420).
 
 - Upstream lane switch (D6) and its result marking.

@@ -1,0 +1,50 @@
+{
+  "active": "root-a",
+  "files": {
+    "disk": "ab.img",
+    "initramfs": "initramfs.img",
+    "kernel": "vmlinuz",
+    "manifest": "ab.img.manifest.json",
+    "resolved_packages": "resolved-packages.txt",
+    "slot_tool": "slot-tool"
+  },
+  "initramfs_sha256": "5fc56c6e76191bc696a90dcd52c7a29570dc9c418b77c3ae89b16451d25d2dbd",
+  "input_manifest_sha256": "18ba60b748f36dc6c8687ecd81fc600d094462f80694db4a3092dc407e2ced20",
+  "kernel_sha256": "17e17e6d713b9c3ab492bb3088c7da485b866098077fee04e8ab30b17d375d68",
+  "lane": "upstream",
+  "schema": "flowerly-lab-candidate/v1",
+  "slots": {
+    "root-a": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-a",
+      "identity_sha256": "f7e0349194bee25235c6b650abe49eead8437bb0f1e2cf318d722a016ddfd358",
+      "kernel_release": "7.3.5-arch1-1",
+      "packages_sha256": "18ba60b748f36dc6c8687ecd81fc600d094462f80694db4a3092dc407e2ced20",
+      "partuuid": "3ff40e0a-b565-4cea-b722-cf8e9cf5b102",
+      "rootfs_sha256": "8b588d917df26840c5d0da5e7376a4edc56f0ca473d85d843beb73d882cb5de0",
+      "vmlinuz_sha256": "17e17e6d713b9c3ab492bb3088c7da485b866098077fee04e8ab30b17d375d68"
+    },
+    "root-b": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-b",
+      "identity_sha256": "a9ee0424583ef2eb216db07b804cf5a553a669ad8c93b993443311d00fa9aa27",
+      "kernel_release": "7.3.5-arch1-1",
+      "packages_sha256": "18ba60b748f36dc6c8687ecd81fc600d094462f80694db4a3092dc407e2ced20",
+      "partuuid": "7a0645d2-7154-4931-b0a4-7b266f733fa0",
+      "rootfs_sha256": "782dbe47a0fadc7053406e3958c004861f162a0bc05b71193a9c6b7bc0c4d33b",
+      "vmlinuz_sha256": "17e17e6d713b9c3ab492bb3088c7da485b866098077fee04e8ab30b17d375d68"
+    }
+  },
+  "source_commit": "7ce5942eb29826e5e8363e4168d4ad42e65198a8",
+  "staged": "root-b"
+}
