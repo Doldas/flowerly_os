@@ -436,7 +436,12 @@ dispatch inputs reach the shell only through the environment.
 The runner's jobs run as root, so the candidate build works on the rootfs
 directly instead of inside `podman unshare`. The job is not a required
 check, and GitHub can dispatch it only once the workflow file is on the
-default branch; it has not run on the runner yet.
+default branch. It has passed on the runner with KVM: run 45050611328 on
+`master` `94e4aea` (reproducibility lane, all scenarios). The runner needs
+`--privileged`, `/dev/kvm`, a `vfs` container storage driver and host
+networking for the nested build container; it also keeps the lab's private
+`flowerlyd` socket short (`scripts/vm-test.sh` uses a `mktemp` runtime
+directory) and keys the cargo cache by checkout path.
 
 ## Acceptance evidence (#413)
 
