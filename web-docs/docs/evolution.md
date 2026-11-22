@@ -42,6 +42,9 @@ One command, `just vm-test`, builds a Flowerly lab candidate, boots it under
 QEMU/KVM, verifies what the guest reports, and records success or failure in a
 private `flowerlyd` ([Evolution Lab](evolution-lab.md)). It is implemented
 (0.0.6, #412); real KVM acceptance of the lab (#413) is still to come. Its
+One command, `just vm-test`, is intended to build a Flowerly candidate
+generation, boot it, verify services, exit, and record success or failure. That
+full generation workflow is the 0.0.6 milestone and is **in progress**; its
 design is [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) and its
 work plan is the [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md).
 
