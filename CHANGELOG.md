@@ -38,6 +38,17 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   describes builds and writes plans; shared plan fixtures tie them to the
   host parser. The
   `vm-test` placeholder no longer fails closed.
+- Evolution Lab lanes and an opt-in CI job (#414, ADR-0024 D4/D6):
+  `vm-test.sh --lane upstream` builds the candidate from a rootfs resolved
+  from today's Arch mirror, records its package list as
+  `resolved-packages.txt` (the identities' input hash and each slot's
+  reported package hash) and claims no package set; the result says
+  `lane: upstream` and is never reproducibility evidence. The default
+  `reproducibility` lane is unchanged. `scripts/build-lab-inputs.sh LANE DIR`
+  builds either lane's rootfs and initramfs in the digest-pinned tooling
+  container (network). The `lab-vm-test` workflow runs the lab on the
+  self-hosted KVM runner on `workflow_dispatch` only; it is not a required
+  check and has not run yet. The candidate build now also runs as root.
 
 ## 0.0.5 — Generations (2026-11-20)
 

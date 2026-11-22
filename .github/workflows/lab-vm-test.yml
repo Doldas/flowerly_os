@@ -1,0 +1,166 @@
+name: lab-vm-test
+
+# Evolution Lab on the self-hosted KVM runner (ADR-0024 D6, #414), on demand
+# only. Builds the lane's inputs (cached for reproducibility, resolved fresh
+# from today's Arch mirror for upstream), runs the chosen scenarios with
+# scripts/vm-test.sh against one candidate built at this commit, and uploads
+# each run's plan and result. Not a required check until it has run cleanly.
+# GitHub can dispatch it only once this file is on the default branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: Lab lane (upstream reaches today's Arch mirror)
+        type: choice
+        required: true
+        default: reproducibility
+        options:
+          - reproducibility
+          - upstream
+      scenarios:
+        description: Scenarios to run
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - good
+          - bad
+          - rollback
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lab-vm-test
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    name: Evolution Lab / ${{ inputs.lane }}
+    runs-on: flowerly-runner
+    timeout-minutes: 240
+    env:
+      LANE: ${{ inputs.lane }}
+      SCENARIOS: ${{ inputs.scenarios }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The runner workspace persists and git does not clean ignored files.
+      - name: Remove lab output left by an earlier run
+        run: rm -rf target/lab target/lab-inputs
+
+      - name: Install QEMU host dependencies
+        run: bash ./scripts/prepare-arch-vm-host.sh
+
+      - name: Install the lab's disk and image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./scripts/prepare-ab-disk-ci-tools.sh
+          missing=()
+          command -v podman >/dev/null 2>&1 || missing+=(podman)
+          command -v systemd-sysusers >/dev/null 2>&1 || missing+=(systemd)
+          if (( ${#missing[@]} )); then
+              (( $(id -u) == 0 )) || { echo "missing ${missing[*]}; needs root to install" >&2; exit 1; }
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.99.1"
+
+      - name: Build or restore the lane's inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$LANE" == reproducibility ]]; then
+              # Keyed by everything the pinned build reads.
+              key="$(git ls-files -s -- distro/base-image/arch distro/base-image/arch-initrd \
+                  scripts/build-lab-inputs.sh | sha256sum | cut -c1-16)"
+              dir="$HOME/.cache/flowerly/lab-inputs/reproducibility-$key"
+              if [[ ! -s "$dir/initramfs.img" ]]; then
+                  rm -rf "$dir.partial"; mkdir -p "$(dirname "$dir")"
+                  nice bash ./scripts/build-lab-inputs.sh reproducibility "$dir.partial"
+                  mv "$dir.partial" "$dir"
+              fi
+          else
+              dir="$PWD/target/lab-inputs/upstream"
+              nice bash ./scripts/build-lab-inputs.sh upstream "$dir"
+          fi
+          mkdir -p target/lab/inputs
+          cp "$dir/tooling-versions.txt" target/lab/inputs/
+          [[ ! -f "$dir/resolved-at.txt" ]] || cp "$dir/resolved-at.txt" target/lab/inputs/
+          {
+              echo "FLOWERLY_LAB_ROOTFS=$dir/flowerly-rootfs"
+              echo "FLOWERLY_LAB_INITRAMFS=$dir/initramfs.img"
+          } >> "$GITHUB_ENV"
+
+      - name: Run the lab scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$SCENARIOS" == all ]]; then set -- good bad rollback; else set -- "$SCENARIOS"; fi
+          status=0
+          for scenario in "$@"; do
+              out="$PWD/target/lab/$scenario"
+              FLOWERLY_LAB_OUT="$out" bash ./scripts/vm-test.sh --lane "$LANE" --scenario "$scenario" ||
+                  status=1
+              # Later scenarios boot their own copies of the first candidate.
+              if [[ -z "${FLOWERLY_LAB_CANDIDATE:-}" && -f "$out/candidate/candidate.json" ]]; then
+                  export FLOWERLY_LAB_CANDIDATE="$out/candidate"
+              fi
+          done
+          exit "$status"
+
+      - name: Upload lab results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: lab-${{ inputs.lane }}-${{ github.sha }}
+          path: |
+            target/lab/inputs/
+            target/lab/*/candidate/candidate.json
+            target/lab/*/candidate/resolved-packages.txt
+            target/lab/*/run/plan.json
+            target/lab/*/run/initial/plan.json
+            target/lab/*/run/result/
+            target/lab/*/run/initial/result/
+            target/lab/*/flowerlyd/flowerlyd.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+              echo "## Evolution Lab — $LANE lane"
+              echo
+              echo "- commit: $GITHUB_SHA"
+              [[ "$LANE" == reproducibility ]] ||
+                  echo "- upstream: package set recorded, not claimed; not reproducibility evidence"
+              for result in target/lab/*/run/result/result.json; do
+                  [[ -f "$result" ]] || continue
+                  scenario="${result#target/lab/}"; scenario="${scenario%%/*}"
+                  python3 -c 'import json, sys
+          r = json.load(open(sys.argv[1]))
+          d = r["decision"]
+          print("- %s: %s, recommends %s (lane %s)" % (sys.argv[2], d["verdict"], d["recommendation"], r["lane"]))' \
+                      "$result" "$scenario"
+              done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The disk images are several GB each; the inputs cache stays.
+      - name: Remove the lab's disks
+        if: ${{ always() }}
+        run: rm -rf target/lab target/lab-inputs

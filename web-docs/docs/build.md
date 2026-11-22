@@ -36,6 +36,9 @@ the exception that needs one: `scripts/vm-test.sh` builds a lab candidate from
 the cached pinned rootfs and initramfs (it downloads nothing), boots it with
 `evolutiond lab run --record` and records the outcome in a private
 `flowerlyd`; see [the candidate build and `just vm-test`](evolution-lab.md#the-candidate-build-and-just-vm-test).
+`scripts/build-lab-inputs.sh reproducibility target/pinned-rootfs` builds
+those inputs (network), and `--lane upstream` runs the lab on inputs resolved
+from today's Arch mirror instead; see [Lanes](evolution-lab.md#lanes).
 
 ## Makefile fallback
 

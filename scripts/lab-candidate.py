@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Evolution Lab candidate (ADR-0024, #412): describe a build, prepare a run.
 
-``describe OUT --source-commit SHA40 --input-manifest-sha256 SHA64`` runs at
-the end of build-lab-candidate.sh. It binds what was built (each slot's
-identity document, root volume, the kernel and initramfs on the ESP) to what
-that slot's probe will report: ``facts-<a|b>.json`` from ``lab-probe.py
---offline`` and the kernel release under ``usr/lib/modules``. It writes
-``candidate.json`` and refuses anything missing or inconsistent, so a plan
-can never expect facts the build did not produce.
+``describe OUT --source-commit SHA40 --input-manifest-sha256 SHA64 [--lane
+reproducibility|upstream]`` runs at the end of build-lab-candidate.sh. It
+binds what was built (each slot's identity document, root volume, the kernel
+and initramfs on the ESP) to what that slot's probe will report:
+``facts-<a|b>.json`` from ``lab-probe.py --offline`` and the kernel release
+under ``usr/lib/modules``. It writes ``candidate.json`` and refuses anything
+missing or inconsistent, so a plan can never expect facts the build did not
+produce.
+
+The lane (ADR-0024 D4) says what the package set is. In the reproducibility
+lane it is the committed manifest's frozen set, and the plan claims it. In
+the upstream lane it is whatever the live mirror resolved when the inputs
+were built: ``resolved-packages.txt`` (``lab-probe.py --package-list``) is
+that list, its SHA-256 is the identity's input manifest hash and every
+slot's package hash, and the plan records the set without claiming it.
 
 ``prepare CANDIDATE RUN --scenario good|bad|rollback ...`` copies the built
 disk into a new run directory and boots the copy once as slot A with
@@ -49,6 +57,9 @@ CHECKS = (
 )
 FAIL_HEALTH = "flowerly.test.fail_health=1"
 SCENARIOS = ("good", "bad", "rollback")
+LANES = ("reproducibility", "upstream")
+RESOLVED = "resolved-packages.txt"
+MAX_RESOLVED = 8 * 1024 * 1024
 # evolutiond's MAX_BOOTS; a rollback run boots B once per try, then A.
 MAX_BOOTS = 8
 MAX_TRIES = 9
@@ -152,10 +163,20 @@ def describe_slot(out, slot, source_commit, manifest_sha256, vmlinuz_sha256):
     }
 
 
-def describe(out, source_commit, manifest_sha256):
+def resolved_sha256(path):
+    """SHA-256 of an upstream lane's resolved package list."""
+    path = regular(path, "resolved package list")
+    if path.stat().st_size > MAX_RESOLVED:
+        raise Refused(f"{path} is larger than {MAX_RESOLVED} bytes")
+    return sha256_file(path)
+
+
+def describe(out, source_commit, manifest_sha256, lane="reproducibility"):
     out = Path(out)
     if not COMMIT.fullmatch(source_commit) or not SHA256.fullmatch(manifest_sha256):
         raise Refused("source commit or input manifest hash is malformed")
+    if lane not in LANES:
+        raise Refused(f"lane must be one of {', '.join(LANES)}")
     files = {
         "disk": "ab.img",
         "manifest": "ab.img.manifest.json",
@@ -163,8 +184,12 @@ def describe(out, source_commit, manifest_sha256):
         "initramfs": "initramfs.img",
         "slot_tool": "slot-tool",
     }
+    if lane == "upstream":
+        files["resolved_packages"] = RESOLVED
     for key, name in files.items():
         regular(out / name, key)
+    if lane == "upstream" and resolved_sha256(out / RESOLVED) != manifest_sha256:
+        raise Refused(f"the input manifest hash is not the hash of {RESOLVED}")
     kernel_sha256 = sha256_file(out / files["kernel"])
     slots = {
         slot: describe_slot(out, slot, source_commit, manifest_sha256, kernel_sha256)
@@ -174,8 +199,14 @@ def describe(out, source_commit, manifest_sha256):
         raise Refused("both slots claim the same PARTUUID")
     if slots[ACTIVE]["build_id"] == slots[TARGET]["build_id"]:
         raise Refused("both slots carry the same build_id")
+    if lane == "upstream":
+        # What each slot's probe will report is the list the build resolved.
+        for slot, built in slots.items():
+            if built["packages_sha256"] != manifest_sha256:
+                raise Refused(f"{slot}: its package set is not {RESOLVED}")
     candidate = {
         "schema": CANDIDATE_SCHEMA,
+        "lane": lane,
         "source_commit": source_commit,
         "input_manifest_sha256": manifest_sha256,
         "active": ACTIVE,
@@ -207,8 +238,19 @@ def load_candidate(directory):
     slots = candidate.get("slots")
     if not isinstance(slots, dict) or sorted(slots) != sorted(SLOTS):
         raise Refused("the candidate must describe root-a and root-b")
-    for name in candidate.get("files", {}).values():
+    lane, files = candidate.get("lane"), candidate.get("files")
+    if lane not in LANES:
+        raise Refused(f"the candidate's lane must be one of {', '.join(LANES)}")
+    if not isinstance(files, dict):
+        raise Refused("the candidate names no files")
+    for name in files.values():
         regular(directory / name, name)
+    if (files.get("resolved_packages") == RESOLVED) != (lane == "upstream"):
+        raise Refused(f"only an upstream candidate carries {RESOLVED}")
+    if lane == "upstream" and (
+        resolved_sha256(directory / RESOLVED) != candidate.get("input_manifest_sha256")
+    ):
+        raise Refused(f"{RESOLVED} is not the list the candidate was built from")
     return candidate
 
 
@@ -222,9 +264,10 @@ def boots(scenario, tries):
     return candidate + [{"label": "fallback", "subject": "baseline", "slot": ACTIVE}]
 
 
-def expectation(built, generation):
-    """What a slot's probe must report, as built, for its Generation."""
-    return {
+def expectation(built, generation, lane):
+    """What a slot's probe must report, as built, for its Generation. The
+    upstream lane records the package set it reports instead of claiming it."""
+    expected = {
         "generation": generation,
         "partuuid": built["partuuid"],
         "identity_sha256": built["identity_sha256"],
@@ -234,12 +277,17 @@ def expectation(built, generation):
         "packages_sha256": built["packages_sha256"],
         "binaries": built["binaries"],
     }
+    if lane == "upstream":
+        del expected["packages_sha256"]
+    return expected
 
 
-def lab_plan(subject, baseline, expect, planned_boots, disk, disk_sha256, options):
+def lab_plan(
+    lane, subject, baseline, expect, planned_boots, disk, disk_sha256, options
+):
     return {
         "schema": PLAN_SCHEMA,
-        "lane": "reproducibility",
+        "lane": lane,
         "candidate": {
             "generation": subject,
             "disk": str(disk),
@@ -267,11 +315,13 @@ def lab_plan(subject, baseline, expect, planned_boots, disk, disk_sha256, option
 
 def plan(candidate, scenario, tries, disk, disk_sha256, generations, options):
     """The plan for one run; ``generations`` maps slot -> Generation id."""
+    lane = candidate["lane"]
     expect = {
-        slot: expectation(built, generations[slot])
+        slot: expectation(built, generations[slot], lane)
         for slot, built in candidate["slots"].items()
     }
     value = lab_plan(
+        lane,
         generations[TARGET],
         generations[ACTIVE],
         expect,
@@ -288,9 +338,17 @@ def plan(candidate, scenario, tries, disk, disk_sha256, generations, options):
 def initial_plan(candidate, disk, disk_sha256, generation, options):
     """The unrecorded first boot of the copy, with slot A's Generation as its
     subject: the host's plan rules have every plan boot its subject."""
-    expect = {ACTIVE: expectation(candidate["slots"][ACTIVE], generation)}
+    lane = candidate["lane"]
+    expect = {ACTIVE: expectation(candidate["slots"][ACTIVE], generation, lane)}
     value = lab_plan(
-        generation, None, expect, [dict(INITIAL_BOOT)], disk, disk_sha256, options
+        lane,
+        generation,
+        None,
+        expect,
+        [dict(INITIAL_BOOT)],
+        disk,
+        disk_sha256,
+        options,
     )
     value["hypothesis"] = INITIAL_HYPOTHESIS
     return value
@@ -384,10 +442,13 @@ def prepare(options, run=subprocess.run):
         str(candidate_dir / files["disk"]),
         str(disk),
     ]
-    for argv in (
-        copy,
-        ["cp", str(candidate_dir / files["manifest"]), str(manifest)],
-    ):
+    copies = [copy, ["cp", str(candidate_dir / files["manifest"]), str(manifest)]]
+    if candidate["lane"] == "upstream":
+        # The run keeps the list its unclaimed package set was resolved as.
+        copies.append(
+            ["cp", str(candidate_dir / files["resolved_packages"]), str(run_dir)]
+        )
+    for argv in copies:
         if run(argv, check=False).returncode != 0:
             raise Refused(f"`{' '.join(argv[:3])} ...` failed")
     initial = run_dir / "initial"
@@ -440,6 +501,7 @@ def parser():
     d.add_argument("out")
     d.add_argument("--source-commit", required=True)
     d.add_argument("--input-manifest-sha256", required=True)
+    d.add_argument("--lane", choices=LANES, default="reproducibility")
     p = sub.add_parser("prepare", help="arm a copy of the candidate and write its plan")
     p.add_argument("candidate")
     p.add_argument("run")
@@ -463,7 +525,12 @@ def main(argv):
     options = parser().parse_args(argv)
     try:
         if options.command == "describe":
-            describe(options.out, options.source_commit, options.input_manifest_sha256)
+            describe(
+                options.out,
+                options.source_commit,
+                options.input_manifest_sha256,
+                options.lane,
+            )
             print(f"described {os.path.join(options.out, 'candidate.json')}")
         else:
             print(prepare(options))

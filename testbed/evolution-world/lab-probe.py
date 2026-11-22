@@ -27,6 +27,8 @@ and rejects lives in this guest's own test database.
 
 `lab-probe.py --offline ROOT` prints the same file facts for an unbooted
 root tree, so a candidate build can write its plan with the probe's hashing.
+`lab-probe.py --package-list ROOT` prints the sorted `name version` lines
+whose SHA-256 is packages_sha256: the upstream lane's resolved package list.
 """
 
 import base64
@@ -125,16 +127,16 @@ def _desc_fields(text):
     return name, version
 
 
-def packages(root):
-    """(SHA-256 of the sorted `name version` lines, count), or (None, None).
+def package_lines(root):
+    """The sorted `name version` lines of the pacman local DB, or None.
 
-    One unreadable entry makes the whole set unknown: a partial hash would
+    One unreadable entry makes the whole set unknown: a partial list would
     look like a different package set.
     """
     local = Path(root) / PACMAN_LOCAL
     try:
         if local.is_symlink() or not local.is_dir():
-            return None, None
+            return None
         lines = []
         for entry in sorted(local.iterdir()):
             if entry.name == "ALPM_DB_VERSION":
@@ -145,17 +147,22 @@ def packages(root):
                 or not desc.is_file()
                 or desc.stat().st_size > MAX_DESC
             ):
-                return None, None
+                return None
             name, version = _desc_fields(desc.read_text())
             lines.append("%s %s\n" % (name, version))
             if len(lines) > MAX_PACKAGES:
-                return None, None
+                return None
     except (OSError, UnicodeError, ValueError):
+        return None
+    return sorted(lines) or None
+
+
+def packages(root):
+    """(SHA-256 of the sorted `name version` lines, count), or (None, None)."""
+    lines = package_lines(root)
+    if lines is None:
         return None, None
-    if not lines:
-        return None, None
-    body = "".join(sorted(lines)).encode()
-    return hashlib.sha256(body).hexdigest(), len(lines)
+    return hashlib.sha256("".join(lines).encode()).hexdigest(), len(lines)
 
 
 def binaries(root):
@@ -479,8 +486,20 @@ def main(argv):
         json.dump(file_facts(argv[1]), sys.stdout, sort_keys=True, indent=2)
         sys.stdout.write("\n")
         return 0
+    if len(argv) == 2 and argv[0] == "--package-list":
+        # The upstream lane's resolved package list: the bytes whose SHA-256
+        # the probe reports as packages_sha256.
+        lines = package_lines(argv[1])
+        if lines is None:
+            print("lab-probe: the package set is unknown", file=sys.stderr)
+            return 1
+        sys.stdout.write("".join(lines))
+        return 0
     if argv:
-        print("usage: lab-probe.py [--offline ROOT]", file=sys.stderr)
+        print(
+            "usage: lab-probe.py [--offline ROOT | --package-list ROOT]",
+            file=sys.stderr,
+        )
         return 2
     emit = console_emitter(CONSOLE)
     for line in report_lines(probe(run, files_root=BUILT_ROOT)):

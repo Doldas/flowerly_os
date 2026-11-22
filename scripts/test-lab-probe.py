@@ -594,6 +594,31 @@ class ReportTests(unittest.TestCase):
         with mock.patch.object(probe.sys, "stderr", io.StringIO()):
             self.assertEqual(probe.main(["--bogus"]), 2)
 
+    def test_the_package_list_is_what_the_package_hash_hashes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = make_root(d)
+            out = io.StringIO()
+            with mock.patch.object(probe.sys, "stdout", out):
+                self.assertEqual(probe.main(["--package-list", str(root)]), 0)
+            listed = out.getvalue()
+            self.assertEqual(
+                listed, "".join(sorted("%s %s\n" % i for i in PACKAGES.items()))
+            )
+            self.assertEqual(
+                hashlib.sha256(listed.encode()).hexdigest(), package_digest()
+            )
+            self.assertEqual(probe.packages(root), (package_digest(), len(PACKAGES)))
+            out, err = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(probe.sys, "stdout", out),
+                mock.patch.object(probe.sys, "stderr", err),
+            ):
+                self.assertEqual(
+                    probe.main(["--package-list", str(Path(d) / "missing")]), 1
+                )
+            self.assertEqual(out.getvalue(), "")
+            self.assertIn("unknown", err.getvalue())
+
 
 def prepared_root(base):
     root = Path(base) / "rootfs"

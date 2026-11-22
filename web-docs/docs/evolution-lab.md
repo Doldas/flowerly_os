@@ -288,8 +288,12 @@ write access to `/dev/kvm`, uses no network, and activates nothing. The
 host's own `flowerlyd`, if any, is never contacted.
 
 ```text
-scripts/vm-test.sh [--scenario good|bad|rollback] [--tries N]
+scripts/vm-test.sh [--lane reproducibility|upstream]
+                   [--scenario good|bad|rollback] [--tries N]
 ```
+
+`--lane` (default `reproducibility`) picks the inputs and what the run may
+claim about the package set; see [Lanes](#lanes).
 
 | Scenario | Slot B's entry | Boots | Expected outcome |
 | --- | --- | --- | --- |
@@ -309,20 +313,22 @@ The steps:
 
 1. `cargo build --release --locked` of `flowerlyd`, `agenticctl`,
    `evolutiond` and `distro-builder` (the slot tool).
-2. `scripts/build-lab-candidate.sh PINNED_ROOTFS INITRAMFS OUT` (from a clean
-   checkout): two copies of the pinned rootfs become slot A (`lab-a`, the
-   baseline) and slot B (`lab-b`, the candidate). Each is an A/B test image
+2. `scripts/build-lab-candidate.sh ROOTFS INITRAMFS OUT` (from a clean
+   checkout, with `FLOWERLY_LAB_LANE` set to the lane): two copies of the
+   lane's rootfs become slot A (`lab-a`, the baseline) and slot B (`lab-b`,
+   the candidate). Each is an A/B test image with the
+   [guest probe](#the-guest-probe). In the reproducibility lane each is
    prepared with `FLOWERLY_FROZEN_INPUTS`, so the rootfs must hold exactly
-   the committed manifest's packages, and each gets the
-   [guest probe](#the-guest-probe). `lab-probe.py --offline` records each
-   slot's file facts before its root volume is built. The two-slot disk is
-   built with A active, and B is staged but not armed.
+   the committed manifest's packages; the upstream lane writes the rootfs's
+   package list instead (see [Lanes](#lanes)). `lab-probe.py --offline`
+   records each slot's file facts before its root volume is built. The
+   two-slot disk is built with A active, and B is staged but not armed.
 3. `scripts/lab-candidate.py describe` writes `candidate.json`
-   (`flowerly-lab-candidate/v1`). It binds each slot's identity document,
-   root volume, kernel release and the ESP kernel to the facts its probe will
-   report, and refuses a build whose baked identity, `build_id`, package
-   hash or binaries do not match, or whose slots share a PARTUUID or a
-   `build_id`.
+   (`flowerly-lab-candidate/v1`) with the lane. It binds each slot's identity
+   document, root volume, kernel release and the ESP kernel to the facts its
+   probe will report, and refuses a build whose baked identity, `build_id`,
+   package hash or binaries do not match, or whose slots share a PARTUUID or
+   a `build_id`.
 4. A private `flowerlyd` under the output directory: its runtime and state
    directories are `0700`, its socket is `0600`, and the only Admin group is
    the invoking user's primary group.
@@ -339,34 +345,90 @@ The steps:
    its subject, slot A's expectations, all eight checks. It must pass.
    Only then does `prepare` arm slot B of the same copy (`slot arm --tries
    N`, plus the injected failure for `bad` and `rollback`), hash the armed
-   copy and write the run's plan: the reproducibility lane, all eight
-   checks, both slots' expectations from `candidate.json`, and the
-   scenario's boots. The built disk is never booted, so one build serves
+   copy and write the run's plan: the candidate's lane, all eight checks,
+   both slots' expectations from `candidate.json`, and the scenario's
+   boots. The built disk is never booted, so one build serves
    any number of runs.
 7. `evolutiond lab run --record` boots the plan and records the decision.
 
 The exit status is 0 when the recorded outcome is the scenario's expected
 one (for `good`, a recorded passing run: `TESTED`), 3 when the other outcome
 was recorded, 1 on any error and 2 on usage. Everything is kept in the output
-directory: `candidate/` (the build), `flowerlyd/` (the private daemon's
-state and log), and `run/` (the armed disk, `initial/` with the initial
-boot's plan and result, `plan.json` and `result/`).
+directory: `candidate/` (the build, with `resolved-packages.txt` in the
+upstream lane), `flowerlyd/` (the private daemon's state and log), and
+`run/` (the armed disk, `initial/` with the initial boot's plan and result,
+`plan.json` and `result/`).
 
 | Variable | Default |
 | --- | --- |
-| `FLOWERLY_LAB_ROOTFS` | `target/pinned-rootfs/flowerly-rootfs`, from `scripts/build-arch-rootfs-pinned-container.sh` |
-| `FLOWERLY_LAB_INITRAMFS` | `target/pinned-rootfs/initramfs.img`, from `scripts/build-arch-initrd.sh` |
-| `FLOWERLY_LAB_CANDIDATE` | unset; a candidate directory built at the same commit, reused instead of building |
-| `FLOWERLY_LAB_OUT` | `target/lab/<UTC time>-<scenario>`; must not exist |
+| `FLOWERLY_LAB_ROOTFS` | `DIR/flowerly-rootfs`, where `DIR` is `target/pinned-rootfs` (reproducibility) or `target/upstream-rootfs` (upstream) |
+| `FLOWERLY_LAB_INITRAMFS` | `DIR/initramfs.img` |
+| `FLOWERLY_LAB_CANDIDATE` | unset; a candidate directory built at the same commit in the same lane, reused instead of building |
+| `FLOWERLY_LAB_OUT` | `target/lab/<UTC time>-<lane>-<scenario>`; must not exist |
 | `FLOWERLY_LAB_OVMF_CODE`, `FLOWERLY_LAB_OVMF_VARS` | the Arch, Debian/Ubuntu or Fedora OVMF paths |
 | `FLOWERLY_LAB_QEMU` | `qemu-system-x86_64` from `PATH` |
 
-`vm-test` downloads nothing: a missing pinned rootfs or initramfs is an
-error that names the script that builds it. A local `vm-test` run is a
-development run. Acceptance evidence comes from the exact-SHA runs of #413.
+`vm-test` downloads nothing: missing inputs are an error that names
+`scripts/build-lab-inputs.sh LANE DIR`, which builds them
+([Lanes](#lanes)). A local `vm-test` run is a development run. Acceptance
+evidence comes from the exact-SHA runs of #413.
 
 `scripts/test-lab-candidate.py` tests `describe` and `prepare` offline
-against fake builds, a fake slot tool and a fake `evolutiond`, and the
-scripts' usage handling. It also proves that `prepare` writes exactly
-`testbed/evolution-world/fixtures/lab-plan-initial.json` and
-`lab-plan-rollback.json`, which the host's plan tests parse.
+against fake builds, a fake slot tool and a fake `evolutiond`, both lanes,
+and the scripts' usage handling. It also proves that `prepare` writes
+exactly `testbed/evolution-world/fixtures/lab-plan-initial.json`,
+`lab-plan-rollback.json` and `lab-plan-upstream.json`, which the host's plan
+tests parse, and checks the CI job's shape.
+
+## Lanes
+
+ADR-0024 D4 separates two questions. The **reproducibility** lane asks
+whether the committed, pinned system works: its inputs come from the
+manifest's dated Arch Archive snapshot, both slots are prepared with
+`FLOWERLY_FROZEN_INPUTS`, the identities name the committed manifest's
+SHA-256, and the plan claims the manifest's package hash for each slot. The
+**upstream** lane asks whether what Arch serves today still works: nothing
+about the package set is pinned, so nothing is claimed.
+
+| | reproducibility | upstream |
+| --- | --- | --- |
+| inputs (`build-lab-inputs.sh`) | the manifest's snapshot | the live Arch mirror (`geo.mirror.pkgbuild.com`) |
+| frozen-set check | both slots | none |
+| identities' `input_manifest_sha256` | the committed manifest | `resolved-packages.txt` |
+| plan `expect.<slot>.packages_sha256` | the manifest's package hash | omitted |
+| `packages` check | the reported hash must equal it | a reported hash is recorded, not claimed |
+| evidence | can be acceptance evidence (#413) | never reproducibility evidence |
+
+`resolved-packages.txt` is the rootfs's sorted `name version` lines, read by
+`lab-probe.py --package-list` exactly the way the guest's probe reads them,
+so its SHA-256 is the `packages_sha256` each slot will report. `describe`
+refuses an upstream build whose list, identities or slots disagree on that
+hash, and `prepare` copies the list into the run directory. The result
+records `lane: upstream`, and so does the Experiment `record` writes.
+
+`scripts/build-lab-inputs.sh LANE DIR` builds a lane's inputs in one run of
+the digest-pinned tooling container (`distro/base-image/arch/build-tooling.json`):
+the rootfs (`DIR/flowerly-rootfs`) and the generic mkosi initrd
+(`DIR/initramfs.img`, from `distro/base-image/arch-initrd`), with
+`DIR/tooling-versions.txt`, and for upstream `DIR/resolved-at.txt` (when and
+from which mirror). The reproducibility lane is the same pinned build as
+`scripts/build-arch-rootfs-pinned-container.sh`. It needs podman and the
+network; `vm-test` itself never does.
+
+## The opt-in CI job (`lab-vm-test`)
+
+`.github/workflows/lab-vm-test.yml` runs the lab on the self-hosted KVM
+runner, on `workflow_dispatch` only, with the lane and the scenarios (`all`,
+`good`, `bad` or `rollback`) as inputs. It builds the lane's inputs (the
+reproducibility inputs are cached under `~/.cache/flowerly/lab-inputs/`,
+keyed by everything the pinned build reads; the upstream inputs are resolved
+fresh each run), runs `scripts/vm-test.sh --lane LANE --scenario S` for each
+scenario against one candidate built at the dispatched commit, uploads each
+run's plans, results, candidate description, resolved package list and
+private daemon log, and removes the disks. Its token is read-only, and the
+dispatch inputs reach the shell only through the environment.
+
+The runner's jobs run as root, so the candidate build works on the rootfs
+directly instead of inside `podman unshare`. The job is not a required
+check, and GitHub can dispatch it only once the workflow file is on the
+default branch; it has not run on the runner yet.
