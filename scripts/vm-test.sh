@@ -107,12 +107,15 @@ fi
 
 # A private flowerlyd whose only Admin is the invoking user: its socket is
 # 0600 in a 0700 runtime directory, and the Admin group is the user's own.
-LAB="$OUT/flowerlyd"; mkdir -m 0700 "$LAB" "$LAB/runtime" "$LAB/state"
-env AGENTIC_RUNTIME_DIR="$LAB/runtime" AGENTIC_STATE_DIR="$LAB/state" \
+# The runtime directory is a short temporary one: under a deep OUT, such as a
+# CI runner's work tree, the socket path would not fit in sun_path.
+LAB="$OUT/flowerlyd"; mkdir -m 0700 "$LAB" "$LAB/state"
+RUNTIME="$(mktemp -d /tmp/flowerly-lab.XXXXXX)"
+env AGENTIC_RUNTIME_DIR="$RUNTIME" AGENTIC_STATE_DIR="$LAB/state" \
     AGENTIC_ADMIN_GROUP="$(id -g)" "$BIN/flowerlyd" > "$LAB/flowerlyd.log" 2>&1 &
 DAEMON=$!
-trap 'kill "$DAEMON" 2>/dev/null || true; wait "$DAEMON" 2>/dev/null || true' EXIT
-ctl() { "$BIN/agenticctl" --runtime-dir "$LAB/runtime" "$@"; }
+trap 'kill "$DAEMON" 2>/dev/null || true; wait "$DAEMON" 2>/dev/null || true; rm -rf "$RUNTIME"' EXIT
+ctl() { "$BIN/agenticctl" --runtime-dir "$RUNTIME" "$@"; }
 for _ in $(seq 100); do
     ctl ping >/dev/null 2>&1 && break
     kill -0 "$DAEMON" 2>/dev/null || fail "the lab flowerlyd exited: $(tail -5 "$LAB/flowerlyd.log")"
@@ -145,7 +148,7 @@ python3 "$ROOT/scripts/lab-candidate.py" prepare "$CANDIDATE" "$OUT/run" \
     --evolutiond "$BIN/evolutiond" --qemu "$QEMU"
 STATUS=0
 "$BIN/evolutiond" lab run --plan "$OUT/run/plan.json" --out "$OUT/run/result" \
-    --qemu "$QEMU" --record --runtime-dir "$LAB/runtime" || STATUS=$?
+    --qemu "$QEMU" --record --runtime-dir "$RUNTIME" || STATUS=$?
 (( STATUS == 0 || STATUS == 3 )) || fail "evolutiond lab run failed ($STATUS); see $OUT"
 
 GOT="$(ctl generation inspect "$CANDIDATE_ID" | python3 -c 'import json, sys; print(json.load(sys.stdin)["status"])')"
