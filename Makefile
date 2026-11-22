@@ -59,6 +59,6 @@ vm:
 	@echo "vm target is a placeholder — not implemented yet"
 	@exit 1
 
+# Evolution Lab KVM run of a good candidate (ADR-0024); see scripts/vm-test.sh.
 vm-test:
-	@echo "vm-test target is a placeholder — not implemented yet"
-	@exit 1
+	bash ./scripts/vm-test.sh

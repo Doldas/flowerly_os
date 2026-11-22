@@ -33,28 +33,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
-AGENTIC_RUNTIME_DIR="$RUNTIME_DIR" AGENTIC_STATE_DIR="$STATE_DIR" "$SUPERVISOR" >"$ROOT/flowerlyd.log" 2>&1 &
-pid=$!
+# Start flowerlyd with the given extra environment and wait for readiness.
+start_flowerlyd() {
+    env AGENTIC_RUNTIME_DIR="$RUNTIME_DIR" AGENTIC_STATE_DIR="$STATE_DIR" "$@" \
+        "$SUPERVISOR" >"$ROOT/flowerlyd.log" 2>&1 &
+    pid=$!
 
-ready=0
-for _ in $(seq 1 100); do
-    if "$CTL" --runtime-dir "$RUNTIME_DIR" ping flowerlyd >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-    if ! kill -0 "$pid" 2>/dev/null; then
-        echo "flowerlyd exited before readiness" >&2
+    local ready=0
+    for _ in $(seq 1 100); do
+        if "$CTL" --runtime-dir "$RUNTIME_DIR" ping flowerlyd >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "flowerlyd exited before readiness" >&2
+            cat "$ROOT/flowerlyd.log" >&2 || true
+            exit 1
+        fi
+        sleep 0.1
+    done
+
+    if [[ "$ready" -ne 1 ]]; then
+        echo "flowerlyd did not become ready" >&2
         cat "$ROOT/flowerlyd.log" >&2 || true
         exit 1
     fi
-    sleep 0.1
-done
+}
 
-if [[ "$ready" -ne 1 ]]; then
-    echo "flowerlyd did not become ready" >&2
-    cat "$ROOT/flowerlyd.log" >&2 || true
-    exit 1
-fi
+stop_flowerlyd() {
+    kill -TERM "$pid"
+    wait "$pid" || true
+    pid=""
+}
+
+start_flowerlyd
 
 default_json="$("$CTL" --runtime-dir "$RUNTIME_DIR" goal create "Default priority")"
 explicit_json="$("$CTL" --runtime-dir "$RUNTIME_DIR" goal create "Explicit priority" --priority 7)"
@@ -124,10 +136,14 @@ for argv in \
     "generation evidence $generation_id --outcome passed --evidence-sha256 $(printf '9%.0s' {1..64}) --reason cli-contract" \
     "generation test $generation_id --experiment exp-x --reason cli-contract" \
     "generation reject $generation_id --reason cli-contract" \
+    "generation reject $generation_id --experiment exp-x --reason cli-contract" \
     "generation revoke $generation_id --reason cli-contract" \
     "generation activate $generation_id --reason cli-contract" \
     "generation rollback $generation_id --reason cli-contract" \
     "generation history" \
+    "experiment inspect exp-x" \
+    "experiment list" \
+    "experiment list --candidate $generation_id --limit 5" \
     "ownership inspect $parent_id --reason cli-contract" \
     "ownership claim $parent_id --to-uid 4242 --reason cli-contract --expect 2" \
     "ownership release $parent_id --reason cli-contract --expect 2"; do
@@ -147,5 +163,93 @@ if "$CTL" --runtime-dir "$RUNTIME_DIR" ownership claim "$parent_id" --to-uid 1 -
     exit 1
 fi
 
+# An unreadable or non-object experiment file never reaches the daemon.
+evidence_sha="$(printf '9%.0s' {1..64})"
+printf '[]' >"$ROOT/not-object.json"
+for file in "$ROOT/missing.json" "$ROOT/not-object.json"; do
+    if local_error="$("$CTL" --runtime-dir "$RUNTIME_DIR" generation evidence "$generation_id" \
+        --outcome passed --evidence-sha256 "$evidence_sha" --experiment-file "$file" \
+        --reason cli-contract 2>&1)"; then
+        echo "a bad experiment file was accepted: $file" >&2
+        exit 1
+    fi
+    if [[ "$local_error" == *PermissionDenied* || "$local_error" != *"experiment file"* ]]; then
+        echo "a bad experiment file was not refused by the CLI: $local_error" >&2
+        exit 1
+    fi
+done
+
+# With the invoking user's group as the admin group, an Evolution Lab record
+# goes through the CLI end to end (ADR-0024 D5): evidence with details, read
+# back, decided by test or reject.
+stop_flowerlyd
+start_flowerlyd AGENTIC_ADMIN_GROUP="$(id -g)"
+ctl() {
+    "$CTL" --runtime-dir "$RUNTIME_DIR" "$@"
+}
+json_field() {
+    python3 -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"
+}
+baseline_id="$(json_field "$(ctl generation create)" id)"
+good_id="$(json_field "$(ctl generation create --parent "$baseline_id")" id)"
+bad_id="$(json_field "$(ctl generation create --parent "$baseline_id")" id)"
+for id in "$baseline_id" "$good_id" "$bad_id"; do
+    ctl generation promote "$id" --reason cli-contract >/dev/null
+done
+ctl generation identity "$good_id" --source-commit "$(printf 'a%.0s' {1..40})" \
+    --rootfs-sha256 "$(printf 'b%.0s' {1..64})" --kernel-sha256 "$(printf 'c%.0s' {1..64})" \
+    --initramfs-sha256 "$(printf 'd%.0s' {1..64})" \
+    --input-manifest-sha256 "$(printf 'e%.0s' {1..64})" --build-id cli-contract \
+    --reason cli-contract >/dev/null
+python3 - "$ROOT/experiment.json" "$baseline_id" <<'PY'
+import json
+import sys
+
+path, baseline = sys.argv[1], sys.argv[2]
+details = {
+    "hypothesis": "the candidate boots and answers",
+    "baseline": baseline,
+    "test_plan": ["identity.root", "health.flowerlyd"],
+    "metrics": {"boot.report_ms": 8125.0},
+    "artifacts": [
+        {"kind": "result", "name": "result.json", "sha256": "f" * 64, "bytes": 2048}
+    ],
+    "lane": "reproducibility",
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(details, handle)
+PY
+good_evidence="$(ctl generation evidence "$good_id" --outcome passed \
+    --evidence-sha256 "$evidence_sha" --experiment-file "$ROOT/experiment.json" \
+    --reason cli-contract)"
+good_experiment="$(json_field "$good_evidence" experiment)"
+ctl generation test "$good_id" --experiment "$good_experiment" --reason cli-contract >/dev/null
+bad_evidence="$(ctl generation evidence "$bad_id" --outcome failed \
+    --evidence-sha256 "$(printf '8%.0s' {1..64})" --experiment-file "$ROOT/experiment.json" \
+    --reason cli-contract)"
+bad_experiment="$(json_field "$bad_evidence" experiment)"
+if wrong="$(ctl generation reject "$good_id" --experiment "$bad_experiment" --reason x 2>&1)"; then
+    echo "a rejection accepted another Generation's Experiment: $wrong" >&2
+    exit 1
+fi
+ctl generation reject "$bad_id" --experiment "$bad_experiment" --reason cli-contract >/dev/null
+python3 - "$(ctl experiment inspect "$good_experiment")" "$(ctl experiment inspect "$bad_experiment")" \
+    "$(ctl experiment list --candidate "$bad_id")" "$baseline_id" "$good_id" <<'PY'
+import json
+import sys
+
+good, bad, listed = (json.loads(arg) for arg in sys.argv[1:4])
+baseline, good_id = sys.argv[4], sys.argv[5]
+assert good["candidate"] == good_id and good["baseline"] == baseline, good
+assert (good["result"], good["decision"]) == ("passed", "tested"), good
+assert (bad["result"], bad["decision"]) == ("failed", "rejected"), bad
+assert good["test_plan"] == ["identity.root", "health.flowerlyd"], good
+assert good["metrics"]["values"] == {"boot.report_ms": 8125.0}, good
+assert good["metrics"]["lane"] == "reproducibility", good
+assert [a["uri"] for a in good["artifacts"]] == ["sha256:" + "f" * 64], good
+assert listed["count"] == 1 and listed["experiments"][0]["id"] == bad["id"], listed
+PY
+
 echo "CLI-to-flowerlyd create contract passed with omitted, explicit and refused invalid priority."
 echo "CLI goal child creates a linked child and refuses a missing parent; Admin generation promote and ownership commands are refused without an admin group."
+echo "With an admin group, an Evolution Lab Experiment is recorded, decided and read back through agenticctl."

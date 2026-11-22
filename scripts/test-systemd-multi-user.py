@@ -89,6 +89,8 @@ UNSET_IN_EVERY_MODE = (
 PTY_FAIL_CLOSED = "PTY delegation unavailable; spawning disabled"
 PTY_DEVELOPMENT = "PTY isolation is development"
 ADMIN_COMMANDS = [
+    "experiment.inspect",
+    "experiment.list",
     "generation.activate",
     "generation.evidence",
     "generation.history",

@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod backup;
+pub mod experiment;
 pub mod lifecycle;
 pub mod memory_contract;
 pub mod remote;

@@ -1,0 +1,83 @@
+{
+  "baseline": "gen-0a31c7d444874752926407066dca5658",
+  "boots": [
+    {
+      "label": "candidate-1",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "label": "candidate-2",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "label": "fallback",
+      "slot": "root-a",
+      "subject": "baseline"
+    }
+  ],
+  "candidate": {
+    "disk": "/home/gamitron/projects/flowerly_os-wt-acc/target/lab/e5-rollback/run/candidate.img",
+    "disk_sha256": "71a61e734aa360824fba93c886a2667f8728d8744b43181c9d773d9417416e0e",
+    "generation": "gen-3eb186b7546f45e4941a5a8155f12b79"
+  },
+  "checks": [
+    "identity",
+    "root",
+    "kernel",
+    "packages",
+    "binaries",
+    "health",
+    "integration",
+    "shutdown"
+  ],
+  "expect": {
+    "root-a": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-a",
+      "generation": "gen-0a31c7d444874752926407066dca5658",
+      "identity_sha256": "77273c80a1e1fe55e5f7da0a5683f3fa13d469c0e7cfb081e5d78542c0819dfe",
+      "kernel_release": "7.2.14-arch1-1",
+      "packages_sha256": "8f6bdfc4d7753541a67b05515ef4a29d24accbc56df3afd398b8a9a93c7bad65",
+      "partuuid": "aad9e4bb-8bcb-4d94-9d02-4fc6e70f01f8",
+      "vmlinuz_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b"
+    },
+    "root-b": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-b",
+      "generation": "gen-3eb186b7546f45e4941a5a8155f12b79",
+      "identity_sha256": "57e232bf32bb9603e0bdb376f2d40298b4f4ef9ebe862d5195864f808ea4b882",
+      "kernel_release": "7.2.14-arch1-1",
+      "packages_sha256": "8f6bdfc4d7753541a67b05515ef4a29d24accbc56df3afd398b8a9a93c7bad65",
+      "partuuid": "b252a368-415d-428d-8616-6ff54676e543",
+      "vmlinuz_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b"
+    }
+  },
+  "firmware": {
+    "code": "/usr/share/OVMF/OVMF_CODE_4M.fd",
+    "vars": "/usr/share/OVMF/OVMF_VARS_4M.fd"
+  },
+  "hypothesis": "a candidate that fails its health gate is left unblessed and, once its boot-count tries are spent, the loader falls back to the baseline, which boots healthy",
+  "lane": "reproducibility",
+  "limits": {
+    "boot_seconds": 600,
+    "shutdown_seconds": 120
+  },
+  "machine": {
+    "accel": "kvm",
+    "memory_mib": 2048,
+    "smp": 2
+  },
+  "schema": "flowerly-lab-plan/v1"
+}

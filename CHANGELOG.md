@@ -5,6 +5,65 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
 
 ## Unreleased
 
+- Complete Experiment records (#409, ADR-0024 D5): `generation.evidence` takes
+  an optional `experiment` object (hypothesis, baseline, test plan, metrics,
+  content-addressed artifacts with `produced` edges); `generation.test` and
+  `generation.reject` set the Experiment's decision, and a rejection may name
+  the Experiment. New Admin read commands `experiment.inspect` and
+  `experiment.list` (`agenticctl experiment inspect|list`). No migration.
+- `evolutiond lab run|verify|record` (#410, ADR-0024): boots a candidate disk
+  under QEMU (KVM, or TCG for development only) in the foreground as the
+  invoking user, with `-net none`, a private OVMF variable store and the Gate D
+  process check; reads the probe report from the serial console; evaluates the
+  planned checks host-side; writes a canonical, re-verifiable result; and
+  records it as Experiment evidence followed by `generation.test` or
+  `generation.reject`. Fail closed; it never activates. No real KVM run yet.
+- Evolution Lab guest probe (#411, ADR-0024 D2), A/B test images only:
+  `flowerly-lab-probe.service` reports the booted slot, identity, kernel,
+  packages, binaries, boot phases, failed units, health gate, an audited Admin
+  round trip and `evolutiond --self-test` on the serial console, then powers
+  the guest off. It reads the image's files from the root filesystem without
+  the tmpfs mounted over `/var`, which hides the pacman database.
+  `scripts/prepare-lab-probe-rootfs.sh ROOTFS --test-profile`
+  installs it; a shared console fixture ties its output to the host parser.
+  Never in the shipped distro. No real KVM run yet.
+- `just vm-test` / `make vm-test` (#412, ADR-0024): builds an Evolution Lab
+  candidate (two A/B test slots from the cached pinned rootfs, both with the
+  probe; B staged) and boots it with `evolutiond lab run --record`, recording
+  the outcome in a private `flowerlyd` run as the invoking user. Scenarios
+  `good` (TESTED), `bad` (injected health failure: REJECTED) and `rollback`
+  (REJECTED, then a healthy fallback boot of A). No network; each run boots
+  its own copy of the built disk once as slot A, unrecorded (the first boot
+  the guest requires before any boot of B), then arms B. `scripts/lab-candidate.py`
+  describes builds and writes plans; shared plan fixtures tie them to the
+  host parser. The
+  `vm-test` placeholder no longer fails closed.
+- Evolution Lab lanes and an opt-in CI job (#414, ADR-0024 D4/D6):
+  `vm-test.sh --lane upstream` builds the candidate from a rootfs resolved
+  from today's Arch mirror, records its package list as
+  `resolved-packages.txt` (the identities' input hash and each slot's
+  reported package hash) and claims no package set; the result says
+  `lane: upstream` and is never reproducibility evidence. The default
+  `reproducibility` lane is unchanged. `scripts/build-lab-inputs.sh LANE DIR`
+  builds either lane's rootfs and initramfs in the digest-pinned tooling
+  container (network). The `lab-vm-test` workflow runs the lab on the
+  self-hosted KVM runner on `workflow_dispatch` only; it is not a required
+  check and has not run yet. The candidate build now also runs as root.
+- `scripts/archive-lab-evidence.py` (#413, ADR-0024): collects one exact-SHA
+  `vm-test` session's three scenarios (reproducibility lane, one candidate)
+  into a review directory with `evidence.json` (`flowerly-lab-evidence/v1`),
+  refusing a wrong commit or lane, a missing scenario, an unexpected outcome,
+  a file that differs from its recorded hash, or a copy `evolutiond lab verify`
+  refuses; `check` re-reads an archive.
+- Evolution Lab real KVM acceptance (#413, ADR-0024): at `release/2`'s
+  `7ce5942`, one reproducibility-lane candidate passed all three scenarios on
+  a KVM host (`good` TESTED, `bad` REJECTED, `rollback` REJECTED with a
+  healthy fallback to root-a). The evidence is archived under
+  `reviews/evidence/0010-evolution-lab-7ce5942` and `check` exits 0.
+  ADR-0024 is accepted (2026-11-22). The upstream lane's first networked run
+  at the same commit (live Arch mirror, kernel 7.3.5) passed the same three
+  scenarios; it is recorded beside the evidence and claims no package set.
+
 ## 0.0.5 — Generations (2026-11-20)
 
 - Generations released: A/B root slots, boot counting, witness ledger, root

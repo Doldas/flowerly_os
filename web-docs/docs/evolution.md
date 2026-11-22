@@ -38,9 +38,13 @@ experiment result ──►  Experiment record with metrics
 promotion decision ──►  promote to STABLE or reject
 ```
 
-One command, `just vm-test`, is intended to build a Flowerly candidate
-generation, boot it, verify services, exit, and record success or failure. That
-full generation workflow is still **planned**.
+One command, `just vm-test`, builds a Flowerly lab candidate, boots it under
+QEMU/KVM, verifies what the guest reports, and records success or failure in a
+private `flowerlyd` ([Evolution Lab](evolution-lab.md)). It is implemented
+(0.0.6, #412) and passed real KVM acceptance at `7ce5942`
+([#413 review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md)). Its
+design is [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) and its
+work plan is the [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md).
 
 A precursor is now implemented as the nightly Arch-kernel system test. It boots
 the official Arch Linux cloud image under QEMU/KVM, performs a full
@@ -49,8 +53,12 @@ Flowerly build/test/runtime smoke suite inside that guest. It validates the real
 rolling substrate while the Flowerly generation image builder is being built;
 it does not yet claim to boot a Flowerly generation.
 
-`evolutiond` currently remains a stub that exposes a health contract
-(`evolution.experiment-status` returns `idle`).
+The `evolutiond` daemon remains a stub that exposes a health contract
+(`evolution.experiment-status` returns `idle`). The Evolution Lab
+(`evolutiond lab`, 0.0.6) is a foreground command that boots a candidate disk
+under QEMU/KVM, checks the guest's report, and records the candidate as
+`TESTED` or `REJECTED`; it never promotes or activates. See
+[evolution-lab.md](evolution-lab.md).
 
 ## Experiment record
 
@@ -70,13 +78,19 @@ generations and goals. See [provenance.md](provenance.md).
 ## Implementation status and requirements
 
 - **Implemented:** `evolutiond` stub; the `Generation` and experiment storage
-  models that the pipeline will populate.
+  models that the pipeline will populate; `evolutiond lab` (QEMU boots, checks,
+  benchmarks, the fail-closed `TESTED`/`REJECTED` policy and verifiable results),
+  tested locally without a real KVM run yet.
 - **Implemented precursor:** nightly/manual official-Arch VM harness with
   KVM-preferred/QEMU-TCG fallback, rolling upgrade + reboot, whole-project
   verification, daemon smoke test and retained evidence artifacts.
-- **Planned:** the Flowerly candidate-image builder, `just vm-test`, generation
-  manifest verification, benchmarks, multidimensional fitness evaluation, and
-  promotion/rejection policy.
+- **Verified on real KVM (reproducibility lane, `7ce5942`):** the in-guest
+  lab probe, the Flowerly lab candidate builder and `just vm-test` (0.0.6,
+  #411, #412, #413).
+- **Run once on real KVM (upstream lane, `7ce5942`, not reproducibility
+  evidence):** the lab against what Arch served on 2026-11-22.
+- **Planned:** the opt-in `lab-vm-test` CI job's first run and
+  multidimensional fitness evaluation.
 - **Environment requirement:** the heavyweight nightly test uses the
   `flowerly-runner` with QEMU; KVM is preferred when available and TCG is a
   correctness fallback.

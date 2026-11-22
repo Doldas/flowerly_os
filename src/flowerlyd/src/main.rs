@@ -175,7 +175,7 @@ impl Router {
     fn dispatch(&self, name: &str, request: &Envelope, caller: Caller) -> Envelope {
         match name.split('.').next() {
             Some("flow") => via_queue(&self.flow, request, caller),
-            Some("generation") => via_queue(&self.generation, request, caller),
+            Some("generation") | Some("experiment") => via_queue(&self.generation, request, caller),
             Some("provenance") => via_queue(&self.provenance, request, caller),
             Some("goal") => goal::handle_command(&self.store, request, caller),
             Some("ownership") => ownership::handle_command(&self.store, request, caller),
@@ -461,6 +461,8 @@ mod malformed_arguments {
             "generation.history",
             "generation.resolve",
             "generation.promote",
+            "experiment.inspect",
+            "experiment.list",
             "ownership.inspect",
             "ownership.claim",
             "ownership.release",
@@ -956,6 +958,7 @@ mod generation_activation {
                 &generation.id,
                 EvidenceOutcome::Passed,
                 &"9".repeat(64),
+                None,
                 "kvm",
             )
             .unwrap();

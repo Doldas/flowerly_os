@@ -1,0 +1,145 @@
+{
+  "accel": "kvm",
+  "artifacts": [
+    {
+      "bytes": 1917,
+      "kind": "plan",
+      "name": "plan.json",
+      "sha256": "c9ba773043f9a2a63e3e573b1db3d0b2e95dd05af7d546bb25232a595dd02cfa"
+    },
+    {
+      "bytes": 47311,
+      "kind": "serial-log",
+      "name": "1-initial.serial.log",
+      "sha256": "5f21a5d7d32f061f19f8db34bbfa95ea3a7bf714bc92ae5db58e9b94fd83e164"
+    },
+    {
+      "bytes": 1010,
+      "kind": "probe-report",
+      "name": "1-initial.report.json",
+      "sha256": "83bdf05d77cbfb1623f558f5a31e01500f3886250ad8b1e8a00de177905ad384"
+    }
+  ],
+  "baseline": null,
+  "boots": [
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "healthy",
+          "passed": true
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "the frozen package set",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "initial",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "c968dc91be3fe77537378d04392a847263fb1aa81fc0b248481de317dd4d0dbd",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.4,
+        "to_report": 10.808
+      },
+      "report": {
+        "error": null,
+        "file": "1-initial.report.json",
+        "sha256": "83bdf05d77cbfb1623f558f5a31e01500f3886250ad8b1e8a00de177905ad384",
+        "status": "received"
+      },
+      "serial": "1-initial.serial.log",
+      "slot": "root-a",
+      "subject": "candidate"
+    }
+  ],
+  "candidate": "gen-e6153ab431934a16ae0fdd7498351860",
+  "decision": {
+    "fallback": null,
+    "reasons": [],
+    "recommendation": "test",
+    "verdict": "passed"
+  },
+  "disk": {
+    "allocated_bytes": 3683082240,
+    "bytes": 7249854464,
+    "sha256": "e1b533acaa10dcee3e8f8ee428c443a987adbd1cc10dabfbd25c9a5acc9c9d27"
+  },
+  "evolutiond": "0.0.1",
+  "firmware": {
+    "code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+    "vars_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+  },
+  "lane": "reproducibility",
+  "metrics": [
+    {
+      "name": "initial.boot_to_report_s",
+      "unit": "s",
+      "value": 10.808
+    },
+    {
+      "name": "initial.shutdown_s",
+      "unit": "s",
+      "value": 0.4
+    },
+    {
+      "name": "initial.phase.kernel_ms",
+      "unit": "ms",
+      "value": 750.025
+    },
+    {
+      "name": "initial.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2400.437
+    },
+    {
+      "name": "initial.phase.userspace_ms",
+      "unit": "ms",
+      "value": 5204.659
+    },
+    {
+      "name": "disk.bytes",
+      "unit": "bytes",
+      "value": 7249854464.0
+    },
+    {
+      "name": "disk.allocated_bytes",
+      "unit": "bytes",
+      "value": 3683082240.0
+    }
+  ],
+  "plan_sha256": "c9ba773043f9a2a63e3e573b1db3d0b2e95dd05af7d546bb25232a595dd02cfa",
+  "qemu": {
+    "path": "/usr/bin/qemu-system-x86_64",
+    "sha256": "fa552a45c337a88fe71e1e1af9ebace875f30e88685a6986d9406c92efaf44cb"
+  },
+  "schema": "flowerly-lab-result/v1"
+}

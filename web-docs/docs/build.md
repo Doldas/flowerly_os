@@ -26,16 +26,24 @@ just check    # cargo check across the workspace
 just test     # run the test suite
 just lint     # cargo fmt --check and cargo clippy
 just run      # build and start the local unified daemon runtime
+just vm-test  # build an Evolution Lab candidate and boot it on this KVM host
 ```
 
 Underlying them are ordinary Cargo invocations (`cargo build --workspace --release / cargo check/test --workspace`,
 `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- --deny warnings`);
-`just` does not hide build behavior behind opaque scripts.
+`just` does not hide build behavior behind opaque scripts. `just vm-test` is
+the exception that needs one: `scripts/vm-test.sh` builds a lab candidate from
+the cached pinned rootfs and initramfs (it downloads nothing), boots it with
+`evolutiond lab run --record` and records the outcome in a private
+`flowerlyd`; see [the candidate build and `just vm-test`](evolution-lab.md#the-candidate-build-and-just-vm-test).
+`scripts/build-lab-inputs.sh reproducibility target/pinned-rootfs` builds
+those inputs (network), and `--lane upstream` runs the lab on inputs resolved
+from today's Arch mirror instead; see [Lanes](evolution-lab.md#lanes).
 
 ## Makefile fallback
 
 Where `just` is not available, a `Makefile` mirrors these targets (`make build`,
-`make check`, `make test`, `make lint`, `make run`), invoking the same underlying
+`make check`, `make test`, `make lint`, `make run`, `make vm-test`), invoking the same underlying
 commands. `just` remains primary; the `Makefile` only keeps the project buildable
 without extra tooling. The parity test fails CI if equivalent task recipes
 diverge or either runner stops refusing unsupported image/VM operations.

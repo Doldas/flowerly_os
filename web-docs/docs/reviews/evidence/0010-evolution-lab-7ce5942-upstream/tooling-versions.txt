@@ -1,0 +1,6 @@
+arch-install-scripts 32-1
+cpio 2.15-3
+diffutils 3.12-2
+mkosi 27.1-1
+python-pefile 2024.8.26-2
+pacman 7.1.0.r9.g54d9411-4

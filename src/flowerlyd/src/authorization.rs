@@ -338,6 +338,16 @@ pub(crate) const COMMANDS: &[(&str, CommandClass, &str)] = &[
         CommandClass::Admin,
         "audited: makes a private candidate a shared system Generation",
     ),
+    (
+        "experiment.inspect",
+        CommandClass::Admin,
+        "reads the acceptance record and artifacts of a Generation",
+    ),
+    (
+        "experiment.list",
+        CommandClass::Admin,
+        "lists the acceptance records of every Generation",
+    ),
     // Ownership: audited Admin crossing of owner boundaries (#225 PR 7).
     (
         "ownership.inspect",
@@ -503,7 +513,7 @@ mod tests {
     #[test]
     fn admin_commands_require_admin_group_membership() {
         let admin = with_class(CommandClass::Admin);
-        assert_eq!(admin.len(), 17, "{admin:?}");
+        assert_eq!(admin.len(), 19, "{admin:?}");
         let configured = AccessPolicy {
             users_gid: Some(USERS),
             admin_gid: Some(ADMIN),
@@ -688,6 +698,8 @@ mod tests {
     #[test]
     fn named_administrative_operations_are_admin() {
         for name in [
+            "experiment.inspect",
+            "experiment.list",
             "generation.activate",
             "generation.evidence",
             "generation.history",
