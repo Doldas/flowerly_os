@@ -1,8 +1,7 @@
 # ADR-0024: Evolution Lab experiment pipeline and authority
 
-**Status:** Proposed 2026-11-21 for 0.0.6. The decisions D1–D6 below are the
-defaults the implementation follows; the owner accepts or changes them in
-review. **Issues:** [#10](https://github.com/Doldas/flowerly_os/issues/10)
+**Status:** Accepted 2026-11-22 by the owner (decisions D1–D6 below), after
+E1–E4 and E6 were merged to `release/2`. Proposed 2026-11-21 for 0.0.6. **Issues:** [#10](https://github.com/Doldas/flowerly_os/issues/10)
 (roadmap), [#3](https://github.com/Doldas/flowerly_os/issues/3) (vertical
 slice). **Scope:** 0.0.6. Builds on
 [ADR-0007](0007-kvm-evolution-world.md) (KVM Evolution World),

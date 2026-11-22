@@ -41,7 +41,8 @@ promotion decision ──►  promote to STABLE or reject
 One command, `just vm-test`, builds a Flowerly lab candidate, boots it under
 QEMU/KVM, verifies what the guest reports, and records success or failure in a
 private `flowerlyd` ([Evolution Lab](evolution-lab.md)). It is implemented
-(0.0.6, #412); real KVM acceptance of the lab (#413) is still to come. Its
+(0.0.6, #412) and passed real KVM acceptance at `7ce5942`
+([#413 review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md)). Its
 design is [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) and its
 work plan is the [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md).
 
@@ -83,10 +84,11 @@ generations and goals. See [provenance.md](provenance.md).
 - **Implemented precursor:** nightly/manual official-Arch VM harness with
   KVM-preferred/QEMU-TCG fallback, rolling upgrade + reboot, whole-project
   verification, daemon smoke test and retained evidence artifacts.
-- **Implemented, not yet KVM-verified:** the in-guest lab probe, the
-  Flowerly lab candidate builder and `just vm-test` (0.0.6, #411, #412).
-- **Planned:** real KVM acceptance of the lab (#413) and multidimensional
-  fitness evaluation.
+- **Verified on real KVM (reproducibility lane, `7ce5942`):** the in-guest
+  lab probe, the Flowerly lab candidate builder and `just vm-test` (0.0.6,
+  #411, #412, #413).
+- **Planned:** the upstream lane's first networked run, the opt-in
+  `lab-vm-test` CI job's first run, and multidimensional fitness evaluation.
 - **Environment requirement:** the heavyweight nightly test uses the
   `flowerly-runner` with QEMU; KVM is preferred when available and TCG is a
   correctness fallback.

@@ -1,0 +1,49 @@
+{
+  "active": "root-a",
+  "files": {
+    "disk": "ab.img",
+    "initramfs": "initramfs.img",
+    "kernel": "vmlinuz",
+    "manifest": "ab.img.manifest.json",
+    "slot_tool": "slot-tool"
+  },
+  "initramfs_sha256": "1fbfd657aaa3abc4857a9b6bfea8bbd9006fc3698665fca48393e9b26d235465",
+  "input_manifest_sha256": "8689cd419c928daa361be330b1794e5be06b301773a7bb94ba5febc97a424d62",
+  "kernel_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b",
+  "lane": "reproducibility",
+  "schema": "flowerly-lab-candidate/v1",
+  "slots": {
+    "root-a": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-a",
+      "identity_sha256": "77273c80a1e1fe55e5f7da0a5683f3fa13d469c0e7cfb081e5d78542c0819dfe",
+      "kernel_release": "7.2.14-arch1-1",
+      "packages_sha256": "8f6bdfc4d7753541a67b05515ef4a29d24accbc56df3afd398b8a9a93c7bad65",
+      "partuuid": "aad9e4bb-8bcb-4d94-9d02-4fc6e70f01f8",
+      "rootfs_sha256": "398736c588e57d0990971665166d3ee65f3306a75112861e7e28f8d2465d48cb",
+      "vmlinuz_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b"
+    },
+    "root-b": {
+      "binaries": {
+        "agenticctl": "6892e8d5086b68e1545ce57b355ec4bb8451790f5755857b56fdb21b7a3c81c8",
+        "evolutiond": "8bfef9a8aa8d3fe138c67c5f362c05f1c3c07471633305e7be0bba87eb6ca632",
+        "flowerly-slot-broker": "42d1ec983b3e49f970e30f5ffb4074798733644dfc1fcb4c643449c78c9099f4",
+        "flowerlyd": "dc14aad3d2a5964e6368c408999132ac4b4ee9568b405d6ad9c889e0fa263a3e"
+      },
+      "build_id": "lab-b",
+      "identity_sha256": "57e232bf32bb9603e0bdb376f2d40298b4f4ef9ebe862d5195864f808ea4b882",
+      "kernel_release": "7.2.14-arch1-1",
+      "packages_sha256": "8f6bdfc4d7753541a67b05515ef4a29d24accbc56df3afd398b8a9a93c7bad65",
+      "partuuid": "b252a368-415d-428d-8616-6ff54676e543",
+      "rootfs_sha256": "299ef46848d2ad306979f09f83ebd4086a508533245ed5298d93298042822158",
+      "vmlinuz_sha256": "b1e9eaf5700a53a31ed923edecd72b319a29da74be32c0885bff112d37ce325b"
+    }
+  },
+  "source_commit": "7ce5942eb29826e5e8363e4168d4ad42e65198a8",
+  "staged": "root-b"
+}

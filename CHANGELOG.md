@@ -54,7 +54,13 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   into a review directory with `evidence.json` (`flowerly-lab-evidence/v1`),
   refusing a wrong commit or lane, a missing scenario, an unexpected outcome,
   a file that differs from its recorded hash, or a copy `evolutiond lab verify`
-  refuses; `check` re-reads an archive. No acceptance run yet.
+  refuses; `check` re-reads an archive.
+- Evolution Lab real KVM acceptance (#413, ADR-0024): at `release/2`'s
+  `7ce5942`, one reproducibility-lane candidate passed all three scenarios on
+  a KVM host (`good` TESTED, `bad` REJECTED, `rollback` REJECTED with a
+  healthy fallback to root-a). The evidence is archived under
+  `reviews/evidence/0010-evolution-lab-7ce5942` and `check` exits 0.
+  ADR-0024 is accepted (2026-11-22).
 
 ## 0.0.5 — Generations (2026-11-20)
 

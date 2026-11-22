@@ -1,0 +1,343 @@
+{
+  "accel": "kvm",
+  "artifacts": [
+    {
+      "bytes": 3055,
+      "kind": "plan",
+      "name": "plan.json",
+      "sha256": "0b63b803b2022b2b2b8c3edaaa422be1ca16a7c88ff3370f9e199daea7da3d04"
+    },
+    {
+      "bytes": 46443,
+      "kind": "serial-log",
+      "name": "1-candidate-1.serial.log",
+      "sha256": "8c92195c95fdeccf26c7ff132870b8ed9103efe6a575ca992adc22466d0804c9"
+    },
+    {
+      "bytes": 1046,
+      "kind": "probe-report",
+      "name": "1-candidate-1.report.json",
+      "sha256": "8095ab3fa749314f6430df8b9a33c806b188d42cb4ab196020b5f88121607312"
+    },
+    {
+      "bytes": 46512,
+      "kind": "serial-log",
+      "name": "2-candidate-2.serial.log",
+      "sha256": "a93af4ae5ea2f8205dd13eca1ff8d52b5fb4aaa8806b060ba5e1be7b475aeb63"
+    },
+    {
+      "bytes": 1046,
+      "kind": "probe-report",
+      "name": "2-candidate-2.report.json",
+      "sha256": "dc0040e24f227de7eb4d118228bcb569378ba01e3aa39a90c4f82c7b10fcdf0c"
+    },
+    {
+      "bytes": 47304,
+      "kind": "serial-log",
+      "name": "3-fallback.serial.log",
+      "sha256": "25bff2ce8109a8f78ee796c3816eb5126a1085b0c36f39ece75ace8a85841dd0"
+    },
+    {
+      "bytes": 1010,
+      "kind": "probe-report",
+      "name": "3-fallback.report.json",
+      "sha256": "eefe74fe3387417a9369a065fb97531b8d3ddcef29a0ce0ddec87757454b40cc"
+    }
+  ],
+  "baseline": "gen-0a31c7d444874752926407066dca5658",
+  "boots": [
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service",
+          "passed": false
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "the frozen package set",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "candidate-1",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "abb7efd504741c8b1762b3bb0ebaf771a3d30254274f68143e6c48e7e8e7979c",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.4,
+        "to_report": 8.606
+      },
+      "report": {
+        "error": null,
+        "file": "1-candidate-1.report.json",
+        "sha256": "8095ab3fa749314f6430df8b9a33c806b188d42cb4ab196020b5f88121607312",
+        "status": "received"
+      },
+      "serial": "1-candidate-1.serial.log",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service",
+          "passed": false
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "the frozen package set",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "candidate-2",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "abb7efd504741c8b1762b3bb0ebaf771a3d30254274f68143e6c48e7e8e7979c",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.4,
+        "to_report": 8.406
+      },
+      "report": {
+        "error": null,
+        "file": "2-candidate-2.report.json",
+        "sha256": "dc0040e24f227de7eb4d118228bcb569378ba01e3aa39a90c4f82c7b10fcdf0c",
+        "status": "received"
+      },
+      "serial": "2-candidate-2.serial.log",
+      "slot": "root-b",
+      "subject": "candidate"
+    },
+    {
+      "checks": {
+        "binaries": {
+          "detail": "Flowerly binaries as built",
+          "passed": true
+        },
+        "health": {
+          "detail": "healthy",
+          "passed": true
+        },
+        "identity": {
+          "detail": "the identity built for this slot",
+          "passed": true
+        },
+        "integration": {
+          "detail": "integrated",
+          "passed": true
+        },
+        "kernel": {
+          "detail": "kernel as built",
+          "passed": true
+        },
+        "packages": {
+          "detail": "the frozen package set",
+          "passed": true
+        },
+        "root": {
+          "detail": "booted the expected root",
+          "passed": true
+        },
+        "shutdown": {
+          "detail": "powered off after its report",
+          "passed": true
+        }
+      },
+      "label": "fallback",
+      "outcome": {
+        "exit_code": 0,
+        "process": {
+          "cmdline_sha256": "abb7efd504741c8b1762b3bb0ebaf771a3d30254274f68143e6c48e7e8e7979c",
+          "kvm_fd": true
+        },
+        "signal": null,
+        "stopped": null,
+        "timed_out": null,
+        "to_exit": 0.2,
+        "to_report": 8.406
+      },
+      "report": {
+        "error": null,
+        "file": "3-fallback.report.json",
+        "sha256": "eefe74fe3387417a9369a065fb97531b8d3ddcef29a0ce0ddec87757454b40cc",
+        "status": "received"
+      },
+      "serial": "3-fallback.serial.log",
+      "slot": "root-a",
+      "subject": "baseline"
+    }
+  ],
+  "candidate": "gen-3eb186b7546f45e4941a5a8155f12b79",
+  "decision": {
+    "fallback": {
+      "after": "candidate-1",
+      "boot": "fallback",
+      "booted": true,
+      "healthy": true
+    },
+    "reasons": [
+      "candidate-1: health failed: health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service",
+      "candidate-2: health failed: health gate is `failed`, expected `passed`; failed units: flowerly-generation-health.service"
+    ],
+    "recommendation": "reject",
+    "verdict": "failed"
+  },
+  "disk": {
+    "allocated_bytes": 3735076864,
+    "bytes": 7249854464,
+    "sha256": "71a61e734aa360824fba93c886a2667f8728d8744b43181c9d773d9417416e0e"
+  },
+  "evolutiond": "0.0.1",
+  "firmware": {
+    "code_sha256": "874f15a7c9110e78a89db159f0f68fc97e9076b74777520de1c235426f758aa7",
+    "vars_sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+  },
+  "lane": "reproducibility",
+  "metrics": [
+    {
+      "name": "candidate-1.boot_to_report_s",
+      "unit": "s",
+      "value": 8.606
+    },
+    {
+      "name": "candidate-1.shutdown_s",
+      "unit": "s",
+      "value": 0.4
+    },
+    {
+      "name": "candidate-1.phase.kernel_ms",
+      "unit": "ms",
+      "value": 763.636
+    },
+    {
+      "name": "candidate-1.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2397.369
+    },
+    {
+      "name": "candidate-1.phase.userspace_ms",
+      "unit": "ms",
+      "value": 3898.516
+    },
+    {
+      "name": "candidate-2.boot_to_report_s",
+      "unit": "s",
+      "value": 8.406
+    },
+    {
+      "name": "candidate-2.shutdown_s",
+      "unit": "s",
+      "value": 0.4
+    },
+    {
+      "name": "candidate-2.phase.kernel_ms",
+      "unit": "ms",
+      "value": 829.935
+    },
+    {
+      "name": "candidate-2.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2417.514
+    },
+    {
+      "name": "candidate-2.phase.userspace_ms",
+      "unit": "ms",
+      "value": 3831.191
+    },
+    {
+      "name": "fallback.boot_to_report_s",
+      "unit": "s",
+      "value": 8.406
+    },
+    {
+      "name": "fallback.shutdown_s",
+      "unit": "s",
+      "value": 0.2
+    },
+    {
+      "name": "fallback.phase.kernel_ms",
+      "unit": "ms",
+      "value": 663.451
+    },
+    {
+      "name": "fallback.phase.initrd_ms",
+      "unit": "ms",
+      "value": 2496.405
+    },
+    {
+      "name": "fallback.phase.userspace_ms",
+      "unit": "ms",
+      "value": 3946.819
+    },
+    {
+      "name": "disk.bytes",
+      "unit": "bytes",
+      "value": 7249854464.0
+    },
+    {
+      "name": "disk.allocated_bytes",
+      "unit": "bytes",
+      "value": 3735076864.0
+    }
+  ],
+  "plan_sha256": "0b63b803b2022b2b2b8c3edaaa422be1ca16a7c88ff3370f9e199daea7da3d04",
+  "qemu": {
+    "path": "/usr/bin/qemu-system-x86_64",
+    "sha256": "fa552a45c337a88fe71e1e1af9ebace875f30e88685a6986d9406c92efaf44cb"
+  },
+  "schema": "flowerly-lab-result/v1"
+}
