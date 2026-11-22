@@ -60,7 +60,9 @@ spirit of Keep a Changelog, and versions use semantic-ish pre-1.0 numbering.
   a KVM host (`good` TESTED, `bad` REJECTED, `rollback` REJECTED with a
   healthy fallback to root-a). The evidence is archived under
   `reviews/evidence/0010-evolution-lab-7ce5942` and `check` exits 0.
-  ADR-0024 is accepted (2026-11-22).
+  ADR-0024 is accepted (2026-11-22). The upstream lane's first networked run
+  at the same commit (live Arch mirror, kernel 7.3.5) passed the same three
+  scenarios; it is recorded beside the evidence and claims no package set.
 
 ## 0.0.5 — Generations (2026-11-20)
 

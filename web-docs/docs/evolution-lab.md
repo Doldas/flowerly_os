@@ -416,6 +416,10 @@ from which mirror). The reproducibility lane is the same pinned build as
 `scripts/build-arch-rootfs-pinned-container.sh`. It needs podman and the
 network; `vm-test` itself never does.
 
+The upstream lane's first run (2026-11-22, `7ce5942`) passed all three
+scenarios against the live mirror; its record is in the
+[#413 review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md#upstream-lane-first-run-not-reproducibility-evidence).
+
 ## The opt-in CI job (`lab-vm-test`)
 
 `.github/workflows/lab-vm-test.yml` runs the lab on the self-hosted KVM

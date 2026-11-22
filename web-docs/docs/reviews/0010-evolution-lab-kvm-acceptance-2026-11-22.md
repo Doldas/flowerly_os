@@ -79,6 +79,36 @@ whose log is archived beside the result.
 - The runner's QEMU TCG job for promotion #424 ran on the same host during
   the session. No timeout or retry was needed. Every boot took 8.2–8.8 s
   from start to probe report.
-- Not covered here: the upstream lane (needs the owner's network approval)
-  and the opt-in `lab-vm-test` CI job, which GitHub can dispatch only once
-  the workflow is on the default branch. Neither is reproducibility evidence.
+- Not covered here: the opt-in `lab-vm-test` CI job, which GitHub can
+  dispatch only once the workflow is on the default branch.
+
+## Upstream lane, first run (not reproducibility evidence)
+
+With the owner's network approval, the upstream lane ran once at the same
+commit, on the same host and firmware. `scripts/build-lab-inputs.sh upstream`
+resolved the rootfs and initrd from the live Arch mirror
+`https://geo.mirror.pkgbuild.com` at 2026-11-22T11:13:35Z, in the
+digest-pinned tooling container (mkosi 27.1-1, pacman 7.1.0.r9.g54d9411-4).
+One upstream candidate served all three scenarios (`FLOWERLY_LAB_CANDIDATE`).
+
+The upstream lane claims no package set: each boot's `packages` check
+says "recorded, not claimed", with the hash of `resolved-packages.txt`. That
+file lists 158 packages, among them `linux 7.3.5.arch1-1`, `systemd 262.2-1`
+and `glibc 2.44+r78+gfcfb867c58ab-1`; its SHA-256 is `18ba60b7…ed20`.
+The pinned set has kernel 7.2.14.
+
+| Scenario | Generation | Experiment | Outcome | Result digest |
+| --- | --- | --- | --- | --- |
+| good | `gen-b9548b2674404b9198f480a0fff47980` | `exp-369752ea5685402a853da869943b9b2a` | passed → **TESTED** | `23857efe…9b50` |
+| bad | `gen-9e854d96f36b4c0484a7cb4207c61a1f` | `exp-3a170e3f01e048f99e9b3b8935d14f2c` | failed (injected health failure) → **REJECTED** | `e9c18a59…16bc` |
+| rollback | `gen-d9f4d5e71bf04c4ca5e1ce032a3cc4f1` | `exp-d4c7229da90846719d0c0f9b8d6b698b` | failed → **REJECTED**; healthy fallback to root-a | `b7ce7eca…a982` |
+
+Every result records `lane: upstream` and `accel: kvm`. Each boot took
+10.0–11.4 s from start to probe report.
+[evidence/0010-evolution-lab-7ce5942-upstream](evidence/0010-evolution-lab-7ce5942-upstream/)
+keeps a small record: the resolution time and tooling, `candidate.json`,
+`resolved-packages.txt` and each scenario's plan, result and result digest,
+with `SHA256SUMS`. `archive-lab-evidence.py` refuses the upstream lane by
+design, so this record is not a full archive. What Arch served on
+2026-11-22 boots and passes the lab's checks; that says nothing about the
+pinned set.

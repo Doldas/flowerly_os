@@ -11,12 +11,12 @@ E1–E4, E6 and E5's archive tool are merged to `release/2` (#416–#421).
 E5's exact-SHA KVM acceptance passed at `7ce5942`, `release/2`'s head after
 those merges: `good` TESTED, `bad` REJECTED, `rollback` REJECTED with a
 healthy fallback ([review](reviews/0010-evolution-lab-kvm-acceptance-2026-11-22.md)). ADR-0024 was accepted by the owner
-on 2026-11-22.
+on 2026-11-22. The upstream lane's first networked run, at the same commit,
+passed all three scenarios too; it is not reproducibility evidence.
 
 Open:
 
 - E5: the owner's review of the evidence.
-- The upstream lane's first networked run.
 - The CI job's first run on the runner. GitHub allows it only once the
   workflow is on the default branch.
 

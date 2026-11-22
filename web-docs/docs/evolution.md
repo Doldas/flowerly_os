@@ -87,8 +87,10 @@ generations and goals. See [provenance.md](provenance.md).
 - **Verified on real KVM (reproducibility lane, `7ce5942`):** the in-guest
   lab probe, the Flowerly lab candidate builder and `just vm-test` (0.0.6,
   #411, #412, #413).
-- **Planned:** the upstream lane's first networked run, the opt-in
-  `lab-vm-test` CI job's first run, and multidimensional fitness evaluation.
+- **Run once on real KVM (upstream lane, `7ce5942`, not reproducibility
+  evidence):** the lab against what Arch served on 2026-11-22.
+- **Planned:** the opt-in `lab-vm-test` CI job's first run and
+  multidimensional fitness evaluation.
 - **Environment requirement:** the heavyweight nightly test uses the
   `flowerly-runner` with QEMU; KVM is preferred when available and TCG is a
   correctness fallback.
