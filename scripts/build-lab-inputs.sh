@@ -47,9 +47,7 @@ mkdir -p "$OUT"; OUT="$(realpath "$OUT")"
 if [[ "$LANE" == upstream ]]; then
     printf 'resolved_at=%s\nmirror=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIRROR" > "$OUT/resolved-at.txt"
 fi
-# --network host: on a runner that is itself a container, nested podman's
-# bridge network cannot reach DNS (pacman times out resolving the mirror).
-podman run --rm --privileged --security-opt label=disable --network host \
+podman run --rm --privileged --security-opt label=disable \
     -e MIRROR="$MIRROR" -e TOOLS="$TOOLS" \
     -v "$ROOT":/work:ro -v "$OUT":/out -w /work "$IMAGE" bash -euc '
         printf "Server = %s/\$repo/os/\$arch\n" "$MIRROR" > /etc/pacman.d/mirrorlist
