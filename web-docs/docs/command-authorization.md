@@ -537,7 +537,7 @@ the test user's own gid.
 
 ## Inventory
 
-66 commands: 10 Admin, 10 ServiceAccount, 46 User.
+80 commands: 19 Admin, 11 ServiceAccount, 50 User.
 
 | Command | Class | Reason |
 | --- | --- | --- |
@@ -552,6 +552,8 @@ the test user's own gid.
 | `generation.history` | Admin | shows the actor and reason of every activation |
 | `generation.resolve` | ServiceAccount | no input; acts only on what the root-owned boot ledger proves |
 | `generation.promote` | Admin | audited: makes a private candidate a shared system Generation |
+| `experiment.inspect` | Admin | reads the acceptance record and artifacts of a Generation |
+| `experiment.list` | Admin | lists the acceptance records of every Generation |
 | `ownership.inspect` | Admin | audited: reads another owner's ownership metadata |
 | `ownership.claim` | Admin | audited: gives unresolved data to a user |
 | `ownership.release` | Admin | audited: makes a user's data unresolved (protected) |
