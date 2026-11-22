@@ -48,6 +48,12 @@ and the reasoning behind them.
   and asynchronous unknown-outcome semantics for an OpenAI-compatible
   provider (#263); disabled unless an administrator installs it.
 
+- [0024: Evolution Lab experiment pipeline and authority](0024-evolution-lab-experiment-pipeline.md)
+  — 0.0.6 lab as a foreground `evolutiond lab` run by an operator with
+  `/dev/kvm` (the daemon stays unprovisioned, #95); frozen-input candidates,
+  an in-guest probe judged on the host, promotion only to `TESTED` or
+  `REJECTED`, complete Experiment records and reproducibility/upstream lanes.
+
 New architecture decisions should be added as numbered ADRs rather than silently
 changing foundational policy. Proposed, not-yet-accepted designs belong in
 [../rfcs/](../rfcs/).

@@ -40,7 +40,9 @@ promotion decision ──►  promote to STABLE or reject
 
 One command, `just vm-test`, is intended to build a Flowerly candidate
 generation, boot it, verify services, exit, and record success or failure. That
-full generation workflow is still **planned**.
+full generation workflow is the 0.0.6 milestone and is **in progress**; its
+design is [ADR-0024](adr/0024-evolution-lab-experiment-pipeline.md) and its
+work plan is the [0.0.6 Evolution Lab plan](release-0.0.6-evolution-lab-plan.md).
 
 A precursor is now implemented as the nightly Arch-kernel system test. It boots
 the official Arch Linux cloud image under QEMU/KVM, performs a full
